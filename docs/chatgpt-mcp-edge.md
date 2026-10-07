@@ -216,8 +216,8 @@ inspect its receipt and live gate/service/launcher state first.
 One narrow recovery mode exists only for an exact `UNKNOWN / UPGRADE_PENDING`
 receipt whose shared-state effect can be disproved. With the ordinary edge lock and
 the state-upgrade lock both held, it requires the exact old launcher and healthy
-local/public service, database revision `0013_failure_journal`, absence of
-`agent_mailbox_transfer_requests`, and an unchanged receipt preimage. It then writes
+local/public service, database revision `0023_activation_continuity`, absence of
+`mcp_operation_timings`, and an unchanged receipt preimage. It then writes
 the terminal `FAIL / NO_EFFECT` receipt. Any mismatch remains `UNKNOWN`; this mode
 does not retry the upgrade or change the service, launcher, database, or Caddy.
 
