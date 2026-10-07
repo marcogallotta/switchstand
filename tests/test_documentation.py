@@ -208,6 +208,22 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "Never present default-off or inert readiness as ordinary-use product completion" in human_review
 
 
+def test_loc_exceptions_use_one_hard_challenge_and_rare_human_escalation():
+    quality = " ".join(
+        section(read("docs/code-quality.md"), "### Canonical exception challenge").split()
+    )
+
+    assert "do not quote, summarize, or rewrite it" in quality
+    assert "assume the exception should be rejected" in quality
+    assert "without accepting candidate-created invariants as requirements" in quality
+    assert "at or below twice the original hard cap" in quality
+    assert "Growth beyond twice the original hard cap is a 1-in-100 exception" in quality
+    assert "strongest smaller route fail or cause concrete greater harm" in quality
+    assert "A `>=500` actual PR/diff is independently a 1-in-100 exception" in quality
+    assert "never demand serial review pairs" in quality
+    assert "it never grants either 1-in-100 exception" in quality
+
+
 def test_human_and_incident_triggers_remain_always_loaded():
     agents = read("AGENTS.md")
     triggers = section(agents, "### Always-loaded triggers")
