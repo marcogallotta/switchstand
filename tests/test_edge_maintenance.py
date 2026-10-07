@@ -743,7 +743,7 @@ def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
         elif command[:3] == ["docker", "volume", "inspect"]:
             output = "switchstand|postgres-data\n"
         elif command[:2] == ["docker", "exec"]:
-            output = "0013_failure_journal|ABSENT\n"
+            output = "0023_activation_continuity|ABSENT\n"
         else:
             pytest.fail(f"unexpected command: {command}")
         return subprocess.CompletedProcess(command, 0, output, "")
@@ -753,13 +753,14 @@ def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
     operations.prove_upgrade_no_effect()
 
     assert commands[-1][:2] == ["docker", "exec"]
-    assert "agent_mailbox_transfer_requests" in commands[-1][-1]
+    assert "mcp_operation_timings" in commands[-1][-1]
 
 
 @pytest.mark.parametrize(
     "database", [
-        "0014_canonical_routing|ABSENT",
-        "0013_failure_journal|agent_mailbox_transfer_requests",
+        "0024_mcp_operation_timings|mcp_operation_timings",
+        "0023_activation_continuity|mcp_operation_timings",
+        "0022_implementation_requests|ABSENT",
     ],
 )
 def test_no_effect_proof_rejects_revision_or_table_mismatch(

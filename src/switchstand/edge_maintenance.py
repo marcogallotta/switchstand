@@ -974,12 +974,12 @@ class HostOperations:
                 "-U", "switchstand", "-d", "switchstand", "-At", "-c",
                 (
                     "SELECT version_num || '|' || COALESCE("
-                    "to_regclass('public.agent_mailbox_transfer_requests')::text, "
+                    "to_regclass('public.mcp_operation_timings')::text, "
                     "'ABSENT') FROM alembic_version"
                 ),
             ]
         ).stdout.strip()
-        if database != "0013_failure_journal|ABSENT":
+        if database != "0023_activation_continuity|ABSENT":
             raise Unknown("shared state is not the exact pre-upgrade state")
 
 
