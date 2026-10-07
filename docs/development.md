@@ -271,6 +271,10 @@ services, state, settings, or routing.
   Codex project configuration and managed/development MCP wrappers. Live use remains fail-closed until the separately
   managed external selector is installed with an ACTIVE CONTROL manifest; repository landing does not install, activate
   or cut over that selector.
+- An operator may stage and select an exact current-main CONTROL with
+  `python -m switchstand.control_release <target-sha>`. It validates through the installed selector without executing
+  the candidate, and fails before staging unless that selector exactly matches this release; the direct four-field
+  manifest method remains the fallback and rollback path.
 - Isolated exact-candidate qualification: from the clean ordinary `main` checkout, run
   `scripts/switchstand --isolated --active <WorkId or legacy task URL/ID> --commit <exact-candidate-SHA>`. This command delegates
   only to the fixed user-level external selector at `$HOME/.local/bin/switchstand-start`; there is no repository or

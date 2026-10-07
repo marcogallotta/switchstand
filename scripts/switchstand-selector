@@ -13,6 +13,19 @@ esac
 
 selector_root="$HOME/.local/state/switchstand/control"
 manifest="$selector_root/manifest"
+validate_only=0
+if [ "${1:-}" = "--_switchstand-check-manifest-v1" ]; then
+    [ "$#" -eq 2 ] || fail "prospective-manifest validation requires exactly one path"
+    manifest=$2
+    [ -f "$manifest" ] && [ ! -L "$manifest" ] \
+        || fail "prospective manifest is not a regular file"
+    manifest_dir=$(CDPATH= cd -- "$(dirname -- "$manifest")" && pwd -P)
+    [ "$manifest_dir" = "$selector_root" ] \
+        || fail "prospective manifest must be inside the selector root"
+    [ "$(/usr/bin/stat -c %a -- "$manifest")" = 600 ] \
+        || fail "prospective manifest must have mode 0600"
+    validate_only=1
+fi
 controls="$selector_root/controls"
 git_bin=/usr/bin/git
 env_bin=/usr/bin/env
@@ -175,6 +188,7 @@ origin_repository=${origin_repository%.git}
 
 entry="$control_real/scripts/switchstand-start"
 [ -f "$entry" ] && [ -x "$entry" ] || fail "CONTROL internal start entry is missing or not executable"
+[ "$validate_only" -eq 0 ] || exit 0
 
 printf 'SWITCHSTAND_CONTROL_SHA=%s\nSWITCHSTAND_CONTROL_PATH=%s\n' "$control_sha" "$control_real" >&2
 unset PYTHONPATH PYTHONHOME
