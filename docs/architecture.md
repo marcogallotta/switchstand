@@ -92,6 +92,10 @@ does not prove the
 absence of external clearing changes, so the repeated-expensive-attempt advisory remains `UNKNOWN`.
 Missing pickup distributions, explicit shape caps, or comparable fix durations likewise remain
 `UNKNOWN`. Advisories are shadow-only and never change work or routing.
+Aggregate learning fails closed until a sufficiently covered completed-trace cohort exists. Its
+stable projection retains null sample count, coverage fraction, runtime/schema/environment cohort,
+metrics, and delivery estimate rather than promoting single-WorkId or best-effort MCP timing into
+cross-work evidence.
 Optional GitHub evidence requires a caller-supplied pull-request number and expected exact head;
 the existing repository-candidate qualifier validates their current identity. Exact-head and
 composition gate intervals remain separate, and overlapping intervals are unioned within each
