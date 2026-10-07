@@ -37,7 +37,7 @@ from switchstand.reviews import (
     ReviewSubmit,
     _stable,
 )
-from switchstand.state import work_handles
+from switchstand.state import work_handles, work_migration_receipts
 
 
 @pytest.fixture
@@ -194,6 +194,10 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         agent_binding=reviewer,
     )
     assert received.status == "ok"
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_migration_receipts).values(
+            name="typed-review-v1-cutoff", source_digest="b" * 64,
+        ))
     submitted = await service.submit(ReviewSubmit(
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
@@ -244,11 +248,11 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         ),
         agent_binding=requester,
     )
-    assert forged_current.status == "ok"
+    assert (forged_current.status, forged_current.reason) == ("denied", "reserved_route")
     mixed = await service.submit(ReviewSubmit(
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
-    assert (mixed.status, mixed.reason) == ("DENIED", "review_delivery_not_received")
+    assert (mixed.status, mixed.reason) == ("STALE", "subject_revision_changed")
     async with engine.begin() as connection:
         assert await occurrences.pass_status_in_transaction(
             connection, subject_id, current_revision,

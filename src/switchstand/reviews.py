@@ -970,30 +970,41 @@ class ReviewService:
             recipient_grant_version=immediate.generation,
         )
         outcome_envelope = ReviewOutcomeEnvelope(brief=envelope.brief, outcome=outcome)
-        submitted = await self.messages.submit_received_result(
-            reviewer.endpoint_id, reviewer.generation, str(reviewer.generation), route,
-            MessageSubmitRequest(
+        outcome_request = MessageSubmitRequest(
                 api_version="1",
                 message_id=_stable("verdict", request.review_id, delivery.delivery_id),
                 grant_version=reviewer.generation, route_ref="review.request", kind="result",
                 payload=cast(JsonValue, outcome_envelope.model_dump(mode="json")),
                 in_reply_to_delivery_id=delivery.delivery_id,
-            ),
-            agent_binding=reviewer,
         )
+        async with self.occurrences.engine.begin() as connection:
+            submitted = await self.messages.submit_review_internal(
+                connection, reviewer, route, outcome_request,
+                (reviewer.generation, str(reviewer.generation)),
+            )
         if submitted.status != "ok" or submitted.message is None:
             return ReviewResult(status="UNKNOWN", review_id=request.review_id,
                                 reason="message_conflict")
         final_delivery = submitted.message
         if immediate.endpoint_id != requester.endpoint_id:
-            notification = await self._send(
-                reviewer, requester, _stable("review-outcome", request.review_id),
-                "review.outcome", cast(JsonValue, outcome_envelope.model_dump(mode="json")),
+            notification_request = MessageSubmitRequest(
+                api_version="1", message_id=_stable("review-outcome", request.review_id),
+                grant_version=reviewer.generation, route_ref="review.outcome", kind="request",
+                payload=cast(JsonValue, outcome_envelope.model_dump(mode="json")),
             )
-            if notification is None:
+            async with self.occurrences.engine.begin() as connection:
+                notified = await self.messages.submit_review_internal(
+                    connection, reviewer,
+                    MessageRoute(
+                        recipient_work_id=requester.endpoint_id,
+                        recipient_grant_version=requester.generation,
+                    ),
+                    notification_request,
+                )
+            if notified.status != "ok" or notified.message is None:
                 return ReviewResult(status="UNKNOWN", review_id=request.review_id,
                                     reason="message_conflict")
-            final_delivery = notification
+            final_delivery = notified.message
         return ReviewResult(
             status="SUBMITTED", review_id=request.review_id,
             delivery_id=final_delivery.delivery_id, verdict_digest=verdict_digest,
