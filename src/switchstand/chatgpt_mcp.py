@@ -691,27 +691,28 @@ def build_ordinary_tools(
             return CallToolResult(content=[TextContent(type="text", text=status)],
                                   structured_content={"status": status, "reason": reason} | detail)
         def qualification_status(value: repository_candidate.RepositoryCandidateQualification) -> str:
-            identity = (value.base_sha, value.head_sha, value.composition_sha)
-            if None in identity or len(value.composition_parents) != 2:
+            if None in (value.base_sha, value.head_sha, value.composition_sha) or len(value.composition_parents) != 2:
+                return "UNKNOWN"
+            expected = {
+                ("Exact-head Quality", "exact_head", value.head_sha),
+                ("PR composition Quality", "composition", value.composition_sha),
+            }
+            observed = {(gate.name, gate.subject_kind, gate.subject_sha) for gate in value.gates}
+            if (len(value.gates) != 2 or observed != expected
+                    or any(gate.detail_reason is not None for gate in value.gates)):
                 return "UNKNOWN"
             stale = value.reason in {"composition_mismatch", "candidate_changed"} or any(
                 gate.reason in {"wrong-head", "wrong-base", "wrong-composition", "conflicting",
                                 "stale"} for gate in value.gates)
             if value.status == "NOT_READY" and stale:
                 return "STALE"
-            expected = {
-                ("Exact-head Quality", "exact_head", value.head_sha),
-                ("PR composition Quality", "composition", value.composition_sha),
-            }
-            observed = {(gate.name, gate.subject_kind, gate.subject_sha) for gate in value.gates}
             failed = {"action_required", "failure", "neutral", "stale", "startup_failure",
                       "timed_out"}
             known = {("queued", None, "queued"), ("in_progress", None, "running"),
                      ("completed", "success", None), ("completed", "cancelled", "cancelled"),
                      ("completed", "skipped", "skipped"), ("missing", None, "missing")}
-            if len(value.gates) != 2 or observed != expected or any(
-                gate.detail_reason is not None
-                or (gate.state, gate.conclusion, gate.reason) not in known
+            if any(
+                (gate.state, gate.conclusion, gate.reason) not in known
                 and not (gate.state == "completed" and gate.reason == "failed"
                          and gate.conclusion in failed) for gate in value.gates
             ):
