@@ -138,6 +138,7 @@ async def test_native_stack_composition_is_bound_through_prefix_to_current_targe
     async with client(stacked=True) as http:
         result = await qualify_repository_candidate(7, client=http)
     assert result.status == "READY"
+    assert result.catalogue == "switchstand-quality-v3"
     assert result.composition_parents == [PREFIX, HEAD]
 
 

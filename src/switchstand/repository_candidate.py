@@ -13,7 +13,7 @@ from .stacked_delivery import EvidenceDimension, LayerQualification
 
 REPOSITORY = "marcogallotta/switchstand"
 API = f"https://api.github.com/repos/{REPOSITORY}"
-CATALOGUE = "switchstand-quality-v1"
+CATALOGUE = "switchstand-quality-v3"
 GATES = (
     ("Exact-head Quality", "exact_head"),
     ("PR composition Quality", "composition"),
