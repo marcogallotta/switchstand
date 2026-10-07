@@ -62,6 +62,35 @@ def test_runner_lifeline_eof_is_inherited_only_by_runner(tmp_path: Path, monkeyp
     assert marker.read_text() == "stopped"
 
 
+def test_runner_diagnostics_do_not_leak_to_parent_terminal(
+    tmp_path: Path, monkeypatch, capfd,
+) -> None:
+    diagnostic_log = tmp_path / "runner.log"
+
+    def command(_config: Path, _descriptor: int) -> tuple[str, ...]:
+        program = (
+            "import sys; "
+            "print('runner-stdout'); "
+            "print('runner-stderr', file=sys.stderr)"
+        )
+        return sys.executable, "-c", program
+
+    monkeypatch.setattr("switchstand.codex_session._runner_command", command)
+    runner, lifeline = _start_runner(
+        tmp_path / "config", "postgresql://unused", diagnostic_log,
+    )
+    runner.wait(timeout=2)
+    _stop_runner(runner, lifeline)
+
+    captured = capfd.readouterr()
+    assert "runner-stdout" not in captured.out
+    assert "runner-stderr" not in captured.err
+    assert diagnostic_log.stat().st_mode & 0o777 == 0o600
+    assert set(diagnostic_log.read_text().splitlines()) == {
+        "runner-stdout", "runner-stderr",
+    }
+
+
 def test_supervisor_restarts_runner_and_stops_it_at_codex_exit(
     tmp_path: Path, monkeypatch,
 ) -> None:
