@@ -10,12 +10,21 @@ from switchstand.affected_tests import (
     BroadQualityRun,
     Plan,
     broad_backstop_required,
+    classify_cumulative_stack_top,
     foreground_authority,
     main,
     plan_exact,
     plan_local,
     selector_health_clear,
 )
+
+
+def test_cumulative_stack_top_requires_one_parent_and_no_child() -> None:
+    cases = ((0, 0, False), (1, 0, True), (1, 1, False), (None, 0, None), (2, 0, None))
+    for parents, children, expected in cases:
+        assert classify_cumulative_stack_top(
+            parent_count=parents, child_count=children
+        ) is expected
 
 
 def test_schedule_and_default_push_always_require_broad_backstop() -> None:
@@ -237,18 +246,16 @@ def test_only_direct_test_modules_can_receive_foreground_authority(tmp_path: Pat
         selector_health_clear=True,
         cumulative_stack_top=True,
     ).mode == "FULL_FALLBACK"
+
+
 def test_serial_sensitive_modules_always_fall_back_on_changed_and_selected_paths() -> None:
     for changed, selected in (
         (("tests/test_alpha.py",), ("tests/test_alpha.py", "tests/test_update_gateway.py")),
         (("tests/test_chatgpt_edge_process.py",), ("tests/test_chatgpt_edge_process.py",)),
     ):
-        plan = Plan("SELECTED", "exact", "a" * 40, "b" * 40,
-                    changed, selected, {}, ())
-        authority = foreground_authority(
-            plan, subject_verified=True, selector_health_clear=True
-        )
-        assert authority.mode == "FULL_FALLBACK"
-        assert authority.reasons == ("serial-sensitive-test-module",)
+        plan = Plan("SELECTED", "exact", "a" * 40, "b" * 40, changed, selected, {}, ())
+        result = foreground_authority(plan, subject_verified=True, selector_health_clear=True)
+        assert result.reasons == ("serial-sensitive-test-module",)
 
 
 def test_direct_test_change_does_not_parse_unrelated_dependency_graph(
