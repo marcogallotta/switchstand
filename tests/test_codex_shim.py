@@ -135,8 +135,8 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     result_file = tmp_path / "result"
     executable(
         primary / "scripts/codex-dispatch",
-        '#!/bin/sh\nprintf "dispatcher\\n%s\\n%s\\n" "$*" '
-        '"$CODEX_INSTALL_DIR" > "$RESULT"\n',
+        '#!/bin/sh\nprintf "dispatcher\\n%s\\n%s\\n%s\\n" "$*" '
+        '"$CODEX_INSTALL_DIR" "$SWITCHSTAND_CODEX_WAKEFUL" > "$RESULT"\n',
     )
     executable(
         home / ".codex/packages/standalone/current/bin/codex",
@@ -161,6 +161,23 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     assert result_file.read_text().splitlines() == [
         "dispatcher", "resume test-session",
         str(home / ".local/state/switchstand/codex/updater-bin"),
+        "OFF",
+    ]
+
+    result = subprocess.run(
+        [launcher, "resume", "explicit-off"], cwd=nested,
+        env=os.environ | {
+            "HOME": str(home), "RESULT": str(result_file),
+            "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result_file.read_text().splitlines() == [
+        "dispatcher", "resume explicit-off",
+        str(home / ".local/state/switchstand/codex/updater-bin"),
+        "OFF",
     ]
 
     writer = home / "writer"
@@ -170,7 +187,10 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     )
     result = subprocess.run(
         [launcher, "exec", "linked"], cwd=writer,
-        env=os.environ | {"HOME": str(home), "RESULT": str(result_file)},
+        env=os.environ | {
+            "HOME": str(home), "RESULT": str(result_file),
+            "SWITCHSTAND_CODEX_WAKEFUL": "PILOT",
+        },
         text=True, capture_output=True, check=False,
     )
 
@@ -178,6 +198,7 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     assert result_file.read_text().splitlines() == [
         "dispatcher", "exec linked",
         str(home / ".local/state/switchstand/codex/updater-bin"),
+        "PILOT",
     ]
 
 
@@ -237,6 +258,8 @@ def test_materialized_repair_recovers_updater_overwrite_without_checkout(tmp_pat
     home = tmp_path / "home"
     launcher = install(home)
     original = launcher.read_bytes()
+    materialized = home / ".local/state/switchstand/codex/shim/codex-shim"
+    assert materialized.read_bytes() == original == (ROOT / "scripts/codex-shim").read_bytes()
     real = home / ".codex/packages/standalone/current/bin/codex"
     executable(real, "#!/bin/sh\nexit 0\n")
     # Actual updater boundary: replace the visible command with a real-binary symlink.

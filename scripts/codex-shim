@@ -21,7 +21,7 @@ canonical_common=$(git_common "$canonical_repo")
 current_common=$(git_common "$PWD")
 
 if [ -n "$canonical_common" ] && [ "$current_common" = "$canonical_common" ]; then
-    SWITCHSTAND_CODEX_WAKEFUL=PILOT
+    SWITCHSTAND_CODEX_WAKEFUL=${SWITCHSTAND_CODEX_WAKEFUL:-OFF}
     export SWITCHSTAND_CODEX_WAKEFUL
     dispatcher="$canonical_repo/scripts/codex-dispatch"
     if [ ! -x "$dispatcher" ]; then
