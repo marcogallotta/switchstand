@@ -130,7 +130,9 @@ class JourneyDriver(Protocol):
     def diagnostic(self) -> tuple[bool | None, str | None]: ...
 
 
-def collect_journey(driver: JourneyDriver, nonce: str) -> JourneyEvidence:
+def collect_journey(
+    driver: JourneyDriver, expected_identity: HostIdentity, nonce: str,
+) -> JourneyEvidence:
     """Run the ordered falsifier; a first definite failure stops the journey."""
 
     launched, persistent_pty = driver.launch_ordinary_pilot()
@@ -146,6 +148,12 @@ def collect_journey(driver: JourneyDriver, nonce: str) -> JourneyEvidence:
         return JourneyEvidence(True, True, bound, None, None, None, None, None, None, None,
                                None, lower, failure)
     observed_identity, session_id = driver.observed_binding()
+    if observed_identity != expected_identity or session_id is None or not session_id.strip():
+        lower, failure = driver.diagnostic()
+        return JourneyEvidence(
+            True, True, True, None, None, None, None, None, None, None, None,
+            lower, failure or "journey-binding-mismatch", observed_identity, None, session_id,
+        )
     committed = driver.commit_nonce(nonce)
     if committed is not True:
         lower, failure = driver.diagnostic()
@@ -154,7 +162,7 @@ def collect_journey(driver: JourneyDriver, nonce: str) -> JourneyEvidence:
     resumed = driver.resume_session()
     if resumed is not True:
         lower, failure = driver.diagnostic()
-        return JourneyEvidence(True, True, True, resumed, None, None, None, None, None, None,
+        return JourneyEvidence(True, True, True, resumed, True, None, None, None, None, None,
                                None, lower, failure, observed_identity, None, session_id)
     wake = driver.await_visible_wake()
     if wake is not True:

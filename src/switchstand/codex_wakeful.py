@@ -43,8 +43,8 @@ class WakeSourceRef:
         if self.source_kind == "switchstand_inbound":
             return (
                 "List the repository MCP mailbox with "
-                "mcp__switchstand__agent_message_pending, retain the payload for this exact "
-                "delivery_id, then receive that delivery with "
+                "mcp__switchstand__agent_message_pending, following next_cursor pages until "
+                "this exact delivery_id is found. Retain its payload, then receive it with "
                 "mcp__switchstand__agent_message_receive and act on the retained payload. "
                 "Do not use the "
                 "codex_apps Switchstand connector: that connector has a different session "
