@@ -20,6 +20,7 @@ def config(home: Path) -> dict[str, object]:
         "binding": {"thread_id": "thread-1", "start_record": str(home / "start-commit.exact"),
                     "generation": "start-commit.exact"},
         "codex_home": str(home), "codex": "/opt/codex/bin/codex",
+        "app_server_socket": str(home / "wakeful-app-server-exact.sock"),
     }
 
 
@@ -51,7 +52,9 @@ async def test_private_config_composes_existing_inbound_loop(tmp_path, monkeypat
     assert args[2].name_key == "root" and args[3].thread_id == "thread-1"
     assert args[4] == tmp_path and args[5] == Path("/opt/codex/bin/codex")
     assert isinstance(args[6], asyncio.Event)
-    assert kwargs == {"opt_in": True}
+    assert kwargs == {
+        "socket_path": tmp_path / "wakeful-app-server-exact.sock", "opt_in": True,
+    }
 
 
 async def test_config_fails_closed_before_source_access(tmp_path, monkeypatch):
