@@ -69,7 +69,7 @@ class WakefulStore:
 
     def __init__(self, path: Path):
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(
                 """
@@ -95,6 +95,7 @@ class WakefulStore:
                 );
                 """
             )
+        self.path.chmod(0o600)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path)
@@ -249,6 +250,14 @@ class WakefulStore:
                 (limit,),
             ).fetchall()
         return tuple(WakeEvent(**json.loads(str(row[0]))) for row in rows)
+
+    def event(self, event_id: str) -> WakeEvent | None:
+        """Return one exact event for canonical adapter/operator readback."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM wake_outbox WHERE event_id = ?", (event_id,)
+            ).fetchone()
+        return None if row is None else WakeEvent(**json.loads(str(row[0])))
 
     def mark_delivered(self, event_id: str, *, delivered_at: datetime) -> bool:
         with self._connect() as connection:

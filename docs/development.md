@@ -1,6 +1,13 @@
 # Development
 
 The Wakeful inbound pilot is a host-only composition, not an edge task.
+The optional disk-pressure producer remains off the launch path. Run one foreground audit with
+`switchstand-disk-pressure check`; reread an emitted transition with
+`switchstand-disk-pressure status --event-id <id>`. `scripts/install-disk-pressure-monitor` installs and enables
+a separate low-priority user timer, so invoking that installer is an activation effect rather than
+part of ordinary development or Codex launch. Its service intentionally follows the canonical
+repository virtualenv: canonical package updates own that runtime, and the timer's acceptance
+checks must be rerun after an update rather than treating the activated executable as immutable.
 `switchstand-wakeful-inbound --config=/absolute/private/runner.json` is the dedicated
 continuously runnable process. It reuses `chatgpt_edge.resource_service()` in the existing
 authorized deployment context and requires a complete, mode-0600 frozen JSON configuration
