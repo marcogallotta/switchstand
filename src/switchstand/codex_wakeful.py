@@ -528,10 +528,8 @@ async def inbound_cycle(
             break
         source = WakeSourceRef("switchstand_inbound", str(delivery_id))
         identity = wake_id(binding, source)
-        if not await messages.pending_delivery(mailbox, delivery_id):
-            results[identity] = "STALE"
-            continue
-        results[identity] = projection.admit(client, source)
+        async with messages.pending_delivery_fence(mailbox, delivery_id) as current:
+            results[identity] = projection.admit(client, source) if current else "STALE"
     return (delivery_ids[-1] if len(delivery_ids) == 50 else None), results
 
 
@@ -601,6 +599,8 @@ async def run_inbound(
                 )
                 for identity, result in results.items():
                     print(identity, result, flush=True)
+                if results.get("source") == "STALE":
+                    return
                 if wakeful_store is not None:
                     wakeful_results = await wakeful_event_cycle(
                         mailboxes, mailbox, projection, client, wakeful_store,
