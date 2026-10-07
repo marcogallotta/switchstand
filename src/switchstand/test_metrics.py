@@ -8,8 +8,130 @@ import math
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from xml.etree import ElementTree
+
+from switchstand.qualification_lineage import (
+    ProviderAttemptIdentity,
+    qualification_lineage_id,
+)
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def qualification_attempt_observation(
+    identity: dict[str, Any], planner: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Project existing GitHub, plan, harness, and timing evidence without authority."""
+
+    raw_github = identity.get("github")
+    github = cast(dict[str, Any], raw_github) if isinstance(raw_github, dict) else {}
+    run_attempt = github.get("run_attempt")
+    run_attempt_number = (
+        int(run_attempt)
+        if isinstance(run_attempt, (str, int)) and str(run_attempt).isdigit()
+        else None
+    )
+    retry_reason = (
+        "PROVIDER_RETRY"
+        if run_attempt_number is not None and run_attempt_number > 1
+        else "UNKNOWN"
+    )
+    try:
+        repository = github["repository"]
+        workflow = github["workflow"]
+        job = github["job"]
+        run_id = github["run_id"]
+        if not all(isinstance(value, str) for value in (repository, workflow, job)):
+            raise TypeError("provider strings unavailable")
+        if not isinstance(run_id, (str, int)) or not isinstance(run_attempt, (str, int)):
+            raise TypeError("provider run identity unavailable")
+        provider = ProviderAttemptIdentity(
+            cast(str, repository), cast(str, workflow), cast(str, job),
+            int(run_id), int(run_attempt),
+        )
+        provider_record: dict[str, Any] = {
+            "repository": provider.repository, "workflow": provider.workflow,
+            "job": provider.job, "run_id": provider.run_id,
+            "run_attempt": provider.run_attempt,
+            "executed_attempt_id": provider.executed_attempt_id,
+        }
+        qualification_subject = identity["qualification_subject"]
+        if not isinstance(qualification_subject, str) or not qualification_subject:
+            raise TypeError("qualification subject unavailable")
+        lineage = qualification_lineage_id(
+            provider.repository, qualification_subject, "qualification-lineage-v1",
+        )
+    except (KeyError, TypeError, ValueError):
+        provider_record = dict(github)
+        lineage = None
+    rework = identity.get("qualification_rework")
+    if not isinstance(rework, dict):
+        rework = {}
+    rework = cast(dict[str, Any], rework)
+    environment = identity.get("environment")
+    if not isinstance(environment, dict):
+        environment = {}
+    environment = cast(dict[str, Any], environment)
+    failure = identity.get("failure_classification")
+    if not isinstance(failure, dict):
+        failure = {}
+    failure = cast(dict[str, Any], failure)
+    started_at = identity.get("started_at")
+    completed_at = identity.get("completed_at")
+    foreground_seconds: float | None = None
+    if identity.get("foreground") is False:
+        foreground_seconds = 0.0
+    elif identity.get("foreground") is True:
+        try:
+            started = datetime.fromisoformat(cast(str, started_at))
+            completed = datetime.fromisoformat(cast(str, completed_at))
+            foreground_seconds = (completed - started).total_seconds()
+            if foreground_seconds < 0:
+                foreground_seconds = None
+        except (TypeError, ValueError):
+            foreground_seconds = None
+    harness_parts: dict[str, object] = {
+        "workflow_blob": environment.get("workflow_blob"),
+        "manifest_blobs": environment.get("manifest_blobs"),
+        "candidate_image": identity.get("candidate_image"),
+    }
+    quality_outcome = identity.get("quality_outcome")
+    attempt_outcome = (
+        "SUCCESS" if quality_outcome == "success"
+        else "FAILURE" if quality_outcome == "failure"
+        else "UNKNOWN"
+    )
+    return {
+        "lineage_id": lineage,
+        "provider": provider_record,
+        "scope": {
+            "candidate_sha": identity.get("subject_sha"),
+            "base_sha": identity.get("base_sha"),
+            "plan_digest": _digest(planner) if planner is not None else None,
+            "harness_digest": (
+                _digest(harness_parts) if all(harness_parts.values()) else None
+            ),
+            "environment_digest": identity.get("environment_key"),
+        },
+        "retry_reason": rework.get("retry_reason", retry_reason),
+        "outcome": attempt_outcome,
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "foreground_seconds": foreground_seconds,
+        "decisive_failure_at": failure.get("decisive_failure_at"),
+        "rework": {
+            "harness_seconds": rework.get("harness_seconds"),
+            "wrapper_seconds": rework.get("wrapper_seconds"),
+            "fixture_seconds": rework.get("fixture_seconds"),
+            "setup_seconds": rework.get("setup_seconds"),
+        },
+        "current": identity.get("current"),
+    }
 
 
 def collect(junit: Path, identity: dict[str, Any], execution_kind: str,
@@ -30,6 +152,7 @@ def collect(junit: Path, identity: dict[str, Any], execution_kind: str,
         total = record["total_test_count"]
         if isinstance(total, int) and total > 0:
             record["selection_ratio"] = record["selected_count"] / total
+    record["qualification_attempt"] = qualification_attempt_observation(identity, planner)
     try:
         root = ElementTree.parse(junit).getroot()
         if root.tag not in ("testsuite", "testsuites"):

@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from switchstand.test_metrics import collect
+from switchstand.qualification_lineage import attempt_from_metrics_record, summarize_lineage
+from switchstand.test_metrics import collect, qualification_attempt_observation
 
 ROOT = Path(__file__).parents[1]
 
@@ -75,6 +76,62 @@ def test_environment_key_ignores_source_image_but_changes_with_runtime_packages(
     assert keys[0] == keys[1] and keys[1] != keys[2]
 
 
+def test_github_junit_identity_maps_to_advisory_attempt() -> None:
+    identity = {
+        'subject_sha': 'a' * 40, 'base_sha': 'b' * 40,
+        'qualification_subject': 'pull-request:42', 'foreground': True,
+        'candidate_image': 'sha256:image', 'environment_key': 'environment',
+        'started_at': '2026-10-07T10:00:00+00:00',
+        'completed_at': '2026-10-07T10:01:00+00:00',
+        'quality_outcome': 'failure', 'current': True,
+        'failure_classification': {'decisive_failure_at': '2026-10-07T10:00:20+00:00'},
+        'environment': {'workflow_blob': 'workflow', 'manifest_blobs': 'manifests'},
+        'github': {'repository': 'owner/repo', 'workflow': 'Quality', 'job': 'quality',
+                   'run_id': '17', 'run_attempt': '1'},
+        'qualification_rework': {'retry_reason': 'INITIAL', 'harness_seconds': 1,
+                                 'wrapper_seconds': 2, 'fixture_seconds': 3,
+                                 'setup_seconds': 4},
+    }
+    result = qualification_attempt_observation(identity, {'mode': 'FULL_FALLBACK'})
+    assert result['lineage_id'].startswith('ql-')
+    assert result['provider']['executed_attempt_id'].startswith('qa-')
+    assert result['scope']['candidate_sha'] == 'a' * 40
+    assert result['decisive_failure_at'] == '2026-10-07T10:00:20+00:00'
+    assert result['foreground_seconds'] == 60
+    assert result['retry_reason'] == 'INITIAL'
+    assert result['outcome'] == 'FAILURE'
+
+    rerun = qualification_attempt_observation(
+        identity | {'github': identity['github'] | {'run_attempt': '2'},
+                    'qualification_rework': None},
+        {'mode': 'FULL_FALLBACK'},
+    )
+    assert rerun['retry_reason'] == 'PROVIDER_RETRY'
+
+    same_lineage = qualification_attempt_observation(
+        identity | {'subject_sha': 'c' * 40}, {'mode': 'FULL_FALLBACK'},
+    )
+    other_lineage = qualification_attempt_observation(
+        identity | {'qualification_subject': 'pull-request:43'}, {'mode': 'FULL_FALLBACK'},
+    )
+    assert same_lineage['lineage_id'] == result['lineage_id']
+    assert other_lineage['lineage_id'] != result['lineage_id']
+
+    unclassified = qualification_attempt_observation(
+        identity | {'failure_classification': None, 'qualification_rework': None},
+        {'mode': 'FULL_FALLBACK'},
+    )
+    assert unclassified['decisive_failure_at'] is None
+    assert unclassified['retry_reason'] == 'UNKNOWN'
+
+    failed_without_classifier = qualification_attempt_observation(
+        identity | {'failure_classification': None}, {'mode': 'FULL_FALLBACK'},
+    )
+    mapped = attempt_from_metrics_record({'qualification_attempt': failed_without_classifier})
+    assert mapped is not None
+    assert summarize_lineage((mapped,)).reason == 'failure-classification-unknown'
+
+
 def test_workflow_preserves_authority_and_attempts():
     text = (ROOT / '.github/workflows/quality.yml').read_text()
     execution, remainder = text.split('  docker_lifecycle:')
@@ -121,6 +178,12 @@ def test_workflow_preserves_authority_and_attempts():
     assert "|| 'Exact-head Quality'" in terminal
     assert 'github.run_id }}-${{ github.run_attempt }}-quality' in execution
     assert 'retention-days: 90' in execution
+    assert 'id: quality_run' in execution
+    assert 'qualification_rework' in execution
+    assert 'QUALIFICATION_SUBJECT' in execution
+    assert '"foreground": e["SUBJECT_KIND"] == "composition"' in execution
+    assert 'started-at' in execution and 'completed-at' in execution
+    assert 'steps.quality_run.outcome' in execution
     identity = ('scripts/verify-quality-composition', 'QUALITY_COMPOSITION_SHA',
                 'QUALITY_SUBJECT_SHA', 'QUALITY_BASE_SHA', 'STACK_BASE_REF', 'STACK_POSITION')
     assert all(token in execution for token in identity)
