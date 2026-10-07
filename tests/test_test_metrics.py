@@ -105,6 +105,10 @@ def test_workflow_preserves_authority_and_attempts():
     assert 'evaluate_full_suite_due' in execution
     assert 'adaptive_full_suite_shadow' in execution
     assert 'adaptive_json=' in execution
+    assert 'planner_policy_changed = policy_identity(baseline_sha) != policy_identity(head)' in execution
+    assert "unresolved_hard_miss = any(" in execution
+    assert 'planner_policy_changed=False' not in execution
+    assert 'unresolved_hard_miss=False' not in execution
     assert 'history_complete=history_complete' in execution
     assert 'test "${push_count:-1000}" -lt 1000' in execution
     assert 'test "${schedule_count:-1000}" -lt 1000' in execution

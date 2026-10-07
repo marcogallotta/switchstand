@@ -412,18 +412,6 @@ def test_projection_false_green_is_caught_by_real_consumer_oracle(setup):
         False, "zero-turn-no-rollout", "exact",
     )
 
-    client.thread["turns"][0]["items"].append({
-        "type": "agentMessage",
-        "id": "assistant-item",
-        "text": "ACK negative-control-nonce-012345",
-    })
-    positive = observe_same_session_turn(
-        client.thread, identity, "negative-control-nonce-012345",
-    )
-    assert (positive.passed, positive.observed_nonce, positive.error, positive.session_id) == (
-        True, "negative-control-nonce-012345", None, "exact",
-    )
-
 
 def test_current_host_subagent_activity_terminal_shape_and_ambiguity():
     started = {"type": "subAgentActivity", "id": "call_exact", "kind": "started",

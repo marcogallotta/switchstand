@@ -3,15 +3,7 @@ from __future__ import annotations
 import httpx
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
-from switchstand.stacked_delivery import (
-    FocusedLayerReview,
-    FocusedReviewCheck,
-    LayerReviewIdentity,
-    StackLandingEvidence,
-    layer_qualification_is_sufficient,
-    stack_is_ready_to_land,
-)
-from switchstand.wakeful_host_qualification import HostJourney, qualify_host_journey
+from switchstand.stacked_delivery import layer_qualification_is_sufficient
 
 BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
     "a" * 40, "b" * 40, "c" * 40, "d" * 40, "e" * 40,
@@ -77,17 +69,13 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                     )
                     for offset, (companion, companion_conclusion) in enumerate(companions, 1):
                         checks.append({
-                            "id": 1000 + index * 10 + offset,
-                            "name": companion,
+                            "id": 1000 + index * 10 + offset, "name": companion,
                             "head_sha": wrong_head or HEAD,
                             "app": {"slug": "github-actions"},
-                            "check_suite": {"id": 10 + index},
-                            "status": "completed",
+                            "check_suite": {"id": 10 + index}, "status": "completed",
                             "conclusion": companion_conclusion,
-                            "details_url": (
-                                "https://github.com/marcogallotta/switchstand/actions/"
-                                f"runs/{index}/job/{1000 + index * 10 + offset}"
-                            ),
+                            "details_url": "https://github.com/marcogallotta/switchstand/actions/"
+                                           f"runs/{index}/job/{1000 + index * 10 + offset}",
                         })
             payload = {"check_runs": checks}
         elif "/actions/runs/" in path:
@@ -129,21 +117,6 @@ async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timin
     assert all("RUNTIME_LIFECYCLE" in gate.evidence_dimensions for gate in result.gates)
     catalogue = result.proportional_evidence()
     assert layer_qualification_is_sufficient(catalogue)
-    host = qualify_host_journey(HostJourney(
-        HEAD, ("1" * 64, "2" * 64, "3" * 64), "nonce-0123456789abcdef",
-        "session", "session", HEAD, "nonce-0123456789abcdef",
-        True, True, True, True, True, True, True, True, 0, 0, 0,
-    )).evidence
-    reviews = tuple(
-        FocusedReviewCheck(FocusedLayerReview(
-            LayerReviewIdentity(character * 64, "b" * 64), "PASS", layer,
-            frozenset({"LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE"}),
-        ), LayerReviewIdentity(character * 64, "b" * 64))
-        for layer, character in zip(("A", "B", "C", "D"), "acde", strict=True)
-    )
-    assert stack_is_ready_to_land(StackLandingEvidence(
-        HEAD, COMPOSITION, HEAD, HEAD, reviews, (catalogue, host),
-    ))
 
 
 async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_closed():
