@@ -146,6 +146,9 @@ async def test_missing_gate_and_old_composition_fail_closed():
         missing = await qualify_repository_candidate(7, client=http)
     assert missing.status == "NOT_READY"
     assert next(g for g in missing.gates if g.name == "Exact-head Quality").reason == "missing"
+    evidence = missing.proportional_evidence()
+    assert not evidence.passed
+    assert not layer_qualification_is_sufficient(evidence)
 
     async with client(mismatch=True) as http:
         stale = await qualify_repository_candidate(7, client=http)
@@ -163,17 +166,6 @@ async def test_missing_gate_and_old_composition_fail_closed():
         untrusted = await qualify_repository_candidate(7, client=http)
     assert untrusted.status == "NOT_READY"
     assert all(g.reason == "conflicting" for g in untrusted.gates)
-
-
-async def test_not_ready_candidate_cannot_project_success_from_one_gate():
-    async with client(omitted="Exact-head Quality") as http:
-        candidate = await qualify_repository_candidate(7, client=http)
-    evidence = candidate.proportional_evidence()
-    assert candidate.status == "NOT_READY"
-    assert not evidence.passed
-    assert not layer_qualification_is_sufficient(evidence)
-
-
 async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     overrides = {
         "Exact-head Quality": ("in_progress", None),
