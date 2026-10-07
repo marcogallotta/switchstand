@@ -9,6 +9,7 @@ import json
 import os
 import re
 import selectors
+import signal
 import stat
 import subprocess
 import threading
@@ -24,7 +25,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import ClientConnection, unix_connect
 
-from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
+from switchstand.agent_mailboxes import (
+    AgentMailbox,
+    AgentMailboxState,
+    agent_name_key,
+    chat_session_key,
+)
 from switchstand.messages import MessageState, PendingMessage
 from switchstand.secure_file import (
     atomic_replace_bytes,
@@ -64,6 +70,77 @@ class CodexBinding:
     generation: str
 
 
+@dataclass(frozen=True)
+class WakefulServiceConfig:
+    mailbox_name: str
+    endpoint_id: UUID
+    principal_key: str
+    codex_home: Path
+    codex: Path
+
+
+def load_service_config(path: Path) -> WakefulServiceConfig:
+    raw_value: object = json.loads(read_private_bytes(
+        path, max_bytes=64 * 1024, owner_uid=os.getuid(),
+    ))
+    if not isinstance(raw_value, dict):
+        raise TypeError("invalid Wakeful service configuration")
+    raw = cast(dict[str, object], raw_value)
+    if set(raw) != {
+        "version", "mailbox_name", "endpoint_id",
+        "principal_key", "codex_home", "codex",
+    }:
+        raise ValueError("invalid Wakeful service configuration")
+    if type(raw["version"]) is not int or raw["version"] != 1:
+        raise ValueError("unsupported Wakeful service configuration")
+    if not all(isinstance(raw[key], str) and raw[key] for key in (
+        "mailbox_name", "endpoint_id", "principal_key", "codex_home", "codex",
+    )):
+        raise ValueError("invalid Wakeful service configuration values")
+    mailbox_name = cast(str, raw["mailbox_name"])
+    endpoint_value = cast(str, raw["endpoint_id"])
+    principal_key = cast(str, raw["principal_key"])
+    home_value = cast(str, raw["codex_home"])
+    codex_value = cast(str, raw["codex"])
+    agent_name_key(mailbox_name)
+    endpoint_id = UUID(endpoint_value)
+    home = Path(home_value)
+    codex = Path(codex_value)
+    if not home.is_absolute() or not codex.is_absolute():
+        raise ValueError("Wakeful service paths must be absolute")
+    try:
+        home = home.resolve(strict=True)
+        codex = codex.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("Wakeful service runtime is unavailable") from exc
+    if not home.is_dir() or not codex.is_file() or not os.access(codex, os.X_OK):
+        raise ValueError("Wakeful service runtime is unavailable")
+    return WakefulServiceConfig(
+        mailbox_name=mailbox_name,
+        endpoint_id=endpoint_id,
+        principal_key=principal_key,
+        codex_home=home,
+        codex=codex,
+    )
+
+
+class _TransitionLog:
+    def __init__(self) -> None:
+        self._states: dict[str, str] = {}
+
+    def emit(self, key: str, state: str, **details: object) -> None:
+        fingerprint = json.dumps(
+            [state, details], sort_keys=True, separators=(",", ":"), default=str,
+        )
+        if self._states.get(key) == fingerprint:
+            return
+        self._states[key] = fingerprint
+        print(json.dumps(
+            {"event": key, "state": state, **details},
+            sort_keys=True, separators=(",", ":"), default=str,
+        ), flush=True)
+
+
 def wake_id(binding: CodexBinding, source: WakeSourceRef) -> str:
     return hashlib.sha256(json.dumps([
         "codex", binding.thread_id, binding.generation, source.source_kind, source.source_id
@@ -90,6 +167,11 @@ class QueueClient:
         self.read_buffer = bytearray()
         self.sequence = 0
         self.socket_path = socket_path
+        self.failed = False
+
+    def connect(self) -> None:
+        """Eagerly establish the one service-owned app-server connection."""
+        self._start()
 
     def _start(self) -> None:
         if self.process is not None or self.websocket is not None:
@@ -114,7 +196,7 @@ class QueueClient:
                     env=environment,
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=None,
                     bufsize=0,
                 )
                 self.process = process
@@ -142,20 +224,32 @@ class QueueClient:
                 self.stdin.write((payload + "\n").encode())
                 self.stdin.flush()
         except (OSError, BrokenPipeError, ConnectionClosed) as exc:
+            self.failed = True
             raise OSError("UNKNOWN: request send failed") from exc
 
-    def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def call(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
         self._start()
         assert self.websocket is not None or (
             self.stdout is not None and self.selector is not None
         )
         self.sequence += 1
-        deadline = time.monotonic() + 10
+        request_deadline = time.monotonic() + 10
+        if deadline is not None:
+            request_deadline = min(request_deadline, deadline)
+        if request_deadline <= time.monotonic():
+            self.failed = True
+            raise OSError("UNKNOWN: request deadline expired")
         try:
             self.write({"jsonrpc": "2.0", "id": self.sequence,
                         "method": method, "params": params})
-            while time.monotonic() < deadline:
-                message = self.read_message(deadline)
+            while time.monotonic() < request_deadline:
+                message = self.read_message(request_deadline)
                 if message is None:
                     break
                 response = json.loads(message)
@@ -168,9 +262,12 @@ class QueueClient:
                         raise OSError("UNKNOWN: RPC rejected")
                     return cast(dict[str, Any], response["result"])
         except OSError:
+            self.failed = True
             raise
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            self.failed = True
             raise OSError("UNKNOWN: response lost") from exc
+        self.failed = True
         raise OSError("UNKNOWN: response lost")
 
     def read_message(self, deadline: float) -> str | bytes | None:
@@ -230,65 +327,120 @@ class QueueClient:
             process.wait(timeout=5)
 
 
+def _rpc(
+    client: QueueClient,
+    method: str,
+    params: dict[str, Any],
+    deadline: float | None = None,
+) -> dict[str, Any]:
+    return (client.call(method, params) if deadline is None
+            else client.call(method, params, deadline=deadline))
+
+
+def _check_deadline(deadline: float | None) -> None:
+    if deadline is not None and time.monotonic() >= deadline:
+        raise OSError("UNKNOWN: admission deadline expired")
+
+
+def _developer_texts(
+    home: Path, path: Path, *, require_private: bool = True,
+) -> list[str]:
+    resolved_home = home.resolve(strict=True)
+    resolved = path.resolve(strict=True)
+    if not resolved.is_relative_to(resolved_home):
+        raise ValueError("thread history is outside CODEX_HOME")
+    texts: list[str] = []
+    body = (read_private_bytes(
+        resolved, max_bytes=16 * 1024 * 1024, owner_uid=os.getuid(),
+    ) if require_private else resolved.read_bytes())
+    if len(body) > 16 * 1024 * 1024:
+        raise ValueError("thread history exceeds maximum size")
+    for line in body.decode().split("\n"):
+        if not line:
+            continue
+        record = json.loads(line)
+        payload = record.get("payload", {})
+        if (record.get("type") != "response_item"
+                or payload.get("type") != "message"
+                or payload.get("role") != "developer"):
+            continue
+        texts.extend(
+            part["text"] for part in payload.get("content", [])
+            if part.get("type") == "input_text" and isinstance(part.get("text"), str)
+        )
+    return texts
+
+
+def _mentions_token(texts: list[str], token: Path) -> bool:
+    pattern = re.compile(
+        r"(?<!\S)" + re.escape(str(token)) + r"(?=$|\s|[.,;:!?](?=\s|$))"
+    )
+    return any(pattern.search(text) is not None for text in texts)
+
+
+def _binding_start_record(home: Path, thread: dict[str, Any]) -> Path:
+    path = Path(thread["path"])
+    texts = _developer_texts(home, path)
+    pattern = re.compile(re.escape(str(home.resolve())) + r"/start-commit\.[A-Za-z0-9_-]+")
+    candidates = {Path(value) for text in texts for value in pattern.findall(text)}
+    valid: list[Path] = []
+    for candidate in candidates:
+        if candidate.parent != home.resolve():
+            continue
+        read_private_bytes(candidate, max_bytes=4096, owner_uid=os.getuid())
+        valid.append(candidate)
+    if len(valid) != 1:
+        raise ValueError("thread does not name one private start record")
+    return valid[0]
+
+
 def bind(
-    client: QueueClient, home: Path, token: Path, expected_thread_id: str | None = None,
+    client: QueueClient,
+    home: Path,
+    token: Path,
+    expected_thread_id: str | None = None,
+    *,
+    deadline: float | None = None,
+    require_private_history: bool = False,
 ) -> CodexBinding | str:
     if token.parent != home or not token.name.startswith("start-commit."):
         return "NOT_BOUND"
     try:
-        read_private_bytes(token)
+        read_private_bytes(token, owner_uid=os.getuid())
         if expected_thread_id is not None:
-            thread = client.call("thread/read", {
+            thread = _rpc(client, "thread/read", {
                 "threadId": expected_thread_id, "includeTurns": False,
-            })["thread"]
+            }, deadline)["thread"]
             if thread["id"] != expected_thread_id:
                 return "NOT_BOUND"
             path = Path(thread["path"])
             if not path.resolve().is_relative_to(home.resolve()):
                 return "NOT_BOUND"
-            matched = False
-            for line in path.read_text().split("\n"):
-                if not line:
-                    continue
-                record = json.loads(line)
-                payload = record.get("payload", {})
-                if (record["type"] == "response_item" and payload.get("type") == "message"
-                        and payload.get("role") == "developer"):
-                    matched |= any(re.search(r"(?<!\S)" + re.escape(str(token))
-                        + r"(?=$|\s|[.,;:!?](?=\s|$))", part.get("text", "")) is not None
-                        for part in payload.get("content", [])
-                        if part.get("type") == "input_text")
+            matched = _mentions_token(
+                _developer_texts(home, path, require_private=require_private_history), token,
+            )
             return (CodexBinding(expected_thread_id, str(token), token.name)
                     if matched else "NOT_BOUND")
         matches: list[str] = []
         cursor = None
         while True:
-            page = client.call("thread/list", {
+            page = _rpc(client, "thread/list", {
                 "cursor": cursor,
                 "limit": 100,
                 "cwd": str(Path.cwd()),
                 "archived": False,
                 "sourceKinds": ["cli"],
                 "useStateDbOnly": True,
-            })
+            }, deadline)
             for thread in page["data"]:
                 if expected_thread_id is not None and thread.get("id") != expected_thread_id:
                     continue
                 path = Path(thread["path"])
                 if not path.resolve().is_relative_to(home.resolve()):
                     return "UNAVAILABLE"
-                matched = False
-                for line in path.read_text().split("\n"):
-                    if not line:
-                        continue
-                    record = json.loads(line)
-                    payload = record.get("payload", {})
-                    if (record["type"] == "response_item" and payload.get("type") == "message"
-                            and payload.get("role") == "developer"):
-                        matched |= any(re.search(r"(?<!\S)" + re.escape(str(token))
-                            + r"(?=$|\s|[.,;:!?](?=\s|$))", part.get("text", "")) is not None
-                            for part in payload.get("content", [])
-                            if part.get("type") == "input_text")
+                matched = _mentions_token(
+                    _developer_texts(home, path, require_private=require_private_history), token,
+                )
                 if matched:
                     matches.append(thread["id"])
             cursor = page.get("nextCursor")
@@ -298,6 +450,62 @@ def bind(
             return "CONFLICT" if matches else "NOT_BOUND"
         return CodexBinding(matches[0], str(token), token.name)
     except (OSError, ValueError, KeyError, TypeError):
+        return "UNAVAILABLE"
+
+
+def resolve_current_binding(
+    client: QueueClient,
+    home: Path,
+    mailbox: AgentMailbox,
+    *,
+    deadline: float | None = None,
+) -> CodexBinding | str:
+    """Resolve the one current CLI thread cryptographically bound to the mailbox."""
+    try:
+        matches: list[str] = []
+        cursor = None
+        seen_cursors: set[str] = set()
+        while True:
+            _check_deadline(deadline)
+            page = _rpc(client, "thread/list", {
+                "cursor": cursor,
+                "limit": 100,
+                "archived": False,
+                "sourceKinds": ["cli"],
+                "useStateDbOnly": True,
+            }, deadline)
+            data = page["data"]
+            if not isinstance(data, list):
+                return "UNAVAILABLE"
+            for raw_summary in cast(list[Any], data):
+                if not isinstance(raw_summary, dict):
+                    return "UNAVAILABLE"
+                summary = cast(dict[str, Any], raw_summary)
+                thread_id = summary.get("id")
+                if (isinstance(thread_id, str)
+                        and chat_session_key(f"codex:{thread_id}") == mailbox.session_key):
+                    matches.append(thread_id)
+            cursor = page.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                return "UNAVAILABLE"
+            seen_cursors.add(cursor)
+        if len(matches) != 1:
+            return "CONFLICT" if matches else "NOT_BOUND"
+        thread_id = matches[0]
+        thread = _rpc(client, "thread/read", {
+            "threadId": thread_id, "includeTurns": False,
+        }, deadline)["thread"]
+        if thread.get("id") != thread_id:
+            return "NOT_BOUND"
+        token = _binding_start_record(home, thread)
+        return CodexBinding(
+            thread_id=thread_id,
+            start_record=str(token),
+            generation=f"{mailbox.generation}-{token.name}",
+        )
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
         return "UNAVAILABLE"
 
 
@@ -340,9 +548,13 @@ def children(thread: dict[str, Any]) -> list[WakeSourceRef]:
 
 
 class Projection:
-    def __init__(self, home: Path, binding: CodexBinding):
-        self.path = home / f"codex-wakeful-{binding.generation}.json"
+    def __init__(
+        self, home: Path, binding: CodexBinding, endpoint_id: UUID | None = None,
+    ):
+        prefix = "" if endpoint_id is None else f"{endpoint_id}-"
+        self.path = home / f"codex-wakeful-{prefix}{binding.generation}.json"
         self.binding = binding
+        self.require_private_history = endpoint_id is not None
         try:
             self.records: dict[str, dict[str, Any]] = json.loads(read_private_bytes(self.path))
         except OSError:
@@ -353,7 +565,12 @@ class Projection:
     def save(self) -> None:
         atomic_replace_bytes(self.path, json.dumps(self.records, sort_keys=True).encode())
 
-    def hydrate_thread(self, client: QueueClient, thread: dict[str, Any]) -> dict[str, Any] | None:
+    def hydrate_thread(
+        self,
+        client: QueueClient,
+        thread: dict[str, Any],
+        deadline: float | None = None,
+    ) -> dict[str, Any] | None:
         if thread.get("historyMode") == "legacy":
             return thread
         if thread.get("historyMode") != "paginated":
@@ -362,9 +579,10 @@ class Projection:
         cursor = None
         seen_cursors: set[str] = set()
         while True:
-            page = client.call("thread/turns/list", {
+            _check_deadline(deadline)
+            page = _rpc(client, "thread/turns/list", {
                 "threadId": self.binding.thread_id, "cursor": cursor, "limit": 100,
-                "sortDirection": "asc", "itemsView": "full"})
+                "sortDirection": "asc", "itemsView": "full"}, deadline)
             raw_turns = page["data"]
             if not isinstance(raw_turns, list):
                 return None
@@ -398,12 +616,16 @@ class Projection:
                     return "ADMITTED"
         return "PROVEN_ABSENT"
 
-    def reconcile_queue(self, client: QueueClient, identity: str) -> str:
+    def reconcile_queue(
+        self, client: QueueClient, identity: str, deadline: float | None = None,
+    ) -> str:
         cursor = None
         matches: list[dict[str, Any]] = []
         while True:
-            page = client.call("thread/queue/list", {
-                "threadId": self.binding.thread_id, "cursor": cursor, "limit": 100})
+            _check_deadline(deadline)
+            page = _rpc(client, "thread/queue/list", {
+                "threadId": self.binding.thread_id, "cursor": cursor, "limit": 100,
+            }, deadline)
             matches.extend(item for item in page["data"]
                            if item.get("clientUserMessageId") == identity)
             cursor = page.get("nextCursor")
@@ -418,7 +640,9 @@ class Projection:
             return "PENDING"
         return "PROVEN_ABSENT"
 
-    def admit(self, client: QueueClient, source: WakeSourceRef) -> str:
+    def admit(
+        self, client: QueueClient, source: WakeSourceRef, deadline: float | None = None,
+    ) -> str:
         identity = wake_id(self.binding, source)
         record = self.records.get(identity)
         if record is None:
@@ -431,22 +655,28 @@ class Projection:
         if record["state"] == "CONSUMED":
             return "ADMITTED"
         try:
+            _check_deadline(deadline)
             rebound = bind(
-                client, self.path.parent, Path(self.binding.start_record), self.binding.thread_id,
+                client, self.path.parent, Path(self.binding.start_record),
+                self.binding.thread_id, deadline=deadline,
+                require_private_history=self.require_private_history,
             )
-            if rebound != self.binding:
+            if (not isinstance(rebound, CodexBinding)
+                    or rebound.thread_id != self.binding.thread_id
+                    or rebound.start_record != self.binding.start_record):
                 return "STALE" if isinstance(rebound, CodexBinding) else "UNKNOWN"
-            thread = client.call("thread/read", {"threadId": self.binding.thread_id,
-                                                "includeTurns": True})["thread"]
+            thread = _rpc(client, "thread/read", {
+                "threadId": self.binding.thread_id, "includeTurns": True,
+            }, deadline)["thread"]
             if thread["id"] != self.binding.thread_id:
                 return "STALE"
-            thread = self.hydrate_thread(client, thread)
+            thread = self.hydrate_thread(client, thread, deadline)
             if thread is None:
                 return "UNKNOWN"
             result = self.reconcile_thread(thread, identity)
             if result != "PROVEN_ABSENT":
                 return result
-            result = self.reconcile_queue(client, identity)
+            result = self.reconcile_queue(client, identity, deadline)
             if result != "PROVEN_ABSENT":
                 return result
             # Queue/history absence cannot fence an attempted request whose response was lost.
@@ -456,12 +686,13 @@ class Projection:
                 return "STALE"
             record.update(attempted=True, timestamp=time.time())
             self.save()
-            queued = client.call("thread/queue/add", {"threadId": self.binding.thread_id,
+            _check_deadline(deadline)
+            queued = _rpc(client, "thread/queue/add", {"threadId": self.binding.thread_id,
                 "clientUserMessageId": identity, "input": [{"type": "text",
                 "text": f'{source.source_kind} '
                         + ('delivery_id=' if source.source_kind == 'switchstand_inbound'
                            else 'parent_call_child_terminal=') + source.source_id + '. '
-                        + source.reread_instruction}]})["queuedSubmission"]
+                        + source.reread_instruction}]}, deadline)["queuedSubmission"]
             if queued.get("clientUserMessageId") != identity:
                 return "UNKNOWN"
             record.update(state="QUEUED", evidence=queued["id"], timestamp=time.time())
@@ -484,6 +715,27 @@ def projection_lock(home: Path, generation: str) -> Generator[None]:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600:
             raise ValueError("not an exact mode-0600 regular lock")
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def endpoint_lock(home: Path, endpoint_id: UUID) -> Generator[None]:
+    """Admit one stable Wakeful writer for an endpoint, across mailbox generations."""
+    path = home / f"codex-wakeful-{endpoint_id}.lock"
+    try:
+        create_new_private_bytes(path, b"")
+    except FileExistsError:
+        pass
+    descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(descriptor)
+        if (not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o777 != 0o600
+                or metadata.st_uid != os.getuid()):
+            raise ValueError("not an owned mode-0600 regular endpoint lock")
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         yield
     finally:
@@ -540,6 +792,8 @@ async def run_inbound(
                 )
                 for identity, result in results.items():
                     print(identity, result, flush=True)
+                if results.get("source") == "STALE":
+                    return
             except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
                 print("inbound UNKNOWN", flush=True)
             finally:
@@ -549,6 +803,107 @@ async def run_inbound(
                 await asyncio.wait_for(stop.wait(), timeout=2)
             except TimeoutError:
                 pass
+
+
+async def _stop_wait(stop: asyncio.Event, delay: float) -> None:
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=delay)
+    except TimeoutError:
+        pass
+
+
+async def _following_cycle(
+    messages: MessageState,
+    mailboxes: AgentMailboxState,
+    config: WakefulServiceConfig,
+    client: QueueClient,
+    stop: asyncio.Event,
+    transition_log: _TransitionLog,
+    admission_seconds: float,
+) -> str:
+    current = await mailboxes.by_endpoint_id(config.endpoint_id)
+    mailbox = current.mailbox
+    if (current.status != "ok" or mailbox is None):
+        return "UNKNOWN"
+    if (mailbox.name_key != agent_name_key(config.mailbox_name)
+            or mailbox.principal_key != config.principal_key):
+        return "STALE"
+    binding = resolve_current_binding(
+        client, config.codex_home, mailbox,
+        deadline=time.monotonic() + admission_seconds,
+    )
+    if isinstance(binding, str):
+        return binding
+    projection = Projection(config.codex_home, binding, config.endpoint_id)
+    cursor = None
+    while not stop.is_set():
+        delivery_ids = await messages.pending_delivery_ids(mailbox, cursor)
+        if delivery_ids is None:
+            return "STALE"
+        for delivery_id in delivery_ids:
+            if stop.is_set():
+                return "STOPPED"
+            source = WakeSourceRef("switchstand_inbound", str(delivery_id))
+            identity = wake_id(binding, source)
+            try:
+                async with messages.pending_delivery_fence(mailbox, delivery_id) as pending:
+                    result = (projection.admit(
+                        client, source, time.monotonic() + admission_seconds,
+                    ) if pending else "STALE")
+            except SQLAlchemyError:
+                result = "UNKNOWN"
+            transition_log.emit(
+                f"delivery:{delivery_id}", result,
+                wake_id=identity, thread_id=binding.thread_id,
+                mailbox_generation=mailbox.generation,
+            )
+            if client.failed:
+                return "UNKNOWN"
+        if len(delivery_ids) < 50:
+            return "CURRENT"
+        cursor = delivery_ids[-1]
+    return "STOPPED"
+
+
+async def run_following_inbound(
+    messages: MessageState,
+    mailboxes: AgentMailboxState,
+    config: WakefulServiceConfig,
+    stop: asyncio.Event,
+    *,
+    poll_seconds: float = 2.0,
+    admission_seconds: float = 5.0,
+) -> None:
+    """Follow one stable mailbox endpoint and its current verified Codex binding."""
+    if poll_seconds <= 0 or not 1 <= admission_seconds <= 30:
+        raise ValueError("invalid Wakeful service timing")
+    transition_log = _TransitionLog()
+    client: QueueClient | None = None
+    delay = poll_seconds
+    with endpoint_lock(config.codex_home, config.endpoint_id):
+        while not stop.is_set():
+            try:
+                if client is None:
+                    client = QueueClient(config.codex, config.codex_home)
+                    client.connect()
+                result = await _following_cycle(
+                    messages, mailboxes, config, client, stop,
+                    transition_log, admission_seconds,
+                )
+                transition_log.emit("service", result)
+                delay = poll_seconds
+            except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
+                transition_log.emit("service", "UNKNOWN")
+                delay = min(max(delay * 2, poll_seconds), 30.0)
+                if client is not None:
+                    client.close()
+                    client = None
+            if client is not None and client.failed:
+                client.close()
+                client = None
+            await _stop_wait(stop, delay)
+    if client is not None:
+        client.close()
 
 
 async def run_inbound_service(path: Path, *, stop: asyncio.Event | None = None) -> None:
@@ -568,6 +923,30 @@ async def run_inbound_service(path: Path, *, stop: asyncio.Event | None = None) 
         await run_inbound(service.messages, AgentMailboxState(service.messages.engine), mailbox,
                           binding, home, codex, stop or asyncio.Event(),
                           socket_path=socket_path, opt_in=True)
+
+
+async def _run_service(path: Path) -> None:
+    config = load_service_config(path)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for watched_signal in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(watched_signal, stop.set)
+    from switchstand.chatgpt_edge import resource_service
+    async with resource_service() as (service, _runtime):
+        assert service.messages is not None
+        await run_following_inbound(
+            service.messages,
+            AgentMailboxState(service.messages.engine),
+            config,
+            stop,
+        )
+
+
+def service_main() -> None:
+    parser = argparse.ArgumentParser(description="Run the stable Wakeful root service")
+    parser.add_argument("--config", type=Path, required=True)
+    args = parser.parse_args()
+    asyncio.run(_run_service(args.config))
 
 
 def watch_lifeline(

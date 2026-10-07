@@ -754,15 +754,14 @@ are removal predicates, not removal decisions:
 - `marcogallotta/switchstandold` is read-only evidence, never an implementation base or architectural
   ancestor.
 
-`codex_wakeful.py` owns the opt-in Codex technical precursor: exact start-record/generation
-binding, delivery/child source references, client-ID admission and private `codex-wakeful.json`
-projection. Its explicit probe excludes simultaneous probes with a nonblocking generation-token
-lock. For external-source admission it starts one bounded, lazy stdio client using the exact
-supplied Codex binary and `CODEX_HOME`, writes the deterministic client ID through Codex's durable
-thread queue, and terminates only that owned child. It never starts, stops, restarts, attaches to,
-or owns a managed Codex daemon. The live same-home embedded root discovers durable queue changes
-and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner.
-The `run_inbound` pilot reuses existing authorized `MessageState` and
+`codex_wakeful.py` owns the standalone Codex adapter: authoritative mailbox following, unique
+current-thread/start-record discovery, endpoint locking, generation-scoped projection, bounded
+queue admission, and transition-only diagnostics. One user service follows an endpoint across
+takeover. Final revalidation/admission holds the mailbox-row lock used by takeover and transfer;
+ambiguous RPC results are reconciled from queue/history evidence and never blindly resent. The
+versioned systemd asset and bounded control script are the sole inert installation path.
+`wakeful.py` remains the neutral SQLite/outbox owner.
+The legacy `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. The small production
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
 configuration and reuses `chatgpt_edge.resource_service()`. With
@@ -779,10 +778,9 @@ closes the lifeline so intake stops. The activated selector defaults to `PILOT`;
 database or service owner and leaves the existing probe CLI
 semantics unchanged. It reads only committed
 delivery references for one explicitly configured mailbox endpoint/generation/session matched
-to the exact Codex root/start record. Source transactions finish before host admission so
-host latency cannot block canonical receive/disposition/takeover. Source and runtime checks
-are preflight, not atomic fences against concurrent source changes or host turns; the awakened
-agent must reread the exact delivery before acting. Busy targets retain the durable queued input
+to the exact Codex root/start record. Its source transactions finish before host admission; this
+is not the standalone service's takeover fence. The awakened agent must still reread the exact
+delivery before acting. Busy targets retain the durable queued input
 until idle; unsupported history and ambiguous attempts remain UNKNOWN without resend. Queue and
 consumed-history readback remain distinct. A home-wide private lock excludes all
 precursor writers, and the source is never received or dispositioned by intake. Stopping the

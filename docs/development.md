@@ -1,6 +1,21 @@
 # Development
 
-The Wakeful inbound pilot is a host-only composition, not an edge task.
+The durable Root Wakeful path is a standalone user service, not a launcher child or edge task.
+`switchstand-wakeful-root --config=/absolute/private/config.json` follows one immutable mailbox
+name, endpoint UUID, and principal while resolving the current generation, session, CLI thread,
+and private start record on every cycle. A takeover therefore needs no service restart. Its
+mode-0600 configuration has exactly `version`, `mailbox_name`, `endpoint_id`, `principal_key`,
+`codex_home`, and `codex`; it never freezes a session, generation, thread, or socket. Discovery
+fails closed unless exactly one CLI thread matches the mailbox session hash and identifies one
+owned private start record inside `CODEX_HOME`.
+
+`scripts/switchstand-wakeful-root-service install --config <absolute-path>` copies the versioned
+user unit and private configuration but does not enable, start, or restart it. Final admission
+holds the mailbox row lock used by takeover/transfer and has a bounded RPC deadline. Endpoint- and
+generation-scoped state prevents a second writer and blind resend after ambiguity. Landing or
+installation does not prove or authorize activation.
+
+The older Wakeful inbound pilot is a host-only compatibility composition, not an edge task.
 `switchstand-wakeful-inbound --config=/absolute/private/runner.json` is the dedicated
 continuously runnable process. It reuses `chatgpt_edge.resource_service()` in the existing
 authorized deployment context and requires a complete, mode-0600 frozen JSON configuration

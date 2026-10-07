@@ -1,0 +1,77 @@
+#!/bin/sh
+set -eu
+
+unit=switchstand-wakeful-root.service
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+asset=$root/packaging/systemd/user/$unit
+unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+config_dir=${XDG_CONFIG_HOME:-$HOME/.config}/switchstand
+installed_unit=$unit_dir/$unit
+installed_config=$config_dir/wakeful-root.json
+
+usage() {
+    echo "usage: $0 install --config ABSOLUTE_PATH | status | disable | uninstall" >&2
+    exit 2
+}
+
+copy_if_changed() {
+    source=$1 destination=$2 mode=$3
+    if [ -f "$destination" ] && [ ! -L "$destination" ] && cmp -s "$source" "$destination"; then
+        chmod "$mode" "$destination"
+        return 1
+    fi
+    temporary=$destination.tmp.$$
+    trap 'rm -f "$temporary"' EXIT HUP INT TERM
+    install -m "$mode" "$source" "$temporary"
+    mv -f "$temporary" "$destination"
+    trap - EXIT HUP INT TERM
+    return 0
+}
+
+command=${1:-}
+case "$command" in
+install)
+    [ "$#" -eq 3 ] && [ "$2" = --config ] || usage
+    source_config=$3
+    case "$source_config" in /*) ;; *) usage ;; esac
+    [ -f "$source_config" ] && [ ! -L "$source_config" ] || {
+        echo "config must be a regular non-symlink file" >&2; exit 1;
+    }
+    [ "$(stat -c %u "$source_config")" = "$(id -u)" ] || {
+        echo "config must be owned by the current user" >&2; exit 1;
+    }
+    [ "$(stat -c %a "$source_config")" = 600 ] || {
+        echo "config must have mode 600" >&2; exit 1;
+    }
+    mkdir -p "$unit_dir" "$config_dir"
+    chmod 700 "$config_dir"
+    changed=false
+    copy_if_changed "$asset" "$installed_unit" 644 && changed=true || :
+    copy_if_changed "$source_config" "$installed_config" 600 || :
+    [ "$changed" = false ] || systemctl --user daemon-reload
+    echo "installed-disabled"
+    ;;
+status)
+    [ "$#" -eq 1 ] || usage
+    systemctl --user show "$unit" --no-pager \
+        --property=LoadState --property=UnitFileState \
+        --property=ActiveState --property=SubState
+    ;;
+disable)
+    [ "$#" -eq 1 ] || usage
+    if [ -f "$installed_unit" ] && [ ! -L "$installed_unit" ]; then
+        systemctl --user disable --now "$unit"
+        [ "$(systemctl --user show "$unit" --property=ActiveState --value)" = inactive ]
+    fi
+    ;;
+uninstall)
+    [ "$#" -eq 1 ] || usage
+    if [ -f "$installed_unit" ] && [ ! -L "$installed_unit" ]; then
+        systemctl --user disable --now "$unit" || :
+        rm -- "$installed_unit"
+        systemctl --user daemon-reload
+    fi
+    echo "configuration-preserved=$installed_config"
+    ;;
+*) usage ;;
+esac

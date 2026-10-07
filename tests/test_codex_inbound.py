@@ -1,11 +1,9 @@
 import asyncio
 import json
-import threading
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import select, update
 
 from switchstand.agent_mailboxes import AgentMailboxState, agent_mailboxes, chat_session_key
 from switchstand.codex_wakeful import (
@@ -82,44 +80,39 @@ async def test_disposition_between_scan_and_admission_does_not_wake(subject, set
     assert not Projection(home, binding).path.exists()
 
 
-async def test_source_lifecycle_progresses_while_host_admission_waits(subject, setup, monkeypatch):
-    home, _, client, binding = setup
+async def test_admission_first_linearizes_before_takeover(subject):
     messages, mailboxes, mailbox, delivery_id = await source(subject)
-    sync = create_engine(messages.engine.url)
-    finished, failures = threading.Event(), []
+    async with messages.pending_delivery_fence(mailbox, delivery_id) as pending:
+        assert pending is True
+        takeover = asyncio.create_task(mailboxes.takeover(
+            mailbox.name, mailbox.principal_key, "codex:replacement",
+        ))
+        done, _ = await asyncio.wait({takeover}, timeout=0.1)
+        assert not done
+    moved = await asyncio.wait_for(takeover, timeout=2)
+    assert moved.status == "ok" and moved.mailbox is not None
+    assert moved.mailbox.generation == mailbox.generation + 1
 
-    def transition():
-        try:
-            with sync.begin() as connection:
-                connection.execute(text("SET LOCAL lock_timeout = '500ms'"))
-                connection.execute(update(message_deliveries).where(
-                    message_deliveries.c.delivery_id == delivery_id
-                ).values(state="DISPOSITIONED"))
-                connection.execute(update(agent_mailboxes).where(
-                    agent_mailboxes.c.endpoint_id == mailbox.endpoint_id
-                ).values(generation=mailbox.generation + 1,
-                         session_key=chat_session_key("codex:replacement")))
-        except SQLAlchemyError as exc:
-            failures.append(type(exc).__name__)
-        finally:
-            finished.set()
 
-    def waiting_host(*_args, **_kwargs):
-        worker = threading.Thread(target=transition)
-        worker.start()
-        try:
-            assert finished.wait(3), "source lifecycle blocked by host admission"
-            assert not failures, "source lifecycle could not acquire canonical locks"
-        finally:
-            worker.join(timeout=3)
-        return "UNKNOWN"
+async def test_takeover_first_fences_old_generation_admission(subject):
+    messages, _, mailbox, delivery_id = await source(subject)
 
-    monkeypatch.setattr(Projection, "admit", waiting_host)
-    try:
-        await inbound_cycle(messages, mailboxes, mailbox, Projection(home, binding), client)
-        assert await messages.pending_delivery_ids(mailbox) is None
-    finally:
-        sync.dispose()
+    async def fenced():
+        async with messages.pending_delivery_fence(mailbox, delivery_id) as pending:
+            return pending
+
+    async with messages.engine.begin() as connection:
+        await connection.execute(select(agent_mailboxes.c.endpoint_id).where(
+            agent_mailboxes.c.endpoint_id == mailbox.endpoint_id,
+        ).with_for_update())
+        admission = asyncio.create_task(fenced())
+        done, _ = await asyncio.wait({admission}, timeout=0.1)
+        assert not done
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == mailbox.endpoint_id,
+        ).values(generation=mailbox.generation + 1,
+                 session_key=chat_session_key("codex:replacement")))
+    assert await asyncio.wait_for(admission, timeout=2) is False
 
 
 async def test_exact_mailbox_session_and_takeover_fence(subject, setup):

@@ -3,7 +3,8 @@
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
@@ -21,6 +22,7 @@ from sqlalchemy import (
     and_,
     func,
     select,
+    text,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
@@ -392,6 +394,34 @@ class MessageState:
                 message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
             ))).scalar_one_or_none() if current else None
         return row is not None
+
+    @asynccontextmanager
+    async def pending_delivery_fence(
+        self,
+        binding: AgentMailbox,
+        delivery_id: UUID,
+        *,
+        lock_timeout_ms: int = 1000,
+    ) -> AsyncGenerator[bool]:
+        """Hold the exact mailbox generation stable across bounded host admission."""
+        if not 1 <= lock_timeout_ms <= 5000:
+            raise ValueError("mailbox fence lock timeout is out of range")
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                text("SELECT set_config('lock_timeout', :timeout, true)"),
+                {"timeout": f"{lock_timeout_ms}ms"},
+            )
+            if not await self._current_agent_binding(connection, binding):
+                yield False
+                return
+            current = await connection.scalar(
+                select(message_deliveries.c.delivery_id).where(
+                    message_deliveries.c.delivery_id == delivery_id,
+                    message_deliveries.c.recipient_work_id == binding.endpoint_id,
+                    message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+                )
+            )
+            yield current is not None
 
     async def reply_context(self, delivery_id: UUID) -> MessageReplyContext | None:
         async with self.engine.connect() as connection:

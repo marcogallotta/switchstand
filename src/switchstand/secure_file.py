@@ -47,7 +47,9 @@ def _fsync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
-def read_private_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
+def read_private_bytes(
+    path: Path, *, max_bytes: int | None = None, owner_uid: int | None = None,
+) -> bytes:
     """Read a bounded mode-0600 regular file without following a final symlink."""
     if max_bytes is not None and max_bytes < 0:
         raise ValueError("maximum private-file size must be nonnegative")
@@ -59,6 +61,8 @@ def read_private_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o777 != 0o600:
             raise ValueError("not an exact mode-0600 regular file")
+        if owner_uid is not None and metadata.st_uid != owner_uid:
+            raise ValueError("private file has the wrong owner")
         if max_bytes is not None and metadata.st_size > max_bytes:
             raise ValueError("private file exceeds maximum size")
         with os.fdopen(descriptor, "rb", closefd=False) as stream:

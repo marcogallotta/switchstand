@@ -1,0 +1,13 @@
+[Unit]
+Description=Switchstand Wakeful Root mailbox follower
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/switchstand/.env
+ExecStart=%h/switchstand/.venv/bin/switchstand-wakeful-root --config=%h/.config/switchstand/wakeful-root.json
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
