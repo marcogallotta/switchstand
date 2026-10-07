@@ -257,7 +257,7 @@ def attempt_from_metrics_record(record: dict[str, Any]) -> QualificationAttempt 
             started_at=started,
             completed_at=completed,
             decisive_failure_at=decisive,
-            foreground_seconds=(completed - started).total_seconds(),
+            foreground_seconds=raw.get("foreground_seconds"),
             harness_rework_seconds=rework["harness_seconds"],
             wrapper_rework_seconds=rework["wrapper_seconds"],
             fixture_rework_seconds=rework["fixture_seconds"],

@@ -137,6 +137,7 @@ def test_warning_not_due_and_metrics_artifact_adapter() -> None:
         "retry_reason": "INITIAL", "started_at": START.isoformat(),
         "completed_at": (START + timedelta(seconds=60)).isoformat(),
         "decisive_failure_at": (START + timedelta(seconds=20)).isoformat(),
+        "foreground_seconds": 60,
         "rework": {"harness_seconds": 1, "wrapper_seconds": 2,
                    "fixture_seconds": 3, "setup_seconds": 4},
         "current": True,
@@ -148,3 +149,22 @@ def test_warning_not_due_and_metrics_artifact_adapter() -> None:
     ).executed_attempt_id
     assert mapped.foreground_seconds == 60
     assert attempt_from_metrics_record({}) is None
+
+
+def test_adapter_does_not_invent_foreground_time() -> None:
+    record = {"qualification_attempt": {
+        "lineage_id": LINEAGE,
+        "provider": {"repository": "owner/repo", "workflow": "Quality", "job": "quality",
+                     "run_id": 101, "run_attempt": 1},
+        "scope": {"candidate_sha": "a" * 40, "base_sha": "b" * 40,
+                  "plan_digest": "p", "harness_digest": "h", "environment_digest": "e"},
+        "retry_reason": "INITIAL", "started_at": START.isoformat(),
+        "completed_at": (START + timedelta(seconds=60)).isoformat(),
+        "decisive_failure_at": None,
+        "rework": {"harness_seconds": 0, "wrapper_seconds": 0,
+                   "fixture_seconds": 0, "setup_seconds": 0},
+        "current": True,
+    }}
+    mapped = attempt_from_metrics_record(record)
+    assert mapped is not None and mapped.foreground_seconds is None
+    assert summarize_lineage((mapped,)).reason == "evidence-missing"

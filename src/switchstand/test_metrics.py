@@ -31,7 +31,16 @@ def qualification_attempt_observation(
     raw_github = identity.get("github")
     github = cast(dict[str, Any], raw_github) if isinstance(raw_github, dict) else {}
     run_attempt = github.get("run_attempt")
-    retry_reason = "INITIAL" if str(run_attempt) == "1" else "UNKNOWN"
+    run_attempt_number = (
+        int(run_attempt)
+        if isinstance(run_attempt, (str, int)) and str(run_attempt).isdigit()
+        else None
+    )
+    retry_reason = (
+        "PROVIDER_RETRY"
+        if run_attempt_number is not None and run_attempt_number > 1
+        else "UNKNOWN"
+    )
     try:
         repository = github["repository"]
         workflow = github["workflow"]
@@ -51,8 +60,11 @@ def qualification_attempt_observation(
             "run_attempt": provider.run_attempt,
             "executed_attempt_id": provider.executed_attempt_id,
         }
+        qualification_subject = identity["qualification_subject"]
+        if not isinstance(qualification_subject, str) or not qualification_subject:
+            raise TypeError("qualification subject unavailable")
         lineage = qualification_lineage_id(
-            provider.repository, "quality", "qualification-lineage-v1",
+            provider.repository, qualification_subject, "qualification-lineage-v1",
         )
     except (KeyError, TypeError, ValueError):
         provider_record = dict(github)
@@ -65,6 +77,24 @@ def qualification_attempt_observation(
     if not isinstance(environment, dict):
         environment = {}
     environment = cast(dict[str, Any], environment)
+    failure = identity.get("failure_classification")
+    if not isinstance(failure, dict):
+        failure = {}
+    failure = cast(dict[str, Any], failure)
+    started_at = identity.get("started_at")
+    completed_at = identity.get("completed_at")
+    foreground_seconds: float | None = None
+    if identity.get("foreground") is False:
+        foreground_seconds = 0.0
+    elif identity.get("foreground") is True:
+        try:
+            started = datetime.fromisoformat(cast(str, started_at))
+            completed = datetime.fromisoformat(cast(str, completed_at))
+            foreground_seconds = (completed - started).total_seconds()
+            if foreground_seconds < 0:
+                foreground_seconds = None
+        except (TypeError, ValueError):
+            foreground_seconds = None
     harness_parts: dict[str, object] = {
         "workflow_blob": environment.get("workflow_blob"),
         "manifest_blobs": environment.get("manifest_blobs"),
@@ -83,11 +113,10 @@ def qualification_attempt_observation(
             "environment_digest": identity.get("environment_key"),
         },
         "retry_reason": rework.get("retry_reason", retry_reason),
-        "started_at": identity.get("started_at"),
-        "completed_at": identity.get("completed_at"),
-        "decisive_failure_at": (
-            identity.get("completed_at") if identity.get("quality_outcome") == "failure" else None
-        ),
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "foreground_seconds": foreground_seconds,
+        "decisive_failure_at": failure.get("decisive_failure_at"),
         "rework": {
             "harness_seconds": rework.get("harness_seconds"),
             "wrapper_seconds": rework.get("wrapper_seconds"),
