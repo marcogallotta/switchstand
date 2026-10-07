@@ -81,7 +81,12 @@ def test_prepare_registers_exact_launch_owned_thread(spec: Spec, monkeypatch) ->
         return spec.home / "runner.json"
 
     monkeypatch.setattr("switchstand.codex_registration.QueueClient", Client)
-    monkeypatch.setattr("switchstand.codex_registration.bind", lambda *_args: binding)
+    monkeypatch.setattr(
+        "switchstand.codex_registration.bind",
+        lambda *_args: (_ for _ in ()).throw(AssertionError(
+            "a zero-turn thread has no rollout to read back",
+        )),
+    )
     monkeypatch.setattr("switchstand.codex_registration.existing_registration", existing)
     monkeypatch.setattr("switchstand.codex_registration.freeze_config", freeze)
 
