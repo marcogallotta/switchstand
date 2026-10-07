@@ -134,7 +134,7 @@ trusted_hash = "must-not-copy"
     assert "creation is denied/unresolved, report COVERAGE_GAP / UNKNOWN" in instructions
     assert "Bare work_get is reserved for trusted launch-bound managed runs." in instructions
     assert (
-        "Built-in Workers are read-only because they share Root's filesystem profile"
+        "Built-in Workers are read-only until Root creates a dedicated linked writer"
         in instructions
     )
     assert "Native full local-user execution applies to directly operated Root" in instructions
@@ -143,11 +143,11 @@ trusted_hash = "must-not-copy"
         f"`{primary / 'scripts/codex-worker-inspect'} --root {primary.parent / 'writer'}`"
         in instructions
     )
-    assert "runtime denies every other shell and every file-edit call" in instructions
-    assert "a Worker returns a patch proposal and Root applies it" in instructions
-    assert not Path(
+    assert "runtime denies every other shell" in instructions
+    assert "--bind-worker AGENT --work-id WORK" in instructions
+    assert Path(
         f"{tmp_path / 'coordinator/start-commit.coordinator.config'}.worker-writers"
-    ).exists()
+    ).is_dir()
     assert "mode=OFF; lifetime=ASSIGNMENT" in instructions
     assert "forked Workers" not in instructions
     assert profile["features"] == {"hooks": True, "multi_agent": True}
@@ -181,7 +181,8 @@ trusted_hash = "must-not-copy"
     group = profile["hooks"]["PreToolUse"][0]
     assert group["hooks"][0]["command"] == (
         f"{primary / 'scripts/codex-hook'} --coordinator-primary {primary} "
-        f"--coordinator-writer {primary.parent / 'writer'}"
+        f"--coordinator-writer {primary.parent / 'writer'} --worker-bindings "
+        f"{tmp_path / 'coordinator/start-commit.coordinator.config.worker-writers'}"
     )
     compact = profile["hooks"]["SessionStart"][0]
     assert compact["matcher"] == "^compact$"
