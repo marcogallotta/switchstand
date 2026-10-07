@@ -219,6 +219,39 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
     assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
 
 
+async def test_ineligible_reviewer_denial_leaves_no_review_state(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-shared", "chat-requester",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-shared", "chat-reviewer",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    assert requester.endpoint_id != reviewer.endpoint_id
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    request = ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    )
+    basis = service._basis(request, requester)
+
+    denied = await service.request(request, requester)
+
+    assert (denied.status, denied.reason, denied.review_id) == (
+        "DENIED", "reviewer_not_eligible", basis.review_id,
+    )
+    assert await occurrences.works.get(basis.review_id) is None
+    assert await occurrences.basis_sources(basis.review_id) == ()
+    assert await occurrences.request_sources(basis.review_id) == ()
+
+
 async def test_concurrent_review_request_converges_on_one_occurrence_and_delivery(
     occurrence_runtime,
 ):
