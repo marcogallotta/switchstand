@@ -1,8 +1,14 @@
 #!/bin/sh
 set -eu
 
-[ "$#" -eq 2 ] && [ "$1" = --target ] && [ "$2" = production ] \
-    || { echo "usage: scripts/switchstand-upgrade-state --target production" >&2; exit 2; }
+case "$*" in
+    "--target production") mode=legacy ;;
+    "--mode prepare --target production") mode=prepare ;;
+    "--mode apply --target production --image-id "*)
+        [ "$#" -eq 6 ] && [ "$5" = --image-id ] || exit 2; mode=apply; image_id=$6 ;;
+    *)
+        echo "usage: scripts/switchstand-upgrade-state --mode prepare|apply --target production [--image-id sha256:...]" >&2; exit 2 ;;
+esac
 umask 077
 
 EXPECTED_NEW=0025_task_control_checkpoints
@@ -43,6 +49,7 @@ mkdir "$lock_dir" 2>/dev/null \
 cleanup() {
     status=$?
     [ -z "$rehearsal" ] || docker rm -f "$rehearsal" >/dev/null 2>&1 || true
+    [ "$mode" = apply ] || [ "$shared_migration_attempted" = true ] || [ -z "$backup" ] || rm -f "$backup"
     if [ "$status" -ne 0 ] && [ "$backup_ready" = true ]; then
         observed_revision=$(sql 'SELECT version_num FROM alembic_version' 2>/dev/null || printf UNAVAILABLE)
         observed_counts=$(sql "$counts_sql" 2>/dev/null || printf UNAVAILABLE)
@@ -80,10 +87,25 @@ volume_identity=$(docker volume inspect --format \
 [ "$volume_identity" = "$PROJECT|postgres-data" ] \
     || { echo "Switchstand PostgreSQL volume labels mismatch" >&2; exit 1; }
 
+if [ "$mode" = apply ]; then
+    digest=${image_id#sha256:}
+    [ "$digest" != "$image_id" ] && [ "${#digest}" -eq 64 ] \
+        || { echo "apply requires an exact sha256 image ID" >&2; exit 1; }
+    case "$digest" in
+        *[!0-9a-f]*) echo "apply requires an exact sha256 image ID" >&2; exit 1 ;;
+    esac
+    [ "$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null)" = "$image_id" ] \
+        || { echo "prepared migration image is unavailable or mismatched" >&2; exit 1; }
+fi
+
 sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 revision=$(sql 'SELECT version_num FROM alembic_version')
 case "$revision" in
     "$EXPECTED_NEW")
+        [ "$mode" != prepare ] || {
+            migration_image="switchstand-upgrade:$head"; docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
+            docker image inspect --format '{{.Id}}' "$migration_image"; exit 0
+        }
         printf 'SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=%s\n' "$EXPECTED_NEW"
         exit 0
         ;;
@@ -135,7 +157,6 @@ case "$revision" in
         ;;
 esac
 EXPECTED_OLD=$revision
-before_counts=$(sql "$counts_sql")
 quiescence_sql="SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND pid<>pg_backend_pid() AND backend_type='client backend'"
 assert_quiescent() {
     clients=$(sql "$quiescence_sql")
@@ -147,18 +168,25 @@ assert_quiescent() {
     [ "$network_members" = "$container_name" ] \
         || { echo "shared state network has an attached application container; stop Switchstand writers before upgrading" >&2; exit 1; }
 }
-assert_quiescent
 
-backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
-mkdir -p "$backup_dir"
-chmod 700 "$backup_dir"
-backup="$backup_dir/state-$EXPECTED_OLD-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
+if [ "$mode" = prepare ]; then
+    backup="$state_dir/rehearsal-$EXPECTED_OLD-$head-$$.dump"
+else
+    assert_quiescent
+    before_counts=$(sql "$counts_sql")
+    backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
+    mkdir -p "$backup_dir"
+    chmod 700 "$backup_dir"
+    backup="$backup_dir/state-$EXPECTED_OLD-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"
+fi
 set -C
 docker exec "$container" pg_dump -U switchstand -d switchstand -Fc >"$backup"
 set +C
 [ -s "$backup" ] || { echo "state backup is empty" >&2; exit 1; }
 backup_ready=true
+[ "$mode" != prepare ] || backup_ready=false
 
+if [ "$mode" != apply ]; then
 rehearsal="switchstand-upgrade-rehearsal-$(printf '%.12s' "$head")-$$"
 migration_image="switchstand-upgrade:$head"
 docker run -d --rm --name "$rehearsal" --tmpfs /var/lib/postgresql \
@@ -183,19 +211,31 @@ docker exec "$rehearsal" pg_restore --exit-on-error --no-owner --no-privileges \
     -U switchstand -d switchstand /tmp/state.dump
 rehearsal_sql() { docker exec "$rehearsal" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_OLD" ]
-[ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+rehearsal_counts=$(rehearsal_sql "$counts_sql")
+[ "$mode" != prepare ] || before_counts=$rehearsal_counts
 
 docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
+migration_image=$(docker image inspect --format '{{.Id}}' "$migration_image")
+fi
+
 migrate() {
     target=$1
     docker run --rm --network "container:$target" \
         -e DATABASE_URL=postgresql+psycopg://switchstand:switchstand@127.0.0.1/switchstand \
         "$migration_image" uv run --no-sync alembic -c /app/alembic.ini upgrade "$EXPECTED_NEW"
 }
+
+if [ "$mode" != apply ]; then
 migrate "$rehearsal"
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_NEW" ]
-[ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+[ "$(rehearsal_sql "$counts_sql")" = "$rehearsal_counts" ]
+fi
+if [ "$mode" = prepare ]; then
+printf '%s\n' "$migration_image"
+exit 0
+fi
 
+[ "$mode" != apply ] || migration_image=$image_id
 assert_quiescent
 revision=$(sql 'SELECT version_num FROM alembic_version')
 current_counts=$(sql "$counts_sql")
