@@ -58,6 +58,44 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     }
 
 
+def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_git = subprocess.check_output(
+        ["sh", "-c", "command -v git"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    invocation_count = tmp_path / "absolute-git-dir-count"
+    executable(
+        test_bin / "git",
+        "#!/bin/sh\n"
+        f'count_file="{invocation_count}"\n'
+        "if [ \"${3-}\" = rev-parse ] && [ \"${4-}\" = --absolute-git-dir ]; then\n"
+        "    count=$(cat \"$count_file\" 2>/dev/null || printf '0')\n"
+        "    count=$((count + 1))\n"
+        "    printf '%s\\n' \"$count\" >\"$count_file\"\n"
+        "    [ \"$count\" -ne 2 ] || exit 88\n"
+        "fi\n"
+        f'exec "{real_git}" "$@"\n',
+    )
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"PATH": f"{test_bin}:{env['PATH']}"},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    assert invocation_count.read_text() == "2\n"
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    assert not list(coordinator_home.glob("start-commit.*"))
+    assert not list(coordinator_home.glob("switchstand-coordinator-*"))
+    assert not list(
+        (home / ".local/state/switchstand/worktrees").glob("switchstand-coordinator-*")
+    )
+    assert subprocess.check_output(
+        [real_git, "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip() == ""
+
+
 def commit(repo: Path, *paths: str) -> str:
     subprocess.run(["git", "-C", repo, "add", *paths], check=True)
     subprocess.run(

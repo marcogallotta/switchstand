@@ -101,6 +101,29 @@ def setup(
     return repo, start, Path(result.stdout.strip())
 
 
+def test_writer_verification_does_not_scan_scaled_worktree_registry(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    repo, start, _manifest = setup(tmp_path)
+    writer = tmp_path / "writer"
+    for index in range(24):
+        subprocess.run(
+            ["git", "-C", repo, "worktree", "add", "-q", "-b", f"extra-{index}",
+             tmp_path / f"extra-{index}", "HEAD"], check=True,
+        )
+    original = subprocess.check_output
+
+    def bounded_check_output(arguments, **kwargs):
+        if "worktree" in arguments and "list" in arguments:
+            raise subprocess.TimeoutExpired(arguments, kwargs.get("timeout", 0))
+        return original(arguments, **kwargs)
+
+    monkeypatch.setattr(subprocess, "check_output", bounded_check_output)
+    runpy.run_path(SCRIPT)["verify_linked_writer"](
+        repo, writer, start.read_text().strip()
+    )
+
+
 def pending_handoff(start: Path, commit: str) -> Path:
     artifact = start.parent.parent / "handoffs/handoff-test"
     artifact.mkdir(parents=True)
