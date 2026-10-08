@@ -9,9 +9,11 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .stacked_delivery import EvidenceDimension, LayerQualification
+
 REPOSITORY = "marcogallotta/switchstand"
 API = f"https://api.github.com/repos/{REPOSITORY}"
-CATALOGUE = "switchstand-quality-v2"
+CATALOGUE = "switchstand-quality-v3"
 GATES = (
     ("Exact-head Quality", "exact_head"),
     ("PR composition Quality", "composition"),
@@ -40,6 +42,7 @@ class QualificationGate(BaseModel):
     failed_steps: list[str] = Field(default_factory=list)
     failure_excerpt: str | None = None
     detail_reason: str | None = None
+    evidence_dimensions: list[EvidenceDimension] = Field(default_factory=list[EvidenceDimension])
 
 
 class RepositoryCandidateQualification(BaseModel):
@@ -55,6 +58,20 @@ class RepositoryCandidateQualification(BaseModel):
     catalogue: str = CATALOGUE
     gates: list[QualificationGate]
     reason: str | None = None
+
+    def proportional_evidence(self) -> LayerQualification:
+        """Project catalogue truth into the one shared qualification predicate."""
+
+        passed: set[EvidenceDimension] = {
+            dimension for gate in self.gates for dimension in gate.evidence_dimensions
+            if self.status == "READY" and gate.state == "completed"
+            and gate.conclusion == "success" and gate.reason is None
+        }
+        return LayerQualification(
+            self.head_sha or "", frozenset(passed),
+            self.status == "READY" and self.head_sha is not None,
+            self.composition_sha,
+        )
 
 
 def _timestamp(value: Any) -> datetime | None:
@@ -137,6 +154,68 @@ def _excerpt(output: Any) -> str | None:
     if not text:
         return None
     return text[:1000] + ("…" if len(text) > 1000 else "")
+
+
+def _check_identity(check: dict[str, Any]) -> tuple[int | None, int | None]:
+    identity = DETAILS_RE.search(str(check.get("details_url") or ""))
+    if identity is None:
+        return None, None
+    job = identity.group("job")
+    return int(identity.group("run")), int(job) if job else None
+
+
+def _policy_evidence(
+    checks: list[dict[str, Any]], run_id: int | None, kind: str, head: str,
+) -> tuple[list[EvidenceDimension], str | None]:
+    """Validate the typed evidence hidden behind the one stable Quality gate."""
+
+    if run_id is None:
+        return [], "policy-evidence-missing"
+
+    def same_run(check: dict[str, Any]) -> bool:
+        app = check.get("app")
+        check_run, _ = _check_identity(check)
+        return (
+            isinstance(app, dict)
+            and cast(dict[str, Any], app).get("slug") == "github-actions"
+            and check_run == run_id
+            and check.get("head_sha") == head
+        )
+
+    docker_name = (
+        "Exact-head Docker lifecycle" if kind == "exact_head"
+        else "PR composition Docker lifecycle"
+    )
+    by_name = {
+        str(check.get("name")): check for check in checks
+        if same_run(check) and (
+            check.get("name") in {"Quality policy", docker_name}
+            or str(check.get("name") or "").startswith("Quality execution / ")
+        )
+    }
+    executions = [value for name, value in by_name.items()
+                  if name.startswith("Quality execution / ")]
+    if len(by_name) != 3 or len(executions) != 1:
+        return [], "policy-evidence-missing"
+    policy, docker = by_name["Quality policy"], by_name[docker_name]
+    execution = executions[0]
+    execution_name = str(execution["name"])
+    raw_mode = execution_name.removeprefix("Quality execution / ")
+    if raw_mode not in {"PROMOTE_TEST_MODULE_ONLY_V1", "FULL_FALLBACK"}:
+        return [], "policy-evidence-unknown"
+    if any(check.get("status") != "completed" for check in (policy, execution, docker)):
+        return [], "policy-evidence-running"
+    if policy.get("conclusion") != "success" or execution.get("conclusion") != "success":
+        return [], "policy-evidence-failed"
+    expected_docker = "skipped" if raw_mode == "PROMOTE_TEST_MODULE_ONLY_V1" else "success"
+    if docker.get("conclusion") != expected_docker:
+        return [], "policy-evidence-conflicting"
+    dimensions: list[EvidenceDimension] = ["LAYER_CAUSAL_QUALITY"]
+    if kind == "composition":
+        dimensions.append("CUMULATIVE_TOP_QUALITY")
+    if raw_mode == "FULL_FALLBACK":
+        dimensions.extend(("BROAD_QUALITY", "RUNTIME_LIFECYCLE"))
+    return dimensions, None
 
 
 def _run_matches(
@@ -243,9 +322,7 @@ async def qualify_repository_candidate(
             conclusion = check.get("conclusion")
             conclusion = str(conclusion) if conclusion is not None else None
             details = str(check.get("details_url") or "")
-            identity = DETAILS_RE.search(details)
-            run_id = int(identity.group("run")) if identity else None
-            job_id = int(identity.group("job")) if identity and identity.group("job") else None
+            run_id, job_id = _check_identity(check)
             run: dict[str, Any] = {}
             if run_id is not None:
                 if run_id not in runs:
@@ -261,6 +338,11 @@ async def qualify_repository_candidate(
                 reason = "conflicting"
             elif kind == "composition" and composition_reason is not None:
                 reason = composition_reason
+            evidence_dimensions, policy_reason = _policy_evidence(
+                checks, run_id, kind, head,
+            )
+            if reason is None and policy_reason is not None:
+                reason = policy_reason
             failed_steps: list[str] = []
             failure_excerpt = None
             detail_reason = None
@@ -286,6 +368,7 @@ async def qualify_repository_candidate(
                 age_ms=_elapsed(started, now) if status == "queued" else None,
                 failed_steps=failed_steps, failure_excerpt=failure_excerpt,
                 detail_reason=detail_reason,
+                evidence_dimensions=evidence_dimensions,
             ))
         ready = composition_reason is None and all(g.reason is None for g in gates)
         result_reason = None if ready else (

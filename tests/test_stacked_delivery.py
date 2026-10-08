@@ -1,11 +1,15 @@
 import os
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 from switchstand.stacked_delivery import (
+    EvidenceDimension,
     FocusedLayerReview,
+    FocusedReviewCheck,
     LayerQualification,
     LayerReviewIdentity,
+    ReviewReceipt,
     StackLandingEvidence,
     focused_review_is_current,
     layer_qualification_is_sufficient,
@@ -77,38 +81,63 @@ def test_focused_review_reuse_requires_unchanged_delta_and_dependency_contract()
     )
 
 
-def test_proportional_inert_qualification_fails_closed() -> None:
-    inert = LayerQualification("a" * 40, True, "INERT_PROVEN", False)
-    assert layer_qualification_is_sufficient(inert)
-    assert layer_qualification_is_sufficient(
-        LayerQualification("a" * 40, True, "INERT_PROVEN", True, True)
+def test_typed_proportional_dimensions_fail_closed() -> None:
+    passed: frozenset[EvidenceDimension] = frozenset({
+        "LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE",
+    })
+    assert layer_qualification_is_sufficient(LayerQualification("a" * 40, passed), passed)
+    invalid = (
+        LayerQualification("a" * 40, frozenset()),
+        LayerQualification("a" * 40, passed, known=False),
+        LayerQualification("not-a-sha", passed),
+        LayerQualification("a" * 40, frozenset({"invented"})),  # type: ignore[arg-type]
     )
-    assert not layer_qualification_is_sufficient(
-        LayerQualification("a" * 40, True, "UNKNOWN", False)
-    )
-    assert not layer_qualification_is_sufficient(
-        LayerQualification("a" * 40, True, "RELIANCE_CHANGING", False)
-    )
-    assert not layer_qualification_is_sufficient(
-        LayerQualification("a" * 40, True, "INERT_PROVEN", True, False)
-    )
-    assert not layer_qualification_is_sufficient(
-        LayerQualification("not-a-sha", True, "INERT_PROVEN", False)
-    )
+    assert not any(layer_qualification_is_sufficient(item) for item in invalid)
 
 
 def test_no_layer_lands_before_exact_cumulative_top_proof() -> None:
-    ready = StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, True, True)
+    required: frozenset[EvidenceDimension] = frozenset({
+        "CUMULATIVE_TOP_QUALITY", "BROAD_QUALITY", "RUNTIME_LIFECYCLE",
+        "WAKEFUL_REAL_HOST",
+    })
+    catalogue = LayerQualification(
+        "a" * 40, required - {"WAKEFUL_REAL_HOST"}, composition_sha="c" * 40,
+    )
+    host = LayerQualification("a" * 40, frozenset({"WAKEFUL_REAL_HOST"}))
+    reviews = tuple(
+        FocusedReviewCheck(
+            FocusedLayerReview(
+                identity, "PASS", layer,
+                frozenset({"LAYER_CAUSAL_QUALITY", "INERTNESS_NON_RELIANCE"}),
+            ), identity,
+        )
+        for layer, identity in zip(
+            ("A", "B", "C", "D"),
+            (IDENTITY, LayerReviewIdentity("c" * 64, "d" * 64),
+             LayerReviewIdentity("e" * 64, "f" * 64), LayerReviewIdentity("1" * 64, "2" * 64)),
+            strict=True,
+        )
+    )
+    ready = StackLandingEvidence(
+        "a" * 40, "c" * 40, ReviewReceipt("a" * 40, "PASS"),
+        "a" * 40, reviews, (catalogue, host),
+    )
     assert stack_is_ready_to_land(ready)
-    assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, None, True, True)
+    rejected = (
+        replace(ready, cumulative_quality_sha=None),
+        replace(ready, cumulative_review=ReviewReceipt("b" * 40, "PASS")),
+        replace(ready, cumulative_review=ReviewReceipt("a" * 40, "FAIL")),
+        replace(ready, cumulative_review=ReviewReceipt("a" * 40, "UNKNOWN")),
+        replace(ready, focused_reviews=reviews[:-1]),
+        replace(ready, qualifications=(catalogue, replace(host, subject_sha="b" * 40))),
+        replace(ready, qualifications=(replace(catalogue, composition_sha="d" * 40), host)),
     )
-    assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "b" * 40, "a" * 40, True, True)
-    )
-    assert not stack_is_ready_to_land(
-        StackLandingEvidence("a" * 40, "a" * 40, "a" * 40, False, True)
-    )
-    assert not stack_is_ready_to_land(
-        StackLandingEvidence("x", "x", "x", True, True)
-    )
+    assert not any(stack_is_ready_to_land(item) for item in rejected)
+
+    for dimension in required:
+        reduced = replace(
+            catalogue,
+            passed=catalogue.passed - {dimension},
+        ) if dimension != "WAKEFUL_REAL_HOST" else catalogue
+        receipts = (reduced, host) if dimension != "WAKEFUL_REAL_HOST" else (catalogue,)
+        assert not stack_is_ready_to_land(replace(ready, qualifications=receipts))
