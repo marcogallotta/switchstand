@@ -54,6 +54,29 @@ exact WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred a
 
 Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
 
+#### Native fork operating boundary
+
+The live native mechanics are bounded forks and messages while the parent Codex process is active,
+plus the V1 writer binding described above: before implementation, Root binds the exact Worker,
+WorkId, base, and non-overlapping repository-relative surface to a dedicated linked writer; the
+Worker then uses only the fixed writer-bound inspect, test, and commit entry points. Keep one
+mutation owner per surface. If native forking or that binding cannot safely deliver the assigned
+slice, use the existing Tier B isolated implementation-worker route with its task-private writer,
+or report the affected capability `UNKNOWN`; do not have an unbound Worker edit or invent a new
+supervisor path.
+
+These mechanics provide no inactive wake, background supervision, cadence, scheduler, durable
+child-state store, or guaranteed opportunity to reply before a stop. Repository instructions are
+also not proof that V2 supervision has been adopted: landing is inert for that reliance claim until
+a fresh representative real Codex session passes the governing behavioral acceptance and any
+separate process installation is authorized and read back. Unobserved host behavior stays
+`UNKNOWN`.
+
+An independent-review fork remains a distinct eligible reviewer. Root may track its identity,
+eligibility, currentness, charter, liveness, and evidence delivery, but must not coach its verdict
+or findings or replace it merely because the result is adverse. Findings continue through the
+existing accept, challenge, evidence, and focused-rereview boundaries.
+
 #### Setup and workflow failure journal
 
 Immediately record every newly observed setup or workflow failure through the repo-local,
