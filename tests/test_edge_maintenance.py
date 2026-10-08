@@ -1000,8 +1000,9 @@ def test_host_r0_semantic_probe_is_fresh_bound_and_preserves_frozen_evidence(
         results = {"product_currentness": {
                 "status": "ok",
                 "product_work_id": str(maintenance.STATEFUL_PRODUCT_WORK_ID),
-                "current": "FALSE" if len(commands) == 3 else "TRUE",
-                "blockers": ["new-blocker"] if len(commands) == 3 else [],
+                "current": "FALSE" if len(commands) == 4 else "TRUE",
+                "blockers": ["new-blocker"] if len(commands) == 4 else [],
+                "conditions": ["changed"] if len(commands) == 3 else [],
             }}
         receipt_path.write_text(json.dumps({
             "schema": 1, "result": "PASS", "candidate_sha": subject.candidate_sha,
@@ -1029,10 +1030,12 @@ def test_host_r0_semantic_probe_is_fresh_bound_and_preserves_frozen_evidence(
     assert commands[0][commands[0].index("--endpoint") + 1] == subject.local_url
     assert operations.semantic_ready() == digest
     frozen = subject.attempt_dir.joinpath("semantic-probe.json").read_bytes()
-    with pytest.raises(Unknown, match="not current PASS"):
+    with pytest.raises(Unknown, match="proof changed before receipt binding"):
         operations.semantic_ready()
     assert len(commands) == 3
     assert subject.attempt_dir.joinpath("semantic-probe.json").read_bytes() == frozen
+    with pytest.raises(Unknown, match="not current PASS"):
+        operations.semantic_ready()
     subject.env_file.write_text("ASANA_TOKEN=test\n")
     with pytest.raises(Failed, match="inputs are unavailable"):
         operations.semantic_ready()

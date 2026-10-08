@@ -995,8 +995,9 @@ class HostOperations:
             raise Unknown("R0 semantic proof receipt is not current PASS")
         digest = self._artifact_digest(refresh, 0o600)
         if path.exists():
-            if self._artifact_digest(path, 0o600) == digest:
-                refresh.unlink()
+            if self._artifact_digest(path, 0o600) != digest:
+                raise Unknown("R0 semantic proof changed before receipt binding")
+            refresh.unlink()
             return digest
         os.replace(refresh, path)
         return digest
