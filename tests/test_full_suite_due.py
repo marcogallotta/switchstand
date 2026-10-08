@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 from switchstand.full_suite_due import FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due
 
+# Activation canary: a direct, non-sensitive test-module change may use selective foreground CI.
 NOW = datetime(2026, 10, 7, tzinfo=UTC)
 POLICY = FullSuitePolicy(20, 24 * 60 * 60, 100, 2_000, 50, 0.5)
 
