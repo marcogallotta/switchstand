@@ -45,13 +45,12 @@ class WakeSourceRef:
     def reread_instruction(self) -> str:
         if self.source_kind == "switchstand_inbound":
             return (
-                "List the repository MCP mailbox with "
-                "mcp__switchstand__agent_message_pending, following next_cursor pages until "
-                "this exact delivery_id is found. Retain its payload, then receive it with "
-                "mcp__switchstand__agent_message_receive and act on the retained payload. "
-                "Do not use the "
-                "codex_apps Switchstand connector: that connector has a different session "
-                "identity and cannot receive this Codex mailbox delivery."
+                "Handle mailbox mechanics silently in one functions.exec code-mode call; "
+                "never use codex_apps. Page the repository "
+                "mcp__switchstand__agent_message_pending through next_cursor to this exact "
+                "delivery_id, retain its payload, then use repository "
+                "mcp__switchstand__agent_message_receive to receive it and act on the retained "
+                "payload."
             )
         if self.source_kind == "child_completion":
             return "Reread the exact parent call and latest persisted child state before acting."
@@ -442,6 +441,8 @@ class Projection:
             return "STALE"
         if record["state"] == "CONSUMED":
             return "ADMITTED"
+        if record["state"] == "QUEUED":
+            return "PENDING"
         try:
             rebound = bind(
                 client, self.path.parent, Path(self.binding.start_record), self.binding.thread_id,
@@ -524,13 +525,21 @@ async def inbound_cycle(
     delivery_ids = await messages.pending_delivery_ids(mailbox, cursor)
     if delivery_ids is None:
         return None, {"source": "STALE"}
-    results: dict[str, str] = {}
+    pending: list[tuple[int, UUID, WakeSourceRef, str]] = []
     for delivery_id in delivery_ids:
+        source = WakeSourceRef("switchstand_inbound", str(delivery_id))
+        identity = wake_id(binding, source)
+        record = projection.records.get(identity)
+        if record is not None and record.get("state") == "CONSUMED":
+            continue
+        priority = (0 if record is None else 1 if not record.get("attempted")
+                    else 2 if record.get("state") == "PENDING" else 3)
+        pending.append((priority, delivery_id, source, identity))
+    results: dict[str, str] = {}
+    for _, delivery_id, source, identity in sorted(pending, key=lambda item: item[0]):
         await asyncio.sleep(0)
         if stop is not None and stop.is_set():
             break
-        source = WakeSourceRef("switchstand_inbound", str(delivery_id))
-        identity = wake_id(binding, source)
         async with messages.pending_delivery_fence(mailbox, delivery_id) as current:
             results[identity] = projection.admit(client, source) if current else "STALE"
     return (delivery_ids[-1] if len(delivery_ids) == 50 else None), results
