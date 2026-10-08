@@ -161,7 +161,7 @@ def test_inside_canonical_git_common_delegates_to_repo_dispatcher(tmp_path: Path
     assert result_file.read_text().splitlines() == [
         "dispatcher", "resume test-session",
         str(home / ".local/state/switchstand/codex/updater-bin"),
-        "OFF",
+        "PILOT",
     ]
 
     result = subprocess.run(

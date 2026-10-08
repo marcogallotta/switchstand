@@ -11,7 +11,7 @@ fi
 host_canonical_repo="$HOME/switchstand"
 canonical_repo=${SWITCHSTAND_CODEX_QUALIFICATION_REPO:-$host_canonical_repo}
 script_dir=$(dirname -- "$(readlink -f "$0")")
-wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-OFF}
+wakeful_mode=${SWITCHSTAND_CODEX_WAKEFUL:-PILOT}
 git_common() {
     env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
         -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
