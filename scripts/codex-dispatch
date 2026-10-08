@@ -70,17 +70,24 @@ continuity_telemetry="$coordinator_home/continuity-${start_record##*.}.jsonl"
 writer_suffix=$(printf '%s' "${start_record##*.}" | tr '[:upper:]' '[:lower:]')
 owned_writer=
 owned_branch="v2-coordinator-$writer_suffix"
+expected_writer="$HOME/.local/state/switchstand/worktrees/switchstand-coordinator-$writer_suffix"
+cleanup_writer=
 cleanup_incomplete_generation() {
     status=$?
     trap - EXIT HUP INT TERM
-    if [ -n "$owned_writer" ]; then
+    if [ -n "$cleanup_writer" ]; then
         env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
-            git -C "$canonical_repo" worktree remove --force "$owned_writer" >/dev/null 2>&1 || :
+            -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+            git -C "$canonical_repo" worktree remove --force "$cleanup_writer" >/dev/null 2>&1 || :
         env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+            -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
             git -C "$canonical_repo" branch -D "$owned_branch" >/dev/null 2>&1 || :
     fi
     rm -f -- "$manifest_record" "$coordinator_profile_path" \
         "$coordinator_profile_snapshot" "$continuity_telemetry" "$start_record"
+    if [ -d "$start_record.worker-writers" ]; then
+        rm -r -- "$start_record.worker-writers"
+    fi
     if [ -d "$start_record.compact-controls" ]; then
         rm -r -- "$start_record.compact-controls"
     fi
@@ -186,10 +193,29 @@ if [ "$(readlink -f "$friction_dir_path" || :)" != "$friction_root" ]; then
     ln -sfn "$friction_root" "$friction_dir_path"
 fi
 
+if [ ! -e "$expected_writer" ] && [ ! -L "$expected_writer" ]; then
+    if env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+            -u GIT_CEILING_DIRECTORIES -u GIT_DISCOVERY_ACROSS_FILESYSTEM \
+            git -C "$canonical_repo" show-ref --verify --quiet "refs/heads/$owned_branch"; then
+        :
+    else
+        branch_status=$?
+        if [ "$branch_status" -eq 1 ]; then
+            cleanup_writer=$expected_writer
+        else
+            echo "Coordinator writer identity could not be reserved safely" >&2
+            exit 1
+        fi
+    fi
+fi
 owned_writer=$(
     cd "$canonical_repo"
     "$script_dir/switchstand-worktree" "coordinator-$writer_suffix" "$start_commit"
 )
+if [ "$owned_writer" != "$expected_writer" ]; then
+    echo "Coordinator writer path differs from its generation identity" >&2
+    exit 1
+fi
 "$script_dir/codex-coordinator-profile" \
     "$HOME/.codex/config.toml" "$coordinator_profile_snapshot" "$coordinator_profile_path" \
     "$host_canonical_repo" "$owned_writer" "$coordinator_home/hooks.json" "$script_dir/codex-hook" \
