@@ -484,8 +484,9 @@ def test_resume_prepared_reprepares_before_stop(
         monkeypatch.setattr(host, "_artifact_digest", lambda *_args: subject.current_launcher_sha)
         observed = host.reconcile_phase("PREPARED", {})
         operations.reconcile_phase = lambda *_args: observed  # type: ignore[method-assign]
-    operations.prepare_state = lambda: (_ for _ in ()).throw(Failed())
-    assert deploy(subject, operations) == "FAIL" and "stop" not in operations.events
+    operations.fail_at = "prepare_state"
+    assert deploy(subject, operations) == "FAIL"
+    assert "prepare_state" in operations.events and "stop" not in operations.events
 
 
 def test_malformed_receipt_installs_and_proves_gate_before_unknown(tmp_path: Path):

@@ -543,7 +543,7 @@ class HostOperations:
             if gate == "ABSENT" and service == "ACTIVE":
                 return phase, {}
             if gate == "APPLIED" and service == "ACTIVE":
-                return ("GATED" if phase == "PREFLIGHT" else "PREPARED"), {}
+                return "GATED", {}
             raise Unknown("gate outcome is ambiguous")
         if phase == "GATED":
             if gate != "APPLIED":
@@ -1326,6 +1326,7 @@ def deploy(config: Config, operations: Operations) -> str:
     if receipt.value["status"] in {"PASS", "FAIL"}:
         return cast(str, receipt.value["status"])
     phase = cast(str, receipt.value["phase"])
+    resume_prepared = receipt.existing and phase == "PREPARED"
     prepared_image = receipt.value.get("prepared_image")
     gate_retained = False
     gate_attempted = phase not in {"PREFLIGHT", "PREPARED"}
@@ -1343,12 +1344,13 @@ def deploy(config: Config, operations: Operations) -> str:
                 phase = observed
                 receipt.value.update(proof)
                 receipt.write(phase)
+            gate_attempted = phase not in {"PREFLIGHT", "PREPARED"}
         else:
             receipt.write(phase)
             operations.preflight()
         if phase == "UPGRADE_PENDING":
             raise Unknown("shared state upgrade outcome is ambiguous")
-        if receipt.existing and phase == "PREPARED":
+        if resume_prepared:
             receipt.value["prepared_image"] = prepared_image = operations.prepare_state()
             receipt.write(phase)
         if phase == "PREFLIGHT":
