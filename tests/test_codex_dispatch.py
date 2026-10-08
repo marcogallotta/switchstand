@@ -37,9 +37,14 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
         ["git", "-C", primary, "init", "-b", "main"],
         check=True, capture_output=True,
     )
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test",
-         "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base"],
+         "-c", "user.email=test@example.com", "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
@@ -56,6 +61,179 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
         "HOME": str(home), "MARKER": str(marker),
         "SWITCHSTAND_CODEX_WAKEFUL": "OFF",
     }
+
+
+def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_git = subprocess.check_output(
+        ["sh", "-c", "command -v git"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    invocation_count = tmp_path / "absolute-git-dir-count"
+    executable(
+        test_bin / "git",
+        "#!/bin/sh\n"
+        f'count_file="{invocation_count}"\n'
+        "if [ \"${3-}\" = rev-parse ] && [ \"${4-}\" = --absolute-git-dir ]; then\n"
+        "    count=$(cat \"$count_file\" 2>/dev/null || printf '0')\n"
+        "    count=$((count + 1))\n"
+        "    printf '%s\\n' \"$count\" >\"$count_file\"\n"
+        "    [ \"$count\" -ne 2 ] || exit 88\n"
+        "fi\n"
+        f'exec "{real_git}" "$@"\n',
+    )
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"PATH": f"{test_bin}:{env['PATH']}"},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    assert invocation_count.read_text() == "2\n"
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    assert not list(coordinator_home.glob("start-commit.*"))
+    assert not list(coordinator_home.glob("switchstand-coordinator-*"))
+    assert not list(
+        (home / ".local/state/switchstand/worktrees").glob("switchstand-coordinator-*")
+    )
+    assert subprocess.check_output(
+        [real_git, "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip() == ""
+
+
+def test_writer_friction_links_are_ready_before_generation_is_committed(
+    tmp_path: Path,
+) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_ln = subprocess.check_output(
+        ["sh", "-c", "command -v ln"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    observed_phase = tmp_path / "writer-link-phase"
+    executable(
+        test_bin / "ln",
+        "#!/bin/sh\n"
+        "case \"${3-}\" in\n"
+        "  */worktrees/switchstand-coordinator-*/friction.md)\n"
+        "    if find \"$HOME/.local/state/switchstand/codex/coordinator\" "
+        "-name 'start-commit.*.manifest.json' -print -quit | grep -q .; then\n"
+        "      printf 'committed\\n' >\"$OBSERVED_PHASE\"\n"
+        "    else\n"
+        "      printf 'pre-create\\n' >\"$OBSERVED_PHASE\"\n"
+        "    fi\n"
+        "    exit 91\n"
+        "    ;;\n"
+        "esac\n"
+        f'exec "{real_ln}" "$@"\n',
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {
+            "PATH": f"{test_bin}:{env['PATH']}",
+            "OBSERVED_PHASE": str(observed_phase),
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert observed_phase.read_text() == "pre-create\n"
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    assert not list(coordinator_home.glob("start-commit.*"))
+    assert not list(coordinator_home.glob("switchstand-coordinator-*"))
+    assert not list(
+        (home / ".local/state/switchstand/worktrees").glob("switchstand-coordinator-*")
+    )
+    assert subprocess.check_output(
+        ["git", "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip() == ""
+
+
+def test_successful_generation_create_is_the_cleanup_commit_point(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    executable(
+        home / ".codex/packages/standalone/current/bin/codex",
+        "#!/bin/sh\nexit 77\n",
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary, env=env,
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 77
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    records = [
+        path for path in coordinator_home.glob("start-commit.*")
+        if path.is_file() and not path.name.endswith(".manifest.json")
+    ]
+    assert len(records) == 1
+    manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    writer = Path(manifest["session"]["writer"])
+    assert writer.is_dir()
+    assert (writer / "friction.md").is_symlink()
+    assert (writer / "friction").is_symlink()
+    assert subprocess.check_output(
+        ["git", "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip()
+
+
+def test_signal_deferred_during_create_preserves_committed_generation(
+    tmp_path: Path,
+) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_git = subprocess.check_output(
+        ["sh", "-c", "command -v git"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    signal_sent = tmp_path / "signal-sent"
+    executable(
+        test_bin / "git",
+        "#!/bin/sh\n"
+        "if [ \"${3-}\" = status ] && [ \"${4-}\" = --porcelain ] && "
+        "case \"${2-}\" in */switchstand-coordinator-*) true;; *) false;; esac; then\n"
+        f'    "{real_git}" "$@"\n'
+        "    result=$?\n"
+        "    read -r _ _ _ dispatch_pid _ <\"/proc/$PPID/stat\"\n"
+        "    kill -TERM \"$dispatch_pid\"\n"
+        "    printf 'sent\\n' >\"$SIGNAL_SENT\"\n"
+        "    exit \"$result\"\n"
+        "fi\n"
+        f'exec "{real_git}" "$@"\n',
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {
+            "PATH": f"{test_bin}:{env['PATH']}",
+            "SIGNAL_SENT": str(signal_sent),
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 143
+    assert signal_sent.read_text() == "sent\n"
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    records = [
+        path for path in coordinator_home.glob("start-commit.*")
+        if path.is_file() and not path.name.endswith(".manifest.json")
+    ]
+    assert len(records) == 1
+    manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    writer = Path(manifest["session"]["writer"])
+    assert writer.is_dir()
+    assert (writer / "friction.md").is_symlink()
+    assert (writer / "friction").is_symlink()
+    assert subprocess.check_output(
+        [real_git, "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip()
 
 
 def commit(repo: Path, *paths: str) -> str:
@@ -227,7 +405,7 @@ head=$(git -C "$HOME/switchstand" rev-parse HEAD)
 printf '{"status":"ready","effect":"not_sent","previous_sha":"%s","target_sha":"%s","resulting_sha":"%s","reason":"test-owner"}\\n' "$head" "$head" "$head"
 """,
     )
-    (primary / ".gitignore").write_text("friction.md\n")
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
     subprocess.run(
         [
             "git", "-C", primary, "add", "scripts/coordinator-handoff",
@@ -444,11 +622,16 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     primary = home / "switchstand"
     primary.mkdir(parents=True)
     (primary / "friction.md").write_text("existing friction\n")
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
     subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-         "commit", "--allow-empty", "-m", "base"],
+         "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
@@ -634,9 +817,14 @@ def test_dispatch_preserves_explicit_off_control_and_scrubs_selectors(tmp_path: 
     primary.mkdir(parents=True)
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-         "commit", "--allow-empty", "-m", "base"],
+         "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
@@ -709,9 +897,14 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
     primary.mkdir(parents=True)
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-         "commit", "--allow-empty", "-m", "base"],
+         "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
