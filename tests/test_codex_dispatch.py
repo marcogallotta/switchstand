@@ -37,9 +37,14 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
         ["git", "-C", primary, "init", "-b", "main"],
         check=True, capture_output=True,
     )
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test",
-         "-c", "user.email=test@example.com", "commit", "--allow-empty", "-m", "base"],
+         "-c", "user.email=test@example.com", "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
