@@ -1,6 +1,7 @@
 """Tests for the production edge replacement transaction."""
 # pyright: reportPrivateUsage=false
 
+import contextlib
 import hashlib
 import json
 import os
@@ -30,6 +31,8 @@ from switchstand.edge_maintenance import (
     validate_target,
 )
 from switchstand.edge_monitor import HttpObservation
+
+PREPARED_IMAGE = "sha256:" + "e" * 64
 
 
 def config(
@@ -96,6 +99,10 @@ class FakeOperations:
     def preflight(self):
         self._event("preflight")
 
+    def prepare_state(self):
+        self._event("prepare_state")
+        return PREPARED_IMAGE
+
     def gate(self):
         self._event("gate")
         self.gated = True
@@ -111,7 +118,8 @@ class FakeOperations:
     def stop(self):
         self._event("stop")
 
-    def upgrade_state(self):
+    def upgrade_state(self, prepared_image):
+        assert prepared_image == PREPARED_IMAGE
         self._event("upgrade_state")
         return self.upgrade
 
@@ -155,6 +163,8 @@ class FakeOperations:
 
     def current_public_ready(self):
         self._event("current_public_ready")
+        if self.unknown_at == "public_ready" and self.events.count("current_public_ready") > 1:
+            raise Unknown("ambiguous")
         return self.current_public
 
     def ungate(self):
@@ -178,11 +188,16 @@ def receipt(subject: Config) -> dict[str, object]:
 
 def seed_receipt(subject: Config, phase: str) -> None:
     durable = maintenance.Receipt(subject)
+    if phase != "PREFLIGHT":
+        durable.value["prepared_image"] = PREPARED_IMAGE
     if phase == "UPGRADE_PENDING":
         durable.value["state_upgrade"] = "PENDING"
-    elif phase not in {"PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK"}:
+    elif phase not in {"PREFLIGHT", "PREPARED", "GATED", "STOPPED", "ROLLED_BACK"}:
         durable.value["state_upgrade"] = "APPLIED"
-    if phase not in {"PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED"}:
+    if phase not in {
+        "PREFLIGHT", "PREPARED", "GATED", "STOPPED",
+        "UPGRADE_PENDING", "UPGRADED",
+    }:
         durable.value["fastmcp_snapshot"] = "a" * 64
     durable.write(phase, "UNKNOWN")
 
@@ -410,6 +425,7 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
     assert operations.events == [
         "preflight",
         "current_public_ready",
+        "prepare_state",
         "gate",
         "public_gated",
         "stop",
@@ -429,7 +445,7 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
 @pytest.mark.parametrize(
     ("phase", "observed", "completed"),
     [
-        ("PREFLIGHT", "GATED", "gate"),
+        ("PREPARED", "GATED", "gate"),
         ("GATED", "STOPPED", "stop"),
         ("STOPPED", "UPGRADED", "upgrade_state"),
         ("UPGRADED", "SNAPSHOTTED", "snapshot"),
@@ -453,6 +469,36 @@ def test_resume_never_replays_a_proven_completed_host_effect(
 
     assert deploy(subject, operations) == "PASS"
     assert completed not in operations.events
+
+
+@pytest.mark.parametrize("gate_ahead", [False, True])
+def test_resume_prepared_reprepares_before_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gate_ahead: bool,
+):
+    subject = config(tmp_path); seed_receipt(subject, "PREPARED")
+    operations = FakeOperations(); operations.gated = gate_ahead
+    if gate_ahead:
+        host = HostOperations(subject)
+        monkeypatch.setattr(host, "_resume_trust", lambda: None)
+        monkeypatch.setattr(host, "_gate_state", lambda: "APPLIED")
+        monkeypatch.setattr(host, "_service_state", lambda: "ACTIVE")
+        monkeypatch.setattr(host, "_artifact_digest", lambda *_args: subject.current_launcher_sha)
+        observed = host.reconcile_phase("PREPARED", {})
+        operations.reconcile_phase = lambda *_args: observed  # type: ignore[method-assign]
+    operations.fail_at = "prepare_state"
+    assert deploy(subject, operations) == "FAIL"
+    assert "prepare_state" in operations.events and "stop" not in operations.events
+
+
+def test_interrupted_gate_ahead_reprepare_remains_prepared(tmp_path: Path):
+    subject = config(tmp_path); seed_receipt(subject, "PREPARED")
+    operations = FakeOperations(unknown_at="prepare_state"); operations.gated = True
+    operations.reconcile_phase = lambda *_args: ("GATED", {})  # type: ignore[method-assign]
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert receipt(subject)["phase"] == "PREPARED" and "stop" not in operations.events
+    operations = FakeOperations(fail_at="prepare_state"); operations.gated = True
+    operations.reconcile_phase = lambda *_args: ("GATED", {})  # type: ignore[method-assign]
+    assert deploy(subject, operations) == "FAIL" and "stop" not in operations.events
 
 
 def test_malformed_receipt_installs_and_proves_gate_before_unknown(tmp_path: Path):
@@ -637,22 +683,22 @@ def test_definite_pre_upgrade_failure_restarts_old_runtime_and_ungates(tmp_path:
 
     assert deploy(subject, operations) == "FAIL"
 
-    assert operations.events[-3:] == ["stop", "ungate", "public_ready"]
+    assert operations.events[-3:] == ["stop", "ungate", "current_public_ready"]
     assert not operations.gated
     assert receipt(subject)["phase"] == "ROLLED_BACK"
     assert receipt(subject)["state_upgrade"] == "NOT_STARTED"
 
 
-def test_candidate_failure_after_state_upgrade_keeps_gate_and_reports_unknown(tmp_path: Path):
+def test_candidate_failure_after_state_upgrade_restores_verified_lkg(tmp_path: Path):
     subject = config(tmp_path)
-    operations = FakeOperations(local=False)
+    operations = FakeOperations(public=False)
 
-    assert deploy(subject, operations) == "UNKNOWN"
+    assert deploy(subject, operations) == "FAIL"
 
-    assert operations.gated
-    assert "restore_launcher" not in operations.events
-    assert "ungate" not in operations.events
-    assert receipt(subject)["phase"] == "STARTED"
+    assert operations.events[-7:] == ["stop", "restore_launcher", "start", "rollback_ready",
+                                      "ungate", "current_public_ready", "rollback_complete"]
+    assert receipt(subject)["phase"] == "ROLLED_BACK"
+    assert receipt(subject)["state_upgrade"] == "APPLIED"
 
 
 @pytest.mark.parametrize(("complete", "expected"), [(True, "FAIL"), (False, "UNKNOWN")])
@@ -826,16 +872,13 @@ def test_recovery_refuses_receipt_change_during_proof(
     assert receipt(subject)["phase"] == "UPGRADE_PENDING"
 
 
-def test_definite_post_upgrade_failure_keeps_gate_and_does_not_restart_old_runtime(tmp_path: Path):
+def test_definite_post_upgrade_failure_restarts_and_verifies_lkg(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(fail_at="snapshot")
 
-    assert deploy(subject, operations) == "UNKNOWN"
+    assert deploy(subject, operations) == "FAIL"
 
-    assert operations.gated
-    assert "restore_launcher" not in operations.events
-    assert "start" not in operations.events
-    assert "ungate" not in operations.events
+    assert operations.events[-4:] == ["start", "rollback_ready", "ungate", "current_public_ready"]
     assert receipt(subject)["state_upgrade"] == "APPLIED"
 
 
@@ -845,14 +888,14 @@ def test_post_upgrade_candidate_failure_retains_gate_after_local_check(tmp_path:
 
     assert deploy(subject, operations) == "UNKNOWN"
 
-    assert operations.events[-3:] == ["gate_exact", "gate_exact", "public_gated"]
+    assert operations.events[-3:] == ["gate", "gate_exact", "public_gated"]
     assert operations.gated
     assert receipt(subject)["error"] == "RollbackUnknown"
 
 
 def test_ambiguous_public_readback_reinstalls_gate(tmp_path: Path):
     subject = config(tmp_path)
-    operations = FakeOperations(public=False)
+    operations = FakeOperations(public=False, unknown_at="public_ready")
 
     assert deploy(subject, operations) == "UNKNOWN"
 
@@ -901,9 +944,10 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
 ):
     subject, operations, _state = resume_subject(tmp_path, monkeypatch)
     commands: list[list[str]] = []
+    boundary = {"service": "ACTIVE", "gate": False}
 
-    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
-    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "_service_state", lambda: boundary["service"])
+    monkeypatch.setattr(operations, "gate_exact", lambda: boundary["gate"])
     monkeypatch.setattr(operations, "public_gated", lambda: True)
     monkeypatch.setattr(operations, "_candidate_control_environment", dict)
     monkeypatch.setattr(
@@ -911,18 +955,23 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
         "run_host_command",
         lambda command, **_kwargs: (
             commands.append(command) or subprocess.CompletedProcess(
-                command, 0,
+                command, 0, PREPARED_IMAGE + "\n" if "prepare" in command else
                 "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
                 "revision=0025_task_control_checkpoints\n", "",
             )
         ),
     )
 
-    operations.upgrade_state()
+    assert operations.prepare_state() == PREPARED_IMAGE
+    boundary.update(service="INACTIVE", gate=True)
+    operations.upgrade_state(PREPARED_IMAGE)
 
     assert commands == [
         [str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-         "--target", "production"]
+         "--mode", "prepare", "--target", "production"],
+        [str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
+         "--mode", "apply", "--target", "production",
+         "--image-id", PREPARED_IMAGE]
     ]
 
 
@@ -941,7 +990,7 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
     )
 
     with pytest.raises(Unknown, match="did not complete"):
-        operations.upgrade_state()
+        operations.upgrade_state(PREPARED_IMAGE)
 
 
 @pytest.mark.parametrize("output", [
@@ -964,7 +1013,7 @@ def test_state_upgrade_rejects_truncated_trailing_or_unbound_result(
     )
 
     with pytest.raises(Unknown, match="result is not exact"):
-        operations.upgrade_state()
+        operations.upgrade_state(PREPARED_IMAGE)
 
 
 def test_state_upgrade_accepts_exact_applied_result_with_private_backup(
@@ -981,7 +1030,7 @@ def test_state_upgrade_accepts_exact_applied_result_with_private_backup(
     )
     stub_upgrade(operations, monkeypatch, subprocess.CompletedProcess([], 0, output, ""))
 
-    assert operations.upgrade_state() == "APPLIED"
+    assert operations.upgrade_state(PREPARED_IMAGE) == "APPLIED"
 
 
 def test_host_r0_semantic_probe_is_fresh_bound_and_preserves_frozen_evidence(
@@ -1143,12 +1192,13 @@ def test_state_upgrade_passes_exact_detached_candidate_selectors(
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
 
-    operations.upgrade_state()
+    operations.upgrade_state(PREPARED_IMAGE)
 
     command, kwargs = calls[-1]
     assert command == [
         str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-        "--target", "production",
+        "--mode", "apply", "--target", "production",
+        "--image-id", PREPARED_IMAGE,
     ]
     assert kwargs["env"] is not None
     environment = kwargs["env"]
@@ -1194,7 +1244,7 @@ def test_state_upgrade_overwrites_inherited_control_selectors(
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
 
-    operations.upgrade_state()
+    operations.upgrade_state(PREPARED_IMAGE)
 
     assert command_env is not None
     assert command_env["SWITCHSTAND_CONTROL_PATH"] == str(subject.candidate_runtime)
@@ -1229,7 +1279,7 @@ def test_state_upgrade_rejects_candidate_control_mismatch_before_invocation(
     monkeypatch.setattr(maintenance, "run_host_command", run)
 
     with pytest.raises(Unknown, match="control identity is not exact"):
-        operations.upgrade_state()
+        operations.upgrade_state(PREPARED_IMAGE)
 
     assert all("switchstand-upgrade-state" not in command[0] for command in commands)
 
@@ -1408,6 +1458,123 @@ def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
     with pytest.raises(Failed, match="production target identity"):
         maintenance.main(arguments)
     assert not attempt.exists()
+
+
+def test_cli_resume_rejects_malformed_receipt_without_deploy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    attempt = tmp_path / "attempt"; attempt.mkdir(mode=0o700)
+    arguments = [
+        "--resume", "--attempt-dir", str(attempt),
+        "--current-runtime", str(tmp_path / "current"),
+        "--candidate-runtime", str(tmp_path / "candidate"),
+        "--candidate-launcher", str(tmp_path / "candidate-launcher"),
+        "--launcher", str(tmp_path / "launcher"),
+        "--fastmcp-state", str(maintenance.FASTMCP_STATE),
+        "--env-file", str(tmp_path / "edge.env"),
+        "--current-sha", "a" * 40, "--candidate-sha", "b" * 40,
+        "--candidate-launcher-sha", "c" * 64, "--current-launcher-sha", "d" * 64,
+    ]
+    with pytest.raises(SystemExit):
+        maintenance.main(arguments)
+    attempt.joinpath("receipt.json").write_text("{")
+    attempt.joinpath("receipt.json").chmod(0o600)
+    monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda *_args, **_kwargs: pytest.fail("deploy called")
+    )
+    assert maintenance.main(arguments) == 2
+
+
+def test_cli_resume_validates_host_before_returning_terminal_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, _operations, _state = resume_subject(tmp_path, monkeypatch)
+    durable = maintenance.Receipt(subject)
+    host = HostOperations(subject)
+    host.snapshot_file.write_bytes(b"snapshot")
+    host.snapshot_file.chmod(0o600)
+    host.backup.write_bytes(b"current launcher")
+    host.backup.chmod(0o600)
+    durable.value.update(
+        prepared_image=PREPARED_IMAGE,
+        fastmcp_snapshot=hashlib.sha256(b"snapshot").hexdigest(),
+        state_upgrade="APPLIED",
+    )
+    durable.write("COMPLETE", "PASS")
+    arguments = [
+        "--resume", "--attempt-dir", str(subject.attempt_dir),
+        "--current-runtime", str(subject.current_runtime),
+        "--candidate-runtime", str(subject.candidate_runtime),
+        "--candidate-launcher", str(subject.candidate_launcher),
+        "--launcher", str(subject.launcher),
+        "--fastmcp-state", str(subject.fastmcp_state),
+        "--env-file", str(subject.env_file),
+        "--current-sha", subject.current_sha,
+        "--candidate-sha", subject.candidate_sha,
+        "--candidate-launcher-sha", subject.candidate_launcher_sha,
+        "--current-launcher-sha", subject.current_launcher_sha,
+    ]
+    monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
+    monkeypatch.setattr(HostOperations, "_gate_state", lambda _self: "ABSENT")
+    monkeypatch.setattr(HostOperations, "_service_state", lambda _self: "ACTIVE")
+    monkeypatch.setattr(HostOperations, "local_ready", lambda _self: True)
+    monkeypatch.setattr(HostOperations, "public_ready", lambda _self: True)
+
+    subject.launcher.write_bytes(b"candidate launcher")
+    assert maintenance.main(arguments) == 0
+    subject.launcher.write_bytes(b"changed")
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda *_args, **_kwargs: pytest.fail("deploy called")
+    )
+    assert maintenance.main(arguments) == 2
+
+
+def test_systemd_execstart_requires_the_direct_launcher(tmp_path: Path):
+    launcher = tmp_path / "launcher"
+    direct = f"{{ path={launcher} ; argv[]={launcher} ; ignore_errors=no ; }}"
+
+    assert maintenance._unit_launcher_exact(direct, launcher)
+    assert not maintenance._unit_launcher_exact(
+        f"{{ path=/bin/sh ; argv[]=/bin/sh {launcher} ; ignore_errors=no ; }}",
+        launcher,
+    )
+
+
+@pytest.mark.parametrize("phase", ["ROLLED_BACK", "NO_EFFECT"])
+def test_cli_resume_reconciles_terminal_failure_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+):
+    subject = config(tmp_path); subject.attempt_dir.chmod(0o700)
+    maintenance.Receipt(subject).write(phase, "FAIL")
+    arguments = [
+        "--resume", "--attempt-dir", str(subject.attempt_dir),
+        "--current-runtime", str(subject.current_runtime),
+        "--candidate-runtime", str(subject.candidate_runtime),
+        "--candidate-launcher", str(subject.candidate_launcher),
+        "--launcher", str(subject.launcher),
+        "--fastmcp-state", str(subject.fastmcp_state),
+        "--env-file", str(subject.env_file),
+        "--current-sha", subject.current_sha,
+        "--candidate-sha", subject.candidate_sha,
+        "--candidate-launcher-sha", subject.candidate_launcher_sha,
+        "--current-launcher-sha", subject.current_launcher_sha,
+    ]
+    monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
+    monkeypatch.setattr(HostOperations, "_resume_trust", lambda _self: None)
+    if phase == "ROLLED_BACK":
+        monkeypatch.setattr(HostOperations, "rollback_complete", lambda _self: False)
+    else:
+        monkeypatch.setattr(
+            HostOperations,
+            "prove_upgrade_no_effect",
+            lambda _self: (_ for _ in ()).throw(Unknown("changed host state")),
+        )
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda *_args, **_kwargs: pytest.fail("deploy called")
+    )
+
+    assert maintenance.main(arguments) == 2
 
 
 def test_disposable_service_command_cannot_select_production_unit(
@@ -1610,6 +1777,8 @@ def test_https_gate_proof_uses_public_dns_pinning(monkeypatch, tmp_path: Path):
 
     def request(host, address, method, path):
         requests.append((host, address, method, path))
+        if len(requests) == 1:
+            raise TimeoutError
         return 503, {"retry-after": "60"}, b""
 
     monkeypatch.setattr(
@@ -1622,7 +1791,8 @@ def test_https_gate_proof_uses_public_dns_pinning(monkeypatch, tmp_path: Path):
     )
 
     assert operations.public_gated()
-    assert len(requests) == len(maintenance.EDGE_PATHS)
+    assert len(requests) == len(maintenance.EDGE_PATHS) + 1
+    assert requests[0] == requests[1]
     assert all(call[:3] == ("edge.example", "8.8.8.8", "GET") for call in requests)
 
 
@@ -1652,6 +1822,7 @@ def test_https_gate_proof_fails_when_one_public_address_times_out(
     assert not operations.public_gated()
     assert any(call[1] == "8.8.8.8" for call in requests)
     assert any(call[1] == "9.9.9.9" for call in requests)
+    assert sum(call[1] == "9.9.9.9" for call in requests) == 2
 
 
 def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path: Path):

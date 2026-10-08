@@ -182,8 +182,11 @@ must be credential-free loopback HTTP at exact path `/mcp`.
 `scripts/switchstand-edge-maintenance` is the sole repository-owned production
 replacement transaction. It is inert until an operator invokes it with an exact
 clean candidate checkout, staged launcher and their expected digests, the current
-runtime and launcher identities, the exact FastMCP OAuth state directory, a new mode-`0700`
-attempt directory, and the edge environment file. Its host defaults are the
+runtime and launcher identities, the exact FastMCP OAuth state directory, a new attempt-directory
+path, and the edge environment file. The CLI creates that mode-`0700` directory and refuses an
+existing path. `--resume` is required to continue the exact existing attempt; before any terminal
+return or maintenance effect it validates the directory, mode-`0600` receipt, bound runtime
+checkouts, launcher, environment, and service-unit identities. Its host defaults are the
 existing `switchstand-chatgpt-mcp.service`, loopback Caddy admin API and public
 Switchstand origin; changing that topology is separate work.
 
@@ -194,13 +197,13 @@ launcher with its single exact runtime path retargeted to the candidate. Before 
 and after each start, it binds the systemd `MainPID` command line to that launcher and derives
 the process's effective FastMCP path from its initial environment; a mismatch cannot pass.
 It proves the current four Caddy proxy handlers and requires the current runtime to
-pass the complete public-address readiness probe before any gate mutation. It then
-inserts and publicly verifies a
+pass the complete public-address readiness probe. While production is still serving traffic, it
+builds and rehearses the exact state-upgrade image. Only then does it insert and publicly verify a
 first-priority `503 Retry-After` route covering every Switchstand MCP, OAuth and
 metadata path, and only then stops the edge. While that gate remains publicly proven
-and the systemd service is confirmed stopped, it runs the existing
-`switchstand-upgrade-state --target production` rehearsal, backup, and shared-state
-upgrade before any launcher swap or start. The upgrader emits exactly `NO_EFFECT` when the schema
+and the systemd service is confirmed stopped, it applies the already prepared state upgrade before
+any launcher swap or start. A resumed `PREPARED` attempt repeats preparation while the old service
+is running before it may stop the service. The upgrader emits exactly `NO_EFFECT` when the schema
 was current, or `APPLIED` only after migration readback. Missing, malformed, or interrupted output
 remains `UNKNOWN`. The receipt records `UPGRADE_PENDING`
 before that forward-only command and `UPGRADED` only after it completes, so an
@@ -240,8 +243,8 @@ partial or unreadable restoration is `UNKNOWN` and retains or reinstalls contain
 One narrow recovery mode exists only for an exact `UNKNOWN / UPGRADE_PENDING`
 receipt whose shared-state effect can be disproved. With the ordinary edge lock and
 the state-upgrade lock both held, it requires the exact old launcher and healthy
-local/public service, database revision `0023_activation_continuity`, absence of
-`mcp_operation_timings`, and an unchanged receipt preimage. It then writes
+local/public service, database revision `0024_mcp_operation_timings`, absence of
+`task_control_checkpoints`, and an unchanged receipt preimage. It then writes
 the terminal `FAIL / NO_EFFECT` receipt. Any mismatch remains `UNKNOWN`; this mode
 does not retry the upgrade or change the service, launcher, database, or Caddy.
 
