@@ -89,15 +89,18 @@ def verify_linked_writer(repo: Path, writer: Path, start_commit: str) -> None:
     repo_common = Path(git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     writer_common = Path(git(writer, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     writer_git = Path(git(writer, "rev-parse", "--absolute-git-dir"))
-    registered = {
-        Path(line.removeprefix("worktree ")).resolve()
-        for line in git(repo, "worktree", "list", "--porcelain").splitlines()
-        if line.startswith("worktree ")
-    }
+    try:
+        writer_backpointer = Path((writer_git / "gitdir").read_text().strip()).resolve()
+        registered = (
+            writer_git.parent.resolve() == (repo_common / "worktrees").resolve()
+            and writer_backpointer == (writer / ".git").resolve()
+        )
+    except (OSError, UnicodeError):
+        registered = False
     if (
         writer_common.resolve() != repo_common.resolve()
         or writer_git.resolve() == writer_common.resolve()
-        or writer.resolve() not in registered
+        or not registered
         or repository_head(writer) != start_commit
         or git(writer, "status", "--porcelain", "--untracked-files=all")
     ):
