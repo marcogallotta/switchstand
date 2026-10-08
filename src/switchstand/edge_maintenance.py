@@ -65,26 +65,13 @@ R0_ENV = {
     "principal": "SWITCHSTAND_R0_EXPECTED_PRINCIPAL",
 }
 STATE_REVISION = "0025_task_control_checkpoints"
-UPGRADE_SOURCES = frozenset({
-    "0002_grants_and_effects",
-    "0004_required_result_persistence",
-    "0005_work_event_handles",
-    "0006_agent_mailboxes",
-    "0007_agent_chat_identity",
-    "0012_outcome_state",
-    "0013_failure_journal",
-    "0014_canonical_routing",
-    "0015_work_admission_time",
-    "0016_agent_mailbox_transfers",
-    "0017_priority_claims",
-    "0018_task_runs",
-    "0019_task_run_executions",
-    "0020_task_run_results",
-    "0021_human_reviews",
-    "0022_implementation_requests",
-    "0023_activation_continuity",
-    "0024_mcp_operation_timings",
-})
+UPGRADE_SOURCES = frozenset((  # noqa: SIM905 - compact exact protocol allowlist
+    "0002_grants_and_effects 0004_required_result_persistence 0005_work_event_handles 0006_agent_mailboxes "
+    "0007_agent_chat_identity 0012_outcome_state 0013_failure_journal 0014_canonical_routing "
+    "0015_work_admission_time 0016_agent_mailbox_transfers 0017_priority_claims 0018_task_runs "
+    "0019_task_run_executions 0020_task_run_results 0021_human_reviews "
+    "0022_implementation_requests 0023_activation_continuity 0024_mcp_operation_timings"
+).split())
 
 
 class Failed(RuntimeError):
@@ -941,8 +928,9 @@ class HostOperations:
 
     def semantic_ready(self) -> str:
         """Run a fresh governing semantic proof while gated and bind its identity."""
-        path = self.c.attempt_dir / "semantic-probe.json"
-        refresh = self.c.attempt_dir / "semantic-probe.next.json"
+        path, refresh = (self.c.attempt_dir / name for name in (
+            "semantic-probe.json", "semantic-probe.next.json",
+        ))
         try:
             values = {
                 key.strip(): value.strip().strip("'\"")
@@ -973,20 +961,16 @@ class HostOperations:
         except (OSError, subprocess.SubprocessError) as exc:
             raise Unknown("R0 semantic proof outcome is unreadable") from exc
         if result.returncode:
-            refresh.unlink(missing_ok=True)
             raise Failed("R0 governing semantic proof failed")
         try:
-            self._artifact_digest(refresh, 0o600)
             value = json.loads(refresh.read_text())
             currentness = value["results"]["product_currentness"]
         except (KeyError, OSError, TypeError, UnicodeError, ValueError) as exc:
             raise Unknown("R0 semantic proof receipt is invalid") from exc
-        results_digest = hashlib.sha256(json.dumps(
-            value.get("results"), sort_keys=True, separators=(",", ":")
-        ).encode()).hexdigest()
-        tools_digest = hashlib.sha256(json.dumps(
-            value.get("tools"), sort_keys=True, separators=(",", ":")
-        ).encode()).hexdigest()
+        results_digest = hashlib.sha256(json.dumps(value.get("results"), sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        tools_digest = hashlib.sha256(json.dumps(value.get("tools"), sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
         if (
             value.get("schema") != 1
             or value.get("result") != "PASS"
@@ -1009,8 +993,13 @@ class HostOperations:
             or currentness.get("blockers") != []
         ):
             raise Unknown("R0 semantic proof receipt is not current PASS")
+        digest = self._artifact_digest(refresh, 0o600)
+        if path.exists():
+            if self._artifact_digest(path, 0o600) == digest:
+                refresh.unlink()
+            return digest
         os.replace(refresh, path)
-        return self._artifact_digest(path, 0o600)
+        return digest
 
     def rollback_ready(self) -> bool:
         return (
@@ -1365,6 +1354,8 @@ def deploy(config: Config, operations: Operations) -> str:
         if not operations.local_ready():
             raise Failed("candidate local verification failed")
         if receipt.value["state_upgrade"] == "NO_EFFECT":
+            if not operations.gate_exact() or not operations.public_gated():
+                raise Unknown("R0 semantic boundary is no longer gated")
             semantic = operations.semantic_ready()
             recorded = receipt.value.get("semantic_probe")
             if recorded is not None and recorded != semantic:
@@ -1373,6 +1364,8 @@ def deploy(config: Config, operations: Operations) -> str:
                 receipt.value["semantic_probe"] = semantic
                 receipt.write(phase)
         if phase == "STARTED" or gate_retained:
+            if not operations.gate_exact() or not operations.public_gated():
+                raise Unknown("R0 ungate boundary is no longer exact")
             operations.ungate()
             phase = "UNGATED"
             receipt.write(phase)
