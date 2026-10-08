@@ -28,6 +28,25 @@ Assignment is not progress. A lane with an owner but no attributable pickup/prog
 
 Merge or landing is not live completion. Keep implementation, merge, deployment, activation, adoption, verification, and proven-live remainder distinct, and keep post-merge activation/reliance work visible until terminal evidence or explicit deferral.
 
+## Supervise live children from attributable evidence
+
+For each live native child, keep one compact view in the existing derived coordination picture:
+
+- agent, exact WorkId, outcome, and phase;
+- writer, base, and writable surface;
+- last attributable evidence artifact;
+- expected checkpoint and next check;
+- pending challenge or rebuttal;
+- terminal condition.
+
+Inspect that view on a native `MESSAGE` or `FINAL`, a missed task-specific checkpoint, material Marco direction, and before status, handoff, compaction, or final claims. If no other coordination is ready, use native wait. This is not a scheduler, cadence, store, state machine, or claim that an inactive session will wake.
+
+A missed checkpoint starts bounded inquiry; call it a stall only when the child missed a task-specific observable and shows no attributable progress after that inquiry. Silence, elapsed time, or a verified external wait is not enough.
+
+A Root challenge names the exact work/revision, applicable clause, evidence, concrete harm, smaller path, cheapest falsifier, and affected branch. The child may answer `ACCEPT_FIX`, `COUNTEREVIDENCE`, `NEEDS_EVIDENCE`, or `MATERIAL_HUMAN_CHOICE`. Evaluate the answer and withdraw or narrow a disproved challenge; disagreement alone is not disobedience. Send an established material human choice directly to Marco while safe unaffected work continues.
+
+On `FINAL`, validate the evidence against the exact WorkId and terminal condition, absorb every remaining obligation into the current picture, and advance the next safe gate. A failed child does not stop healthy siblings; current Marco direction remains foreground.
+
 ## Recover incomplete coverage without adopting history
 
 Historical recovery is exceptional and begins only when Root cannot prove complete
