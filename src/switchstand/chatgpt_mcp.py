@@ -32,6 +32,7 @@ from .contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
+from .creates import CreateGateway
 from .failure_journal import FailureJournal
 from .grants import (
     GrantedWorkResult,
@@ -546,13 +547,23 @@ def build_ordinary_tools(
             return admission_unknown("work_create", parent_work_id or project_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
+        request = ProtectedCreate(
+            api_version=api_version, operation_id=operation_id,
+            parent_work_id=parent_work_id, project_id=project_id,
+            grant_version=grant_version, title=title, notes=notes,
+            priority=priority, work_type=work_type, lifecycle_state=lifecycle_state,
+            canonical_root=canonical_root, owner_key=owner_key, wait_kind=wait_kind,
+            unblock_condition=unblock_condition, next_due=next_due,
+            next_action_class=next_action_class, next_action_ref=next_action_ref,
+        )
         if service.canonical_work_active:
             evidence = (
                 parent_work_id is not None
                 and work_type == "Evidence"
                 and owner_key == "NONE"
             )
-            if not evidence:
+            legacy_parent = CreateGateway.legacy_parent_semantics_supported(request)
+            if not evidence and not legacy_parent:
                 if owner_key != "SELF":
                     return service.denied(
                         "work_create", "canonical_owner_must_be_self",
@@ -574,16 +585,10 @@ def build_ordinary_tools(
                         reason=reason, effect="not_sent", retry="none",
                         next_action=unregistered_agent_next_action,
                     )
-                owner_key = f"agent:{context.mailbox.name_key}"
-        result = await service.create(ProtectedCreate(
-            api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
-            project_id=project_id,
-            grant_version=grant_version, title=title, notes=notes,
-            priority=priority, work_type=work_type, lifecycle_state=lifecycle_state,
-            canonical_root=canonical_root, owner_key=owner_key, wait_kind=wait_kind,
-            unblock_condition=unblock_condition, next_due=next_due,
-            next_action_class=next_action_class, next_action_ref=next_action_ref,
-        ))
+                request = request.model_copy(update={
+                    "owner_key": f"agent:{context.mailbox.name_key}",
+                })
+        result = await service.create(request)
         audited("work_create", str(parent_work_id or project_id), result.status)
         return result
 

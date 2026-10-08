@@ -69,6 +69,15 @@ class CreateGateway:
         )
 
     @classmethod
+    def legacy_parent_semantics_supported(cls, request: ProtectedCreate) -> bool:
+        """Recognize the exact opaque child-create shape used by legacy launchers."""
+        return (
+            request.parent_work_id is not None
+            and request.project_gid is None
+            and cls.legacy_semantics_supported(request)
+        )
+
+    @classmethod
     def guard(
         cls, request: ProtectedCreate, status: str, reason: str, *, possible_send: bool = False,
     ) -> GuardOutcome:

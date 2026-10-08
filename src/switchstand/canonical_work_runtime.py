@@ -385,6 +385,7 @@ class CanonicalWorkRuntime:
                         parent = request.parent_work_id
                         project_id = request.project_id
                         root = request.canonical_root
+                        legacy_parent_create = False
                         if parent is not None:
                             if not grant.can_write(parent):
                                 return CreateGateway.guard(
@@ -396,19 +397,25 @@ class CanonicalWorkRuntime:
                                     request, "denied", "parent_not_writable"
                                 )
                             inherited = current.canonical_root
-                            try:
-                                inherited_root = _exact_root(inherited)
-                            except ValueError:
-                                inherited_root = None
-                            if inherited_root is None:
-                                return CreateGateway.guard(
-                                    request, "denied", "parent_root_not_exact"
-                                )
-                            if root is not None and root != inherited:
-                                return CreateGateway.guard(
-                                    request, "denied", "child_root_conflicts_with_parent"
-                                )
-                            root = inherited
+                            if inherited in {None, "NONE", "UNKNOWN"}:
+                                if not CreateGateway.legacy_parent_semantics_supported(request):
+                                    return CreateGateway.guard(
+                                        request, "denied", "parent_root_not_exact"
+                                    )
+                                root = "UNKNOWN"
+                                legacy_parent_create = True
+                            else:
+                                try:
+                                    _exact_root(inherited)
+                                except ValueError:
+                                    return CreateGateway.guard(
+                                        request, "denied", "parent_root_not_exact"
+                                    )
+                                if root is not None and root != inherited:
+                                    return CreateGateway.guard(
+                                        request, "denied", "child_root_conflicts_with_parent"
+                                    )
+                                root = inherited
                         else:
                             if grant.scope != "workspace":
                                 return CreateGateway.guard(
@@ -438,18 +445,30 @@ class CanonicalWorkRuntime:
                             next_action_ref=request.next_action_ref,
                         )
                         try:
-                            validate_create_state(
-                                parented=parent is not None,
-                                work_type=created.work_type,
-                                lifecycle_state=created.lifecycle_state,
-                                canonical_root=created.canonical_root,
-                                owner_key=created.owner_key,
-                                wait_kind=created.wait_kind,
-                                unblock_condition=created.unblock_condition,
-                                next_due=created.next_due,
-                                next_action_class=created.next_action_class,
-                                next_action_ref=created.next_action_ref,
-                            )
+                            if legacy_parent_create:
+                                validate_resultant_state(
+                                    lifecycle_state=created.lifecycle_state,
+                                    canonical_root=created.canonical_root,
+                                    owner_key=created.owner_key,
+                                    wait_kind=created.wait_kind,
+                                    unblock_condition=created.unblock_condition,
+                                    next_due=created.next_due,
+                                    next_action_class=created.next_action_class,
+                                    next_action_ref=created.next_action_ref,
+                                )
+                            else:
+                                validate_create_state(
+                                    parented=parent is not None,
+                                    work_type=created.work_type,
+                                    lifecycle_state=created.lifecycle_state,
+                                    canonical_root=created.canonical_root,
+                                    owner_key=created.owner_key,
+                                    wait_kind=created.wait_kind,
+                                    unblock_condition=created.unblock_condition,
+                                    next_due=created.next_due,
+                                    next_action_class=created.next_action_class,
+                                    next_action_ref=created.next_action_ref,
+                                )
                         except ValueError:
                             return CreateGateway.guard(
                                 request, "denied", "invalid_resultant_state"

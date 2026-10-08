@@ -36,6 +36,7 @@ from switchstand.contracts import (
     WorkResolveReferenceRequest,
     WorkSearchRequest,
 )
+from switchstand.creates import CreateGateway
 from switchstand.grant_state import GrantState, effect_intents, work_grants
 from switchstand.grants import (
     CreateReceipt,
@@ -143,6 +144,15 @@ def create(subject: Subject, operation_id: UUID | None = None, **values: object)
         "work_type": "Task", "lifecycle_state": "CURRENT", "owner_key": "agent:root",
         "wait_kind": "NONE", "unblock_condition": "NONE", "next_due": "NONE",
         "next_action_class": "OWNER_CAN_DO", "next_action_ref": "implement",
+    } | values)
+
+
+def legacy_create(
+    subject: Subject, operation_id: UUID | None = None, **values: object,
+) -> ProtectedCreate:
+    return ProtectedCreate.model_validate({
+        "api_version": "1", "operation_id": operation_id or uuid4(), "grant_version": 1,
+        "title": "Legacy child", "parent_work_id": subject.work_id,
     } | values)
 
 
@@ -384,6 +394,162 @@ async def test_atomic_create_replays_and_persists_parent_without_provider(
         assert (handle["provider"], handle["provider_work_id"]) == (
             "postgres", str(first.work_id),
         )
+
+
+@pytest.mark.parametrize("parent_root", (None, "NONE", "UNKNOWN"))
+async def test_legacy_parent_create_restores_exact_opaque_request_atomically(
+    subject: Subject, parent_root: str | None,
+) -> None:
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(current, canonical_root=parent_root))
+    request = legacy_create(subject)
+
+    applied = await subject.service.create(request)
+    replay = await subject.service.create(request)
+    conflict = await subject.service.create(request.model_copy(update={"title": "Changed"}))
+
+    assert applied == replay and applied.effect == "applied"
+    assert isinstance(applied.receipt, CreateReceipt)
+    assert applied.receipt.parent_task_gid == str(subject.work_id)
+    assert conflict.reason == "operation_identity_conflict"
+    stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
+    assert stored.item is not None
+    assert stored.item.routing.canonical_root == "UNKNOWN"
+    assert stored.item.routing.owner_key == "UNKNOWN"
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(
+        current, canonical_root=str(subject.work_id)
+    ))
+    strict = await subject.service.create(create(subject))
+    assert strict.effect == "applied"
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    unrelated = await subject.service.update(ProtectedUpdate(
+        api_version="1", operation_id=uuid4(), work_id=subject.work_id,
+        grant_version=subject.grant.version,
+        observed_revision=canonical_revision(subject.work_id, current.row_version),
+        patch=ScalarPatch(notes="removal-accounting control"),
+    ))
+    assert unrelated.effect == "applied"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(work_parents.c.parent_work_id).where(
+            work_parents.c.child_work_id == applied.work_id
+        )) == subject.work_id
+        intents = (await connection.execute(select(effect_intents))).mappings().all()
+        intent = next(
+            item for item in intents
+            if item["operation_id"] == str(request.operation_id)
+        )
+    assert intent["intent"]["authority"] == "postgres"
+    assert intent["intent"]["resolved_state"]["canonical_root"] == "UNKNOWN"
+    assert intent["outcome"]["effect"] == "applied"
+    def compatibility_work_id(item) -> UUID | None:
+        outcome = item["outcome"]
+        if not isinstance(outcome, dict) or (
+            outcome.get("operation"), outcome.get("effect")
+        ) != ("work_create", "applied"):
+            return None
+        intent = item["intent"]
+        if not isinstance(intent, dict) or intent.get("authority") != "postgres":
+            return None
+        request_json, resolved = intent.get("request"), intent.get("resolved_state")
+        if not isinstance(request_json, dict) or not isinstance(resolved, dict):
+            return None
+        request_value = ProtectedCreate.model_validate(request_json)
+        if (
+            not CreateGateway.legacy_parent_semantics_supported(request_value)
+            or resolved.get("canonical_root") != "UNKNOWN"
+        ):
+            return None
+        return UUID(item["work_id"])
+
+    compatibility_work_ids = {
+        work_id for item in intents if (work_id := compatibility_work_id(item)) is not None
+    }
+    assert compatibility_work_ids == {applied.work_id}
+
+
+async def test_legacy_parent_create_rejects_malformed_root_and_payload_near_misses(
+    subject: Subject,
+) -> None:
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(current, canonical_root="malformed"))
+    malformed = await subject.service.create(legacy_create(subject))
+
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(current, canonical_root="UNKNOWN"))
+    deviations = (
+        {"canonical_root": "UNKNOWN"},
+        {"owner_key": "SELF"},
+        {"work_type": "Task"},
+    )
+    denied = [await subject.service.create(legacy_create(subject, **change)) for change in deviations]
+
+    assert malformed.reason == "parent_root_not_exact"
+    assert all(item.reason == "parent_root_not_exact" for item in denied)
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id)) is None
+
+
+async def test_legacy_payload_beneath_exact_parent_remains_strict(
+    subject: Subject,
+) -> None:
+    denied = await subject.service.create(legacy_create(subject))
+
+    assert denied.reason == "invalid_resultant_state"
+
+
+async def test_legacy_parent_create_preserves_parent_authority_and_writability(
+    subject: Subject,
+) -> None:
+    launch_grant = subject.grant.model_copy(update={
+        "id": uuid4(), "version": 2, "scope": "launch",
+    })
+    await subject.grants.issue(launch_grant, subject.grant.version)
+    ungranted = await subject.service.create(legacy_create(
+        subject, parent_work_id=uuid4(), grant_version=launch_grant.version,
+    ))
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(
+        current, completed=True, canonical_root="UNKNOWN"
+    ))
+    completed = await subject.service.create(legacy_create(
+        subject, grant_version=launch_grant.version,
+    ))
+
+    assert ungranted.reason == "parent_not_granted"
+    assert completed.reason == "parent_not_writable"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id)) is None
+
+
+async def test_legacy_create_journal_failure_rolls_back_and_exact_retry_is_safe(
+    subject: Subject, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(current, canonical_root="UNKNOWN"))
+    request = legacy_create(subject)
+    create_locked = subject.runtime.works.create_locked
+
+    async def fail_after_write(connection: AsyncConnection, item: CurrentWork) -> None:
+        await create_locked(connection, item)
+        raise SQLAlchemyError("injected legacy create journal boundary failure")
+
+    monkeypatch.setattr(subject.runtime.works, "create_locked", fail_after_write)
+    unknown = await subject.service.create(request)
+    monkeypatch.setattr(subject.runtime.works, "create_locked", create_locked)
+    before_retry = await subject.runtime.get(unknown.work_id)  # type: ignore[arg-type]
+    applied = await subject.service.create(request)
+
+    assert unknown.effect == "unknown" and unknown.retry == "reconcile"
+    assert before_retry.status == "unknown"
+    assert applied.effect == "applied" and isinstance(applied.receipt, CreateReceipt)
 
 
 async def test_create_classifies_invalid_resultant_state_and_accepts_coherent_current(

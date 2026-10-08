@@ -301,6 +301,55 @@ async def test_canonical_create_derives_self_owner_from_registered_mailbox(monke
     )
     assert denied.reason == "canonical_owner_must_be_self"
 
+
+async def test_canonical_create_preserves_exact_legacy_parent_request(monkeypatch):
+    subject = service()
+    subject.canonical_work_active = True
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    tool = dict(build_ordinary_tools(subject))["work_create"]
+
+    result = await tool(
+        api_version="1", operation_id=uuid4(), title="Legacy child",
+        parent_work_id=ACTIVE,
+    )
+
+    assert result.reason == "probe"
+    request = create.await_args.args[0]
+    assert request.parent_work_id == ACTIVE
+    assert request.canonical_root is None
+    assert request.model_dump(include={
+        "priority", "work_type", "lifecycle_state", "owner_key", "wait_kind",
+        "unblock_condition", "next_due", "next_action_class", "next_action_ref",
+    }) == {
+        "priority": "UNSET", "work_type": "UNKNOWN", "lifecycle_state": "UNKNOWN",
+        "owner_key": "UNKNOWN", "wait_kind": "UNKNOWN",
+        "unblock_condition": "UNKNOWN", "next_due": "UNKNOWN",
+        "next_action_class": "UNKNOWN", "next_action_ref": "UNKNOWN",
+    }
+
+
+async def test_canonical_legacy_create_near_miss_stays_on_strict_owner_path(monkeypatch):
+    subject = service()
+    subject.canonical_work_active = True
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    tool = dict(build_ordinary_tools(subject))["work_create"]
+
+    for field in (
+        {"work_type": "Task"},
+        {"canonical_root": "UNKNOWN"},
+        {"owner_key": "agent:root"},
+    ):
+        denied = await tool(
+            api_version="1", operation_id=uuid4(), title="Near miss",
+            parent_work_id=ACTIVE, **field,
+        )
+        assert denied.reason == "canonical_owner_must_be_self"
+    assert create.await_count == 0
+
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
     subject = service()
     subject.outcome_state_enabled = True

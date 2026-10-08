@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import pytest
 from chatgpt_fixture import ACTIVE, PRINCIPAL, MemoryGrants, grant
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -105,6 +106,45 @@ def request(selected, operation_id=None, **changes):
         "grant_version": selected.version, "title": "Created", "notes": "notes",
     }
     return ProtectedCreate(**(values | changes))
+
+
+@pytest.mark.parametrize(("field", "value"), (
+    ("priority", "P0"),
+    ("work_type", "Task"),
+    ("lifecycle_state", "CURRENT"),
+    ("canonical_root", "UNKNOWN"),
+    ("project_id", uuid4()),
+    ("owner_key", "SELF"),
+    ("wait_kind", "NONE"),
+    ("unblock_condition", "NONE"),
+    ("next_due", "NONE"),
+    ("next_action_class", "NONE"),
+    ("next_action_ref", "NONE"),
+))
+def test_legacy_create_shape_rejects_every_semantic_deviation(field, value):
+    selected = grant(operations=frozenset({"work_create"}))
+    exact = request(selected)
+
+    assert CreateGateway.legacy_semantics_supported(exact)
+    assert not CreateGateway.legacy_semantics_supported(
+        exact.model_copy(update={field: value})
+    )
+
+
+@pytest.mark.parametrize(("field", "value"), (
+    ("parent_work_id", None),
+    ("project_gid", "999"),
+    ("project_id", uuid4()),
+    ("canonical_root", "UNKNOWN"),
+))
+def test_legacy_parent_create_shape_rejects_every_target_deviation(field, value):
+    selected = grant(operations=frozenset({"work_create"}))
+    exact = request(selected)
+
+    assert CreateGateway.legacy_parent_semantics_supported(exact)
+    assert not CreateGateway.legacy_parent_semantics_supported(
+        exact.model_copy(update={field: value})
+    )
 
 
 async def test_create_binds_reserved_work_and_normal_work_readback():
