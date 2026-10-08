@@ -67,6 +67,29 @@ coordinator_profile="switchstand-coordinator-${start_record##*.}"
 coordinator_profile_path="$coordinator_home/$coordinator_profile.config.toml"
 coordinator_profile_snapshot="$coordinator_home/$coordinator_profile.launch.toml"
 continuity_telemetry="$coordinator_home/continuity-${start_record##*.}.jsonl"
+writer_suffix=$(printf '%s' "${start_record##*.}" | tr '[:upper:]' '[:lower:]')
+owned_writer=
+owned_branch="v2-coordinator-$writer_suffix"
+cleanup_incomplete_generation() {
+    status=$?
+    trap - EXIT HUP INT TERM
+    if [ -n "$owned_writer" ]; then
+        env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+            git -C "$canonical_repo" worktree remove --force "$owned_writer" >/dev/null 2>&1 || :
+        env -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+            git -C "$canonical_repo" branch -D "$owned_branch" >/dev/null 2>&1 || :
+    fi
+    rm -f -- "$manifest_record" "$coordinator_profile_path" \
+        "$coordinator_profile_snapshot" "$continuity_telemetry" "$start_record"
+    if [ -d "$start_record.compact-controls" ]; then
+        rm -r -- "$start_record.compact-controls"
+    fi
+    exit "$status"
+}
+trap cleanup_incomplete_generation EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 invocation_digest=$("$script_dir/coordinator-control" digest-argv -- "$@")
 if [ -L "$auth_link" ]; then
     if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
@@ -163,7 +186,6 @@ if [ "$(readlink -f "$friction_dir_path" || :)" != "$friction_root" ]; then
     ln -sfn "$friction_root" "$friction_dir_path"
 fi
 
-writer_suffix=$(printf '%s' "${start_record##*.}" | tr '[:upper:]' '[:lower:]')
 owned_writer=$(
     cd "$canonical_repo"
     "$script_dir/switchstand-worktree" "coordinator-$writer_suffix" "$start_commit"
@@ -192,6 +214,7 @@ fi
 if [ ! -e "$owned_writer/friction" ]; then
     ln -s "$friction_root" "$owned_writer/friction"
 fi
+trap - EXIT HUP INT TERM
 
 unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME \
     SWITCHSTAND_CODEX_WAKEFUL SWITCHSTAND_CODEX_QUALIFICATION_REPO
