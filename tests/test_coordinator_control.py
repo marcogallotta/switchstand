@@ -168,6 +168,31 @@ def test_markdown_dependency_graph_fails_closed_at_a_fixed_bound(tmp_path: Path)
     assert unresolved[0]["reason"] == "dependency_limit"
 
 
+def test_writer_verification_does_not_scan_scaled_worktree_registry(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    repo, start, _manifest = setup(tmp_path)
+    writer = tmp_path / "writer"
+    for index in range(24):
+        subprocess.run(
+            ["git", "-C", repo, "worktree", "add", "-q", "-b", f"extra-{index}",
+             tmp_path / f"extra-{index}", "HEAD"],
+            check=True,
+        )
+    original = subprocess.check_output
+
+    def bounded_check_output(arguments, **kwargs):
+        if "worktree" in arguments and "list" in arguments:
+            raise subprocess.TimeoutExpired(arguments, kwargs.get("timeout", 0))
+        return original(arguments, **kwargs)
+
+    monkeypatch.setattr(subprocess, "check_output", bounded_check_output)
+
+    runpy.run_path(SCRIPT)["verify_linked_writer"](
+        repo, writer, start.read_text().strip()
+    )
+
+
 def test_required_live_reads_rejects_non_file_targets(tmp_path: Path) -> None:
     required_live_reads = runpy.run_path(SCRIPT)["required_live_reads"]
     start = tmp_path / "start"

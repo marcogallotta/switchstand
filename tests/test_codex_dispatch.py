@@ -167,6 +167,40 @@ def test_default_wakeful_off_preserves_direct_launch(tmp_path: Path) -> None:
     assert marker.read_text() == "executed\n"
 
 
+def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_git = subprocess.check_output(
+        ["sh", "-c", "command -v git"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    executable(
+        test_bin / "git",
+        "#!/bin/sh\n"
+        "if [ \"${3-}\" = rev-parse ] && [ \"${4-}\" = --absolute-git-dir ]; then\n"
+        "    exit 88\n"
+        "fi\n"
+        f'exec "{real_git}" "$@"\n',
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {"PATH": f"{test_bin}:{env['PATH']}"},
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    assert not list(coordinator_home.glob("start-commit.*"))
+    assert not list(coordinator_home.glob("switchstand-coordinator-*"))
+    assert not list((home / ".local/state/switchstand/worktrees").glob(
+        "switchstand-coordinator-*"
+    ))
+    assert subprocess.check_output(
+        [real_git, "-C", primary, "branch", "--list", "coordinator-*"], text=True,
+    ).strip() == ""
+
+
 def test_dispatch_rejects_invalid_wakeful_selector(tmp_path: Path) -> None:
     _home, primary, marker, env = dispatch_fixture(tmp_path)
     result = subprocess.run(
