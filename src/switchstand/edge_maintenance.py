@@ -155,6 +155,18 @@ def run_host_command(
     )
 
 
+def _unit_launcher_exact(output: str, launcher: Path) -> bool:
+    """Accept one direct systemd ExecStart, never a wrapper containing the path."""
+    value = output.strip()
+    direct = f"path={launcher} ; argv[]={launcher} ;"
+    return value == str(launcher) or (
+        value.startswith("{")
+        and value.endswith("}")
+        and value.count("path=") == 1
+        and direct in value
+    )
+
+
 def validate_target(config: Config) -> None:
     """Reject any maintenance target whose host identity is not exact."""
     if config.target == "production":
@@ -405,7 +417,7 @@ class HostOperations:
                 "--value",
             ]
         ).stdout
-        if str(c.launcher) not in unit:
+        if not _unit_launcher_exact(unit, c.launcher):
             raise Failed("edge unit does not execute the selected launcher")
         if (
             run_host_command(["systemctl", "--user", "is-active", c.service], check=False).stdout.strip()
@@ -484,8 +496,28 @@ class HostOperations:
         unit = self._observe([
             "systemctl", "--user", "show", c.service, "--property=ExecStart", "--value",
         ]).stdout
-        if str(c.launcher) not in unit:
+        if not _unit_launcher_exact(unit, c.launcher):
             raise Unknown("edge unit does not execute the selected launcher")
+
+    def validate_resume(self, receipt: Receipt) -> None:
+        """Validate a saved attempt's bound inputs without changing host state."""
+        status = receipt.value["status"]
+        if status == "PASS":
+            observed, proof = self.reconcile_phase("COMPLETE", receipt.value)
+            if observed != "COMPLETE" or proof or not self.public_ready():
+                raise Unknown("completed attempt no longer matches the live edge")
+        elif status == "FAIL":
+            self._resume_trust()
+            phase = receipt.value["phase"]
+            if phase == "ROLLED_BACK":
+                if not self.rollback_complete():
+                    raise Unknown("rollback receipt no longer matches the live edge")
+            elif phase == "NO_EFFECT":
+                self.prove_upgrade_no_effect()
+            else:
+                raise Unknown("failed receipt phase is not exact")
+        else:
+            self._resume_trust()
 
     @staticmethod
     def _observe(
@@ -1585,7 +1617,7 @@ def main(argv: list[str] | None = None) -> int:
                 if resume:
                     try:
                         receipt = Receipt(config)
-                        operations._resume_trust()  # pyright: ignore[reportPrivateUsage]
+                        operations.validate_resume(receipt)
                     except (Failed, Unknown, OSError, subprocess.SubprocessError):
                         result = "UNKNOWN"
                     else:

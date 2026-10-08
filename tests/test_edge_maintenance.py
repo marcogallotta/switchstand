@@ -1491,9 +1491,14 @@ def test_cli_resume_validates_host_before_returning_terminal_receipt(
 ):
     subject, _operations, _state = resume_subject(tmp_path, monkeypatch)
     durable = maintenance.Receipt(subject)
+    host = HostOperations(subject)
+    host.snapshot_file.write_bytes(b"snapshot")
+    host.snapshot_file.chmod(0o600)
+    host.backup.write_bytes(b"current launcher")
+    host.backup.chmod(0o600)
     durable.value.update(
         prepared_image=PREPARED_IMAGE,
-        fastmcp_snapshot="a" * 64,
+        fastmcp_snapshot=hashlib.sha256(b"snapshot").hexdigest(),
         state_upgrade="APPLIED",
     )
     durable.write("COMPLETE", "PASS")
@@ -1511,13 +1516,29 @@ def test_cli_resume_validates_host_before_returning_terminal_receipt(
         "--current-launcher-sha", subject.current_launcher_sha,
     ]
     monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
+    monkeypatch.setattr(HostOperations, "_gate_state", lambda _self: "ABSENT")
+    monkeypatch.setattr(HostOperations, "_service_state", lambda _self: "ACTIVE")
+    monkeypatch.setattr(HostOperations, "local_ready", lambda _self: True)
+    monkeypatch.setattr(HostOperations, "public_ready", lambda _self: True)
 
+    subject.launcher.write_bytes(b"candidate launcher")
     assert maintenance.main(arguments) == 0
-    subject.candidate_launcher.write_bytes(b"changed")
+    subject.launcher.write_bytes(b"changed")
     monkeypatch.setattr(
         maintenance, "deploy", lambda *_args, **_kwargs: pytest.fail("deploy called")
     )
     assert maintenance.main(arguments) == 2
+
+
+def test_systemd_execstart_requires_the_direct_launcher(tmp_path: Path):
+    launcher = tmp_path / "launcher"
+    direct = f"{{ path={launcher} ; argv[]={launcher} ; ignore_errors=no ; }}"
+
+    assert maintenance._unit_launcher_exact(direct, launcher)
+    assert not maintenance._unit_launcher_exact(
+        f"{{ path=/bin/sh ; argv[]=/bin/sh {launcher} ; ignore_errors=no ; }}",
+        launcher,
+    )
 
 
 def test_disposable_service_command_cannot_select_production_unit(
