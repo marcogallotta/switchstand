@@ -211,7 +211,7 @@ def run(argv: list[str] | None = None) -> int:
         stale = _status(client.call("tools/call", {"name": "work_history", "arguments": {
             "api_version": "1", "work_id": str(args.work_id),
             "observed_revision": "semantic-probe-deliberately-stale",
-            "limit": 1,
+            "limit": 1, "purpose": "investigation",
         }}, 7), "stale", "stale currentness")
         if stale.get("work_id") != str(args.work_id) or stale.get("revision") != revision:
             raise ProbeFailure("stale currentness did not return exact target revision")
