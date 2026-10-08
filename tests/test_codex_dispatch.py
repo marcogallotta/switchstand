@@ -197,7 +197,7 @@ def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: P
         "switchstand-coordinator-*"
     ))
     assert subprocess.check_output(
-        [real_git, "-C", primary, "branch", "--list", "coordinator-*"], text=True,
+        [real_git, "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
     ).strip() == ""
 
 
