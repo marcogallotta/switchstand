@@ -90,6 +90,7 @@ def _start_runner(
             env=dict(os.environ) | {"DATABASE_URL": database_url},
             pass_fds=(read_fd,),
             start_new_session=True,
+            stdout=log_descriptor,
             stderr=log_descriptor,
         )
     except Exception:

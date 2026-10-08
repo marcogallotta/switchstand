@@ -2,21 +2,12 @@
 set -eu
 
 case "$*" in
-    "--target production")
-        prepared=$("$0" --mode prepare --target production)
-        case "$prepared" in sha256:*) exec "$0" --mode apply --target production --image-id "$prepared" ;; *) printf '%s\n' "$prepared"; exit 0 ;; esac ;;
-    "--mode prepare --target production")
-        mode=prepare
-        ;;
+    "--target production") mode=legacy ;;
+    "--mode prepare --target production") mode=prepare ;;
     "--mode apply --target production --image-id "*)
-        [ "$#" -eq 6 ] && [ "$5" = --image-id ] || exit 2
-        mode=apply
-        image_id=$6
-        ;;
+        [ "$#" -eq 6 ] && [ "$5" = --image-id ] || exit 2; mode=apply; image_id=$6 ;;
     *)
-        echo "usage: scripts/switchstand-upgrade-state --mode prepare|apply --target production [--image-id sha256:...]" >&2
-        exit 2
-        ;;
+        echo "usage: scripts/switchstand-upgrade-state --mode prepare|apply --target production [--image-id sha256:...]" >&2; exit 2 ;;
 esac
 umask 077
 
@@ -58,7 +49,7 @@ mkdir "$lock_dir" 2>/dev/null \
 cleanup() {
     status=$?
     [ -z "$rehearsal" ] || docker rm -f "$rehearsal" >/dev/null 2>&1 || true
-    [ "$mode" != prepare ] || [ -z "$backup" ] || rm -f "$backup"
+    [ "$mode" = apply ] || [ "$shared_migration_attempted" = true ] || [ -z "$backup" ] || rm -f "$backup"
     if [ "$status" -ne 0 ] && [ "$backup_ready" = true ]; then
         observed_revision=$(sql 'SELECT version_num FROM alembic_version' 2>/dev/null || printf UNAVAILABLE)
         observed_counts=$(sql "$counts_sql" 2>/dev/null || printf UNAVAILABLE)
@@ -111,7 +102,11 @@ sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d sw
 revision=$(sql 'SELECT version_num FROM alembic_version')
 case "$revision" in
     "$EXPECTED_NEW")
-        printf 'state upgrade passed: already at %s; no migration required\n' "$EXPECTED_NEW"
+        [ "$mode" != prepare ] || {
+            migration_image="switchstand-upgrade:$head"; docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
+            docker image inspect --format '{{.Id}}' "$migration_image"; exit 0
+        }
+        printf 'SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=%s\n' "$EXPECTED_NEW"
         exit 0
         ;;
     0002_grants_and_effects)
@@ -191,7 +186,7 @@ set +C
 backup_ready=true
 [ "$mode" != prepare ] || backup_ready=false
 
-if [ "$mode" = prepare ]; then
+if [ "$mode" != apply ]; then
 rehearsal="switchstand-upgrade-rehearsal-$(printf '%.12s' "$head")-$$"
 migration_image="switchstand-upgrade:$head"
 docker run -d --rm --name "$rehearsal" --tmpfs /var/lib/postgresql \
@@ -216,7 +211,8 @@ docker exec "$rehearsal" pg_restore --exit-on-error --no-owner --no-privileges \
     -U switchstand -d switchstand /tmp/state.dump
 rehearsal_sql() { docker exec "$rehearsal" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_OLD" ]
-before_counts=$(rehearsal_sql "$counts_sql")
+rehearsal_counts=$(rehearsal_sql "$counts_sql")
+[ "$mode" != prepare ] || before_counts=$rehearsal_counts
 
 docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
 migration_image=$(docker image inspect --format '{{.Id}}' "$migration_image")
@@ -229,15 +225,17 @@ migrate() {
         "$migration_image" uv run --no-sync alembic -c /app/alembic.ini upgrade "$EXPECTED_NEW"
 }
 
-if [ "$mode" = prepare ]; then
+if [ "$mode" != apply ]; then
 migrate "$rehearsal"
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_NEW" ]
-[ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]
+[ "$(rehearsal_sql "$counts_sql")" = "$rehearsal_counts" ]
+fi
+if [ "$mode" = prepare ]; then
 printf '%s\n' "$migration_image"
 exit 0
 fi
 
-migration_image=$image_id
+[ "$mode" != apply ] || migration_image=$image_id
 assert_quiescent
 revision=$(sql 'SELECT version_num FROM alembic_version')
 current_counts=$(sql "$counts_sql")
@@ -250,5 +248,5 @@ after_counts=$(sql "$counts_sql")
 [ "$revision" = "$EXPECTED_NEW" ] && [ "$after_counts" = "$before_counts" ] \
     || { echo "shared state upgrade readback failed; preserve backup $backup" >&2; exit 1; }
 
-printf 'state upgrade passed: %s -> %s; preserved counts %s; backup %s\n' \
+printf 'SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED from=%s to=%s preserved_counts=%s backup=%s\n' \
     "$EXPECTED_OLD" "$EXPECTED_NEW" "$after_counts" "$backup"

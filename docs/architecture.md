@@ -671,21 +671,9 @@ same dedicated updater `bin` directory is the sole user-writable `PATH` prefix, 
 compatibility exception avoids a stale CLI without adding broader user-writable lookup paths.
 A deterministic host unit and durable phase record survive Coordinator restart; cancellation uses
 the managed run receipt when present, stops only that unit, and retains the writer and logs as
-recovery evidence. The seam grants no merge, deployment, or activation authority, and built-in
-shared-filesystem Workers remain read-only.
+recovery evidence. The seam grants no merge, deployment, or activation authority.
 
-Built-in delegated Workers share the Coordinator process and filesystem profile. Hooks are a
-useful guardrail rather than a security sandbox, so they cannot safely grant a Worker mutation in
-one writer while withholding Root's writer or sibling writers. Built-in Workers therefore remain
-repository-read-only through a single runtime-admitted `codex-worker-inspect` command bound to the
-generation-owned writer. It provides bounded file listing, UTF-8 reading and literal search plus
-fixed non-locking Git status, diff, and log operations. The hook denies every other Worker shell
-command and every file-edit call; the inspector rejects paths outside the bound writer, Git
-administrative files, symlink escapes, oversized/binary reads, and caller-selected Git operations.
-This is a process guard, not an adversarial OS boundary. Root delegates research and review
-directly; an implementation Worker returns a patch proposal for Root to apply in the
-generation-owned writer. Managed Workers retain their separate trusted task-private writer
-contract.
+Built-in Workers share the Coordinator filesystem profile, so hooks/worktrees are concurrency guardrails, not a sandbox. Unbound Workers stay read-only; Root may bind one agent, WorkId, base and non-overlapping surface to a dedicated writer. The hook confines edits and admits only the existing helper's fixed test/commit actions; arbitrary shell remains denied. Root validates candidate identity, cleanliness and ancestry; stronger-containment work uses the isolated implementation Worker.
 
 `development.py` owns high-level environment/workload behavior, including invoking the repository-owned
 `scripts/docker-gc` BuildKit cache cap whenever managed Docker work is reconciled. `scripts/docker-gc` serializes

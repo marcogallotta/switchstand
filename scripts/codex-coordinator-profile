@@ -100,8 +100,10 @@ def render(
 ) -> str:
     canonical_mcp = _canonical_mcp()
     _linked_worktree_git_dir(primary, writer)
+    worker_bindings = Path(f"{start_record}.worker-writers")
     guard_command = shlex.join((
         str(hook), "--coordinator-primary", str(primary), "--coordinator-writer", str(writer),
+        "--worker-bindings", str(worker_bindings),
     ))
     continuity_command = shlex.join((
         str(continuity_hook), "--mode", continuity_mode, "--lifetime", lifetime,
@@ -156,12 +158,16 @@ def render(
             "managed runs. Native full local-user execution applies to directly operated Root "
             "and sub-Coordinators, but grants no provider, deployment, activation, or other "
             "consequential-effect authority; preserve each exact authority and readback gate. "
-            "Built-in Workers are read-only because they share Root's filesystem "
-            "profile and hooks are not a security sandbox. Their only shell entry point is "
+            "Built-in Workers are read-only until Root creates a dedicated linked writer with "
+            "scripts/switchstand-worktree and binds agent ID, exact WorkId/base, and a "
+            "non-overlapping repository-relative surface using "
+            f"{hook} --bind-worker AGENT --work-id WORK --writer WRITER --base SHA "
+            f"--surface SURFACE --coordinator-primary {primary} --worker-bindings "
+            f"{worker_bindings}. A bound Worker may edit only that surface. Hooks/worktrees are "
+            "concurrency guardrails, not a security sandbox. The only Worker shell entry point is "
             f"`{worker_inspector}` with one of `files`, `read`, `search`, `status`, `diff`, or "
-            "`log`; the runtime denies every other shell and every file-edit call. Delegate "
-            "research/review freely; for implementation, a Worker returns a patch proposal and "
-            "Root applies it in this generation's owned writer. The "
+            "`log`; bound Workers may additionally use its fixed `test` and `commit` actions. "
+            "The runtime denies every other shell. Delegate research/review freely. The "
             "Coordinator control MCP separately exposes an isolated implementation-worker "
             "spawn/status/cancel path backed by the exact WorkId and a task-private writer. "
             f"Resolved root continuity launch state: mode={continuity_mode}; "
@@ -289,6 +295,10 @@ def main() -> None:
     worker_inspector = resolved_hook.with_name("codex-worker-inspect")
     if not worker_inspector.is_file() or not os.access(worker_inspector, os.X_OK):
         raise SystemExit("Worker repository inspector is unavailable")
+    worker_bindings = Path(f"{start_record}.worker-writers")
+    worker_bindings.mkdir(mode=0o700, parents=True)
+    if worker_bindings.stat().st_mode & 0o077:
+        raise SystemExit("Coordinator Worker binding directory is not private")
     compact_controls = Path(f"{start_record}.compact-controls")
     compact_controls.mkdir(mode=0o700, parents=True)
     compact_hook_snapshot = compact_controls / "codex-compact-hook"
@@ -311,9 +321,9 @@ def main() -> None:
             start_record, manifest_record, resolved_hook, resolved_continuity_hook,
             continuity_mode, lifetime, telemetry, compact_hook_snapshot,
         )
+    _write(hooks, render_hooks(resolved_hook, primary.resolve(strict=True)))
     _write(snapshot, output, exclusive=True, mode=0o400)
     _write(runtime_profile, output, exclusive=True)
-    _write(hooks, render_hooks(resolved_hook, primary.resolve(strict=True)))
 
 
 if __name__ == "__main__":
