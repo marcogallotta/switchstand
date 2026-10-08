@@ -948,6 +948,10 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
 
     monkeypatch.setattr(operations, "_service_state", lambda: boundary["service"])
     monkeypatch.setattr(operations, "gate_exact", lambda: boundary["gate"])
+    monkeypatch.setattr(
+        operations, "_gate_state",
+        lambda: "APPLIED" if boundary["gate"] else "ABSENT",
+    )
     monkeypatch.setattr(operations, "public_gated", lambda: True)
     monkeypatch.setattr(operations, "_candidate_control_environment", dict)
     monkeypatch.setattr(
