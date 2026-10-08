@@ -54,13 +54,48 @@ async def test_committed_source_restart_exact_reference_and_duplicate(subject, s
     client.consume()
     _, results = await inbound_cycle(
         restarted, mailboxes, mailbox, Projection(home, binding), client)
-    assert set(results.values()) == {"ADMITTED"} and len(client.calls) == 1
+    assert set(results.values()) == {"PENDING"} and len(client.calls) == 1
     assert str(delivery_id) in client.calls[0]["input"][0]["text"]
     assert "private-source-payload" not in json.dumps(client.calls)
     assert "private-source-payload" not in Projection(home, binding).path.read_text()
     other = await mailboxes.register_agent("other-root", mailbox.principal_key, "codex:other")
     assert other.mailbox is not None
     assert await messages.pending_delivery_ids(other.mailbox) == ()
+
+
+async def test_new_deliveries_precede_reconciliation_and_consumed_are_skipped(
+    subject, setup, monkeypatch
+):
+    home, _, client, binding = setup
+    deliveries = [await source(subject) for _ in range(4)]
+    messages, mailboxes, mailbox = deliveries[0][:3]
+    delivery_ids = tuple(item[3] for item in deliveries)
+    assert all(item[2] == mailbox for item in deliveries)
+    projection = Projection(home, binding)
+    identities = [wake_id(binding, WakeSourceRef("switchstand_inbound", str(delivery_id)))
+                  for delivery_id in delivery_ids]
+    projection.records.update({
+        identities[0]: {"state": "PENDING", "attempted": True},
+        identities[1]: {"state": "CONSUMED", "attempted": True},
+        identities[2]: {"state": "PENDING", "attempted": False},
+    })
+
+    async def fixed_page(_mailbox, _cursor=None):
+        return delivery_ids
+
+    admitted = []
+
+    def observe(_client, selected):
+        admitted.append(selected.source_id)
+        return "PENDING"
+
+    monkeypatch.setattr(messages, "pending_delivery_ids", fixed_page)
+    monkeypatch.setattr(projection, "admit", observe)
+    cursor, results = await inbound_cycle(
+        messages, mailboxes, mailbox, projection, client)
+    assert cursor is None
+    assert admitted == [str(delivery_ids[index]) for index in (3, 2, 0)]
+    assert list(results) == [identities[index] for index in (3, 2, 0)]
 
 
 async def test_disposition_between_scan_and_admission_does_not_wake(subject, setup, monkeypatch):

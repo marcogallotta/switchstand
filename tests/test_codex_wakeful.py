@@ -167,15 +167,21 @@ def test_persist_before_send_lost_response_duplicate_stability(setup, lost):
     assert p.admit(client, source) == ("UNKNOWN" if lost else "PENDING")
     assert json.loads(p.path.read_text())[wake_id(binding, source)]["state"] == (
         "PENDING" if lost else "QUEUED")
-    assert Projection(home, binding).admit(client, source) == "PENDING"
     assert p.path.stat().st_mode & 0o777 == 0o600
     client.consume()
-    assert Projection(home, binding).admit(client, source) == "ADMITTED"
+    assert Projection(home, binding).admit(client, source) == (
+        "ADMITTED" if lost else "PENDING")
     assert len(client.calls) == 1
     assert client.calls[0]["clientUserMessageId"] == wake_id(binding, source)
     queued_text = client.calls[0]["input"][0]["text"]
+    assert "Handle mailbox mechanics silently" in queued_text
+    assert "one functions.exec code-mode call" in queued_text
+    assert "mcp__switchstand__agent_message_pending" in queued_text
+    assert "next_cursor" in queued_text
+    assert "retain its payload" in queued_text
     assert "mcp__switchstand__agent_message_receive" in queued_text
-    assert "Do not use the codex_apps Switchstand connector" in queued_text
+    assert "never use codex_apps" in queued_text
+    assert queued_text.endswith("receive it and act on the retained payload.")
     assert set(asdict(source)) == {"source_kind", "source_id"}
     replacement = CodexBinding(binding.thread_id, binding.start_record, "new-generation")
     assert wake_id(replacement, source) != wake_id(binding, source)
@@ -190,8 +196,20 @@ def test_busy_target_queues_and_unresolved_absence_never_resends(setup):
     assert len(client.calls) == 1
     client.queued = []
     client.thread["turns"] = []
-    assert Projection(home, binding).admit(client, source) == "UNKNOWN"
+    assert Projection(home, binding).admit(client, source) == "PENDING"
     assert len(client.calls) == 1
+
+
+def test_acknowledged_queue_skips_host_reconciliation(setup):
+    home, _, client, binding = setup
+    source = WakeSourceRef("switchstand_inbound", str(uuid4()))
+    assert Projection(home, binding).admit(client, source) == "PENDING"
+
+    def unexpected_host_call(*_args, **_kwargs):
+        pytest.fail("acknowledged queue re-entered host reconciliation")
+
+    client.call = unexpected_host_call
+    assert Projection(home, binding).admit(client, source) == "PENDING"
 
 
 @pytest.mark.asyncio
@@ -391,7 +409,7 @@ def test_delivery_identity_and_missed_child_latest_parent_oracle(setup, stale):
     assert not client.calls
     assert p.admit(client, source) == "PENDING"
     client.consume()
-    assert Projection(home, binding).admit(client, children(thread)[0]) == "ADMITTED"
+    assert Projection(home, binding).admit(client, children(thread)[0]) == "PENDING"
     assert len(client.calls) == 1
 
 
@@ -404,7 +422,7 @@ def test_projection_false_green_is_caught_by_real_consumer_oracle(setup):
     client.consume()
     client.thread["turns"][0]["status"] = "completed"
 
-    assert Projection(home, binding).admit(client, source) == "ADMITTED"
+    assert Projection(home, binding).admit(client, source) == "PENDING"
     negative = observe_same_session_turn(
         client.thread, identity, "negative-control-nonce-012345",
     )
