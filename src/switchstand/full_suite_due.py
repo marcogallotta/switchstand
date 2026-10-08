@@ -104,9 +104,11 @@ def evaluate_full_suite_due(
     assert production_files is not None and production_lines is not None
     assert selected_tests is not None and total_tests is not None
 
+    planner_mode = inputs.planner_mode
+    assert planner_mode is not None
     reasons: list[str] = []
-    if inputs.planner_mode != "SELECTED":
-        reasons.append(f"planner-{inputs.planner_mode.lower().replace('_', '-')}")
+    if planner_mode != "SELECTED":
+        reasons.append(f"planner-{planner_mode.lower().replace('_', '-')}")
     if inputs.high_risk_fallback:
         reasons.append("high-risk-fallback")
     if inputs.planner_policy_changed:
