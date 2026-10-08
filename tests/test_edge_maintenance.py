@@ -1,6 +1,7 @@
 """Tests for the production edge replacement transaction."""
 # pyright: reportPrivateUsage=false
 
+import contextlib
 import hashlib
 import json
 import os
@@ -1457,6 +1458,29 @@ def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
     with pytest.raises(Failed, match="production target identity"):
         maintenance.main(arguments)
     assert not attempt.exists()
+
+
+def test_cli_resume_requires_and_reuses_exact_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    attempt = tmp_path / "attempt"; attempt.mkdir(mode=0o700)
+    arguments = [
+        "--resume", "--attempt-dir", str(attempt),
+        "--current-runtime", str(tmp_path / "current"),
+        "--candidate-runtime", str(tmp_path / "candidate"),
+        "--candidate-launcher", str(tmp_path / "candidate-launcher"),
+        "--launcher", str(tmp_path / "launcher"),
+        "--fastmcp-state", str(maintenance.FASTMCP_STATE),
+        "--env-file", str(tmp_path / "edge.env"),
+        "--current-sha", "a" * 40, "--candidate-sha", "b" * 40,
+        "--candidate-launcher-sha", "c" * 64, "--current-launcher-sha", "d" * 64,
+    ]
+    with pytest.raises(SystemExit):
+        maintenance.main(arguments)
+    attempt.joinpath("receipt.json").write_text("{}")
+    monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
+    monkeypatch.setattr(maintenance, "deploy", lambda config, _ops: "UNKNOWN")
+    assert maintenance.main(arguments) == 2
 
 
 def test_disposable_service_command_cannot_select_production_unit(

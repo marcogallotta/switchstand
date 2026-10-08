@@ -1327,6 +1327,7 @@ def deploy(config: Config, operations: Operations) -> str:
         return cast(str, receipt.value["status"])
     phase = cast(str, receipt.value["phase"])
     resume_prepared = receipt.existing and phase == "PREPARED"
+    reconciled_phase = phase
     prepared_image = receipt.value.get("prepared_image")
     gate_retained = False
     gate_attempted = phase not in {"PREFLIGHT", "PREPARED"}
@@ -1339,6 +1340,7 @@ def deploy(config: Config, operations: Operations) -> str:
             return abort_unproved_gate(receipt, operations)
         if receipt.existing:
             observed, proof = operations.reconcile_phase(phase, receipt.value)
+            reconciled_phase = observed
             gate_retained = proof.pop("gate_retained", None) == "true"
             if observed != phase or proof:
                 receipt.value.update(proof)
@@ -1353,7 +1355,7 @@ def deploy(config: Config, operations: Operations) -> str:
             raise Unknown("shared state upgrade outcome is ambiguous")
         if resume_prepared:
             receipt.value["prepared_image"] = prepared_image = operations.prepare_state()
-            phase = observed
+            phase = reconciled_phase
             receipt.write(phase)
         if phase == "PREFLIGHT":
             if not operations.current_public_ready():
@@ -1536,6 +1538,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--retry-after", type=int, default=60)
+    parser.add_argument("--resume", action="store_true")
     parser.add_argument("--recover-upgrade-no-effect", action="store_true")
     args = parser.parse_args(argv)
     if (
@@ -1545,10 +1548,14 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("candidate SHA or retry interval is invalid")
     recover = args.recover_upgrade_no_effect
+    resume = args.resume
     config_values = vars(args).copy()
     config_values.pop("recover_upgrade_no_effect")
+    config_values.pop("resume")
     config = Config(**config_values, target="production")
     validate_target(config)
+    if recover and resume:
+        parser.error("resume and no-effect recovery are mutually exclusive")
     def interrupted(signum: int, _frame: object) -> None:
         raise Interrupted(f"maintenance interrupted by signal {signum}")
 
@@ -1558,7 +1565,18 @@ def main(argv: list[str] | None = None) -> int:
         if recover:
             result = recover_upgrade_no_effect(config, HostOperations(config))
         else:
-            args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
+            if resume:
+                receipt = args.attempt_dir / "receipt.json"
+                if (
+                    not args.attempt_dir.is_absolute()
+                    or args.attempt_dir.is_symlink()
+                    or not args.attempt_dir.is_dir()
+                    or receipt.is_symlink()
+                    or not receipt.is_file()
+                ):
+                    parser.error("resume attempt is not exact")
+            else:
+                args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
             with exclusive_lock(config.lock_path):
                 result = deploy(config, HostOperations(config))
     finally:
