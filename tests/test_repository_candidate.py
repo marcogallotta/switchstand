@@ -69,17 +69,13 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                     )
                     for offset, (companion, companion_conclusion) in enumerate(companions, 1):
                         checks.append({
-                            "id": 1000 + index * 10 + offset,
-                            "name": companion,
+                            "id": 1000 + index * 10 + offset, "name": companion,
                             "head_sha": wrong_head or HEAD,
                             "app": {"slug": "github-actions"},
-                            "check_suite": {"id": 10 + index},
-                            "status": "completed",
+                            "check_suite": {"id": 10 + index}, "status": "completed",
                             "conclusion": companion_conclusion,
-                            "details_url": (
-                                "https://github.com/marcogallotta/switchstand/actions/"
-                                f"runs/{index}/job/{1000 + index * 10 + offset}"
-                            ),
+                            "details_url": "https://github.com/marcogallotta/switchstand/actions/"
+                                           f"runs/{index}/job/{1000 + index * 10 + offset}",
                         })
             payload = {"check_runs": checks}
         elif "/actions/runs/" in path:
@@ -119,7 +115,8 @@ async def test_two_stable_terminal_gates_are_ready_with_exact_identity_and_timin
     assert all(gate.attempt == 2 and gate.duration_ms == 2000 for gate in result.gates)
     assert all(not gate.failed_steps and gate.failure_excerpt is None for gate in result.gates)
     assert all("RUNTIME_LIFECYCLE" in gate.evidence_dimensions for gate in result.gates)
-    assert layer_qualification_is_sufficient(result.proportional_evidence())
+    catalogue = result.proportional_evidence()
+    assert layer_qualification_is_sufficient(catalogue)
 
 
 async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_closed():
@@ -167,6 +164,8 @@ async def test_missing_gate_and_old_composition_fail_closed():
         untrusted = await qualify_repository_candidate(7, client=http)
     assert untrusted.status == "NOT_READY"
     assert all(g.reason == "conflicting" for g in untrusted.gates)
+
+
 async def test_running_cancelled_and_detail_are_bounded_and_diagnostic():
     overrides = {
         "Exact-head Quality": ("in_progress", None),

@@ -57,6 +57,30 @@ def dispatch_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
     }
 
 
+def commit(repo: Path, *paths: str) -> str:
+    subprocess.run(["git", "-C", repo, "add", *paths], check=True)
+    subprocess.run(
+        ["git", "-C", repo, "-c", "user.name=Test", "-c", "user.email=test@example.com",
+         "commit", "-m", "qualification fixture"], check=True, capture_output=True,
+    )
+    return subprocess.check_output(["git", "-C", repo, "rev-parse", "HEAD"], text=True).strip()
+
+
+def qualification_candidate(tmp_path: Path, home: Path, primary: Path) -> tuple[Path, str]:
+    environment = home / ".config/switchstand/.env"
+    environment.parent.mkdir(parents=True)
+    environment.write_text("DATABASE_URL=postgresql://unused\n")
+    environment.chmod(0o600)
+    executable(primary / ".venv/bin/python", '#!/bin/sh\nprintf "%s\\n" "$@" > "$OBSERVED"\n')
+    commit(primary, ".venv/bin/python")
+    candidate = tmp_path / "candidate"
+    subprocess.run(
+        ["git", "-C", primary, "worktree", "add", "-q", "-b", "candidate", candidate], check=True,
+    )
+    (candidate / "candidate.txt").write_text("exact\n")
+    return candidate, commit(candidate, "candidate.txt")
+
+
 def test_explicit_wakeful_pilot_routes_launch_through_supervisor(tmp_path: Path) -> None:
     home, primary, marker, env = dispatch_fixture(tmp_path)
     observed = tmp_path / "supervisor"
@@ -153,6 +177,55 @@ def test_dispatch_rejects_invalid_wakeful_selector(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "must be OFF or PILOT" in result.stderr
     assert not marker.exists()
+
+
+def test_wakeful_qualification_repo_is_exact_clean_linked_candidate(tmp_path: Path) -> None:
+    home, primary, _marker, env = dispatch_fixture(tmp_path)
+    candidate, candidate_sha = qualification_candidate(tmp_path, home, primary)
+    observed = tmp_path / "observed"
+    result = subprocess.run(
+        [DISPATCH], cwd=candidate,
+        env=env | {
+            "SWITCHSTAND_CODEX_WAKEFUL": "PILOT",
+            "SWITCHSTAND_CODEX_QUALIFICATION_REPO": str(candidate),
+            "OBSERVED": str(observed),
+        }, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert str(candidate / "src") in observed.read_text()
+    records = [
+        path for path in (home / ".local/state/switchstand/codex/coordinator").glob(
+            "start-commit.*"
+        ) if "." not in path.name.removeprefix("start-commit.")
+    ]
+    assert len(records) == 1
+    assert records[0].read_text().strip() == candidate_sha
+
+
+def test_qualification_repo_is_rejected_outside_pilot(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    candidate, _ = qualification_candidate(tmp_path, home, primary)
+    unrelated = tmp_path / "unrelated"
+    subprocess.run(["git", "init", "-q", unrelated], check=True)
+
+    def rejected(repo: Path, cwd: Path, *, pilot: bool = True) -> None:
+        result = subprocess.run(
+            [DISPATCH], cwd=cwd, env=env | {
+                "SWITCHSTAND_CODEX_QUALIFICATION_REPO": str(repo),
+                "SWITCHSTAND_CODEX_WAKEFUL": "PILOT" if pilot else "OFF",
+            },
+            text=True, capture_output=True, check=False,
+        )
+        assert result.returncode == 2
+        assert "clean linked writer in PILOT" in result.stderr
+        assert not marker.exists()
+
+    for repo, cwd in ((primary, primary), (tmp_path / "missing", primary), (tmp_path, tmp_path),
+                      (unrelated, unrelated), (candidate, primary)):
+        rejected(repo, cwd)
+    rejected(candidate, candidate, pilot=False)
+    (candidate / "dirty.txt").write_text("dirty\n")
+    rejected(candidate, candidate)
 
 
 def test_fresh_dispatch_can_commit_fetch_and_register_handoff(tmp_path: Path) -> None:
