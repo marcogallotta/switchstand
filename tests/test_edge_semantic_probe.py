@@ -10,6 +10,11 @@ import switchstand.edge_semantic_probe as probe
 
 
 class FakeMCP:
+    currentness = {  # noqa: RUF012 - controlled test double
+        "status": "ok", "product_work_id": str(probe.STATEFUL_PRODUCT_WORK_ID),
+        "current": "TRUE", "blockers": [], "conditions": []}
+    open_failures: list[object] = []  # noqa: RUF012 - controlled test double
+
     def __init__(self, endpoint, token):
         self.endpoint, self.token, self.requests = endpoint, token, []
         self.client = object()
@@ -39,13 +44,15 @@ class FakeMCP:
             title = "Dependency" if arguments["work_id"] == IDS["dependency"] else "Representative"
             return {"status": "ok", "item": {"id": arguments["work_id"],
                 "title": title, "revision": "r1", "completed": False,
-                "routing": {}, "context": {}}}
+                "routing": {}, "context": {}}, "open_failures": self.open_failures}
         if name == "work_search":
             work_id = IDS["dependency"] if arguments["text"] == "Dependency" else IDS["work"]
             return {"status": "ok", "items": [{"id": work_id, "title": arguments["text"],
                 "revision": "r1", "completed": False, "routing": {}, "context": {}}]}
         if name == "work_history":
             return {"status": "stale", "work_id": IDS["work"], "revision": "r1"}
+        if name == "product_currentness_get":
+            return self.currentness
         raise AssertionError(name)
 
 
@@ -89,7 +96,30 @@ def test_read_only_probe_records_exact_schema_and_denials(tmp_path, grounded):
     assert value["results_sha256"] == probe._digest(value["results"])
     assert value["results"]["get"]["item"]["id"] == IDS["work"]
     assert value["results"]["dependency"]["item"]["id"] == IDS["dependency"]
+    assert value["results"]["product_currentness"]["current"] == "TRUE"
     assert receipt.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("currentness", [
+    {"status": "unknown", "product_work_id": str(probe.STATEFUL_PRODUCT_WORK_ID),
+     "current": "UNKNOWN", "blockers": ["functional_proof"]},
+    {"status": "ok", "product_work_id": str(probe.STATEFUL_PRODUCT_WORK_ID),
+     "current": "TRUE", "blockers": ["functional_proof"]},
+])
+def test_governing_currentness_must_be_exact_true(
+    tmp_path, grounded, monkeypatch, currentness,
+):
+    monkeypatch.setattr(FakeMCP, "currentness", currentness)
+    target = tmp_path / "never.json"
+    with pytest.raises(probe.ProbeFailure, match="currentness is not TRUE"):
+        probe.run(arguments(tmp_path) + ["--receipt", str(target)])
+    assert not target.exists()
+
+
+def test_target_unresolved_effects_deny_r0(tmp_path, grounded, monkeypatch):
+    monkeypatch.setattr(FakeMCP, "open_failures", [{"effect_state": "unknown"}])
+    with pytest.raises(probe.ProbeFailure, match="unresolved effects"):
+        probe.run(arguments(tmp_path) + ["--receipt", str(tmp_path / "never.json")])
 
 
 def test_effect_options_are_not_part_of_read_only_probe(tmp_path, grounded):

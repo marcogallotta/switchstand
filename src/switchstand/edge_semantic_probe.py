@@ -16,6 +16,8 @@ from uuid import UUID
 
 import httpx
 
+from .product_currentness import STATEFUL_PRODUCT_WORK_ID
+
 PROTOCOL = "2025-03-26"
 
 
@@ -196,6 +198,8 @@ def run(argv: list[str] | None = None) -> int:
         got = _status(client.call("tools/call", {"name": "work_get", "arguments": {
             "api_version": "1", "work_id": str(args.work_id),
         }}, 3), "ok", "work_get")
+        if got.get("open_failures") != []:
+            raise ProbeFailure("target unresolved effects are not CLEAR")
         item = _item(got, args.work_id, "target")
         revision = str(item["revision"])
         found = _search_match(client, item, 4)
@@ -214,6 +218,18 @@ def run(argv: list[str] | None = None) -> int:
         foreign = _status(client.call("tools/call", {"name": "work_get", "arguments": {
             "api_version": "1", "work_id": str(args.foreign_work_id),
         }}, 8), "denied", "foreign WorkId")
+        currentness = cast(dict[str, object], client.call(
+            "tools/call", {"name": "product_currentness_get", "arguments": {
+                "api_version": "1",
+            }}, 9,
+        ))
+        if (
+            currentness.get("status") != "ok"
+            or currentness.get("product_work_id") != str(STATEFUL_PRODUCT_WORK_ID)
+            or currentness.get("current") != "TRUE"
+            or currentness.get("blockers") != []
+        ):
+            raise ProbeFailure("governing product currentness is not TRUE")
         wrong_client = MCP(endpoint, wrong)
         try:
             wrong_token_status = wrong_client.unauthorized_initialize()
@@ -223,7 +239,8 @@ def run(argv: list[str] | None = None) -> int:
             wrong_client.close()
         results = {"get": got, "search": found, "dependency": dependency,
                    "dependency_search": dependency_search,
-                   "stale": stale, "foreign": foreign}
+                   "stale": stale, "foreign": foreign,
+                   "product_currentness": currentness}
         record = {"schema": 1, "result": "PASS", "candidate_sha": args.expected_sha,
             "endpoint": endpoint, "expected_principal": args.expected_principal,
             "principal_proof": "NOT_RUN",

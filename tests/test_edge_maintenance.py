@@ -69,6 +69,9 @@ class FakeOperations:
         fail_at: str | None = None,
         unknown_at: str | None = None,
         rollback: bool = True,
+        rollback_complete: bool = True,
+        upgrade: str = "APPLIED",
+        semantic: bool = True,
     ):
         self.events: list[str] = []
         self.gated = False
@@ -79,6 +82,9 @@ class FakeOperations:
         self.fail_at = fail_at
         self.unknown_at = unknown_at
         self.rollback = rollback
+        self.complete = rollback_complete
+        self.upgrade = upgrade
+        self.semantic = semantic
 
     def _event(self, name: str) -> None:
         self.events.append(name)
@@ -107,6 +113,7 @@ class FakeOperations:
 
     def upgrade_state(self):
         self._event("upgrade_state")
+        return self.upgrade
 
     def snapshot(self):
         self._event("snapshot")
@@ -128,9 +135,19 @@ class FakeOperations:
         self._event("local_ready")
         return self.local
 
+    def semantic_ready(self):
+        self._event("semantic_ready")
+        if not self.semantic:
+            raise Failed("semantic proof failed")
+        return "e" * 64
+
     def rollback_ready(self):
         self._event("rollback_ready")
         return self.rollback
+
+    def rollback_complete(self):
+        self._event("rollback_complete")
+        return self.complete
 
     def gate_abort_ready(self):
         self._event("gate_abort_ready")
@@ -204,6 +221,17 @@ def resume_subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
     return subject, HostOperations(subject), state
+
+
+def stub_upgrade(
+    operations: HostOperations, monkeypatch: pytest.MonkeyPatch,
+    result: subprocess.CompletedProcess[str],
+) -> None:
+    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
+    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "public_gated", lambda: True)
+    monkeypatch.setattr(operations, "_candidate_control_environment", dict)
+    monkeypatch.setattr(maintenance, "run_host_command", lambda *_args, **_kwargs: result)
 
 
 @pytest.mark.parametrize(
@@ -390,6 +418,8 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
         "swap",
         "start",
         "local_ready",
+        "gate_exact",
+        "public_gated",
         "ungate",
         "public_ready",
     ]
@@ -415,6 +445,7 @@ def test_resume_never_replays_a_proven_completed_host_effect(
     subject = config(tmp_path)
     seed_receipt(subject, phase)
     operations = FakeOperations()
+    operations.gated = observed != "UNGATED"
     proof = {"fastmcp_snapshot": "a" * 64} if phase == "STOPPED" else {}
     monkeypatch.setattr(
         operations, "reconcile_phase", lambda *_args, **_kwargs: (observed, proof)
@@ -624,6 +655,55 @@ def test_candidate_failure_after_state_upgrade_keeps_gate_and_reports_unknown(tm
     assert receipt(subject)["phase"] == "STARTED"
 
 
+@pytest.mark.parametrize(("complete", "expected"), [(True, "FAIL"), (False, "UNKNOWN")])
+def test_no_effect_semantic_failure_reports_only_complete_rollback(
+    tmp_path: Path, complete: bool, expected: str,
+):
+    subject = config(tmp_path)
+    operations = FakeOperations(
+        upgrade="NO_EFFECT", semantic=False, rollback_complete=complete,
+    )
+
+    assert deploy(subject, operations) == expected
+
+    value = receipt(subject)
+    if complete:
+        assert value["phase"] == "ROLLED_BACK" and not operations.gated
+    else:
+        assert value["error"] == "RollbackUnknown" and operations.gated
+
+
+def test_no_effect_changed_semantic_proof_is_unknown_without_blind_activation(
+    tmp_path: Path,
+):
+    subject = config(tmp_path)
+    operations = FakeOperations(upgrade="NO_EFFECT")
+    assert deploy(subject, operations) == "PASS"
+    value = receipt(subject)
+    assert value["semantic_probe"] == "e" * 64
+    value["status"] = "RUNNING"
+    value["phase"] = "STARTED"
+    subject.attempt_dir.joinpath("receipt.json").write_text(json.dumps(value))
+    subject.attempt_dir.joinpath("receipt.json").chmod(0o600)
+    operations = FakeOperations(upgrade="NO_EFFECT")
+    operations.semantic_ready = lambda: "f" * 64  # type: ignore[method-assign]
+
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert "ungate" not in operations.events
+
+
+def test_gate_loss_after_semantic_proof_never_ungates_or_passes(tmp_path: Path):
+    subject = config(tmp_path)
+    operations = FakeOperations(upgrade="NO_EFFECT")
+    checks = iter((True, False, False, True))
+
+    operations.gate_exact = lambda: next(checks)  # type: ignore[method-assign]
+
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert "semantic_ready" in operations.events
+    assert "ungate" not in operations.events
+
+
 def test_rollback_ambiguity_keeps_maintenance_gate_and_reports_unknown(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(local=False, rollback=False)
@@ -830,7 +910,11 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
         maintenance,
         "run_host_command",
         lambda command, **_kwargs: (
-            commands.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+            commands.append(command) or subprocess.CompletedProcess(
+                command, 0,
+                "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
+                "revision=0025_task_control_checkpoints\n", "",
+            )
         ),
     )
 
@@ -858,6 +942,103 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
 
     with pytest.raises(Unknown, match="did not complete"):
         operations.upgrade_state()
+
+
+@pytest.mark.parametrize("output", [
+    "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=0025",
+    (
+        "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
+        "revision=0025_task_control_checkpoints trailing=true"
+    ),
+    (
+        "SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED from=0024_mcp_operation_timings "
+        "to=0025_task_control_checkpoints preserved_counts=1|2 backup=relative.dump"
+    ),
+])
+def test_state_upgrade_rejects_truncated_trailing_or_unbound_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, output: str,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    stub_upgrade(
+        operations, monkeypatch, subprocess.CompletedProcess([], 0, output + "\n", ""),
+    )
+
+    with pytest.raises(Unknown, match="result is not exact"):
+        operations.upgrade_state()
+
+
+def test_state_upgrade_accepts_exact_applied_result_with_private_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    _subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    backup = tmp_path / "state.dump"
+    backup.write_bytes(b"backup")
+    backup.chmod(0o600)
+    output = (
+        "SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED "
+        "from=0024_mcp_operation_timings to=0025_task_control_checkpoints "
+        f"preserved_counts=1|2 backup={backup}\n"
+    )
+    stub_upgrade(operations, monkeypatch, subprocess.CompletedProcess([], 0, output, ""))
+
+    assert operations.upgrade_state() == "APPLIED"
+
+
+def test_host_r0_semantic_probe_is_fresh_bound_and_preserves_frozen_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, operations, _state = resume_subject(tmp_path, monkeypatch)
+    values = {key: f"value-{name}" for name, key in maintenance.R0_ENV.items()}
+    tools: list[object] = []
+    values[maintenance.R0_ENV["tools_sha256"]] = hashlib.sha256(b"[]").hexdigest()
+    subject.env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
+    commands: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        receipt_path = Path(command[command.index("--receipt") + 1])
+        results = {"product_currentness": {
+                "status": "ok",
+                "product_work_id": str(maintenance.STATEFUL_PRODUCT_WORK_ID),
+                "current": "FALSE" if len(commands) == 4 else "TRUE",
+                "blockers": ["new-blocker"] if len(commands) == 4 else [],
+                "conditions": ["changed"] if len(commands) == 3 else [],
+            }}
+        receipt_path.write_text(json.dumps({
+            "schema": 1, "result": "PASS", "candidate_sha": subject.candidate_sha,
+            "endpoint": subject.local_url,
+            "expected_principal": values[maintenance.R0_ENV["principal"]], "tools": tools,
+            "tools_sha256": values[maintenance.R0_ENV["tools_sha256"]],
+            "work_id": values[maintenance.R0_ENV["work_id"]],
+            "foreign_work_id": values[maintenance.R0_ENV["foreign_work_id"]],
+            "dependency_work_id": values[maintenance.R0_ENV["dependency_work_id"]], "results": results,
+            "results_sha256": hashlib.sha256(json.dumps(
+                results, sort_keys=True, separators=(",", ":")
+            ).encode()).hexdigest(),
+            "production_mutation": "NOT_RUN", "wrong_token_http_status": 401,
+            "transcript": [{"request": {}}],
+        }))
+        receipt_path.chmod(0o600)
+        return subprocess.CompletedProcess(command, 0, "PASS\n", "")
+
+    monkeypatch.setattr(maintenance, "run_host_command", run)
+
+    digest = operations.semantic_ready()
+
+    assert len(digest) == 64
+    assert commands[0][0] == str(subject.candidate_runtime / "scripts/switchstand-edge-semantic-probe")
+    assert commands[0][commands[0].index("--endpoint") + 1] == subject.local_url
+    assert operations.semantic_ready() == digest
+    frozen = subject.attempt_dir.joinpath("semantic-probe.json").read_bytes()
+    with pytest.raises(Unknown, match="proof changed before receipt binding"):
+        operations.semantic_ready()
+    assert len(commands) == 3
+    assert subject.attempt_dir.joinpath("semantic-probe.json").read_bytes() == frozen
+    with pytest.raises(Unknown, match="not current PASS"):
+        operations.semantic_ready()
+    subject.env_file.write_text("ASANA_TOKEN=test\n")
+    with pytest.raises(Failed, match="inputs are unavailable"):
+        operations.semantic_ready()
 
 
 def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
@@ -954,7 +1135,10 @@ def test_state_upgrade_passes_exact_detached_candidate_selectors(
             else:
                 output = str(common) + "\n"
         else:
-            output = ""
+            output = (
+                "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
+                "revision=0025_task_control_checkpoints\n"
+            )
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
@@ -1002,7 +1186,10 @@ def test_state_upgrade_overwrites_inherited_control_selectors(
                 output = str(common) + "\n"
         else:
             command_env = kwargs["env"]
-            output = ""
+            output = (
+                "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
+                "revision=0025_task_control_checkpoints\n"
+            )
         return subprocess.CompletedProcess(command, 0, output, "")
 
     monkeypatch.setattr(maintenance, "run_host_command", run)

@@ -25,6 +25,7 @@ from typing import Literal, Protocol, TextIO, cast
 from urllib.parse import urlparse
 
 from .edge_monitor_host import ExternalIngressHttp
+from .product_currentness import STATEFUL_PRODUCT_WORK_ID
 from .secure_file import atomic_replace_bytes
 
 SERVICE = "switchstand-chatgpt-mcp.service"
@@ -54,6 +55,23 @@ LOCK = Path("/home/marco/.local/state/switchstand/edge-maintenance.lock")
 FASTMCP_STATE = Path("/home/marco/.local/share/fastmcp")
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
 STATE_UPGRADE_LOCK = Path("/home/marco/.local/state/switchstand/state-upgrade.lock")
+R0_ENV = {
+    "token": "SWITCHSTAND_R0_TOKEN_FILE",
+    "wrong_token": "SWITCHSTAND_R0_WRONG_TOKEN_FILE",
+    "work_id": "SWITCHSTAND_R0_WORK_ID",
+    "foreign_work_id": "SWITCHSTAND_R0_FOREIGN_WORK_ID",
+    "dependency_work_id": "SWITCHSTAND_R0_DEPENDENCY_WORK_ID",
+    "tools_sha256": "SWITCHSTAND_R0_EXPECTED_TOOLS_SHA256",
+    "principal": "SWITCHSTAND_R0_EXPECTED_PRINCIPAL",
+}
+STATE_REVISION = "0025_task_control_checkpoints"
+UPGRADE_SOURCES = frozenset((  # noqa: SIM905 - compact exact protocol allowlist
+    "0002_grants_and_effects 0004_required_result_persistence 0005_work_event_handles 0006_agent_mailboxes "
+    "0007_agent_chat_identity 0012_outcome_state 0013_failure_journal 0014_canonical_routing "
+    "0015_work_admission_time 0016_agent_mailbox_transfers 0017_priority_claims 0018_task_runs "
+    "0019_task_run_executions 0020_task_run_results 0021_human_reviews "
+    "0022_implementation_requests 0023_activation_continuity 0024_mcp_operation_timings"
+).split())
 
 
 class Failed(RuntimeError):
@@ -101,12 +119,14 @@ class Operations(Protocol):
     def gate_exact(self) -> bool: ...
     def public_gated(self) -> bool: ...
     def stop(self) -> None: ...
-    def upgrade_state(self) -> None: ...
+    def upgrade_state(self) -> Literal["NO_EFFECT", "APPLIED"]: ...
     def snapshot(self) -> None: ...
     def swap(self) -> None: ...
     def start(self) -> None: ...
     def local_ready(self) -> bool: ...
+    def semantic_ready(self) -> str: ...
     def rollback_ready(self) -> bool: ...
+    def rollback_complete(self) -> bool: ...
     def gate_abort_ready(self) -> bool: ...
     def current_public_ready(self) -> bool: ...
     def ungate(self) -> None: ...
@@ -730,7 +750,7 @@ class HostOperations:
             return
         raise Unknown("edge listener remains after service stop")
 
-    def upgrade_state(self) -> None:
+    def upgrade_state(self) -> Literal["NO_EFFECT", "APPLIED"]:
         """Run the existing rehearsal-and-upgrade only behind a proven offline gate."""
         if (
             self._service_state() != "INACTIVE"
@@ -752,6 +772,36 @@ class HostOperations:
             # shared migration without rolling it back.  Its nonzero exit cannot
             # prove that the shared-state authority boundary was not crossed.
             raise Unknown("shared state upgrade did not complete")
+        lines = result.stdout.splitlines()
+        if len(lines) != 1:
+            raise Unknown("shared state upgrade result is not exact")
+        if lines[0] == (
+            f"SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision={STATE_REVISION}"
+        ):
+            return "NO_EFFECT"
+        applied = re.fullmatch(
+            r"SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED "
+            r"from=([a-z0-9_]+) to=([a-z0-9_]+) "
+            r"preserved_counts=([0-9]+(?:\|[0-9]+)*) backup=(/\S+)",
+            lines[0],
+        )
+        if applied is not None:
+            source, target, _counts, backup = applied.groups()
+            backup_path = Path(backup)
+            try:
+                metadata = backup_path.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise Unknown("shared state upgrade backup is unreadable") from exc
+            if (
+                source not in UPGRADE_SOURCES
+                or target != STATE_REVISION
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_mode & 0o777 != 0o600
+                or metadata.st_size == 0
+            ):
+                raise Unknown("shared state upgrade result is not exact")
+            return "APPLIED"
+        raise Unknown("shared state upgrade result is not exact")
 
     def _candidate_control_environment(self) -> dict[str, str]:
         """Bind the upgrader to the detached, preflighted candidate checkout."""
@@ -876,11 +926,98 @@ class HostOperations:
             and self._running_process_exact()
         )
 
+    def semantic_ready(self) -> str:
+        """Run a fresh governing semantic proof while gated and bind its identity."""
+        path, refresh = (self.c.attempt_dir / name for name in (
+            "semantic-probe.json", "semantic-probe.next.json",
+        ))
+        try:
+            values = {
+                key.strip(): value.strip().strip("'\"")
+                for line in self.c.env_file.read_text().splitlines()
+                if line.strip() and not line.lstrip().startswith("#") and "=" in line
+                for key, value in [line.split("=", 1)]
+            }
+            required = {name: values[key] for name, key in R0_ENV.items()}
+        except (KeyError, OSError, UnicodeError) as exc:
+            raise Failed("R0 governing semantic inputs are unavailable") from exc
+        command = [
+            str(self.c.candidate_runtime / "scripts" / "switchstand-edge-semantic-probe"),
+            "--endpoint", self.c.local_url,
+            "--token-file", required["token"],
+            "--wrong-token-file", required["wrong_token"],
+            "--work-id", required["work_id"],
+            "--foreign-work-id", required["foreign_work_id"],
+            "--dependency-work-id", required["dependency_work_id"],
+            "--expected-sha", self.c.candidate_sha,
+            "--expected-tools-sha256", required["tools_sha256"],
+            "--expected-principal", required["principal"],
+            "--repo", str(self.c.candidate_runtime),
+            "--receipt", str(refresh),
+        ]
+        refresh.unlink(missing_ok=True)
+        try:
+            result = run_host_command(command, check=False, timeout=120)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise Unknown("R0 semantic proof outcome is unreadable") from exc
+        if result.returncode:
+            raise Failed("R0 governing semantic proof failed")
+        try:
+            value = json.loads(refresh.read_text())
+            currentness = value["results"]["product_currentness"]
+        except (KeyError, OSError, TypeError, UnicodeError, ValueError) as exc:
+            raise Unknown("R0 semantic proof receipt is invalid") from exc
+        results_digest = hashlib.sha256(json.dumps(value.get("results"), sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        tools_digest = hashlib.sha256(json.dumps(value.get("tools"), sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+        if (
+            value.get("schema") != 1
+            or value.get("result") != "PASS"
+            or value.get("candidate_sha") != self.c.candidate_sha
+            or value.get("endpoint") != self.c.local_url
+            or value.get("expected_principal") != required["principal"]
+            or value.get("tools_sha256") != required["tools_sha256"]
+            or tools_digest != required["tools_sha256"]
+            or value.get("work_id") != required["work_id"]
+            or value.get("foreign_work_id") != required["foreign_work_id"]
+            or value.get("dependency_work_id") != required["dependency_work_id"]
+            or value.get("results_sha256") != results_digest
+            or value.get("production_mutation") != "NOT_RUN"
+            or value.get("wrong_token_http_status") not in {401, 403}
+            or not isinstance(value.get("transcript"), list)
+            or not value["transcript"]
+            or currentness.get("status") != "ok"
+            or currentness.get("product_work_id") != str(STATEFUL_PRODUCT_WORK_ID)
+            or currentness.get("current") != "TRUE"
+            or currentness.get("blockers") != []
+        ):
+            raise Unknown("R0 semantic proof receipt is not current PASS")
+        digest = self._artifact_digest(refresh, 0o600)
+        if path.exists():
+            if self._artifact_digest(path, 0o600) != digest:
+                raise Unknown("R0 semantic proof changed before receipt binding")
+            refresh.unlink()
+            return digest
+        os.replace(refresh, path)
+        return digest
+
     def rollback_ready(self) -> bool:
         return (
             self._doctor(self.c.current_runtime, self.c.current_sha, False)
             and (_sha(self.c.launcher) == self.c.current_launcher_sha)
             and self._running_process_exact()
+        )
+
+    def rollback_complete(self) -> bool:
+        """Reconcile every surface frozen by this maintenance transaction."""
+        self._resume_trust()
+        return (
+            self._artifact_digest(self.c.launcher, 0o700) == self.c.current_launcher_sha
+            and self._service_state() == "ACTIVE"
+            and self._gate_state() == "ABSENT"
+            and self.rollback_ready()
+            and self.current_public_ready()
         )
 
     def gate_abort_ready(self) -> bool:
@@ -1046,7 +1183,10 @@ class Receipt:
             "SNAPSHOTTED", "SWAPPED",
             "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK", "NO_EFFECT",
         }
-        fixed = {"status", "phase", "state_upgrade", "error", "fastmcp_snapshot"}
+        fixed = {
+            "status", "phase", "state_upgrade", "error", "fastmcp_snapshot",
+            "semantic_probe",
+        }
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.getuid()
@@ -1054,22 +1194,33 @@ class Receipt:
             or any(value.get(key) != item for key, item in expected.items() if key not in fixed)
             or value.get("status") not in {"RUNNING", "UNKNOWN", "PASS", "FAIL"}
             or value.get("phase") not in phases
-            or not set(value).issubset(set(expected) | {"error", "fastmcp_snapshot"})
+            or not set(value).issubset(
+                set(expected) | {"error", "fastmcp_snapshot", "semantic_probe"}
+            )
             or ("error" in value and not isinstance(value["error"], str))
         ):
             raise Unknown("host receipt is malformed or belongs to another attempt")
+        if "semantic_probe" in value and not re.fullmatch(
+            r"[0-9a-f]{64}", cast(str, value["semantic_probe"])
+        ):
+            raise Unknown("host receipt semantic proof is malformed")
         phase, status = value["phase"], value["status"]
         state_upgrade = value.get("state_upgrade")
-        expected_upgrade = (
+        expected_upgrade: str | set[str] = (
             "NOT_STARTED" if phase in {
-                "PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK", "NO_EFFECT"
+                "PREFLIGHT", "GATED", "STOPPED", "NO_EFFECT"
             }
+            else {"NOT_STARTED", "NO_EFFECT"} if phase == "ROLLED_BACK"
             else "PENDING" if phase == "UPGRADE_PENDING"
-            else "APPLIED"
+            else {"NO_EFFECT", "APPLIED"}
         )
         if (status == "PASS") != (phase == "COMPLETE") or (
             status == "FAIL"
-        ) != (phase in {"ROLLED_BACK", "NO_EFFECT"}) or state_upgrade != expected_upgrade:
+        ) != (phase in {"ROLLED_BACK", "NO_EFFECT"}) or (
+            state_upgrade not in expected_upgrade
+            if isinstance(expected_upgrade, set)
+            else state_upgrade != expected_upgrade
+        ):
             raise Unknown("host receipt terminal state is inconsistent")
         if phase not in {
             "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED", "NO_EFFECT"
@@ -1184,9 +1335,9 @@ def deploy(config: Config, operations: Operations) -> str:
             phase = "UPGRADE_PENDING"
             receipt.value["state_upgrade"] = "PENDING"
             receipt.write(phase)
-            operations.upgrade_state()
+            upgrade = operations.upgrade_state()
             phase = "UPGRADED"
-            receipt.value["state_upgrade"] = "APPLIED"
+            receipt.value["state_upgrade"] = upgrade
             receipt.write(phase)
         if phase == "UPGRADED":
             operations.snapshot()
@@ -1203,7 +1354,19 @@ def deploy(config: Config, operations: Operations) -> str:
             receipt.write(phase)
         if not operations.local_ready():
             raise Failed("candidate local verification failed")
+        if receipt.value["state_upgrade"] == "NO_EFFECT":
+            if not operations.gate_exact() or not operations.public_gated():
+                raise Unknown("R0 semantic boundary is no longer gated")
+            semantic = operations.semantic_ready()
+            recorded = receipt.value.get("semantic_probe")
+            if recorded is not None and recorded != semantic:
+                raise Unknown("R0 semantic proof changed")
+            if recorded is None:
+                receipt.value["semantic_probe"] = semantic
+                receipt.write(phase)
         if phase == "STARTED" or gate_retained:
+            if not operations.gate_exact() or not operations.public_gated():
+                raise Unknown("R0 ungate boundary is no longer exact")
             operations.ungate()
             phase = "UNGATED"
             receipt.write(phase)
@@ -1222,9 +1385,9 @@ def deploy(config: Config, operations: Operations) -> str:
         return "UNKNOWN"
     except (Failed, OSError, subprocess.SubprocessError) as exc:
         try:
-            # An applied shared-state migration is forward-only.  The old runtime
-            # is restarted and publicly exposed only before that authority boundary.
-            if receipt.value["state_upgrade"] != "NOT_STARTED":
+            # An applied or ambiguous shared-state migration is forward-only. A
+            # proven NO_EFFECT retains the exact old-runtime recovery path.
+            if receipt.value["state_upgrade"] not in {"NOT_STARTED", "NO_EFFECT"}:
                 raise Unknown("shared state upgrade prevents automatic rollback")
             if phase in {"SWAPPED", "STARTED", "UNGATED"}:
                 operations.stop()
@@ -1238,6 +1401,11 @@ def deploy(config: Config, operations: Operations) -> str:
                 operations.ungate()
             if phase != "PREFLIGHT" and not operations.public_ready():
                 raise Unknown("rollback public verification failed")
+            if (
+                phase in {"SWAPPED", "STARTED", "UNGATED"}
+                and not operations.rollback_complete()
+            ):
+                raise Unknown("rollback basis reconciliation failed")
         except Failed, Unknown, OSError, subprocess.SubprocessError:
             error = "RollbackUnknown"
             try:

@@ -158,7 +158,10 @@ scripts/switchstand-edge-doctor --env-file /path/to/edge-doctor.env \
 After startup, `switchstand-edge-semantic-probe` is the separate authenticated semantic check.
 Its only path is read-only and writes a create-new, mode-0600, directory-synced receipt recording the
 runtime candidate/run, endpoint, exact `tools/list`, representative WorkIds/revisions, denials, and
-transcript. The nonmutating path records only an expected principal; exact proof is `NOT_RUN`.
+transcript. It consumes the live server-owned `product_currentness_get` result and passes only when
+that owner returns `status=ok`, `current=TRUE`, no blockers, and the exact target work reports no
+unresolved effects. Missing, stale, conflicting, or unknown evidence fails closed. The nonmutating
+path records only an expected principal; exact proof is `NOT_RUN`.
 It accepts no mutation, replay, or restart options. A separate reviewed C2d2b package must keep
 mutation loopback-only, require an exact `test:disposable` qualification and explicit OperationId,
 and hard-disable production mutation. Before its first possible effect it must exclusively create
@@ -197,10 +200,13 @@ first-priority `503 Retry-After` route covering every Switchstand MCP, OAuth and
 metadata path, and only then stops the edge. While that gate remains publicly proven
 and the systemd service is confirmed stopped, it runs the existing
 `switchstand-upgrade-state --target production` rehearsal, backup, and shared-state
-upgrade before any launcher swap or start. The receipt records `UPGRADE_PENDING`
+upgrade before any launcher swap or start. The upgrader emits exactly `NO_EFFECT` when the schema
+was current, or `APPLIED` only after migration readback. Missing, malformed, or interrupted output
+remains `UNKNOWN`. The receipt records `UPGRADE_PENDING`
 before that forward-only command and `UPGRADED` only after it completes, so an
 interrupted or failed migration remains gated and `UNKNOWN`, never a blind retry or
-old-runtime rollback. It then snapshots the exact FastMCP state directory without
+old-runtime rollback. Proven `NO_EFFECT` retains old-runtime rollback eligibility; `APPLIED` does
+not. It then snapshots the exact FastMCP state directory without
 parsing or logging its secret contents, atomically swaps the launcher, starts the edge, runs the edge doctor locally, removes the
 gate, and runs the public doctor. If public gate proof fails or is interrupted
 before the service is stopped, it proves the old runtime locally exact, removes
@@ -220,6 +226,16 @@ session-loss consequences. Ambiguous mutation/readback or ambiguous rollback aft
 the service-stop boundary returns `UNKNOWN` and retains or reinstalls the maintenance
 route. An interrupt after that boundary follows the same fail-closed path. Never blindly rerun an UNKNOWN;
 inspect its receipt and live gate/service/launcher state first.
+
+For the `NO_EFFECT` R0 path, the edge environment supplies the semantic probe's bounded inputs via
+`SWITCHSTAND_R0_TOKEN_FILE`, `SWITCHSTAND_R0_WRONG_TOKEN_FILE`,
+`SWITCHSTAND_R0_WORK_ID`, `SWITCHSTAND_R0_FOREIGN_WORK_ID`,
+`SWITCHSTAND_R0_DEPENDENCY_WORK_ID`, `SWITCHSTAND_R0_EXPECTED_TOOLS_SHA256`, and
+`SWITCHSTAND_R0_EXPECTED_PRINCIPAL`. Before removing the gate, maintenance runs it against
+the candidate's loopback endpoint and freezes its private receipt digest. A definite semantic
+failure restores the exact old launcher/runtime. `ROLLED_BACK` is written only after launcher,
+service/process, gate, local health, and public health all reconcile to the frozen known-good basis;
+partial or unreadable restoration is `UNKNOWN` and retains or reinstalls containment.
 
 One narrow recovery mode exists only for an exact `UNKNOWN / UPGRADE_PENDING`
 receipt whose shared-state effect can be disproved. With the ordinary edge lock and
