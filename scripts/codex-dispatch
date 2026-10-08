@@ -231,6 +231,7 @@ if [ ! -e "$owned_writer/friction" ]; then
     ln -s "$friction_root" "$owned_writer/friction"
 fi
 
+trap '' HUP INT TERM
 "$script_dir/coordinator-control" create \
     --repo "$host_canonical_repo" --control-root "$script_dir/.." \
     --writer "$owned_writer" \
