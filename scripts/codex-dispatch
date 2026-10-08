@@ -224,6 +224,13 @@ fi
     "$continuity_telemetry" \
     "$start_record" "$manifest_record"
 
+if [ ! -e "$owned_writer/friction.md" ]; then
+    ln -s "$friction_store" "$owned_writer/friction.md"
+fi
+if [ ! -e "$owned_writer/friction" ]; then
+    ln -s "$friction_root" "$owned_writer/friction"
+fi
+
 "$script_dir/coordinator-control" create \
     --repo "$host_canonical_repo" --control-root "$script_dir/.." \
     --writer "$owned_writer" \
@@ -233,13 +240,6 @@ fi
     --compact-hook-snapshot "$start_record.compact-controls/codex-compact-hook" \
     --coordinator-control-snapshot "$start_record.compact-controls/coordinator-control" \
     --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
-
-if [ ! -e "$owned_writer/friction.md" ]; then
-    ln -s "$friction_store" "$owned_writer/friction.md"
-fi
-if [ ! -e "$owned_writer/friction" ]; then
-    ln -s "$friction_root" "$owned_writer/friction"
-fi
 trap - EXIT HUP INT TERM
 
 unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME \
