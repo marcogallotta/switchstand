@@ -489,6 +489,17 @@ def test_resume_prepared_reprepares_before_stop(
     assert "prepare_state" in operations.events and "stop" not in operations.events
 
 
+def test_interrupted_gate_ahead_reprepare_remains_prepared(tmp_path: Path):
+    subject = config(tmp_path); seed_receipt(subject, "PREPARED")
+    operations = FakeOperations(unknown_at="prepare_state"); operations.gated = True
+    operations.reconcile_phase = lambda *_args: ("GATED", {})  # type: ignore[method-assign]
+    assert deploy(subject, operations) == "UNKNOWN"
+    assert receipt(subject)["phase"] == "PREPARED" and "stop" not in operations.events
+    operations = FakeOperations(fail_at="prepare_state"); operations.gated = True
+    operations.reconcile_phase = lambda *_args: ("GATED", {})  # type: ignore[method-assign]
+    assert deploy(subject, operations) == "FAIL" and "stop" not in operations.events
+
+
 def test_malformed_receipt_installs_and_proves_gate_before_unknown(tmp_path: Path):
     subject = config(tmp_path)
     path = subject.attempt_dir / "receipt.json"

@@ -1341,10 +1341,11 @@ def deploy(config: Config, operations: Operations) -> str:
             observed, proof = operations.reconcile_phase(phase, receipt.value)
             gate_retained = proof.pop("gate_retained", None) == "true"
             if observed != phase or proof:
-                phase = observed
                 receipt.value.update(proof)
-                receipt.write(phase)
-            gate_attempted = phase not in {"PREFLIGHT", "PREPARED"}
+                if not resume_prepared:
+                    phase = observed
+                    receipt.write(phase)
+            gate_attempted = observed not in {"PREFLIGHT", "PREPARED"}
         else:
             receipt.write(phase)
             operations.preflight()
@@ -1352,6 +1353,7 @@ def deploy(config: Config, operations: Operations) -> str:
             raise Unknown("shared state upgrade outcome is ambiguous")
         if resume_prepared:
             receipt.value["prepared_image"] = prepared_image = operations.prepare_state()
+            phase = observed
             receipt.write(phase)
         if phase == "PREFLIGHT":
             if not operations.current_public_ready():
