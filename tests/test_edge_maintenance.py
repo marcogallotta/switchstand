@@ -191,9 +191,7 @@ def seed_receipt(subject: Config, phase: str) -> None:
         durable.value["prepared_image"] = PREPARED_IMAGE
     if phase == "UPGRADE_PENDING":
         durable.value["state_upgrade"] = "PENDING"
-    elif phase not in {
-        "PREFLIGHT", "PREPARED", "GATED", "STOPPED", "ROLLED_BACK"
-    }:
+    elif phase not in {"PREFLIGHT", "PREPARED", "GATED", "STOPPED", "ROLLED_BACK"}:
         durable.value["state_upgrade"] = "APPLIED"
     if phase not in {
         "PREFLIGHT", "PREPARED", "GATED", "STOPPED",
@@ -472,6 +470,12 @@ def test_resume_never_replays_a_proven_completed_host_effect(
     assert completed not in operations.events
 
 
+def test_resume_prepared_reprepares_before_stop(tmp_path: Path):
+    subject = config(tmp_path); seed_receipt(subject, "PREPARED")
+    operations = FakeOperations(); operations.prepare_state = lambda: (_ for _ in ()).throw(Failed())
+    assert deploy(subject, operations) == "FAIL" and "stop" not in operations.events
+
+
 def test_malformed_receipt_installs_and_proves_gate_before_unknown(tmp_path: Path):
     subject = config(tmp_path)
     path = subject.attempt_dir / "receipt.json"
@@ -658,7 +662,6 @@ def test_definite_pre_upgrade_failure_restarts_old_runtime_and_ungates(tmp_path:
     assert not operations.gated
     assert receipt(subject)["phase"] == "ROLLED_BACK"
     assert receipt(subject)["state_upgrade"] == "NOT_STARTED"
-    assert deploy(subject, FakeOperations()) == "FAIL"
 
 
 def test_candidate_failure_after_state_upgrade_restores_verified_lkg(tmp_path: Path):

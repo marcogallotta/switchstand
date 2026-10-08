@@ -1346,6 +1346,9 @@ def deploy(config: Config, operations: Operations) -> str:
             operations.preflight()
         if phase == "UPGRADE_PENDING":
             raise Unknown("shared state upgrade outcome is ambiguous")
+        if receipt.existing and phase == "PREPARED":
+            receipt.value["prepared_image"] = prepared_image = operations.prepare_state()
+            receipt.write(phase)
         if phase == "PREFLIGHT":
             if not operations.current_public_ready():
                 raise Failed("current public edge is not ready")
