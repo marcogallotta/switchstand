@@ -182,6 +182,60 @@ def test_successful_generation_create_is_the_cleanup_commit_point(tmp_path: Path
     ).strip()
 
 
+def test_signal_deferred_during_create_preserves_committed_generation(
+    tmp_path: Path,
+) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_git = subprocess.check_output(
+        ["sh", "-c", "command -v git"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    signal_sent = tmp_path / "signal-sent"
+    executable(
+        test_bin / "git",
+        "#!/bin/sh\n"
+        "if [ \"${3-}\" = status ] && [ \"${4-}\" = --porcelain ] && "
+        "case \"${2-}\" in */switchstand-coordinator-*) true;; *) false;; esac; then\n"
+        f'    "{real_git}" "$@"\n'
+        "    result=$?\n"
+        "    dispatch_pid=$(ps -o ppid= -p \"$PPID\" | tr -d ' ')\n"
+        "    kill -TERM \"$dispatch_pid\"\n"
+        "    printf 'sent\\n' >\"$SIGNAL_SENT\"\n"
+        "    exit \"$result\"\n"
+        "fi\n"
+        f'exec "{real_git}" "$@"\n',
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {
+            "PATH": f"{test_bin}:{env['PATH']}",
+            "SIGNAL_SENT": str(signal_sent),
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 143
+    assert signal_sent.read_text() == "sent\n"
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    records = [
+        path for path in coordinator_home.glob("start-commit.*")
+        if path.is_file() and not path.name.endswith(".manifest.json")
+    ]
+    assert len(records) == 1
+    manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    writer = Path(manifest["session"]["writer"])
+    assert writer.is_dir()
+    assert (writer / "friction.md").is_symlink()
+    assert (writer / "friction").is_symlink()
+    assert subprocess.check_output(
+        [real_git, "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip()
+
+
 def commit(repo: Path, *paths: str) -> str:
     subprocess.run(["git", "-C", repo, "add", *paths], check=True)
     subprocess.run(
