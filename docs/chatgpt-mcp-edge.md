@@ -209,7 +209,7 @@ remains `UNKNOWN`. The receipt records `UPGRADE_PENDING`
 before that forward-only command and `UPGRADED` only after it completes, so an
 interrupted or failed migration remains gated and `UNKNOWN`, never a blind retry or
 old-runtime rollback. A proven `NO_EFFECT` or `APPLIED` retains old-runtime rollback eligibility
-because preflight verifies schema-0025 compatibility. It then snapshots the exact FastMCP state directory without
+only after deployment qualification proves the exact old runtime compatible with schema 0025. It then snapshots the exact FastMCP state directory without
 parsing or logging its secret contents, atomically swaps the launcher, starts the edge, runs the edge doctor locally, removes the
 gate, and runs the public doctor. If public gate proof fails or is interrupted
 before the service is stopped, it proves the old runtime locally exact, removes

@@ -1406,7 +1406,10 @@ def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     subject.env_file.write_text("SWITCHSTAND_MCP_GITHUB_CLIENT_ID=fixture\nSWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=fixture\nSWITCHSTAND_MCP_GITHUB_USER_ID=123456\nSWITCHSTAND_MCP_BIND_HOST=127.0.0.1\nSWITCHSTAND_MCP_BIND_PORT=28790\nSWITCHSTAND_MCP_PUBLIC_URL=http://127.0.0.1:28443/switchstand/mcp\nSWITCHSTAND_MCP_RESOURCE_URL=https://proof.invalid/switchstand/mcp\n")
     monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
     validate_target(subject)
-    subject.env_file.write_text("SWITCHSTAND_MCP_BIND_PORT=8790\n")
+    subject.launcher.write_text(f'{subject.current_runtime}\n["docker", "inspect", "switchstand-postgres-1"]')
+    subject.candidate_launcher.write_bytes(subject.launcher.read_bytes().replace(bytes(str(subject.current_runtime), "utf8"), bytes(str(subject.candidate_runtime), "utf8")))
+    with pytest.raises(Failed, match="database identity"): _validate_launch_mapping(subject)
+    subject.env_file.write_text(subject.env_file.read_text() + "DATABASE_URL=postgresql://production\n")
     with pytest.raises(Failed, match="non-isolated endpoint"):
         validate_target(subject)
     live = {

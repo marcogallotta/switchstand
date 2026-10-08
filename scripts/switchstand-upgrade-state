@@ -61,6 +61,9 @@ else
 fi
 
 lock_dir=$state_dir/state-upgrade.lock
+if [ "$target" = disposable ]; then
+    [ ! -L "$state_dir" ] && [ ! -L "$root/backups" ] || { echo "disposable state path is a symlink" >&2; exit 1; }
+fi
 mkdir -p "$state_dir"
 mkdir "$lock_dir" 2>/dev/null \
     || { echo "another Switchstand state upgrade is active; refusing concurrent execution" >&2; exit 1; }

@@ -230,16 +230,8 @@ def validate_target(config: Config) -> None:
         )
     except (OSError, UnicodeError, ValueError) as error:
         raise Failed("disposable environment is unavailable") from error
-    expected = {
-        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
-        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
-        "SWITCHSTAND_MCP_GITHUB_USER_ID": "123456",
-        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
-        "SWITCHSTAND_MCP_BIND_PORT": str(parsed[1].port),
-        "SWITCHSTAND_MCP_PUBLIC_URL": config.public_origin + "/switchstand/mcp",
-        "SWITCHSTAND_MCP_RESOURCE_URL": f"https://{root.name}.invalid/switchstand/mcp",
-    }
-    if any(environment.get(key) != value for key, value in expected.items()):
+    expected = {"SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture", "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture", "SWITCHSTAND_MCP_GITHUB_USER_ID": "123456", "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(parsed[1].port), "SWITCHSTAND_MCP_PUBLIC_URL": config.public_origin + "/switchstand/mcp", "SWITCHSTAND_MCP_RESOURCE_URL": f"https://{root.name}.invalid/switchstand/mcp"}
+    if environment != expected:
         raise Failed("disposable environment selects a non-isolated endpoint")
 
 
@@ -260,6 +252,8 @@ def atomic_copy(source: Path, target: Path, mode: int) -> None:
 
 def _validate_launch_mapping(config: Config) -> None:
     current = config.launcher.read_bytes()
+    if config.target == "disposable" and current.count(os.fsencode(f'["docker", "inspect", "rehearsal-{cast(Path, config.target_root).name}-postgres-1"]')) != 1:
+        raise Failed("disposable launcher database identity is not exact")
     old_runtime = os.fsencode(config.current_runtime)
     candidate = config.candidate_launcher.read_bytes()
     if current.count(old_runtime) == 1:
