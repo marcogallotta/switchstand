@@ -1464,6 +1464,42 @@ def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
     assert not attempt.exists()
 
 
+def test_cli_runs_only_an_exact_disposable_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    rehearsals = tmp_path / "rehearsals"
+    root = rehearsals / "proof"
+    root.mkdir(parents=True, mode=0o700)
+    rehearsals.chmod(0o700)
+    root.chmod(0o700)
+    monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
+    seen = []
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda subject, _operations: seen.append(subject) or "PASS"
+    )
+    arguments = [
+        "--target", "disposable", "--target-root", str(root),
+        "--service", "switchstand-rehearsal-proof.service",
+        "--caddy", "http://127.0.0.1:22019",
+        "--local-url", "http://127.0.0.1:28790/mcp",
+        "--public-origin", "http://127.0.0.1:28443",
+        "--lock-path", str(root / "edge.lock"),
+        "--attempt-dir", str(root / "attempt"),
+        "--current-runtime", str(tmp_path / "current"),
+        "--candidate-runtime", str(tmp_path / "candidate"),
+        "--candidate-launcher", str(root / "candidate-launcher"),
+        "--launcher", str(root / "launcher"),
+        "--fastmcp-state", str(root / "fastmcp"),
+        "--env-file", str(root / "edge.env"),
+        "--current-sha", "a" * 40, "--candidate-sha", "b" * 40,
+        "--candidate-launcher-sha", "c" * 64,
+        "--current-launcher-sha", "d" * 64,
+    ]
+
+    assert maintenance.main(arguments) == 0
+    assert len(seen) == 1 and seen[0].target == "disposable"
+
+
 def test_cli_resume_rejects_malformed_receipt_without_deploy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
