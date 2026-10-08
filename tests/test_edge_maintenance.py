@@ -470,9 +470,21 @@ def test_resume_never_replays_a_proven_completed_host_effect(
     assert completed not in operations.events
 
 
-def test_resume_prepared_reprepares_before_stop(tmp_path: Path):
+@pytest.mark.parametrize("gate_ahead", [False, True])
+def test_resume_prepared_reprepares_before_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, gate_ahead: bool,
+):
     subject = config(tmp_path); seed_receipt(subject, "PREPARED")
-    operations = FakeOperations(); operations.prepare_state = lambda: (_ for _ in ()).throw(Failed())
+    operations = FakeOperations(); operations.gated = gate_ahead
+    if gate_ahead:
+        host = HostOperations(subject)
+        monkeypatch.setattr(host, "_resume_trust", lambda: None)
+        monkeypatch.setattr(host, "_gate_state", lambda: "APPLIED")
+        monkeypatch.setattr(host, "_service_state", lambda: "ACTIVE")
+        monkeypatch.setattr(host, "_artifact_digest", lambda *_args: subject.current_launcher_sha)
+        observed = host.reconcile_phase("PREPARED", {})
+        operations.reconcile_phase = lambda *_args: observed  # type: ignore[method-assign]
+    operations.prepare_state = lambda: (_ for _ in ()).throw(Failed())
     assert deploy(subject, operations) == "FAIL" and "stop" not in operations.events
 
 

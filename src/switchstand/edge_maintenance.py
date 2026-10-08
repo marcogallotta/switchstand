@@ -543,7 +543,7 @@ class HostOperations:
             if gate == "ABSENT" and service == "ACTIVE":
                 return phase, {}
             if gate == "APPLIED" and service == "ACTIVE":
-                return "GATED", {}
+                return ("GATED" if phase == "PREFLIGHT" else "PREPARED"), {}
             raise Unknown("gate outcome is ambiguous")
         if phase == "GATED":
             if gate != "APPLIED":
@@ -760,7 +760,9 @@ class HostOperations:
 
     def prepare_state(self) -> str:
         """Build and rehearse the migration while the current edge stays online."""
-        if self._service_state() != "ACTIVE" or self.gate_exact():
+        if self._service_state() != "ACTIVE" or self._gate_state() not in {
+            "ABSENT", "APPLIED",
+        }:
             raise Unknown("state preparation boundary is no longer exact")
         command = [
             str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
