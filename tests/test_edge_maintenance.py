@@ -1447,6 +1447,8 @@ def test_https_gate_proof_uses_public_dns_pinning(monkeypatch, tmp_path: Path):
 
     def request(host, address, method, path):
         requests.append((host, address, method, path))
+        if len(requests) == 1:
+            raise TimeoutError
         return 503, {"retry-after": "60"}, b""
 
     monkeypatch.setattr(
@@ -1459,7 +1461,8 @@ def test_https_gate_proof_uses_public_dns_pinning(monkeypatch, tmp_path: Path):
     )
 
     assert operations.public_gated()
-    assert len(requests) == len(maintenance.EDGE_PATHS)
+    assert len(requests) == len(maintenance.EDGE_PATHS) + 1
+    assert requests[0] == requests[1]
     assert all(call[:3] == ("edge.example", "8.8.8.8", "GET") for call in requests)
 
 
@@ -1489,6 +1492,7 @@ def test_https_gate_proof_fails_when_one_public_address_times_out(
     assert not operations.public_gated()
     assert any(call[1] == "8.8.8.8" for call in requests)
     assert any(call[1] == "9.9.9.9" for call in requests)
+    assert sum(call[1] == "9.9.9.9" for call in requests) == 2
 
 
 def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path: Path):

@@ -517,7 +517,7 @@ class HostOperations:
             launcher != self.c.current_launcher_sha or os.path.lexists(self.backup)
         ):
             raise Unknown("launcher state does not match the durable phase")
-        if phase == "PREFLIGHT":
+        if phase in {"PREFLIGHT", "PREPARED"}:
             if os.path.lexists(self.snapshot_file):
                 raise Unknown("preflight contains an unexpected snapshot")
             if gate == "ABSENT" and service == "ACTIVE":
@@ -525,12 +525,6 @@ class HostOperations:
             if gate == "APPLIED" and service == "ACTIVE":
                 return "GATED", {}
             raise Unknown("gate outcome is ambiguous")
-        if phase == "PREPARED":
-            if gate == "ABSENT" and service == "ACTIVE":
-                return phase, {}
-            if gate == "APPLIED" and service == "ACTIVE":
-                return "GATED", {}
-            raise Unknown("prepared cutover state is ambiguous")
         if phase == "GATED":
             if gate != "APPLIED":
                 raise Unknown("exact maintenance gate is not proven")
@@ -652,6 +646,7 @@ class HostOperations:
             probe = ExternalIngressHttp(
                 self.c.public_origin + "/switchstand/mcp",
                 self.c.public_origin + "/switchstand/mcp",
+                retry_transport=True,
             )
             try:
                 addresses = probe.public_addresses(parsed.hostname)
@@ -660,7 +655,7 @@ class HostOperations:
                         probe_path = (
                             path[:-1] + "maintenance-probe" if path.endswith("/*") else path
                         )
-                        status, headers, _ = probe.request(
+                        status, headers, _ = probe.pinned_request(
                             parsed.hostname, address, "GET", probe_path
                         )
                         if status != 503 or headers.get("retry-after") != str(
@@ -934,7 +929,7 @@ class HostOperations:
 
     def _public_ready(self, runtime: Path, expected: str) -> bool:
         public_url = self.c.public_origin + "/switchstand/mcp"
-        ingress = ExternalIngressHttp(public_url, public_url).observe()
+        ingress = ExternalIngressHttp(public_url, public_url, retry_transport=True).observe()
         return (
             ingress.transport_ok
             and ingress.valid_auth_challenge

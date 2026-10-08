@@ -4,11 +4,9 @@ set -eu
 case "$*" in
     "--target production")
         prepared=$("$0" --mode prepare --target production)
-        case "$prepared" in sha256:*) exec "$0" --mode apply --target production --image-id "$prepared" ;; *) printf '%s\n' "$prepared"; exit 0 ;; esac
-        ;;
+        case "$prepared" in sha256:*) exec "$0" --mode apply --target production --image-id "$prepared" ;; *) printf '%s\n' "$prepared"; exit 0 ;; esac ;;
     "--mode prepare --target production")
         mode=prepare
-        image_id=
         ;;
     "--mode apply --target production --image-id "*)
         [ "$#" -eq 6 ] && [ "$5" = --image-id ] || exit 2
@@ -30,7 +28,6 @@ IMAGE=postgres:18-alpine
 backup=
 backup_ready=false
 rehearsal=
-rehearsal_dump=
 shared_migration_attempted=false
 
 control=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -61,7 +58,7 @@ mkdir "$lock_dir" 2>/dev/null \
 cleanup() {
     status=$?
     [ -z "$rehearsal" ] || docker rm -f "$rehearsal" >/dev/null 2>&1 || true
-    [ -z "$rehearsal_dump" ] || rm -f "$rehearsal_dump"
+    [ "$mode" != prepare ] || [ -z "$backup" ] || rm -f "$backup"
     if [ "$status" -ne 0 ] && [ "$backup_ready" = true ]; then
         observed_revision=$(sql 'SELECT version_num FROM alembic_version' 2>/dev/null || printf UNAVAILABLE)
         observed_counts=$(sql "$counts_sql" 2>/dev/null || printf UNAVAILABLE)
@@ -106,10 +103,8 @@ if [ "$mode" = apply ]; then
     case "$digest" in
         *[!0-9a-f]*) echo "apply requires an exact sha256 image ID" >&2; exit 1 ;;
     esac
-    observed_image=$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null) \
-        || { echo "prepared migration image is unavailable" >&2; exit 1; }
-    [ "$observed_image" = "$image_id" ] \
-        || { echo "prepared migration image identity mismatch" >&2; exit 1; }
+    [ "$(docker image inspect --format '{{.Id}}' "$image_id" 2>/dev/null)" = "$image_id" ] \
+        || { echo "prepared migration image is unavailable or mismatched" >&2; exit 1; }
 fi
 
 sql() { docker exec "$container" psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand -At -c "$1"; }
@@ -180,8 +175,7 @@ assert_quiescent() {
 }
 
 if [ "$mode" = prepare ]; then
-    rehearsal_dump="$state_dir/rehearsal-$EXPECTED_OLD-$head-$$.dump"
-    backup=$rehearsal_dump
+    backup="$state_dir/rehearsal-$EXPECTED_OLD-$head-$$.dump"
 else
     assert_quiescent
     before_counts=$(sql "$counts_sql")
@@ -194,14 +188,8 @@ set -C
 docker exec "$container" pg_dump -U switchstand -d switchstand -Fc >"$backup"
 set +C
 [ -s "$backup" ] || { echo "state backup is empty" >&2; exit 1; }
-[ "$mode" = prepare ] || backup_ready=true
-
-migrate() {
-    target=$1
-    docker run --rm --network "container:$target" \
-        -e DATABASE_URL=postgresql+psycopg://switchstand:switchstand@127.0.0.1/switchstand \
-        "$migration_image" uv run --no-sync alembic -c /app/alembic.ini upgrade "$EXPECTED_NEW"
-}
+backup_ready=true
+[ "$mode" != prepare ] || backup_ready=false
 
 if [ "$mode" = prepare ]; then
 rehearsal="switchstand-upgrade-rehearsal-$(printf '%.12s' "$head")-$$"
@@ -232,6 +220,16 @@ before_counts=$(rehearsal_sql "$counts_sql")
 
 docker build --quiet --target runtime --tag "$migration_image" "$control" >/dev/null
 migration_image=$(docker image inspect --format '{{.Id}}' "$migration_image")
+fi
+
+migrate() {
+    target=$1
+    docker run --rm --network "container:$target" \
+        -e DATABASE_URL=postgresql+psycopg://switchstand:switchstand@127.0.0.1/switchstand \
+        "$migration_image" uv run --no-sync alembic -c /app/alembic.ini upgrade "$EXPECTED_NEW"
+}
+
+if [ "$mode" = prepare ]; then
 migrate "$rehearsal"
 [ "$(rehearsal_sql 'SELECT version_num FROM alembic_version')" = "$EXPECTED_NEW" ]
 [ "$(rehearsal_sql "$counts_sql")" = "$before_counts" ]

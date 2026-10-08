@@ -144,6 +144,7 @@ class ExternalIngressHttp:
     url: str
     resource: str
     resolver_url: str = PUBLIC_DNS_URL
+    retry_transport: bool = False
 
     def _addresses(self, host: str) -> tuple[str, ...]:
         with httpx.Client(timeout=3, trust_env=False, follow_redirects=False) as client:
@@ -191,9 +192,20 @@ class ExternalIngressHttp:
         finally:
             connection.close()
 
-    @staticmethod
-    def _request(host: str, address: str, method: str, path: str) -> tuple[int, str, bytes]:
-        status, headers, body = ExternalIngressHttp.request(host, address, method, path)
+    def pinned_request(
+        self, host: str, address: str, method: str, path: str,
+    ) -> tuple[int, dict[str, str], bytes]:
+        attempts = 2 if self.retry_transport else 1
+        for attempt in range(attempts):
+            try:
+                return self.request(host, address, method, path)
+            except (OSError, TimeoutError, http.client.HTTPException):
+                if attempt == attempts - 1:
+                    raise
+        raise AssertionError("unreachable")
+
+    def _request(self, host: str, address: str, method: str, path: str) -> tuple[int, str, bytes]:
+        status, headers, body = self.pinned_request(host, address, method, path)
         return status, headers.get("www-authenticate", ""), body
 
     def observe(self) -> HttpObservation:

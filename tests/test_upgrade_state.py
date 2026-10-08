@@ -133,7 +133,13 @@ def _run_mode(repo: Path, env: dict[str, str], mode: str, image_id: str = IMAGE_
 
 
 def _run(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run([repo / "scripts" / SCRIPT.name, "--target", "production"], env=env, text=True, capture_output=True, check=False)
+    return subprocess.run(
+        [repo / "scripts" / SCRIPT.name, "--target", "production"],
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 def test_prepare_only_rehearses_live_snapshot_and_returns_image_id(tmp_path):
