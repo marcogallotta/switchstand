@@ -9,6 +9,8 @@ import time
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 DISPATCH = ROOT / "scripts/codex-dispatch"
 
@@ -260,7 +262,10 @@ def qualification_candidate(tmp_path: Path, home: Path, primary: Path) -> tuple[
     return candidate, commit(candidate, "candidate.txt")
 
 
-def test_default_wakeful_pilot_routes_launch_through_supervisor(tmp_path: Path) -> None:
+@pytest.mark.parametrize("root", [False, True])
+def test_default_wakeful_pilot_routes_launch_through_supervisor(
+    tmp_path: Path, root: bool,
+) -> None:
     home, primary, marker, env = dispatch_fixture(tmp_path)
     env.pop("SWITCHSTAND_CODEX_WAKEFUL")
     observed = tmp_path / "supervisor"
@@ -277,8 +282,9 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
 """,
     )
 
+    invocation = [DISPATCH, *(["--root"] if root else []), "resume", "thread-1"]
     result = subprocess.run(
-        [DISPATCH, "resume", "thread-1"], cwd=primary,
+        invocation, cwd=primary,
         env=env | {"SUPERVISOR": str(observed), "PYTHONPATH": "original-codex-path"},
         text=True, capture_output=True, check=False,
     )
@@ -296,7 +302,10 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
     assert "switchstand.codex_session" in arguments[1]
     assert arguments[2] == f"{primary}/src"
     default_name = arguments[arguments.index("--default-name") + 1]
-    assert default_name.startswith("codex-head-") and default_name != "/root"
+    if root:
+        assert default_name == "/root"
+    else:
+        assert default_name.startswith("codex-head-") and default_name != "/root"
     assert arguments[arguments.index("--environment-file") + 1] == str(environment)
     separator = arguments.index("--")
     assert arguments[separator + 1] == str(
@@ -316,6 +325,17 @@ printf 'arg=%s\n' "$@" >> "$SUPERVISOR"
     assert command[command.index("resume") + 1] == "__SWITCHSTAND_WAKEFUL_THREAD__"
     assert command[command.index("--remote") + 1] == "__SWITCHSTAND_WAKEFUL_SOCKET__"
     assert arguments[-2:] == ["resume", "thread-1"]
+
+
+def test_root_selector_rejects_wakeful_off(tmp_path: Path) -> None:
+    _home, primary, marker, env = dispatch_fixture(tmp_path)
+    result = subprocess.run(
+        [DISPATCH, "--root"], cwd=primary, env=env,
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 2
+    assert "requires the Wakeful PILOT" in result.stderr
+    assert not marker.exists()
 
 
 def test_explicit_wakeful_off_preserves_direct_launch_rollback(tmp_path: Path) -> None:

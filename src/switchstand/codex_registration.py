@@ -207,9 +207,10 @@ def prepare_registration(spec: RegistrationSpec) -> tuple[Path, str, CodexBindin
         state, existing_name = asyncio.run(existing_registration(
             binding, spec.default_name, url,
         ))
+        is_root = agent_name_key(spec.default_name) == "root"
+        if state == "missing" and is_root:
+            raise ValueError("reserved /root mailbox does not exist")
         if state == "takeover":
-            if agent_name_key(spec.default_name) == "root":
-                raise ValueError("reserved /root mailbox requires explicit takeover")
             response = client.call("mcpServer/tool/call", {
                 "threadId": binding.thread_id,
                 "server": spec.mcp_server,

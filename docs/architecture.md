@@ -788,13 +788,16 @@ The `run_inbound` pilot reuses existing authorized `MessageState` and
 `AgentMailboxState` objects in a dedicated supervised host process. The small production
 composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
 configuration and reuses `chatgpt_edge.resource_service()`. With
-`SWITCHSTAND_CODEX_WAKEFUL=PILOT`, `codex_session.py` owns the raw Coordinator child, registers its
-  exact authenticated thread through the existing MCP `agent_register` operation, first
+`SWITCHSTAND_CODEX_WAKEFUL=PILOT`, `codex_session.py` owns the raw Coordinator child and, for an
+  ordinary generated-name launch, registers its exact authenticated thread through the existing
+  MCP `agent_register` operation, first
   materializes the zero-turn durable rollout with non-user bootstrap context, and reads back its
   exact start-record binding before registration,
   validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
-  An existing registration, including `/root`, is reused without takeover; ordinary registration
-  cannot create the reserved canonical `root` name and generated names are never `/root`. Runner
+  An existing exact registration is reused without takeover. An explicit leading `codex --root`
+  requires a preexisting `/root` and uses the existing same-principal `agent_takeover`; foreign-
+  principal ownership fails closed. Ordinary registration cannot create the reserved canonical
+  `root` name and generated names are never `/root`. Runner
   failure is retried while Codex remains active, and Codex exit or supervisor death
 closes the lifeline so intake stops. The activated selector defaults to `PILOT`; an explicit
 `SWITCHSTAND_CODEX_WAKEFUL=OFF` restores the direct-launch rollback path. The runner creates no
