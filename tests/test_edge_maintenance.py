@@ -1464,6 +1464,42 @@ def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
     assert not attempt.exists()
 
 
+def test_cli_runs_only_an_exact_disposable_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    rehearsals = tmp_path / "rehearsals"
+    root = rehearsals / "proof"
+    root.mkdir(parents=True, mode=0o700)
+    rehearsals.chmod(0o700)
+    root.chmod(0o700)
+    monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
+    seen = []
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda subject, _operations: seen.append(subject) or "PASS"
+    )
+    arguments = [
+        "--target", "disposable", "--target-root", str(root),
+        "--service", "switchstand-rehearsal-proof.service",
+        "--caddy", "http://127.0.0.1:22019",
+        "--local-url", "http://127.0.0.1:28790/mcp",
+        "--public-origin", "http://127.0.0.1:28443",
+        "--lock-path", str(root / "edge.lock"),
+        "--attempt-dir", str(root / "attempt"),
+        "--current-runtime", str(tmp_path / "current"),
+        "--candidate-runtime", str(tmp_path / "candidate"),
+        "--candidate-launcher", str(root / "candidate-launcher"),
+        "--launcher", str(root / "launcher"),
+        "--fastmcp-state", str(root / "fastmcp"),
+        "--env-file", str(root / "edge.env"),
+        "--current-sha", "a" * 40, "--candidate-sha", "b" * 40,
+        "--candidate-launcher-sha", "c" * 64,
+        "--current-launcher-sha", "d" * 64,
+    ]
+
+    assert maintenance.main(arguments) == 0
+    assert len(seen) == 1 and seen[0].target == "disposable"
+
+
 def test_cli_resume_rejects_malformed_receipt_without_deploy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1848,6 +1884,21 @@ def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path:
         lambda _self: HttpObservation(True, 401, valid_auth_challenge=True),
     )
     assert operations.public_ready()
+
+
+def test_disposable_public_readiness_never_uses_external_ingress(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    subject = replace(config(tmp_path), target="disposable")
+    operations = HostOperations(subject)
+    monkeypatch.setattr(maintenance, "_sha", lambda _path: subject.current_launcher_sha)
+    monkeypatch.setattr(operations, "_doctor", lambda *_args: True)
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp, "observe",
+        lambda _self: pytest.fail("disposable target used external ingress"),
+    )
+
+    assert operations.current_public_ready()
 
 
 def test_current_public_readiness_binds_old_runtime(monkeypatch, tmp_path: Path):

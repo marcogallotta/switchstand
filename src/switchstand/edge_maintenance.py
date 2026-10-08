@@ -798,7 +798,7 @@ class HostOperations:
             raise Unknown("state preparation boundary is no longer exact")
         command = [
             str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-            "--mode", "prepare", "--target", "production",
+            "--mode", "prepare", "--target", self.c.target,
         ]
         try:
             result = run_host_command(
@@ -823,7 +823,7 @@ class HostOperations:
         control_env = self._candidate_control_environment()
         command = [
             str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-            "--mode", "apply", "--target", "production",
+            "--mode", "apply", "--target", self.c.target,
             "--image-id", prepared_image,
         ]
         try:
@@ -912,6 +912,8 @@ class HostOperations:
                 "SWITCHSTAND_CONTROL_COMMON": common,
             }
         )
+        if self.c.target == "disposable" and self.c.target_root is not None:
+            environment["SWITCHSTAND_REHEARSAL_ROOT"] = str(self.c.target_root)
         return environment
 
     def start(self) -> None:
@@ -1099,6 +1101,8 @@ class HostOperations:
             raise Unknown("maintenance gate removal is ambiguous")
 
     def _public_ready(self, runtime: Path, expected: str) -> bool:
+        if self.c.target == "disposable":
+            return self._doctor(runtime, expected, True)
         public_url = self.c.public_origin + "/switchstand/mcp"
         ingress = ExternalIngressHttp(public_url, public_url, retry_transport=True).observe()
         return (
@@ -1573,6 +1577,13 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--retry-after", type=int, default=60)
+    parser.add_argument("--target", choices=("production", "disposable"), default="production")
+    parser.add_argument("--target-root", type=Path)
+    parser.add_argument("--service", default=SERVICE)
+    parser.add_argument("--caddy", default=CADDY)
+    parser.add_argument("--public-origin", default=PUBLIC_ORIGIN)
+    parser.add_argument("--local-url", default=LOCAL_URL)
+    parser.add_argument("--lock-path", type=Path, default=LOCK)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--recover-upgrade-no-effect", action="store_true")
     args = parser.parse_args(argv)
@@ -1587,7 +1598,7 @@ def main(argv: list[str] | None = None) -> int:
     config_values = vars(args).copy()
     config_values.pop("recover_upgrade_no_effect")
     config_values.pop("resume")
-    config = Config(**config_values, target="production")
+    config = Config(**config_values)
     validate_target(config)
     if recover and resume:
         parser.error("resume and no-effect recovery are mutually exclusive")
