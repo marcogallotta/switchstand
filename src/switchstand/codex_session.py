@@ -179,6 +179,7 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
             app_server = start_app_server(
                 spec.codex,
                 spec.home,
+                spec.profile_path.name.removesuffix(".config.toml"),
                 spec.socket_path,
                 spec.log_path("app-server"),
                 environment,

@@ -115,6 +115,7 @@ def remove_owned_socket_entry(socket_path: Path) -> None:
 def start_app_server(
     codex: Path,
     home: Path,
+    profile: str,
     socket_path: Path,
     log_path: Path,
     environment: dict[str, str],
@@ -129,6 +130,8 @@ def start_app_server(
         process = subprocess.Popen(
             [
                 str(codex),
+                "--profile",
+                profile,
                 "--enable",
                 "hooks",
                 "--dangerously-bypass-hook-trust",
