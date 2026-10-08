@@ -22,6 +22,7 @@ from switchstand.messages import (
     MessageSubmitRequest,
     message_deliveries,
 )
+from switchstand.secure_file import atomic_replace_bytes
 
 # Reuse the existing disposable PostgreSQL and host-boundary fixtures.
 pytest_plugins = ["test_codex_wakeful", "test_messages"]
@@ -204,6 +205,66 @@ async def test_supervised_intake_scans_real_source_without_agent_poll(subject, s
     try:
         await asyncio.wait_for(admitted.wait(), timeout=3)
         assert len(client.calls) == 1
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=3)
+
+
+async def test_supervised_intake_follows_displayed_resumed_thread(
+    subject, setup, monkeypatch,
+):
+    home, _, client, launch_binding = setup
+    messages, engine, _grants, principal, sender, _, _ = subject
+    mailboxes = AgentMailboxState(engine)
+    launch = await mailboxes.register_agent("launch", principal.key, "codex:exact")
+    resumed = await mailboxes.register_agent(
+        "resumed", principal.key, "codex:resumed",
+    )
+    assert launch.mailbox is not None and resumed.mailbox is not None
+    request = MessageSubmitRequest(
+        api_version="1", message_id=uuid4(), grant_version=1,
+        route_ref="agent.resumed", kind="request", payload="resume-proof",
+    )
+    submitted = await messages.submit_admitted(
+        sender.authority.active_work_id,
+        MessageRoute(recipient_work_id=resumed.mailbox.endpoint_id,
+                     recipient_grant_version=resumed.mailbox.generation),
+        request,
+    )
+    assert submitted.status == "ok" and submitted.message is not None
+
+    resumed_token = home / "start-commit.resumed"
+    atomic_replace_bytes(resumed_token, b"base\n")
+    client.record["payload"]["content"][0]["text"] = (
+        f"Coordinator start commit is recorded at {resumed_token}."
+    )
+    client.path.write_text(json.dumps(client.record) + "\n")
+    client.thread["id"] = "resumed"
+    client.listed = [{"id": "exact", "path": str(client.path),
+                      "status": {"type": "notLoaded"}},
+                     {"id": "resumed", "path": str(client.path),
+                      "status": {"type": "idle"}}]
+    admitted, stop = asyncio.Event(), asyncio.Event()
+    original_call = client.call
+
+    def observed(method, params):
+        result = original_call(method, params)
+        if method == "thread/queue/add":
+            admitted.set()
+        return result
+
+    monkeypatch.setattr(client, "call", observed)
+    monkeypatch.setattr(client, "close", lambda: None)
+    monkeypatch.setattr("switchstand.codex_wakeful.QueueClient", lambda *_: client)
+    task = asyncio.create_task(run_inbound(
+        messages, mailboxes, launch.mailbox, launch_binding, home, home / "unused", stop,
+        opt_in=True,
+    ))
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=3)
+        assert len(client.calls) == 1
+        assert client.calls[0]["threadId"] == "resumed"
+        assert str(submitted.message.delivery_id) in client.calls[0]["input"][0]["text"]
     finally:
         stop.set()
         await asyncio.wait_for(task, timeout=3)

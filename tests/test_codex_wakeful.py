@@ -24,6 +24,7 @@ from switchstand.codex_wakeful import (
     inbound,
     inbound_cycle,
     open_wakeful_event_store,
+    visible_binding,
     wake_id,
     wakeful_event_cycle,
 )
@@ -49,7 +50,8 @@ class Client(QueueClient):
             f"Coordinator start commit is recorded at {token}. Reread that file after "
             "context compaction and before handoff."}]}}
         self.path.write_text(json.dumps(self.record, ensure_ascii=False) + "\n")
-        self.listed = [{"id": "exact", "path": str(self.path)}]
+        self.listed = [{"id": "exact", "path": str(self.path),
+                        "status": {"type": "idle"}}]
 
     def call(self, method, params):
         if method == "thread/list":
@@ -146,6 +148,34 @@ def test_expected_binding_uses_exact_read_and_result_taxonomy(setup):
     assert bind(client, home, token, "exact") == "NOT_BOUND"
     client.thread.pop("path")
     assert bind(client, home, token, "exact") == "UNAVAILABLE"
+
+
+def test_visible_binding_follows_the_one_displayed_thread(tmp_path):
+    launch = tmp_path / "start-commit.launch"
+    resumed = tmp_path / "start-commit.resumed"
+    atomic_replace_bytes(launch, b"launch\n")
+    atomic_replace_bytes(resumed, b"resumed\n")
+    client = Client(tmp_path, resumed)
+    client.thread["id"] = "resumed"
+    client.listed = [
+        {"id": "launch", "path": str(client.path), "status": {"type": "notLoaded"}},
+        {"id": "resumed", "path": str(client.path), "status": {"type": "idle"}},
+    ]
+    later = json.loads(json.dumps(client.record))
+    later["payload"]["content"][0]["text"] = f"Current launcher: {launch}."
+    client.path.write_text(json.dumps(client.record) + "\n" + json.dumps(later) + "\n")
+
+    selected = visible_binding(client, tmp_path)
+    assert selected == CodexBinding(
+        "resumed", str(resumed), resumed.name,
+    )
+    client.path.write_text("not json\n")
+    assert visible_binding(client, tmp_path, selected) == selected
+    client.listed[0]["status"] = {"type": "active", "activeFlags": []}
+    assert visible_binding(client, tmp_path) == "CONFLICT"
+    for thread in client.listed:
+        thread["status"] = {"type": "notLoaded"}
+    assert visible_binding(client, tmp_path) == "NOT_BOUND"
 
 @pytest.mark.parametrize("suffix,expected", [(". Reread", True), (", next", True),
     (".suffix", False), ("/child", False), ("longer", False), (".suffix next", False)])

@@ -15,7 +15,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable, Generator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -313,6 +313,51 @@ def bind(
         return "UNAVAILABLE"
 
 
+def visible_binding(
+    client: QueueClient, home: Path, known: CodexBinding | None = None,
+) -> CodexBinding | str:
+    """Bind the one thread currently displayed by this private app server."""
+    try:
+        page = client.call("thread/list", {"limit": 100, "archived": False})
+        threads = [thread for thread in page["data"]
+                   if thread.get("status", {}).get("type") in {"active", "idle"}]
+        if len(threads) != 1:
+            return "CONFLICT" if threads else "NOT_BOUND"
+        thread = threads[0]
+        path = Path(thread["path"])
+        if not path.resolve().is_relative_to(home.resolve()):
+            return "NOT_BOUND"
+        if (known is not None and known.thread_id == thread["id"]
+                and Path(known.start_record).parent == home
+                and Path(known.start_record).is_file()):
+            return known
+        pattern = (r"Coordinator start commit is recorded at ("
+                   + re.escape(str(home / "start-commit."))
+                   + r"[A-Za-z0-9_-]+)(?=$|\s|[.,;:!?](?=\s|$))")
+        with path.open(encoding="utf-8") as records:
+            for line in records:
+                if not line.strip():
+                    continue
+                record = json.loads(line)
+                payload = record.get("payload", {})
+                if (record.get("type") != "response_item"
+                        or payload.get("type") != "message"
+                        or payload.get("role") != "developer"):
+                    continue
+                candidates = {Path(match) for part in payload.get("content", [])
+                              if part.get("type") == "input_text"
+                              for match in re.findall(pattern, part.get("text", ""))}
+                valid = [candidate for candidate in candidates
+                         if candidate.parent == home and candidate.is_file()]
+                if len(valid) > 1:
+                    return "CONFLICT"
+                if valid:
+                    return bind(client, home, valid[0], thread["id"])
+        return "NOT_BOUND"
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return "UNAVAILABLE"
+
+
 def children(thread: dict[str, Any]) -> list[WakeSourceRef]:
     calls = [item for turn in thread["turns"] for item in turn["items"]
              if item["type"] == "collabAgentToolCall"]
@@ -590,15 +635,43 @@ async def run_inbound(
     if not opt_in:
         return
     with projection_lock(home, binding.generation):
-        projection = Projection(home, binding)
-        wakeful_store = open_wakeful_event_store(mailbox)
+        active_lock: AbstractContextManager[None] | None = None
+        active_binding: CodexBinding | None = None
+        active_mailbox: AgentMailbox | None = None
+        projection: Projection | None = None
+        wakeful_store = None
         cursor = None
         while not stop.is_set():
             client = None
             try:
                 client = QueueClient(codex, home, socket_path)
+                selected = visible_binding(client, home, active_binding)
+                if isinstance(selected, str):
+                    print(f"visible binding {selected}", flush=True)
+                    raise OSError("visible Codex thread is not exactly bound")
+                current = await mailboxes.for_actor(
+                    mailbox.principal_key, f"codex:{selected.thread_id}",
+                )
+                if current.mailbox is None:
+                    if selected == binding:
+                        return
+                    print(f"visible mailbox {current.reason or current.status}", flush=True)
+                    raise ValueError("visible Codex thread has no mailbox")
+                if selected != active_binding or current.mailbox != active_mailbox:
+                    new_lock: AbstractContextManager[None] | None = None
+                    if selected.generation != binding.generation:
+                        new_lock = projection_lock(home, selected.generation)
+                        new_lock.__enter__()
+                    old_lock, active_lock = active_lock, new_lock
+                    if old_lock is not None:
+                        old_lock.__exit__(None, None, None)
+                    active_binding, active_mailbox = selected, current.mailbox
+                    projection = Projection(home, selected)
+                    wakeful_store = open_wakeful_event_store(current.mailbox)
+                    cursor = None
+                assert projection is not None and active_mailbox is not None
                 cursor, results = await inbound_cycle(
-                    messages, mailboxes, mailbox, projection, client, cursor, stop,
+                    messages, mailboxes, active_mailbox, projection, client, cursor, stop,
                 )
                 for identity, result in results.items():
                     print(identity, result, flush=True)
@@ -606,7 +679,7 @@ async def run_inbound(
                     return
                 if wakeful_store is not None:
                     wakeful_results = await wakeful_event_cycle(
-                        mailboxes, mailbox, projection, client, wakeful_store,
+                        mailboxes, active_mailbox, projection, client, wakeful_store,
                     )
                     for identity, result in wakeful_results.items():
                         print(identity, result, flush=True)
@@ -619,6 +692,8 @@ async def run_inbound(
                 await asyncio.wait_for(stop.wait(), timeout=2)
             except TimeoutError:
                 pass
+        if active_lock is not None:
+            active_lock.__exit__(None, None, None)
 
 
 async def run_inbound_service(path: Path, *, stop: asyncio.Event | None = None) -> None:
