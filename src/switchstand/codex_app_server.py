@@ -2,16 +2,37 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import signal
 import socket
 import stat
 import subprocess
 import time
+from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 THREAD_PLACEHOLDER = "__SWITCHSTAND_WAKEFUL_THREAD__"
 SOCKET_PLACEHOLDER = "__SWITCHSTAND_WAKEFUL_SOCKET__"
+
+
+def _toml(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value)
+    if isinstance(value, list):
+        return "[" + ",".join(_toml(item) for item in cast(list[object], value)) + "]"
+    if isinstance(value, dict):
+        mapping = cast(dict[str, object], value)
+        return "{" + ",".join(
+            f"{json.dumps(key)}={_toml(item)}"
+            for key, item in sorted(mapping.items())
+        ) + "}"
+    raise TypeError(f"unsupported hook value: {type(value).__name__}")
 
 
 def open_private_append(path: Path) -> int:
@@ -115,6 +136,7 @@ def remove_owned_socket_entry(socket_path: Path) -> None:
 def start_app_server(
     codex: Path,
     home: Path,
+    hooks: Mapping[str, object],
     socket_path: Path,
     log_path: Path,
     environment: dict[str, str],
@@ -129,6 +151,8 @@ def start_app_server(
         process = subprocess.Popen(
             [
                 str(codex),
+                "-c",
+                f"hooks={_toml(hooks)}",
                 "--enable",
                 "hooks",
                 "--dangerously-bypass-hook-trust",

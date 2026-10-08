@@ -108,6 +108,10 @@ def test_prepare_materializes_resumable_exact_launch_owned_thread(
     assert calls[0][0] == "thread/start"
     assert calls[0][1]["approvalPolicy"] == "never"
     assert calls[0][1]["sandbox"] == "danger-full-access"
+    assert calls[0][1]["config"] == {
+        "developer_instructions": f"use {spec.start_record}",
+        "bypass_hook_trust": True,
+    }
     assert "permissions" not in calls[0][1]
     assert [method for method, _arguments in calls[:3]] == [
         "thread/start", "thread/inject_items", "thread/read",
