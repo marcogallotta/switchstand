@@ -231,17 +231,30 @@ if [ ! -e "$owned_writer/friction" ]; then
     ln -s "$friction_root" "$owned_writer/friction"
 fi
 
-trap '' HUP INT TERM
-"$script_dir/coordinator-control" create \
-    --repo "$host_canonical_repo" --control-root "$script_dir/.." \
-    --writer "$owned_writer" \
-    --start-record "$start_record" \
-    --profile "$coordinator_profile_snapshot" --runtime-profile "$coordinator_profile_path" \
-    --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
-    --compact-hook-snapshot "$start_record.compact-controls/codex-compact-hook" \
-    --coordinator-control-snapshot "$start_record.compact-controls/coordinator-control" \
-    --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null
-trap - EXIT HUP INT TERM
+create_signal_status=
+trap 'create_signal_status=129' HUP
+trap 'create_signal_status=130' INT
+trap 'create_signal_status=143' TERM
+if "$script_dir/coordinator-control" create \
+        --repo "$host_canonical_repo" --control-root "$script_dir/.." \
+        --writer "$owned_writer" \
+        --start-record "$start_record" \
+        --profile "$coordinator_profile_snapshot" --runtime-profile "$coordinator_profile_path" \
+        --hooks "$coordinator_home/hooks.json" --executable "$real_codex" \
+        --compact-hook-snapshot "$start_record.compact-controls/codex-compact-hook" \
+        --coordinator-control-snapshot "$start_record.compact-controls/coordinator-control" \
+        --shim "$HOME/.local/bin/codex" --invocation-digest "$invocation_digest" >/dev/null; then
+    trap - EXIT HUP INT TERM
+    if [ -n "$create_signal_status" ]; then
+        exit "$create_signal_status"
+    fi
+else
+    create_status=$?
+    if [ -n "$create_signal_status" ]; then
+        create_status=$create_signal_status
+    fi
+    exit "$create_status"
+fi
 
 unset SWITCHSTAND_CODEX_CONTINUITY SWITCHSTAND_CODEX_LIFETIME \
     SWITCHSTAND_CODEX_WAKEFUL SWITCHSTAND_CODEX_QUALIFICATION_REPO
