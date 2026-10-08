@@ -76,11 +76,14 @@ def test_start_app_server_waits_for_private_socket() -> None:
         home = Path(temporary)
         socket_path = home / "app-server.sock"
         log_path = home / "app-server.log"
-        codex = _executable(home / "codex", """\
+        argv_path = home / "argv"
+        codex = _executable(home / "codex", f"""\
 import socket
 import sys
 import time
+from pathlib import Path
 
+Path({str(argv_path)!r}).write_text("\\n".join(sys.argv[1:]))
 path = sys.argv[-1].removeprefix("unix://")
 listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 listener.bind(path)
@@ -93,6 +96,10 @@ time.sleep(10)
         try:
             assert socket_path.stat().st_mode & 0o777 == 0o600
             assert process.poll() is None
+            assert argv_path.read_text().splitlines() == [
+                "--enable", "hooks", "--dangerously-bypass-hook-trust",
+                "app-server", "--listen", f"unix://{socket_path}",
+            ]
         finally:
             stop_process(process, 1)
 

@@ -127,7 +127,15 @@ def start_app_server(
     log_descriptor = open_private_append(log_path)
     try:
         process = subprocess.Popen(
-            [str(codex), "app-server", "--listen", f"unix://{socket_path}"],
+            [
+                str(codex),
+                "--enable",
+                "hooks",
+                "--dangerously-bypass-hook-trust",
+                "app-server",
+                "--listen",
+                f"unix://{socket_path}",
+            ],
             env=environment,
             start_new_session=True,
             stdout=log_descriptor,
