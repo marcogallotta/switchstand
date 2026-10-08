@@ -50,6 +50,7 @@ class FakeMCP:
             return {"status": "ok", "items": [{"id": work_id, "title": arguments["text"],
                 "revision": "r1", "completed": False, "routing": {}, "context": {}}]}
         if name == "work_history":
+            assert arguments["purpose"] == "investigation"
             return {"status": "stale", "work_id": IDS["work"], "revision": "r1"}
         if name == "product_currentness_get":
             return self.currentness
