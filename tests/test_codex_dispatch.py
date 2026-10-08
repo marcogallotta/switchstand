@@ -198,7 +198,7 @@ def test_signal_deferred_during_create_preserves_committed_generation(
         "case \"${2-}\" in */switchstand-coordinator-*) true;; *) false;; esac; then\n"
         f'    "{real_git}" "$@"\n'
         "    result=$?\n"
-        "    dispatch_pid=$(ps -o ppid= -p \"$PPID\" | tr -d ' ')\n"
+        "    read -r _ _ _ dispatch_pid _ <\"/proc/$PPID/stat\"\n"
         "    kill -TERM \"$dispatch_pid\"\n"
         "    printf 'sent\\n' >\"$SIGNAL_SENT\"\n"
         "    exit \"$result\"\n"
