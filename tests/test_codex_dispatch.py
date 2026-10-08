@@ -173,11 +173,15 @@ def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: P
         ["sh", "-c", "command -v git"], text=True,
     ).strip()
     test_bin = tmp_path / "bin"
+    verification_count = tmp_path / "verification-count"
     executable(
         test_bin / "git",
         "#!/bin/sh\n"
         "if [ \"${3-}\" = rev-parse ] && [ \"${4-}\" = --absolute-git-dir ]; then\n"
-        "    exit 88\n"
+        f'    count=$(cat "{verification_count}" 2>/dev/null || printf 0)\n'
+        "    count=$((count + 1))\n"
+        f'    printf "%s\\n" "$count" > "{verification_count}"\n'
+        "    [ \"$count\" -ne 2 ] || exit 88\n"
         "fi\n"
         f'exec "{real_git}" "$@"\n',
     )
@@ -189,6 +193,7 @@ def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: P
     )
 
     assert result.returncode != 0
+    assert verification_count.read_text() == "2\n"
     assert not marker.exists()
     coordinator_home = home / ".local/state/switchstand/codex/coordinator"
     assert not list(coordinator_home.glob("start-commit.*"))
