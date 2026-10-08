@@ -32,7 +32,7 @@ def spec(tmp_path: Path) -> SessionSpec:
     start.write_text("sha\n")
     start.chmod(0o600)
     profile = tmp_path / "profile.toml"
-    profile.write_text(f'developer_instructions = "use {start}"\n')
+    profile.write_text(f'developer_instructions = "use {start}"\n[hooks]\n')
     return SessionSpec(
         home=tmp_path,
         codex=codex,

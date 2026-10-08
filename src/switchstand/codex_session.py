@@ -8,9 +8,10 @@ import signal
 import subprocess
 import sys
 import time
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from .codex_app_server import (
     open_private_append,
@@ -176,9 +177,14 @@ def supervise(spec: SessionSpec, command: list[str], environment: dict[str, str]
         for handled in forwarded:
             previous[handled] = signal.signal(handled, forward)
         try:
+            profile = tomllib.loads(spec.profile_path.read_text())
+            hooks = profile.get("hooks")
+            if not isinstance(hooks, dict):
+                raise TypeError("generated Codex profile has no hooks table")
             app_server = start_app_server(
                 spec.codex,
                 spec.home,
+                cast(dict[str, object], hooks),
                 spec.socket_path,
                 spec.log_path("app-server"),
                 environment,

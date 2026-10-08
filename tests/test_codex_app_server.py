@@ -77,6 +77,9 @@ def test_start_app_server_waits_for_private_socket() -> None:
         socket_path = home / "app-server.sock"
         log_path = home / "app-server.log"
         argv_path = home / "argv"
+        hooks = {"Stop": [{"hooks": [{
+            "type": "command", "command": "/bin/true", "timeout": 10,
+        }]}]}
         codex = _executable(home / "codex", f"""\
 import socket
 import sys
@@ -91,12 +94,16 @@ listener.listen()
 time.sleep(10)
 """)
         process = start_app_server(
-            codex, home, socket_path, log_path, dict(os.environ), timeout=2,
+            codex, home, hooks, socket_path, log_path, dict(os.environ), timeout=2,
         )
         try:
             assert socket_path.stat().st_mode & 0o777 == 0o600
             assert process.poll() is None
             assert argv_path.read_text().splitlines() == [
+                "-c", (
+                    'hooks={"Stop"=[{"hooks"=[{"command"="/bin/true",'
+                    '"timeout"=10,"type"="command"}]}]}'
+                ),
                 "--enable", "hooks", "--dangerously-bypass-hook-trust",
                 "app-server", "--listen", f"unix://{socket_path}",
             ]
@@ -125,7 +132,7 @@ os.symlink(target, requested)
 time.sleep(10)
 """)
         process = start_app_server(
-            codex, home, socket_path, log_path, dict(os.environ), timeout=2,
+            codex, home, {}, socket_path, log_path, dict(os.environ), timeout=2,
         )
         try:
             assert socket_path.is_symlink()
@@ -160,7 +167,7 @@ def test_start_app_server_reports_child_exit() -> None:
         codex = _executable(home / "codex", "raise SystemExit(9)\n")
         with pytest.raises(OSError, match=r"exited before readiness \(status 9\)"):
             start_app_server(
-                codex, home, home / "app-server.sock", home / "app-server.log",
+                codex, home, {}, home / "app-server.sock", home / "app-server.log",
                 dict(os.environ), timeout=1,
             )
 
@@ -179,7 +186,7 @@ time.sleep(10)
 """)
         with pytest.raises(OSError, match="readiness timed out"):
             start_app_server(
-                codex, home, home / "app-server.sock", home / "app-server.log",
+                codex, home, {}, home / "app-server.sock", home / "app-server.log",
                 dict(os.environ), timeout=0.2, term_seconds=0.2,
             )
         pid = int(pid_path.read_text())

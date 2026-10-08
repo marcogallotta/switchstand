@@ -151,7 +151,8 @@ def pending_thread(spec: RegistrationSpec) -> str | None:
 def start_thread(client: QueueClient, profile: dict[str, Any], developer: str) -> str:
     started = client.call("thread/start", {
         "cwd": str(Path.cwd()), "ephemeral": False,
-        "developerInstructions": developer, "config": profile,
+        "developerInstructions": developer,
+        "config": profile | {"bypass_hook_trust": True},
         "approvalPolicy": "never", "sandbox": "danger-full-access",
     })
     thread_id = cast(dict[str, Any], started["thread"])["id"]
