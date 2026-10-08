@@ -136,20 +136,23 @@ async def _async_value(value):
     return value
 
 
-def test_prepare_never_automatically_takes_over_root(spec: Spec, monkeypatch) -> None:
+@pytest.mark.parametrize("state", ["takeover", "missing"])
+def test_prepare_explicit_root(spec: Spec, monkeypatch, state: str) -> None:
     root = replace(spec, default_name="/root")
     binding = CodexBinding("thread-1", str(root.start_record), root.start_record.name)
+    calls: list[tuple[str, dict[str, object]]] = []
 
     class Client:
         def __init__(self, *_args):
             pass
 
-        def call(self, method: str, _arguments: dict[str, object]):
+        def call(self, method: str, arguments: dict[str, object]):
+            calls.append((method, arguments))
             if method == "thread/start":
                 return {"thread": {"id": "thread-1"}}
             if method == "thread/inject_items":
                 return {}
-            raise AssertionError("root takeover must require explicit authorization")
+            return {"structuredContent": {"status": "ok", "name": "/root"}}
 
         def close(self) -> None:
             pass
@@ -158,10 +161,22 @@ def test_prepare_never_automatically_takes_over_root(spec: Spec, monkeypatch) ->
     monkeypatch.setattr("switchstand.codex_registration.bind", lambda *_args: binding)
     monkeypatch.setattr(
         "switchstand.codex_registration.existing_registration",
-        lambda *_args: _async_value(("takeover", "/root")),
+        lambda *_args: _async_value((state, "/root" if state == "takeover" else None)),
     )
-    with pytest.raises(ValueError, match="explicit takeover"):
-        prepare_registration(root)
+    monkeypatch.setattr(
+        "switchstand.codex_registration.freeze_config",
+        lambda *_args: _async_value(root.home / "runner.json"),
+    )
+    if state == "missing":
+        with pytest.raises(ValueError, match="does not exist"):
+            prepare_registration(root)
+        assert all(arguments.get("tool") != "agent_register" for _, arguments in calls)
+    else:
+        assert prepare_registration(root)[2] == binding
+        assert calls[-1] == ("mcpServer/tool/call", {
+            "threadId": "thread-1", "server": "switchstand", "tool": "agent_takeover",
+            "arguments": {"api_version": "1", "name": "/root"},
+        })
 
 
 def test_prepare_retires_unbound_persisted_thread(spec: Spec, monkeypatch) -> None:

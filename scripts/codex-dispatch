@@ -48,6 +48,16 @@ case "$continuity_lifetime" in ASSIGNMENT|STANDING) ;; *)
     echo "SWITCHSTAND_CODEX_LIFETIME must be ASSIGNMENT or STANDING" >&2; exit 2;; esac
 case "$wakeful_mode" in OFF|PILOT) ;; *)
     echo "SWITCHSTAND_CODEX_WAKEFUL must be OFF or PILOT" >&2; exit 2;; esac
+invocation_digest=$("$script_dir/coordinator-control" digest-argv -- "$@")
+root_mailbox=false
+if [ "${1-}" = "--root" ]; then
+    if [ "$wakeful_mode" != PILOT ]; then
+        echo "codex --root requires the Wakeful PILOT launch path" >&2
+        exit 2
+    fi
+    root_mailbox=true
+    shift
+fi
 auth_source="$HOME/.codex/auth.json"
 auth_link="$coordinator_home/auth.json"
 if [ ! -f "$auth_source" ]; then
@@ -97,7 +107,6 @@ trap cleanup_incomplete_generation EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-invocation_digest=$("$script_dir/coordinator-control" digest-argv -- "$@")
 if [ -L "$auth_link" ]; then
     if [ "$(readlink -f "$auth_link")" != "$(readlink -f "$auth_source")" ]; then
         echo "Coordinator Codex authentication binding is invalid" >&2
@@ -266,13 +275,17 @@ if [ "$wakeful_mode" = PILOT ]; then
         echo "Wakeful pilot runtime is unavailable" >&2
         exit 1
     fi
+    mailbox_name="codex-head-$writer_suffix"
+    if [ "$root_mailbox" = true ]; then
+        mailbox_name=/root
+    fi
     CODEX_HOME="$coordinator_home" \
         exec "$runtime_python" -c \
             'import sys; sys.path.insert(0, sys.argv.pop(1)); from switchstand.codex_session import main; main()' \
             "$canonical_repo/src" \
             --home "$coordinator_home" --codex "$real_codex" \
             --start-record "$start_record" \
-            --default-name "codex-head-$writer_suffix" \
+            --default-name "$mailbox_name" \
             --environment-file "$environment_file" \
             --profile-path "$coordinator_profile_path" -- \
             "$real_codex" --profile "$coordinator_profile" \
