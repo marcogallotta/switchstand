@@ -31,6 +31,8 @@ from switchstand.edge_maintenance import (
 )
 from switchstand.edge_monitor import HttpObservation
 
+PREPARED_IMAGE = "sha256:" + "e" * 64
+
 
 def config(
     tmp_path: Path,
@@ -90,6 +92,10 @@ class FakeOperations:
     def preflight(self):
         self._event("preflight")
 
+    def prepare_state(self):
+        self._event("prepare_state")
+        return PREPARED_IMAGE
+
     def gate(self):
         self._event("gate")
         self.gated = True
@@ -105,7 +111,8 @@ class FakeOperations:
     def stop(self):
         self._event("stop")
 
-    def upgrade_state(self):
+    def upgrade_state(self, prepared_image):
+        assert prepared_image == PREPARED_IMAGE
         self._event("upgrade_state")
 
     def snapshot(self):
@@ -138,6 +145,8 @@ class FakeOperations:
 
     def current_public_ready(self):
         self._event("current_public_ready")
+        if self.unknown_at == "public_ready" and self.events.count("current_public_ready") > 1:
+            raise Unknown("ambiguous")
         return self.current_public
 
     def ungate(self):
@@ -161,11 +170,18 @@ def receipt(subject: Config) -> dict[str, object]:
 
 def seed_receipt(subject: Config, phase: str) -> None:
     durable = maintenance.Receipt(subject)
+    if phase != "PREFLIGHT":
+        durable.value["prepared_image"] = PREPARED_IMAGE
     if phase == "UPGRADE_PENDING":
         durable.value["state_upgrade"] = "PENDING"
-    elif phase not in {"PREFLIGHT", "GATED", "STOPPED", "ROLLED_BACK"}:
+    elif phase not in {
+        "PREFLIGHT", "PREPARED", "GATED", "STOPPED", "ROLLED_BACK"
+    }:
         durable.value["state_upgrade"] = "APPLIED"
-    if phase not in {"PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED"}:
+    if phase not in {
+        "PREFLIGHT", "PREPARED", "GATED", "STOPPED",
+        "UPGRADE_PENDING", "UPGRADED",
+    }:
         durable.value["fastmcp_snapshot"] = "a" * 64
     durable.write(phase, "UNKNOWN")
 
@@ -382,6 +398,7 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
     assert operations.events == [
         "preflight",
         "current_public_ready",
+        "prepare_state",
         "gate",
         "public_gated",
         "stop",
@@ -399,7 +416,7 @@ def test_success_gates_every_public_path_before_stop(tmp_path: Path):
 @pytest.mark.parametrize(
     ("phase", "observed", "completed"),
     [
-        ("PREFLIGHT", "GATED", "gate"),
+        ("PREPARED", "GATED", "gate"),
         ("GATED", "STOPPED", "stop"),
         ("STOPPED", "UPGRADED", "upgrade_state"),
         ("UPGRADED", "SNAPSHOTTED", "snapshot"),
@@ -606,22 +623,23 @@ def test_definite_pre_upgrade_failure_restarts_old_runtime_and_ungates(tmp_path:
 
     assert deploy(subject, operations) == "FAIL"
 
-    assert operations.events[-3:] == ["stop", "ungate", "public_ready"]
+    assert operations.events[-3:] == ["stop", "ungate", "current_public_ready"]
     assert not operations.gated
     assert receipt(subject)["phase"] == "ROLLED_BACK"
     assert receipt(subject)["state_upgrade"] == "NOT_STARTED"
+    assert deploy(subject, FakeOperations()) == "FAIL"
 
 
-def test_candidate_failure_after_state_upgrade_keeps_gate_and_reports_unknown(tmp_path: Path):
+def test_candidate_failure_after_state_upgrade_restores_verified_lkg(tmp_path: Path):
     subject = config(tmp_path)
-    operations = FakeOperations(local=False)
+    operations = FakeOperations(public=False)
 
-    assert deploy(subject, operations) == "UNKNOWN"
+    assert deploy(subject, operations) == "FAIL"
 
-    assert operations.gated
-    assert "restore_launcher" not in operations.events
-    assert "ungate" not in operations.events
-    assert receipt(subject)["phase"] == "STARTED"
+    assert operations.events[-6:] == ["stop", "restore_launcher", "start",
+                                      "rollback_ready", "ungate", "current_public_ready"]
+    assert receipt(subject)["phase"] == "ROLLED_BACK"
+    assert receipt(subject)["state_upgrade"] == "APPLIED"
 
 
 def test_rollback_ambiguity_keeps_maintenance_gate_and_reports_unknown(tmp_path: Path):
@@ -746,16 +764,13 @@ def test_recovery_refuses_receipt_change_during_proof(
     assert receipt(subject)["phase"] == "UPGRADE_PENDING"
 
 
-def test_definite_post_upgrade_failure_keeps_gate_and_does_not_restart_old_runtime(tmp_path: Path):
+def test_definite_post_upgrade_failure_restarts_and_verifies_lkg(tmp_path: Path):
     subject = config(tmp_path)
     operations = FakeOperations(fail_at="snapshot")
 
-    assert deploy(subject, operations) == "UNKNOWN"
+    assert deploy(subject, operations) == "FAIL"
 
-    assert operations.gated
-    assert "restore_launcher" not in operations.events
-    assert "start" not in operations.events
-    assert "ungate" not in operations.events
+    assert operations.events[-4:] == ["start", "rollback_ready", "ungate", "current_public_ready"]
     assert receipt(subject)["state_upgrade"] == "APPLIED"
 
 
@@ -765,14 +780,14 @@ def test_post_upgrade_candidate_failure_retains_gate_after_local_check(tmp_path:
 
     assert deploy(subject, operations) == "UNKNOWN"
 
-    assert operations.events[-3:] == ["gate_exact", "gate_exact", "public_gated"]
+    assert operations.events[-3:] == ["gate", "gate_exact", "public_gated"]
     assert operations.gated
     assert receipt(subject)["error"] == "RollbackUnknown"
 
 
 def test_ambiguous_public_readback_reinstalls_gate(tmp_path: Path):
     subject = config(tmp_path)
-    operations = FakeOperations(public=False)
+    operations = FakeOperations(public=False, unknown_at="public_ready")
 
     assert deploy(subject, operations) == "UNKNOWN"
 
@@ -821,24 +836,32 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
 ):
     subject, operations, _state = resume_subject(tmp_path, monkeypatch)
     commands: list[list[str]] = []
+    boundary = {"service": "ACTIVE", "gate": False}
 
-    monkeypatch.setattr(operations, "_service_state", lambda: "INACTIVE")
-    monkeypatch.setattr(operations, "gate_exact", lambda: True)
+    monkeypatch.setattr(operations, "_service_state", lambda: boundary["service"])
+    monkeypatch.setattr(operations, "gate_exact", lambda: boundary["gate"])
     monkeypatch.setattr(operations, "public_gated", lambda: True)
     monkeypatch.setattr(operations, "_candidate_control_environment", dict)
     monkeypatch.setattr(
         maintenance,
         "run_host_command",
         lambda command, **_kwargs: (
-            commands.append(command) or subprocess.CompletedProcess(command, 0, "", "")
+            commands.append(command) or subprocess.CompletedProcess(
+                command, 0, PREPARED_IMAGE + "\n" if "prepare" in command else "", ""
+            )
         ),
     )
 
-    operations.upgrade_state()
+    assert operations.prepare_state() == PREPARED_IMAGE
+    boundary.update(service="INACTIVE", gate=True)
+    operations.upgrade_state(PREPARED_IMAGE)
 
     assert commands == [
         [str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-         "--target", "production"]
+         "--mode", "prepare", "--target", "production"],
+        [str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
+         "--mode", "apply", "--target", "production",
+         "--image-id", PREPARED_IMAGE]
     ]
 
 
@@ -857,7 +880,7 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
     )
 
     with pytest.raises(Unknown, match="did not complete"):
-        operations.upgrade_state()
+        operations.upgrade_state(PREPARED_IMAGE)
 
 
 def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
@@ -959,12 +982,13 @@ def test_state_upgrade_passes_exact_detached_candidate_selectors(
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
 
-    operations.upgrade_state()
+    operations.upgrade_state(PREPARED_IMAGE)
 
     command, kwargs = calls[-1]
     assert command == [
         str(subject.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-        "--target", "production",
+        "--mode", "apply", "--target", "production",
+        "--image-id", PREPARED_IMAGE,
     ]
     assert kwargs["env"] is not None
     environment = kwargs["env"]
@@ -1007,7 +1031,7 @@ def test_state_upgrade_overwrites_inherited_control_selectors(
 
     monkeypatch.setattr(maintenance, "run_host_command", run)
 
-    operations.upgrade_state()
+    operations.upgrade_state(PREPARED_IMAGE)
 
     assert command_env is not None
     assert command_env["SWITCHSTAND_CONTROL_PATH"] == str(subject.candidate_runtime)
@@ -1042,7 +1066,7 @@ def test_state_upgrade_rejects_candidate_control_mismatch_before_invocation(
     monkeypatch.setattr(maintenance, "run_host_command", run)
 
     with pytest.raises(Unknown, match="control identity is not exact"):
-        operations.upgrade_state()
+        operations.upgrade_state(PREPARED_IMAGE)
 
     assert all("switchstand-upgrade-state" not in command[0] for command in commands)
 
