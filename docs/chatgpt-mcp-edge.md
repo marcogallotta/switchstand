@@ -208,8 +208,8 @@ was current, or `APPLIED` only after migration readback. Missing, malformed, or 
 remains `UNKNOWN`. The receipt records `UPGRADE_PENDING`
 before that forward-only command and `UPGRADED` only after it completes, so an
 interrupted or failed migration remains gated and `UNKNOWN`, never a blind retry or
-old-runtime rollback. Proven `NO_EFFECT` retains old-runtime rollback eligibility; `APPLIED` does
-not. It then snapshots the exact FastMCP state directory without
+old-runtime rollback. A proven `NO_EFFECT` or `APPLIED` retains old-runtime rollback eligibility
+only after deployment qualification proves the exact old runtime compatible with schema 0025. It then snapshots the exact FastMCP state directory without
 parsing or logging its secret contents, atomically swaps the launcher, starts the edge, runs the edge doctor locally, removes the
 gate, and runs the public doctor. If public gate proof fails or is interrupted
 before the service is stopped, it proves the old runtime locally exact, removes
@@ -219,9 +219,8 @@ service-wide gate. Ambiguous old-runtime or gate-removal proof stays `UNKNOWN`
 without deliberately re-gating the still-running old service. A definite failure
 later but before `UPGRADE_PENDING` retains the existing safe recovery: when stop
 is definitely complete, it restarts and verifies the compatible old runtime before
-ungating. Every failure or
-ambiguity at or after `UPGRADE_PENDING` returns `UNKNOWN`, retains or reinstalls
-the gate, and performs no automatic old-runtime restart. It never restores the
+ungating. An ambiguous `UPGRADE_PENDING` remains `UNKNOWN` and gated. After a proven result, a
+definite later failure restores and verifies the compatible old runtime. It never restores the
 OAuth snapshot automatically because doing
 so could discard registrations or token rotations accepted after the snapshot.
 Snapshot restoration is a separate offline corruption-recovery action with explicit

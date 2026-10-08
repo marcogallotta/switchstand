@@ -2,19 +2,19 @@
 set -eu
 
 case "$*" in
-    "--target production") mode=legacy ;;
-    "--mode prepare --target production") mode=prepare ;;
-    "--mode apply --target production --image-id "*)
-        [ "$#" -eq 6 ] && [ "$5" = --image-id ] || exit 2; mode=apply; image_id=$6 ;;
+    "--target production") mode=legacy; target=production ;;
+    "--mode prepare --target production"|"--mode prepare --target disposable")
+        mode=prepare; target=$4 ;;
+    "--mode apply --target production --image-id "*|"--mode apply --target disposable --image-id "*)
+        [ "$#" -eq 6 ] && [ "$5" = --image-id ] || exit 2
+        mode=apply; target=$4; image_id=$6 ;;
     *)
         echo "usage: scripts/switchstand-upgrade-state --mode prepare|apply --target production [--image-id sha256:...]" >&2; exit 2 ;;
 esac
 umask 077
 
 EXPECTED_NEW=0025_task_control_checkpoints
-PROJECT=switchstand
 SERVICE=postgres
-VOLUME=switchstand_postgres-data
 IMAGE=postgres:18-alpine
 backup=
 backup_ready=false
@@ -22,6 +22,25 @@ rehearsal=
 shared_migration_attempted=false
 
 control=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+if [ "$target" = disposable ]; then
+    root=${SWITCHSTAND_REHEARSAL_ROOT:-}
+    case "$root" in
+        /home/marco/.local/state/switchstand/rehearsals/[a-z0-9]* ) ;;
+        *) echo "disposable upgrade root is invalid" >&2; exit 1 ;;
+    esac
+    [ -d "$root" ] && [ ! -L "$root" ] \
+        && [ "$(stat -c '%u:%a' "$root")" = "$(id -u):700" ] \
+        || { echo "disposable upgrade root is not private" >&2; exit 1; }
+    name=${root##*/}
+    case "$name" in *[!a-z0-9-]*|""|switchstand) echo "disposable upgrade name is invalid" >&2; exit 1;; esac
+    PROJECT="rehearsal-$name"
+    VOLUME="${PROJECT}_postgres-data"
+    state_dir=$root/state
+else
+    PROJECT=switchstand
+    VOLUME=switchstand_postgres-data
+    state_dir=$HOME/.local/state/switchstand
+fi
 head=$(git -C "$control" rev-parse HEAD)
 branch=$(git -C "$control" branch --show-current)
 common=$(git -C "$control" rev-parse --path-format=absolute --git-common-dir)
@@ -41,8 +60,10 @@ else
         || { echo "state upgrade requires clean current main CONTROL" >&2; exit 1; }
 fi
 
-state_dir=$HOME/.local/state/switchstand
 lock_dir=$state_dir/state-upgrade.lock
+if [ "$target" = disposable ]; then
+    [ ! -L "$state_dir" ] && [ ! -L "$root/backups" ] || { echo "disposable state path is a symlink" >&2; exit 1; }
+fi
 mkdir -p "$state_dir"
 mkdir "$lock_dir" 2>/dev/null \
     || { echo "another Switchstand state upgrade is active; refusing concurrent execution" >&2; exit 1; }
@@ -67,7 +88,7 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-compose() { docker compose --project-directory "$control" -f "$control/compose.state.yaml" "$@"; }
+compose() { docker compose --project-name "$PROJECT" --project-directory "$control" -f "$control/compose.state.yaml" "$@"; }
 container=$(compose ps -q "$SERVICE")
 [ -n "$container" ] && [ "$(printf '%s\n' "$container" | wc -l)" -eq 1 ] \
     || { echo "expected exactly one running Switchstand PostgreSQL service" >&2; exit 1; }
@@ -164,7 +185,7 @@ assert_quiescent() {
         || { echo "shared state has $clients other database client(s); stop Switchstand writers before upgrading" >&2; exit 1; }
     container_name=$(docker inspect --format '{{.Name}}' "$container")
     container_name=${container_name#/}
-    network_members=$(docker network inspect --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' switchstand_default)
+    network_members=$(docker network inspect --format '{{range .Containers}}{{.Name}}{{"\n"}}{{end}}' "${PROJECT}_default")
     [ "$network_members" = "$container_name" ] \
         || { echo "shared state network has an attached application container; stop Switchstand writers before upgrading" >&2; exit 1; }
 }
@@ -174,7 +195,11 @@ if [ "$mode" = prepare ]; then
 else
     assert_quiescent
     before_counts=$(sql "$counts_sql")
-    backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
+    if [ "$target" = disposable ]; then
+        backup_dir=$root/backups
+    else
+        backup_dir=${SWITCHSTAND_BACKUP_DIR:-$HOME/.local/state/switchstand/backups}
+    fi
     mkdir -p "$backup_dir"
     chmod 700 "$backup_dir"
     backup="$backup_dir/state-$EXPECTED_OLD-$head-$(date -u +%Y%m%dT%H%M%SZ)-$$.dump"

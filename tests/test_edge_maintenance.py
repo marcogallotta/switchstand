@@ -1403,8 +1403,15 @@ def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     )
     rehearsals.chmod(0o700)
     root.chmod(0o700)
+    subject.env_file.write_text("SWITCHSTAND_MCP_GITHUB_CLIENT_ID=fixture\nSWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=fixture\nSWITCHSTAND_MCP_GITHUB_USER_ID=123456\nSWITCHSTAND_MCP_BIND_HOST=127.0.0.1\nSWITCHSTAND_MCP_BIND_PORT=28790\nSWITCHSTAND_MCP_PUBLIC_URL=http://127.0.0.1:28443/switchstand/mcp\nSWITCHSTAND_MCP_RESOURCE_URL=https://proof.invalid/switchstand/mcp\n")
     monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
     validate_target(subject)
+    subject.launcher.write_text(f'{subject.current_runtime}\n["docker", "inspect", "switchstand-postgres-1"]')
+    subject.candidate_launcher.write_bytes(subject.launcher.read_bytes().replace(bytes(str(subject.current_runtime), "utf8"), bytes(str(subject.candidate_runtime), "utf8")))
+    with pytest.raises(Failed, match="database identity"): _validate_launch_mapping(subject)
+    subject.env_file.write_text(subject.env_file.read_text() + "DATABASE_URL=postgresql://production\n")
+    with pytest.raises(Failed, match="non-isolated endpoint"):
+        validate_target(subject)
     live = {
         "service": maintenance.SERVICE, "fastmcp_state": FASTMCP_STATE,
         "caddy": maintenance.CADDY, "local_url": maintenance.LOCAL_URL,
@@ -1462,6 +1469,43 @@ def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
     with pytest.raises(Failed, match="production target identity"):
         maintenance.main(arguments)
     assert not attempt.exists()
+
+
+def test_cli_runs_only_an_exact_disposable_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    rehearsals = tmp_path / "rehearsals"
+    root = rehearsals / "proof"
+    root.mkdir(parents=True, mode=0o700)
+    rehearsals.chmod(0o700)
+    root.chmod(0o700)
+    monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
+    root.joinpath("edge.env").write_text("SWITCHSTAND_MCP_GITHUB_CLIENT_ID=fixture\nSWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=fixture\nSWITCHSTAND_MCP_GITHUB_USER_ID=123456\nSWITCHSTAND_MCP_BIND_HOST=127.0.0.1\nSWITCHSTAND_MCP_BIND_PORT=28790\nSWITCHSTAND_MCP_PUBLIC_URL=http://127.0.0.1:28443/switchstand/mcp\nSWITCHSTAND_MCP_RESOURCE_URL=https://proof.invalid/switchstand/mcp\n")
+    seen = []
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda subject, _operations: seen.append(subject) or "PASS"
+    )
+    arguments = [
+        "--target", "disposable", "--target-root", str(root),
+        "--service", "switchstand-rehearsal-proof.service",
+        "--caddy", "http://127.0.0.1:22019",
+        "--local-url", "http://127.0.0.1:28790/mcp",
+        "--public-origin", "http://127.0.0.1:28443",
+        "--lock-path", str(root / "edge.lock"),
+        "--attempt-dir", str(root / "attempt"),
+        "--current-runtime", str(tmp_path / "current"),
+        "--candidate-runtime", str(tmp_path / "candidate"),
+        "--candidate-launcher", str(root / "candidate-launcher"),
+        "--launcher", str(root / "launcher"),
+        "--fastmcp-state", str(root / "fastmcp"),
+        "--env-file", str(root / "edge.env"),
+        "--current-sha", "a" * 40, "--candidate-sha", "b" * 40,
+        "--candidate-launcher-sha", "c" * 64,
+        "--current-launcher-sha", "d" * 64,
+    ]
+
+    assert maintenance.main(arguments) == 0
+    assert len(seen) == 1 and seen[0].target == "disposable"
 
 
 def test_cli_resume_rejects_malformed_receipt_without_deploy(
@@ -1848,6 +1892,21 @@ def test_public_readiness_requires_external_ingress_probe(monkeypatch, tmp_path:
         lambda _self: HttpObservation(True, 401, valid_auth_challenge=True),
     )
     assert operations.public_ready()
+
+
+def test_disposable_public_readiness_never_uses_external_ingress(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+):
+    subject = replace(config(tmp_path), target="disposable")
+    operations = HostOperations(subject)
+    monkeypatch.setattr(maintenance, "_sha", lambda _path: subject.current_launcher_sha)
+    monkeypatch.setattr(operations, "_doctor", lambda *_args: True)
+    monkeypatch.setattr(
+        maintenance.ExternalIngressHttp, "observe",
+        lambda _self: pytest.fail("disposable target used external ingress"),
+    )
+
+    assert operations.current_public_ready()
 
 
 def test_current_public_readiness_binds_old_runtime(monkeypatch, tmp_path: Path):
