@@ -96,6 +96,87 @@ def test_failed_writer_verification_removes_new_generation_artifacts(tmp_path: P
     ).strip() == ""
 
 
+def test_writer_friction_links_are_ready_before_generation_is_committed(
+    tmp_path: Path,
+) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    real_ln = subprocess.check_output(
+        ["sh", "-c", "command -v ln"], text=True,
+    ).strip()
+    test_bin = tmp_path / "bin"
+    observed_phase = tmp_path / "writer-link-phase"
+    executable(
+        test_bin / "ln",
+        "#!/bin/sh\n"
+        "case \"${3-}\" in\n"
+        "  */worktrees/switchstand-coordinator-*/friction.md)\n"
+        "    if find \"$HOME/.local/state/switchstand/codex/coordinator\" "
+        "-name 'start-commit.*.manifest.json' -print -quit | grep -q .; then\n"
+        "      printf 'committed\\n' >\"$OBSERVED_PHASE\"\n"
+        "    else\n"
+        "      printf 'pre-create\\n' >\"$OBSERVED_PHASE\"\n"
+        "    fi\n"
+        "    exit 91\n"
+        "    ;;\n"
+        "esac\n"
+        f'exec "{real_ln}" "$@"\n',
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary,
+        env=env | {
+            "PATH": f"{test_bin}:{env['PATH']}",
+            "OBSERVED_PHASE": str(observed_phase),
+        },
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode != 0
+    assert observed_phase.read_text() == "pre-create\n"
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    assert not list(coordinator_home.glob("start-commit.*"))
+    assert not list(coordinator_home.glob("switchstand-coordinator-*"))
+    assert not list(
+        (home / ".local/state/switchstand/worktrees").glob("switchstand-coordinator-*")
+    )
+    assert subprocess.check_output(
+        ["git", "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip() == ""
+
+
+def test_successful_generation_create_is_the_cleanup_commit_point(tmp_path: Path) -> None:
+    home, primary, marker, env = dispatch_fixture(tmp_path)
+    executable(
+        home / ".codex/packages/standalone/current/bin/codex",
+        "#!/bin/sh\nexit 77\n",
+    )
+
+    result = subprocess.run(
+        [DISPATCH], cwd=primary, env=env,
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 77
+    assert not marker.exists()
+    coordinator_home = home / ".local/state/switchstand/codex/coordinator"
+    records = [
+        path for path in coordinator_home.glob("start-commit.*")
+        if path.is_file() and not path.name.endswith(".manifest.json")
+    ]
+    assert len(records) == 1
+    manifests = list(coordinator_home.glob("start-commit.*.manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    writer = Path(manifest["session"]["writer"])
+    assert writer.is_dir()
+    assert (writer / "friction.md").is_symlink()
+    assert (writer / "friction").is_symlink()
+    assert subprocess.check_output(
+        ["git", "-C", primary, "branch", "--list", "v2-coordinator-*"], text=True,
+    ).strip()
+
+
 def commit(repo: Path, *paths: str) -> str:
     subprocess.run(["git", "-C", repo, "add", *paths], check=True)
     subprocess.run(
