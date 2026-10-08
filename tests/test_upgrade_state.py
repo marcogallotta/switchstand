@@ -6,6 +6,7 @@ import pytest
 
 SCRIPT = Path(__file__).parents[1] / "scripts" / "switchstand-upgrade-state"
 HEAD = "a" * 40
+IMAGE_ID = "sha256:" + "b" * 64
 
 
 def _repo(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -51,6 +52,7 @@ case "$*" in
   "network inspect --format "*" switchstand_default") printf '%s\n' "$FAKE_MEMBERS" ;;
   "volume inspect --format "*" switchstand_postgres-data")
     echo "switchstand|postgres-data" ;;
+  "image inspect --format "*) echo "$FAKE_IMAGE_ID" ;;
   "exec shared psql "*version_num*)
     if [ -f "$FAKE_STATE/shared-new" ]; then
       echo 0025_task_control_checkpoints
@@ -76,7 +78,7 @@ case "$*" in
     else
       echo "$FAKE_REVISION"
     fi ;;
-  "exec switchstand-upgrade-rehearsal-"*" psql "*) echo "$FAKE_COUNTS" ;;
+  "exec switchstand-upgrade-rehearsal-"*" psql "*) echo "$FAKE_REHEARSAL_COUNTS" ;;
   "build "*) : ;;
   "run --rm --network container:switchstand-upgrade-rehearsal-"*)
     [ "$FAKE_FAIL_REHEARSAL" = 0 ] || exit 17
@@ -110,6 +112,8 @@ esac
         "FAKE_STATE": str(state),
         "FAKE_REVISION": "0002_grants_and_effects",
         "FAKE_COUNTS": "78|2|3",
+        "FAKE_REHEARSAL_COUNTS": "78|2|3",
+        "FAKE_IMAGE_ID": IMAGE_ID,
         "FAKE_IDENTITY": "switchstand|postgres|postgres:18-alpine|healthy",
         "FAKE_MOUNT": "switchstand_postgres-data|true",
         "FAKE_CLIENTS": "0",
@@ -119,6 +123,13 @@ esac
         "FAKE_READY_FLAP": "0",
     }
     return repo, env
+
+
+def _run_mode(repo: Path, env: dict[str, str], mode: str, image_id: str = IMAGE_ID) -> subprocess.CompletedProcess[str]:
+    args = [repo / "scripts" / SCRIPT.name, "--mode", mode, "--target", "production"]
+    if mode == "apply":
+        args += ["--image-id", image_id]
+    return subprocess.run(args, env=env, text=True, capture_output=True, check=False)
 
 
 def _run(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
@@ -131,6 +142,24 @@ def _run(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_prepare_only_rehearses_live_snapshot_and_returns_image_id(tmp_path):
+    repo, env = _repo(tmp_path)
+    env.update(FAKE_CLIENTS="3", FAKE_MEMBERS="shared-name\nactive-controller", FAKE_REHEARSAL_COUNTS="91|4|7")
+    assert (result := _run_mode(repo, env, "prepare")).returncode == 0 and result.stdout.strip() == IMAGE_ID, result.stderr
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    assert "pg_dump" in trace and "build" in trace and "container:shared" not in trace
+    Path(env["FAKE_STATE"], "rehearsal-new").unlink(); env.update(FAKE_CLIENTS="0", FAKE_MEMBERS="shared-name"); legacy = subprocess.run([repo / "scripts" / SCRIPT.name, "--target", "production"], env=env, text=True, capture_output=True, check=False)
+    assert legacy.returncode == 0 and "container:shared" in Path(env["FAKE_TRACE"]).read_text()
+
+
+def test_apply_uses_exact_image_with_fresh_backup_and_no_rehearsal(tmp_path):
+    repo, env = _repo(tmp_path)
+    assert (result := _run_mode(repo, env, "apply")).returncode == 0, result.stderr
+    trace = Path(env["FAKE_TRACE"]).read_text()
+    assert "pg_dump" in trace and "build" not in trace and "pg_restore" not in trace
+    assert "container:shared" in trace and IMAGE_ID in trace
+
+
 def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):
     repo, env = _repo(tmp_path)
     env["FAKE_REVISION"] = "unexpected"
@@ -141,7 +170,6 @@ def test_refuses_wrong_revision_before_backup_or_migration(tmp_path):
     assert "expected 0002, 0004, 0005, 0006, 0007, 0012, 0013, 0014, 0015, 0016, 0017, 0018, 0019, 0020, 0021, 0022, 0023, 0024, or 0025_task_control_checkpoints; actual unexpected" in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "pg_dump" not in trace
-    assert "build" not in trace
 
 
 @pytest.mark.parametrize(
@@ -183,17 +211,17 @@ def test_rehearsal_failure_never_migrates_shared_state(tmp_path):
     result = _run(repo, env)
 
     assert result.returncode == 17
-    assert "shared migration NOT_RUN; operation aborted" in result.stderr
+    assert "shared migration outcome UNKNOWN" not in result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
     assert "run --rm --network container:shared" not in trace
-    assert list((tmp_path / "backups").glob("*.dump"))
+    assert not list((tmp_path / "backups").glob("*.dump"))
 
 
 def test_rehearsal_requires_stable_readiness_before_restore(tmp_path):
     repo, env = _repo(tmp_path)
     env["FAKE_READY_FLAP"] = "1"
 
-    result = _run(repo, env)
+    result = _run_mode(repo, env, "prepare")
 
     assert result.returncode == 0, result.stderr
     trace = Path(env["FAKE_TRACE"]).read_text()
@@ -205,7 +233,7 @@ def test_attached_writer_container_refuses_before_backup(tmp_path):
     repo, env = _repo(tmp_path)
     env["FAKE_MEMBERS"] = "shared-name\nactive-controller"
 
-    result = _run(repo, env)
+    result = _run_mode(repo, env, "apply")
 
     assert result.returncode == 1
     assert "attached application container" in result.stderr

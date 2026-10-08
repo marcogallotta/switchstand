@@ -115,11 +115,12 @@ class Config:
 
 class Operations(Protocol):
     def preflight(self) -> None: ...
+    def prepare_state(self) -> str: ...
     def gate(self) -> None: ...
     def gate_exact(self) -> bool: ...
     def public_gated(self) -> bool: ...
     def stop(self) -> None: ...
-    def upgrade_state(self) -> Literal["NO_EFFECT", "APPLIED"]: ...
+    def upgrade_state(self, prepared_image: str) -> Literal["NO_EFFECT", "APPLIED"]: ...
     def snapshot(self) -> None: ...
     def swap(self) -> None: ...
     def start(self) -> None: ...
@@ -519,7 +520,7 @@ class HostOperations:
     ) -> tuple[str, dict[str, str]]:
         """Classify a durable host phase or its one proven next state without effects."""
         phases = (
-            "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
+            "PREFLIGHT", "PREPARED", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
             "SNAPSHOTTED", "SWAPPED",
             "STARTED", "UNGATED", "COMPLETE",
         )
@@ -532,11 +533,11 @@ class HostOperations:
             raise Unknown("maintenance gate readback failed") from exc
         service = self._service_state()
         launcher = self._artifact_digest(self.c.launcher, 0o700)
-        if phase in {"PREFLIGHT", "GATED", "STOPPED"} and (
+        if phase in {"PREFLIGHT", "PREPARED", "GATED", "STOPPED"} and (
             launcher != self.c.current_launcher_sha or os.path.lexists(self.backup)
         ):
             raise Unknown("launcher state does not match the durable phase")
-        if phase == "PREFLIGHT":
+        if phase in {"PREFLIGHT", "PREPARED"}:
             if os.path.lexists(self.snapshot_file):
                 raise Unknown("preflight contains an unexpected snapshot")
             if gate == "ABSENT" and service == "ACTIVE":
@@ -665,6 +666,7 @@ class HostOperations:
             probe = ExternalIngressHttp(
                 self.c.public_origin + "/switchstand/mcp",
                 self.c.public_origin + "/switchstand/mcp",
+                retry_transport=True,
             )
             try:
                 addresses = probe.public_addresses(parsed.hostname)
@@ -673,7 +675,7 @@ class HostOperations:
                         probe_path = (
                             path[:-1] + "maintenance-probe" if path.endswith("/*") else path
                         )
-                        status, headers, _ = probe.request(
+                        status, headers, _ = probe.pinned_request(
                             parsed.hostname, address, "GET", probe_path
                         )
                         if status != 503 or headers.get("retry-after") != str(
@@ -750,18 +752,47 @@ class HostOperations:
             return
         raise Unknown("edge listener remains after service stop")
 
-    def upgrade_state(self) -> Literal["NO_EFFECT", "APPLIED"]:
-        """Run the existing rehearsal-and-upgrade only behind a proven offline gate."""
+    @staticmethod
+    def _image_id(value: str) -> str:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
+            raise Unknown("prepared migration image identity is invalid")
+        return value
+
+    def prepare_state(self) -> str:
+        """Build and rehearse the migration while the current edge stays online."""
+        if self._service_state() != "ACTIVE" or self._gate_state() not in {
+            "ABSENT", "APPLIED",
+        }:
+            raise Unknown("state preparation boundary is no longer exact")
+        command = [
+            str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
+            "--mode", "prepare", "--target", "production",
+        ]
+        try:
+            result = run_host_command(
+                command, check=False, timeout=1800,
+                env=self._candidate_control_environment(),
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise Failed("shared state preparation failed") from exc
+        if result.returncode:
+            raise Failed("shared state preparation failed")
+        return self._image_id(result.stdout.strip())
+
+    def upgrade_state(self, prepared_image: str) -> Literal["NO_EFFECT", "APPLIED"]:
+        """Apply the exact rehearsed image only behind a proven offline gate."""
         if (
             self._service_state() != "INACTIVE"
             or not self.gate_exact()
             or not self.public_gated()
         ):
             raise Unknown("state upgrade boundary is no longer exact")
+        prepared_image = self._image_id(prepared_image)
         control_env = self._candidate_control_environment()
         command = [
             str(self.c.candidate_runtime / "scripts" / "switchstand-upgrade-state"),
-            "--target", "production",
+            "--mode", "apply", "--target", "production",
+            "--image-id", prepared_image,
         ]
         try:
             result = run_host_command(command, check=False, timeout=1800, env=control_env)
@@ -1037,7 +1068,7 @@ class HostOperations:
 
     def _public_ready(self, runtime: Path, expected: str) -> bool:
         public_url = self.c.public_origin + "/switchstand/mcp"
-        ingress = ExternalIngressHttp(public_url, public_url).observe()
+        ingress = ExternalIngressHttp(public_url, public_url, retry_transport=True).observe()
         return (
             ingress.transport_ok
             and ingress.valid_auth_challenge
@@ -1179,14 +1210,15 @@ class Receipt:
             raise Unknown("host receipt is malformed")
         value = cast(dict[str, object], loaded)
         phases = {
-            "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
+            "PREFLIGHT", "PREPARED", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED",
             "SNAPSHOTTED", "SWAPPED",
             "STARTED", "UNGATED", "COMPLETE", "ROLLED_BACK", "NO_EFFECT",
         }
         fixed = {
             "status", "phase", "state_upgrade", "error", "fastmcp_snapshot",
-            "semantic_probe",
+            "prepared_image", "semantic_probe",
         }
+        prepared_image = value.get("prepared_image")
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.getuid()
@@ -1195,9 +1227,11 @@ class Receipt:
             or value.get("status") not in {"RUNNING", "UNKNOWN", "PASS", "FAIL"}
             or value.get("phase") not in phases
             or not set(value).issubset(
-                set(expected) | {"error", "fastmcp_snapshot", "semantic_probe"}
+                set(expected) | {"error", "fastmcp_snapshot", "prepared_image", "semantic_probe"}
             )
             or ("error" in value and not isinstance(value["error"], str))
+            or (prepared_image is not None and not (isinstance(prepared_image, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", prepared_image)))
+            or (value.get("phase") not in {"PREFLIGHT", "GATED", "ROLLED_BACK", "NO_EFFECT"} and prepared_image is None)
         ):
             raise Unknown("host receipt is malformed or belongs to another attempt")
         if "semantic_probe" in value and not re.fullmatch(
@@ -1208,9 +1242,9 @@ class Receipt:
         state_upgrade = value.get("state_upgrade")
         expected_upgrade: str | set[str] = (
             "NOT_STARTED" if phase in {
-                "PREFLIGHT", "GATED", "STOPPED", "NO_EFFECT"
+                "PREFLIGHT", "PREPARED", "GATED", "STOPPED", "NO_EFFECT"
             }
-            else {"NOT_STARTED", "NO_EFFECT"} if phase == "ROLLED_BACK"
+            else {"NOT_STARTED", "NO_EFFECT", "APPLIED"} if phase == "ROLLED_BACK"
             else "PENDING" if phase == "UPGRADE_PENDING"
             else {"NO_EFFECT", "APPLIED"}
         )
@@ -1223,7 +1257,8 @@ class Receipt:
         ):
             raise Unknown("host receipt terminal state is inconsistent")
         if phase not in {
-            "PREFLIGHT", "GATED", "STOPPED", "UPGRADE_PENDING", "UPGRADED", "NO_EFFECT"
+            "PREFLIGHT", "PREPARED", "GATED", "STOPPED",
+            "UPGRADE_PENDING", "UPGRADED", "ROLLED_BACK", "NO_EFFECT"
         } and not re.fullmatch(
             r"[0-9a-f]{64}", cast(str, value.get("fastmcp_snapshot", ""))
         ):
@@ -1291,8 +1326,10 @@ def deploy(config: Config, operations: Operations) -> str:
     if receipt.value["status"] in {"PASS", "FAIL"}:
         return cast(str, receipt.value["status"])
     phase = cast(str, receipt.value["phase"])
+    resume_prepared = receipt.existing and phase == "PREPARED"
+    prepared_image = receipt.value.get("prepared_image")
     gate_retained = False
-    gate_attempted = phase != "PREFLIGHT"
+    gate_attempted = phase not in {"PREFLIGHT", "PREPARED"}
     try:
         if (
             receipt.existing
@@ -1304,22 +1341,34 @@ def deploy(config: Config, operations: Operations) -> str:
             observed, proof = operations.reconcile_phase(phase, receipt.value)
             gate_retained = proof.pop("gate_retained", None) == "true"
             if observed != phase or proof:
-                phase = observed
                 receipt.value.update(proof)
-                receipt.write(phase)
+                if not resume_prepared:
+                    phase = observed
+                    receipt.write(phase)
+            gate_attempted = observed not in {"PREFLIGHT", "PREPARED"}
         else:
             receipt.write(phase)
             operations.preflight()
         if phase == "UPGRADE_PENDING":
             raise Unknown("shared state upgrade outcome is ambiguous")
+        if resume_prepared:
+            receipt.value["prepared_image"] = prepared_image = operations.prepare_state()
+            phase = observed
+            receipt.write(phase)
         if phase == "PREFLIGHT":
             if not operations.current_public_ready():
                 raise Failed("current public edge is not ready")
+            receipt.value["prepared_image"] = prepared_image = operations.prepare_state()
+            phase = "PREPARED"
+            receipt.write(phase)
+        if phase == "PREPARED":
             gate_attempted = True
             operations.gate()
             phase = "GATED"
             receipt.write(phase)
         if phase == "GATED":
+            if not isinstance(prepared_image, str):
+                return abort_unproved_gate(receipt, operations)
             try:
                 public_gate_exact = operations.public_gated()
             except (Failed, Unknown, OSError, subprocess.SubprocessError):
@@ -1335,7 +1384,7 @@ def deploy(config: Config, operations: Operations) -> str:
             phase = "UPGRADE_PENDING"
             receipt.value["state_upgrade"] = "PENDING"
             receipt.write(phase)
-            upgrade = operations.upgrade_state()
+            upgrade = operations.upgrade_state(cast(str, prepared_image))
             phase = "UPGRADED"
             receipt.value["state_upgrade"] = upgrade
             receipt.write(phase)
@@ -1371,7 +1420,7 @@ def deploy(config: Config, operations: Operations) -> str:
             phase = "UNGATED"
             receipt.write(phase)
         if not operations.public_ready():
-            raise Unknown("candidate public verification failed after ungating")
+            raise Failed("candidate public verification failed after ungating")
         receipt.write("COMPLETE", "PASS")
         return "PASS"
     except Unknown as exc:
@@ -1385,21 +1434,25 @@ def deploy(config: Config, operations: Operations) -> str:
         return "UNKNOWN"
     except (Failed, OSError, subprocess.SubprocessError) as exc:
         try:
-            # An applied or ambiguous shared-state migration is forward-only. A
-            # proven NO_EFFECT retains the exact old-runtime recovery path.
-            if receipt.value["state_upgrade"] not in {"NOT_STARTED", "NO_EFFECT"}:
+            if receipt.value["state_upgrade"] == "PENDING":
                 raise Unknown("shared state upgrade prevents automatic rollback")
+            if phase == "UNGATED":
+                operations.gate()
+                if not operations.public_gated():
+                    raise Unknown("public gate is not proven before rollback")
             if phase in {"SWAPPED", "STARTED", "UNGATED"}:
                 operations.stop()
                 operations.restore_launcher()
                 operations.start()
                 if not operations.rollback_ready():
                     raise Unknown("rollback local verification failed")
-            elif phase in {"STOPPED", "SNAPSHOTTED"}:
+            elif phase in {"STOPPED", "UPGRADED", "SNAPSHOTTED"}:
                 operations.start()
+                if not operations.rollback_ready():
+                    raise Unknown("rollback local verification failed")
             if phase != "PREFLIGHT":
                 operations.ungate()
-            if phase != "PREFLIGHT" and not operations.public_ready():
+            if phase != "PREFLIGHT" and not operations.current_public_ready():
                 raise Unknown("rollback public verification failed")
             if (
                 phase in {"SWAPPED", "STARTED", "UNGATED"}
