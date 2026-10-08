@@ -351,7 +351,7 @@ head=$(git -C "$HOME/switchstand" rev-parse HEAD)
 printf '{"status":"ready","effect":"not_sent","previous_sha":"%s","target_sha":"%s","resulting_sha":"%s","reason":"test-owner"}\\n' "$head" "$head" "$head"
 """,
     )
-    (primary / ".gitignore").write_text("friction.md\n")
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
     subprocess.run(
         [
             "git", "-C", primary, "add", "scripts/coordinator-handoff",
@@ -568,11 +568,16 @@ def test_dispatch_uses_promptless_primary_fence_without_global_instructions(
     primary = home / "switchstand"
     primary.mkdir(parents=True)
     (primary / "friction.md").write_text("existing friction\n")
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
     subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-         "commit", "--allow-empty", "-m", "base"],
+         "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
@@ -758,9 +763,14 @@ def test_dispatch_preserves_explicit_off_control_and_scrubs_selectors(tmp_path: 
     primary.mkdir(parents=True)
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-         "commit", "--allow-empty", "-m", "base"],
+         "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
@@ -833,9 +843,14 @@ def test_concurrent_launch_keeps_first_profile_immutable(tmp_path: Path) -> None
     primary.mkdir(parents=True)
     subprocess.run(["git", "-C", primary, "init", "-b", "main"], check=True,
                    capture_output=True)
+    (primary / ".gitignore").write_text("/friction.md\n/friction\n")
+    subprocess.run(
+        ["git", "-C", primary, "add", ".gitignore"],
+        check=True, capture_output=True,
+    )
     subprocess.run(
         ["git", "-C", primary, "-c", "user.name=Test", "-c", "user.email=test@example.com",
-         "commit", "--allow-empty", "-m", "base"],
+         "commit", "-m", "base"],
         check=True, capture_output=True,
     )
     codex_home = home / ".codex"
