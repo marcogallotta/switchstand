@@ -18,6 +18,8 @@ from switchstand.core import Controller
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import PrincipalContext, ProtectedUpdate, ScalarPatch, WorkGrant
 from switchstand.managed_identity import managed_principal, rotate_managed_grant
+
+# Activation canary: this serial-sensitive module must force full-fallback CI.
 from switchstand.mcp import build_server
 from switchstand.provider import AsanaProvider
 from switchstand.state import PostgresState, metadata
