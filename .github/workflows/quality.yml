@@ -286,6 +286,7 @@ jobs:
           ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
           fetch-depth: 0
       - name: Record immutable Quality subject
+        id: quality_subject
         env:
           QUALITY_SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
           QUALITY_SUBJECT_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -347,6 +348,7 @@ jobs:
           QUALIFICATION_SUBJECT: ${{ github.event_name == 'pull_request' && format('pull-request:{0}', github.event.pull_request.number) || format('exact-head:{0}', github.ref) }}
           ADAPTIVE_JSON: ${{ needs.plan.outputs.adaptive_json }}
           QUALITY_OUTCOME: ${{ steps.quality_run.outcome }}
+          SUBJECT_BINDING_OUTCOME: ${{ steps.quality_subject.outcome }}
         run: |
           export METRICS_DIR="$RUNNER_TEMP/test-metrics"
           export COMPOSITION_SHA="$(git rev-parse HEAD)"
@@ -375,7 +377,8 @@ jobs:
               "candidate_image": e["QUALITY_IMAGE"] or None,
               "started_at": Path(e["METRICS_DIR"], "started-at").read_text().strip() if Path(e["METRICS_DIR"], "started-at").exists() else None,
               "completed_at": Path(e["METRICS_DIR"], "completed-at").read_text().strip() if Path(e["METRICS_DIR"], "completed-at").exists() else None,
-              "quality_outcome": e["QUALITY_OUTCOME"], "current": True,
+              "quality_outcome": e["QUALITY_OUTCOME"],
+              "current": e["SUBJECT_BINDING_OUTCOME"] == "success",
               "foreground": e["SUBJECT_KIND"] == "composition",
               "qualification_rework": json.loads(rework_path.read_text()) if rework_path.exists() else None,
               "adaptive_full_suite_shadow": json.loads(e["ADAPTIVE_JSON"]),

@@ -283,12 +283,16 @@ def test_workflow_preserves_authority_and_attempts():
     assert 'github.run_id }}-${{ github.run_attempt }}-quality' in execution
     assert 'retention-days: 90' in execution
     assert 'id: quality_run' in execution
+    assert 'id: quality_subject' in execution
     assert 'qualification_rework' in execution
     assert 'QUALIFICATION_SUBJECT' in execution
     assert "format('exact-head:{0}', github.ref)" in execution
     assert '"foreground": e["SUBJECT_KIND"] == "composition"' in execution
     assert 'started-at' in execution and 'completed-at' in execution
     assert 'steps.quality_run.outcome' in execution
+    assert 'steps.quality_subject.outcome' in execution
+    assert '"current": e["SUBJECT_BINDING_OUTCOME"] == "success"' in execution
+    assert '"current": True' not in execution
     identity = ('scripts/verify-quality-composition', 'QUALITY_COMPOSITION_SHA',
                 'QUALITY_SUBJECT_SHA', 'QUALITY_BASE_SHA', 'STACK_BASE_REF', 'STACK_POSITION')
     assert all(token in execution for token in identity)
