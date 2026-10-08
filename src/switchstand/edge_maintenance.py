@@ -223,6 +223,24 @@ def validate_target(config: Config) -> None:
         or len(ports) != 3
     ):
         raise Failed("disposable target resolves a live or non-isolated identity")
+    try:
+        environment = dict(
+            line.split("=", 1) for line in config.env_file.read_text().splitlines()
+            if line and not line.startswith("#") and "=" in line
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        raise Failed("disposable environment is unavailable") from error
+    expected = {
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": "123456",
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(parsed[1].port),
+        "SWITCHSTAND_MCP_PUBLIC_URL": config.public_origin + "/switchstand/mcp",
+        "SWITCHSTAND_MCP_RESOURCE_URL": f"https://{root.name}.invalid/switchstand/mcp",
+    }
+    if any(environment.get(key) != value for key, value in expected.items()):
+        raise Failed("disposable environment selects a non-isolated endpoint")
 
 
 def atomic_copy(source: Path, target: Path, mode: int) -> None:

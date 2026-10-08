@@ -1403,8 +1403,12 @@ def test_disposable_target_rejects_every_live_identity_and_escaping_path(
     )
     rehearsals.chmod(0o700)
     root.chmod(0o700)
+    subject.env_file.write_text("SWITCHSTAND_MCP_GITHUB_CLIENT_ID=fixture\nSWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=fixture\nSWITCHSTAND_MCP_GITHUB_USER_ID=123456\nSWITCHSTAND_MCP_BIND_HOST=127.0.0.1\nSWITCHSTAND_MCP_BIND_PORT=28790\nSWITCHSTAND_MCP_PUBLIC_URL=http://127.0.0.1:28443/switchstand/mcp\nSWITCHSTAND_MCP_RESOURCE_URL=https://proof.invalid/switchstand/mcp\n")
     monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
     validate_target(subject)
+    subject.env_file.write_text("SWITCHSTAND_MCP_BIND_PORT=8790\n")
+    with pytest.raises(Failed, match="non-isolated endpoint"):
+        validate_target(subject)
     live = {
         "service": maintenance.SERVICE, "fastmcp_state": FASTMCP_STATE,
         "caddy": maintenance.CADDY, "local_url": maintenance.LOCAL_URL,
@@ -1473,6 +1477,7 @@ def test_cli_runs_only_an_exact_disposable_target(
     rehearsals.chmod(0o700)
     root.chmod(0o700)
     monkeypatch.setattr(maintenance, "REHEARSALS", rehearsals)
+    root.joinpath("edge.env").write_text("SWITCHSTAND_MCP_GITHUB_CLIENT_ID=fixture\nSWITCHSTAND_MCP_GITHUB_CLIENT_SECRET=fixture\nSWITCHSTAND_MCP_GITHUB_USER_ID=123456\nSWITCHSTAND_MCP_BIND_HOST=127.0.0.1\nSWITCHSTAND_MCP_BIND_PORT=28790\nSWITCHSTAND_MCP_PUBLIC_URL=http://127.0.0.1:28443/switchstand/mcp\nSWITCHSTAND_MCP_RESOURCE_URL=https://proof.invalid/switchstand/mcp\n")
     seen = []
     monkeypatch.setattr(
         maintenance, "deploy", lambda subject, _operations: seen.append(subject) or "PASS"
