@@ -1310,19 +1310,22 @@ def abort_unproved_gate(receipt: Receipt, operations: Operations) -> str:
     return "FAIL"
 
 
-def deploy(config: Config, operations: Operations) -> str:
+def deploy(
+    config: Config, operations: Operations, *, receipt: Receipt | None = None
+) -> str:
     try:
         validate_target(config)
     except (Failed, OSError):
         return "FAIL"
-    try:
-        receipt = Receipt(config)
-    except Unknown:
+    if receipt is None:
         try:
-            retain_gate(operations)
-        except GateRetentionUnknown:
-            pass
-        return "UNKNOWN"
+            receipt = Receipt(config)
+        except Unknown:
+            try:
+                retain_gate(operations)
+            except GateRetentionUnknown:
+                pass
+            return "UNKNOWN"
     if receipt.value["status"] in {"PASS", "FAIL"}:
         return cast(str, receipt.value["status"])
     phase = cast(str, receipt.value["phase"])
@@ -1578,7 +1581,17 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 args.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
             with exclusive_lock(config.lock_path):
-                result = deploy(config, HostOperations(config))
+                operations = HostOperations(config)
+                if resume:
+                    try:
+                        receipt = Receipt(config)
+                        operations._resume_trust()  # pyright: ignore[reportPrivateUsage]
+                    except (Failed, Unknown, OSError, subprocess.SubprocessError):
+                        result = "UNKNOWN"
+                    else:
+                        result = deploy(config, operations, receipt=receipt)
+                else:
+                    result = deploy(config, operations)
     finally:
         signal.signal(signal.SIGINT, previous_int)
         signal.signal(signal.SIGTERM, previous_term)

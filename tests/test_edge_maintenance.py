@@ -1460,7 +1460,7 @@ def test_cli_rejects_target_identity_before_attempt_directory(tmp_path: Path):
     assert not attempt.exists()
 
 
-def test_cli_resume_requires_and_reuses_exact_receipt(
+def test_cli_resume_rejects_malformed_receipt_without_deploy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ):
     attempt = tmp_path / "attempt"; attempt.mkdir(mode=0o700)
@@ -1477,9 +1477,46 @@ def test_cli_resume_requires_and_reuses_exact_receipt(
     ]
     with pytest.raises(SystemExit):
         maintenance.main(arguments)
-    attempt.joinpath("receipt.json").write_text("{}")
+    attempt.joinpath("receipt.json").write_text("{")
+    attempt.joinpath("receipt.json").chmod(0o600)
     monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
-    monkeypatch.setattr(maintenance, "deploy", lambda config, _ops: "UNKNOWN")
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda *_args, **_kwargs: pytest.fail("deploy called")
+    )
+    assert maintenance.main(arguments) == 2
+
+
+def test_cli_resume_validates_host_before_returning_terminal_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+):
+    subject, _operations, _state = resume_subject(tmp_path, monkeypatch)
+    durable = maintenance.Receipt(subject)
+    durable.value.update(
+        prepared_image=PREPARED_IMAGE,
+        fastmcp_snapshot="a" * 64,
+        state_upgrade="APPLIED",
+    )
+    durable.write("COMPLETE", "PASS")
+    arguments = [
+        "--resume", "--attempt-dir", str(subject.attempt_dir),
+        "--current-runtime", str(subject.current_runtime),
+        "--candidate-runtime", str(subject.candidate_runtime),
+        "--candidate-launcher", str(subject.candidate_launcher),
+        "--launcher", str(subject.launcher),
+        "--fastmcp-state", str(subject.fastmcp_state),
+        "--env-file", str(subject.env_file),
+        "--current-sha", subject.current_sha,
+        "--candidate-sha", subject.candidate_sha,
+        "--candidate-launcher-sha", subject.candidate_launcher_sha,
+        "--current-launcher-sha", subject.current_launcher_sha,
+    ]
+    monkeypatch.setattr(maintenance, "exclusive_lock", lambda *_args: contextlib.nullcontext())
+
+    assert maintenance.main(arguments) == 0
+    subject.candidate_launcher.write_bytes(b"changed")
+    monkeypatch.setattr(
+        maintenance, "deploy", lambda *_args, **_kwargs: pytest.fail("deploy called")
+    )
     assert maintenance.main(arguments) == 2
 
 
