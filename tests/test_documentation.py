@@ -269,15 +269,17 @@ def test_repository_safety_routes_detail_to_the_operational_owner():
     assert "`repository_bundle_get`, accepts only `current`" in usage
 
 
-def test_handoff_and_unbound_grounding_have_one_consistent_owner():
+def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     agents = normalized("AGENTS.md")
     architecture = normalized("docs/architecture.md")
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
-    assert "plain raw `codex` launch always creates an independent session and never claims" in agents
+    assert "Stock Codex has no implicit writer or launcher records" in agents
+    assert 'tells that exact session "you are /root"' in agents
+    assert "After losing `/root`, never retake" in agents
+    assert "A fresh launch is independent" in usage
     assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
-    assert "registration and a later plain launch are not pickup" in usage
-    assert "grounding after reconciliation remains `COVERAGE_GAP / UNKNOWN`" in architecture
+    assert "Failure after reconciliation is `COVERAGE_GAP / UNKNOWN`" in agents
     assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
 
 

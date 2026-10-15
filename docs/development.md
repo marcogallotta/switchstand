@@ -1,57 +1,9 @@
 # Development
 
-The Wakeful inbound pilot is a host-only composition, not an edge task.
-The optional disk-pressure producer remains off the launch path. Run one foreground audit with
-`switchstand-disk-pressure check`; reread an emitted transition with
-`switchstand-disk-pressure status --event-id <id>`. `scripts/install-disk-pressure-monitor` installs and enables
-a separate low-priority user timer, so invoking that installer is an activation effect rather than
-part of ordinary development or Codex launch. Its service intentionally follows the canonical
-repository virtualenv: canonical package updates own that runtime, and the timer's acceptance
-checks must be rerun after an update rather than treating the activated executable as immutable.
-`switchstand-wakeful-inbound --config=/absolute/private/runner.json` is the dedicated
-continuously runnable process. It reuses `chatgpt_edge.resource_service()` in the existing
-authorized deployment context and requires a complete, mode-0600 frozen JSON configuration
-containing exactly one `mailbox`, `binding`, `codex_home`, and `codex` path. Raw Coordinator
-launches route through `codex_session.py` by default, which registers
-the exact authenticated Codex thread, freezes its mailbox binding, and owns the runner only for
-that Codex process lifetime. It reads only `DATABASE_URL` from the existing owned mode-0600
-`~/.config/switchstand/.env`; credentials are not exported to Codex. Merely installing
-Switchstand or launching its ordinary services does not start a detached Wakeful service. Setting
-`SWITCHSTAND_CODEX_WAKEFUL=OFF` restores the direct-exec rollback path. The rendered unit remains
-disabled because nothing installs, enables, or starts it.
-
-The process composes the existing owners as follows:
-
-```python
-async with resource_service() as (service, _):
-    assert service.messages is not None
-    await run_inbound(service.messages, AgentMailboxState(service.messages.engine),
-                      configured_mailbox, configured_binding, coordinator_home,
-                      selected_codex, stop_event, opt_in=True)
-```
-
-Imports are from `switchstand.chatgpt_edge`, `switchstand.agent_mailboxes`, and
-`switchstand.codex_wakeful`. Supply the explicitly frozen `AgentMailbox` and `CodexBinding`
-records from the exact target qualification; intake never registers or takes over a mailbox.
-This reuses the existing source owner and host configuration without exporting credentials
-or creating an MCP impersonation session. Do not run it as a task in the live edge process:
-admission performs synchronous host RPC. Each page reads at most 50 metadata references,
-then the next page follows on the next two-second cycle; a completed scan restarts from the
-beginning so newly committed UUIDs behind a cursor are not lost. Source transactions end
-before host RPCs: authoritative source receive/disposition/takeover remain independent of
-host latency. A source may change after preflight, so a wake is only a reference requiring
-the agent's canonical reread. The 10-second RPC timeout is per call, not a bound on a
-complete page or binding scan. Host latency/capacity remains a
-live qualification obligation. Output contains wake IDs and outcomes, never source payloads.
-The Codex child starts lazily only when a committed pending source reaches admission, uses
-`thread/queue/add` and `thread/queue/list` through stdio in the exact supplied `CODEX_HOME`, and
-terminates after the bounded scan. The existing embedded root consumes that durable queue when
-idle; the pilot never manages or attaches to a daemon.
-`opt_in=False` is inert. A supervisor may invoke `switchstand-wakeful-inbound --config=<path>`
-with the existing environment file supplying `DATABASE_URL`; the runner does not install, enable,
-or start that service. Stop/cancel the dedicated process; restart with the same frozen
-configuration to reconcile pending admissions. This is not full product suspend,
-replay, escalation, retirement, or service activation; those remain owned follow-up work.
+The retired custom Codex launcher and its private Wakeful adapter are not development paths.
+Ordinary Codex uses the official CLI and repository configuration. Neutral Wakeful persistence,
+edge monitoring, and the optional disk-pressure producer remain independent components; installing
+the disk-pressure timer is still a separate activation effect.
 
 Governed implementation tasks carry the inline package projection and review handoff
 defined in [Code quality: governed implementation packages](code-quality.md#governed-implementation-packages).
@@ -90,8 +42,8 @@ the private writer and supplies the pinned development tools:
 scripts/switchstand --active <WorkId or legacy task URL/ID> -- <exact initial assignment>
 ```
 
-For an ordinary Claude Code Coordinator, install the host shim once with
-`scripts/install-claude-shim`, as for `codex`; raw `claude` then delegates to
+For an ordinary Claude Code Coordinator, install its separate host shim once with
+`scripts/install-claude-shim`; raw `claude` then delegates to
 `scripts/claude-dispatch` inside the canonical repository and runs plain Claude Code elsewhere. The Coordinator loads only
 `.claude/coordinator-settings.json` and `.claude/coordinator-mcp.json`, excludes the global
 `~/.claude/CLAUDE.md`, exposes the `switchstand` MCP, and fences the shared primary checkout with
@@ -345,66 +297,8 @@ The current development path is operational but still has explicit ownership/tra
 Canonical cumulative handwritten Python LOC is counted with
 `git ls-files src tests | rg '\.py$' | xargs wc -l`; generated files and dependencies are excluded.
 
-The default-off Wakeful precursor is invoked explicitly with `python -m switchstand.codex_wakeful
---opt-in --home <isolated-Coordinator-CODEX_HOME> --codex <exact-binary> --start-record <exact-path>`.
-Use only a disposable committed MessageState delivery readback in a mode-0600 JSON file via
-`--synthetic-delivery-file`, or `--recover-child` for the exact bound parent. Never use live provider
-messages for this probe. The probe owns only its bounded stdio app-server child; it never starts,
-stops, restarts, attaches to, or owns a managed daemon. Queue acceptance and root consumption are
-separate readbacks. A lost response remains PENDING/UNKNOWN until the deterministic client ID is
-found in the queue or consumed history; absence after an attempted add is insufficient to retry.
-Unsupported binding/history fails closed. Focused fake/private-file tests qualify local semantics
-only. Exact same-home queue visibility, real root consumption, reconnect and natural-restart
-qualification are NOT_RUN until separately
-approved exact-host proof; Claude resume/concurrency/settings/MCP behavior remains UNKNOWN.
-
-## Codex shim updater recurrence (2026-10-01 RCA)
-
-The standalone updater runs the published installer, whose `update_visible_command`
-(observed at `https://chatgpt.com/codex/install.sh` on 2026-10-01)
-atomically replaces `${CODEX_INSTALL_DIR:-$HOME/.local/bin}/codex` with a symlink to
-`~/.codex/packages/standalone/current/bin/codex`. The observed October 1 launcher
-was exactly that symlink. A one-time shim installation did not own subsequent writes.
-The launcher replacement is separate from the post-dispatch hang. Marco confirmed
-on 2026-10-02 that a stuck keyring caused the in-repository hang and is now fixed.
-Prior controlled evidence supports OAuth credential lookup blocking: disabling all
-MCP completed in 4.9 seconds; canonical HTTP MCP alone timed out, as did runs with
-plugins or hooks disabled. Shim overwrite did not cause that post-dispatch hang.
-The recurrence candidate addresses launcher replacement only.
-
-The managed launcher now exports
-`CODEX_INSTALL_DIR=$HOME/.local/state/switchstand/codex/updater-bin` before both direct and
-Coordinator execution. Normal automatic updater subprocesses inherit that value and therefore
-maintain their visible symlink outside `~/.local/bin/codex`; package updates still use Codex's
-normal standalone package cache. The launcher deliberately overrides an ambient value because
-allowing it to point back at `~/.local/bin` would break the routing invariant. Directly running the
-published installer adds its visible-command directory to a shell profile only when that directory
-is absent from `PATH`, so the launcher also appends the private directory after the managed shim.
-This prevents profile rewrites from making the updater command win future resolution. A direct
-installer run from another shell does not inherit either setting and can still replace the shim, so
-the recovery units remain a fallback rather than the primary ownership mechanism.
-
-Run `scripts/install-codex-shim` to install the shim and enable the user-systemd
-`switchstand-codex-shim.path` recovery watch and `switchstand-codex-shim.timer` safety net.
-It requires a working user manager;
-installation errors are fatal and must not be reported as protected installation.
-The service runs a materialized private installer with `--repair-only`, using the
-materialized shim beside it, so recovery works without the repository. It leaves
-real binaries and their updater unchanged. Existing routing still selects dispatch
-only inside the canonical Git common directory and real Codex everywhere else.
-
-Fallback recovery is asynchronous: a launch after a manual or non-inheriting replacement can bypass
-dispatch until repair.
-The path watch can miss a replacement during repair execution/watch rearm. The timer
-checks five minutes after manager startup and five minutes after service completion;
-a healthy check does not rewrite the launcher. Eventual recovery requires the user
-manager and timer to keep running and the repair service to succeed.
-Protection applies while the user manager/watch/timer is running; it is not an immutable-file
-lock. Check `systemctl --user is-active switchstand-codex-shim.path switchstand-codex-shim.timer` and verify that
-`~/.local/bin/codex` is a regular executable matching `scripts/codex-shim`.
-For a manual upstream reinstall, verify recovery afterward. Remove protection with
-`systemctl --user disable --now switchstand-codex-shim.path switchstand-codex-shim.timer` before intentionally
-replacing the launcher. Do not modify the real standalone binary to repair routing.
+Official Codex installation and updates are owned by npm. The repository does not install,
+repair, wrap, or redirect the global `codex` command.
 
 Quality emits non-authoritative test timing in `test-metrics-<run_id>-<run_attempt>-quality`
 artifacts retained for 90 days, plus a bounded slow-test job summary. The original

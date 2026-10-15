@@ -315,8 +315,6 @@ def test_compact_snapshots_survive_canonical_control_mutation_and_removal(
     control_root = tmp_path / "control"
     controls = (
         ".codex/config.toml",
-        "scripts/codex-dispatch",
-        "scripts/codex-coordinator-profile",
         "scripts/codex-continuity-hook",
         "scripts/codex-compact-hook",
         "scripts/codex-hook",
