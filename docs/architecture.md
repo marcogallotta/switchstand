@@ -562,12 +562,9 @@ canonical PostgreSQL work and reads the protected source request from its notes;
 `candidate.py::prepare_launch_source` verifies and materializes the exact Git repository/ref before
 preflight. This is a transitional trusted-host bridge, not a provider API for agent code.
 
-The materialized host launcher installed by `scripts/install-codex-shim` owns global `codex`
-routing. Outside the canonical Switchstand Git common directory it directly launches the real Codex
-binary, even when the checkout is missing or broken; inside that Git common directory it delegates
-to `scripts/codex-dispatch`. The installed launcher is a regular host file, not a symlink into the
-mutable checkout. The launcher exports a private `CODEX_INSTALL_DIR` before either route, so Codex's
-automatic updater maintains its otherwise-unused visible command outside the managed launcher path.
+Ordinary Codex uses the official npm-installed CLI directly. Repository configuration and
+instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
+global `codex` command.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
@@ -588,81 +585,18 @@ configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protoco
 submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
-`codex-dispatch` creates a byte-identical pair for each launch: an immutable policy snapshot used
-as frozen-control evidence and a uniquely named runtime profile that Codex may persist normal
-session preferences into. The manifest records the snapshot digest and the runtime profile's
-launch-time digest; currentness rechecks only the immutable snapshot, never the mutable runtime
-copy. This receipt is launch-manifest schema v3; the checker still accepts valid legacy v1/v2
-manifests; changed controls report bounded recheck boundaries instead of permanent stale, while missing or corrupt proof remains `CURRENTNESS_UNKNOWN`. It also records the
-executable, repository controls and
-privacy-preserving invocation identity in the per-generation manifest owned by
-`scripts/coordinator-control`. Concurrent launches retain the shared Coordinator home, authentication,
-session storage and byte-stable hooks without replacing another generation's evidence. A PILOT-only
-Wakeful qualifier accepts a clean non-canonical linked writer; it grants no activation. The full
-local Markdown dependency graph rooted at `AGENTS.md` remains tracked for post-sync change
-detection, while schema v3 records a separate bounded post-compaction reread set. Fresh Coordinator
-manifests include both `AGENTS.md` and `docs/coordinator-tracker-contract.md`; an already-created
-schema-v3 manifest retains its launch-time set, and legacy v1/v2 manifests fall back to
-`AGENTS.md` only. The two-document reread contract therefore becomes active only for a fresh
-Coordinator generation whose manifest/readback proves that set. A synchronous `SessionStart` hook
-for `source=compact` runs generation-private launch-time snapshots of both the wrapper and checker,
-then injects the result as immediate developer context before the continuation;
-the snapshotted checker still compares the tracked canonical controls. Manual post-compaction
-retries and post-sync checks use that same generation-private checker and never a mutable
-writer-relative `scripts/coordinator-control`. Each unresolved tracked dependency retains its identity and reason
-as component-scoped `CURRENTNESS_UNKNOWN`.
+Legacy generation manifests and currentness controls remain temporarily readable for pre-cutover
+sessions. Stock Codex does not create or consume them. They retire after every old generation and
+pending handoff is drained.
 The checker emits each required durable reread as a name-to-absolute-path mapping: every generation
 rereads its exact start-commit record, and only an addressed successor manifest adds its validated
 handoff obligations path. Current work remains the active assignment and WorkId; the compaction hook
 does not invent a duplicate local current-work pointer. Missing, relative, or malformed live-read
 paths make that mechanical re-grounding `CURRENTNESS_UNKNOWN`.
-That directory is appended to the child `PATH` after the managed launcher, preventing the standalone
-installer from rewriting its shell profile block while keeping raw `codex` resolution on the shim.
-The installer also materializes a private repair installer/source under
-`~/.local/state/switchstand/codex/shim` and enables a user-systemd path watch on the visible
-command plus a five-minute timer on the same idempotent repair service. The watch repairs
-manual or non-inheriting installer replacements promptly; the timer catches replacements missed
-during service execution and watch rearm without depending on the checkout. Healthy checks
-preserve launcher identity.
-The repository dispatcher creates a generation-owned linked writer and launches Codex there with a separate Coordinator home, shared authentication, a durable per-launch starting-commit file named in developer context, and the repository's fixed runtime policy. Canonical `main` may advance without rewriting that exact candidate; normal repository implementation stays in the writer while per-generation and byte-stable shared guards protect the primary. `switchstand-worktree-lifecycle` is the inert operator path for retirement: it defaults uncertain ownership or terminal state to retain, separates dead Git-registration pruning, and requires an operator-confirmed exact generation plus a revalidated plan while preserving designated evidence before removing one writer. It never treats a turn-yield marker as terminal authority and never performs age-based or automatic cleanup. Direct and Wakeful launch share native `danger-full-access` with `approval_policy=never` for directly operated Root and sub-Coordinators, removing the redundant custom filesystem/network sandbox so user-session IPC follows host-user semantics. Repository policy still forbids canonical-primary source mutation, and the hook blocks recognized Git and editing-tool mutation routes while permitting adjacent repair worktrees. The hook is a guardrail, not complete shell or operating-system isolation: arbitrary local-user shell code remains technically capable of writing the canonical checkout, so implementation must stay in an owned writer. `scripts/codex-coordinator-profile` copies
-only the allowlisted benign user preferences into that isolated profile and installs no conventional
-user-level instructions. It separately copies only the repository-owned canonical `switchstand`
-HTTP/OAuth MCP contract, makes that MCP required for Coordinator launch, and adds the narrow
-Coordinator-control MCP; unrelated user MCP configuration remains excluded. Its injected bootstrap
-instructions preserve the ordinary/managed authority split: mailbox takeover permits mailbox use
-only, and a raw Coordinator reads work by an exact WorkId from direct assignment or an acknowledged
-addressed handoff. For new substantive work directly assigned without an ID, it resolves and reads
-`START HERE` only as a provider-neutral parent. An exact canonical parent gets a CURRENT,
-SELF-owned actionable create; a legacy parent gets the legacy-compatible required arguments only.
-Both paths use one stable operation identity. A possible-send ambiguity is reconciled only by replaying that
-same identity and arguments; a second intent is forbidden. Exact created-ID readback is required
-before continuing. Simple questions, status, corrections, approvals,
-already-grounded continuation, and inferred work do not create records; failed or ambiguous
-grounding after reconciliation remains `COVERAGE_GAP / UNKNOWN`. It never treats bare `work_get` as focus recovery for an unbound Coordinator; that shorthand belongs only to trusted
-launch-bound managed MCP. The same per-launch renderer defaults role-neutral root continuity to
-`PILOT` with `ASSIGNMENT` lifetime, adding only root `UserPromptSubmit` and `Stop` handlers backed by
-`scripts/codex-continuity-hook`. The explicit launch-only
-`SWITCHSTAND_CODEX_CONTINUITY=OFF` selector disables those continuity handlers. Each generation's
-immutable profile freezes and exposes the resolved continuity/lifetime modes, while launch selectors
-are removed before Codex starts. The shared `hooks.json` remains the byte-stable destructive guard,
-so concurrent OFF and PILOT launches cannot replace one another's continuity policy. The separate hook's blocked-stop response enumerates the exact terminal deliberate-yield markers accepted for the current lifetime, writes minimal
-private per-run Stop telemetry, and fails open visibly on malformed input or local errors. It never
-registers `SubagentStop` or changes the destructive-command guard.
-Full local-user execution grants no provider, deployment, activation, or other consequential effect;
-those remain gated by exact current authority and readback. The same hook also retains built-in
-Worker shell/file-edit denial and auto-memory denial.
-Because an exact writable file root can be misclassified as a directory by sandbox child-mount
-handling, dispatch gives new Coordinators a dedicated mode-0700 local-state friction directory.
-It binds repository `friction.md` to the mode-0600 policy/index and repository `friction/` to the
-same durable root, whose three mode-0600 category ledgers are capability, process, and
-implementation. A locked writer validates stable keys and entry bounds, checks only exact headings
-for global dedupe without returning ledger prose, and atomically replaces one ledger. The first
-new launch copies a valid legacy local-state
-`friction.md` into that directory without moving, deleting, or silently rewriting it, so
-already-running agents and unstructured evidence remain undisturbed. Malformed legacy, current,
-or binding nodes move to a generation-specific private quarantine; dispatch recreates only the
-affected bounded friction surface, reports the degradation, and continues launch. Outside the
-canonical repository, dispatch passes through to the ordinary Codex executable.
+Pre-cutover generations may still have launcher-created writers, snapshots, and handoff receipts.
+Their frozen compact/currentness checks and `switchstand-worktree-lifecycle` remain only to drain
+and retire those exact generations. Stock Codex creates none of this state and does not use the
+legacy launcher selectors, profiles, hooks, repair units, or dispatcher.
 
 The Coordinator-control MCP also owns the narrow asynchronous implementation handoff. An exact
 WorkId, caller-chosen operation identity, and bounded objective start the existing trusted
@@ -740,10 +674,8 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change copied-state rehearsal provisioning | `rehearsal_target.py` | `development.md`, zero-Asana qualification, and disposable Docker ownership tests |
 | Change resource-worker admission, execution, or live proof | `agent_broker.py`, `agent_executor.py`, `agent_canary.py` | [resource-worker architecture](resource-governed-agent-workers.md), owner-local tests, host pressure/sandbox boundaries, and the separate activation decision |
 | Change affected-test selection or repository qualification | `affected_tests.py`, `repository_candidate.py` | their owner-local tests, `scripts/check`, GitHub Quality/composition evidence, and exact-head-versus-local truth |
-| Change global raw-Codex routing or installation | `scripts/codex-shim`, `scripts/install-codex-shim` | shim tests and the ordinary Coordinator entry contract |
 | Change global raw-Claude routing or installation | `scripts/claude-shim`, `scripts/install-claude-shim`, `scripts/claude-dispatch`, `.claude/coordinator-*.json` | `tests/test_claude_shim.py` and the Coordinator hook tests |
-| Change Coordinator ordinary launch policy or session-bounded Wakeful supervision | `scripts/codex-dispatch`, `codex_session.py` | `scripts/codex-coordinator-profile`, `codex_wakeful.py`, and their tests |
-| Change guarded canonical-main synchronization | `coordinator_sync.py` | generated Coordinator profile, stdio boundary tests, and `scripts/coordinator-handoff` interaction |
+| Change guarded canonical-main synchronization | `coordinator_sync.py` | stdio boundary tests and retained legacy `scripts/coordinator-handoff` interaction |
 
 ## Compatibility and retirement boundaries
 
@@ -769,45 +701,9 @@ are removal predicates, not removal decisions:
 - `marcogallotta/switchstandold` is read-only evidence, never an implementation base or architectural
   ancestor.
 
-`codex_wakeful.py` owns the opt-in Codex technical precursor: exact start-record/generation
-binding, delivery/child source references, client-ID admission and private `codex-wakeful.json`
-projection. Its explicit probe excludes simultaneous probes with a nonblocking generation-token
-lock. For external-source admission it starts one bounded, lazy stdio client using the exact
-supplied Codex binary and `CODEX_HOME`, writes the deterministic client ID through Codex's durable
-thread queue, and terminates only that owned child. It never starts, stops, restarts, attaches to,
-or owns a managed Codex daemon. The live same-home embedded root discovers durable queue changes
-and consumes them when idle. `wakeful.py` remains the neutral SQLite/outbox owner.
+`wakeful.py` remains the neutral SQLite/outbox owner.
 `disk_pressure.py` is a non-destructive, one-shot Wakeful producer that runs outside the Codex
 launch path. It performs only a constant-time filesystem capacity probe, records an atomic private
 SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
-The current Root-only Wakeful adapter admits an exact pending event ID through the existing durable
-Codex queue and requires exact event plus current filesystem readback before action; the reminder
-grants no cleanup authority. Installation/activation of the timer remains a separate host effect,
-and the producer never deletes data or runs from `codex-dispatch`.
-The `run_inbound` pilot reuses existing authorized `MessageState` and
-`AgentMailboxState` objects in a dedicated supervised host process. The small production
-composition remains in `codex_wakeful.py`: it loads one private frozen mailbox/binding
-configuration and reuses `chatgpt_edge.resource_service()`. With
-`SWITCHSTAND_CODEX_WAKEFUL=PILOT`, `codex_session.py` owns the raw Coordinator child, registers its
-  exact authenticated thread through the existing MCP `agent_register` operation, first
-  materializes the zero-turn durable rollout with non-user bootstrap context, and reads back its
-  exact start-record binding before registration,
-  validates the resulting mailbox session, and starts the runner with an inherited lifeline pipe.
-  An existing registration, including `/root`, is reused without takeover; ordinary registration
-  cannot create the reserved canonical `root` name and generated names are never `/root`. Runner
-  failure is retried while Codex remains active, and Codex exit or supervisor death
-closes the lifeline so intake stops. The activated selector defaults to `PILOT`; an explicit
-`SWITCHSTAND_CODEX_WAKEFUL=OFF` restores the direct-launch rollback path. The runner creates no
-database or service owner and leaves the existing probe CLI
-semantics unchanged. It reads only committed
-delivery references for one explicitly configured mailbox endpoint/generation/session matched
-to the exact Codex root/start record. Source transactions finish before host admission so
-host latency cannot block canonical receive/disposition/takeover. Source and runtime checks
-are preflight, not atomic fences against concurrent source changes or host turns; the awakened
-agent must reread the exact delivery before acting. Busy targets retain the durable queued input
-until idle; unsupported history and ambiguous attempts remain UNKNOWN without resend. Queue and
-consumed-history readback remain distinct. A home-wide private lock excludes all
-precursor writers, and the source is never received or dispositioned by intake. Stopping the
-process preserves source records, durable MessageState backlog, and the private admission
-projection; restarting the same target scans the pending source again. This pilot does not supply
-the neutral product bridge, other sources/clients, or unattended service operation.
+It does not start Codex or deliver into Codex sessions. Stock Codex consumes durable mailbox
+messages only while the user is actively running and prompting that session.

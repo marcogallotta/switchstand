@@ -155,13 +155,8 @@ inside the adapter. The neutral event does not contain a Codex prompt or Claude 
 bounded wake instruction tells either client to read `canonical_ref`, recover its durable work and
 owned watches, verify current authority, and continue only authorized work.
 
-The Codex MVP runs its adapter in the host execution namespace and uses the exact host-owned Codex
-state and supported sign-in without reading or copying credential material. A bounded same-home
-stdio app-server child writes deterministic identities through Codex's durable thread queue; the
-already-running embedded root discovers and consumes them when idle. Wakeful does not start, stop,
-restart, attach to, or own a managed daemon. Binding and projection state remain private mode-0600
-host state. A credential-free setup can qualify queue transport, but cannot qualify a model-turn
-delivery.
+The former Codex MVP adapter was retired with the custom launcher. Stock Codex has durable mailbox
+tools but no unattended wake path: messages wait until Marco next runs and prompts the session.
 
 Claude remains a later, separate adapter behind this unchanged neutral contract. Its exact-host
 resume behavior and its own credential boundary must be proved before implementation or activation;
@@ -273,10 +268,9 @@ rejected. Those claims remain `UNKNOWN` / `NOT_RUN` at that SHA. The authenticat
 does not prove durable Switchstand message ingestion, a product outbox-to-adapter bridge, the CLI,
 Claude delivery, timers, production service operation, or activation.
 
-## Prototype feedback round
+## Superseded prototype feedback round
 
-The next product round exercises one Codex-only vertical path without first building the whole
-system:
+The following historical proposal was never adopted and is not an available implementation:
 
 1. Use a synthetic/manual event producer to write one event into a disposable outbox.
 2. Deliver it through one disposable, authenticated Codex adapter target using no production
@@ -295,7 +289,9 @@ The first feedback round is successful when Marco can trigger, observe, understa
 recover the synthetic event on Codex without polling or inspecting raw logs. Claude is not a gate
 for this round. It is not necessary to ingest every source or provide a polished UI.
 
-## Delivery stages
+## Superseded delivery stages
+
+These historical stages are not current work or available runtime behavior.
 
 1. **Codex feedback adapter slice:** synthetic producer, existing outbox, one disposable Codex
    adapter, local CLI, and no production source or authority. It remains default-off.
@@ -375,8 +371,8 @@ activation, and reliance are separate claims.
   lifecycle mechanisms, so sharing a launcher would couple the neutral contract to the clients.
   The shared seam ends at event/delivery outcome semantics.
 
-The Codex-only technical precursor (WorkId `95724d3c-f1c3-5585-a2bd-ebbc43bf408e`, approved
-revision `2026-10-01T20:15:32.212Z`) is preliminary, opt-in/default-off qualification in
-`codex_wakeful.py`. Its private projection proves admission rather than task completion and is
-not the product WakeEvent/outbox. It does not complete the product outbox bridge, CLI,
-status/suspend, real-source watcher, Claude adapter, service operation, or activation.
+The former Codex-only technical precursor (WorkId
+`95724d3c-f1c3-5585-a2bd-ebbc43bf408e`, approved revision
+`2026-10-01T20:15:32.212Z`) was retired with the custom Codex launcher. Its historical evidence
+does not provide a live adapter or complete the product outbox bridge, CLI, status/suspend,
+real-source watcher, Claude adapter, service operation, or activation.

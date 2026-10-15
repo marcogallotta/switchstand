@@ -21,8 +21,6 @@ LINK = re.compile(r"\[[^]]*\]\(([^)#]+)(?:#[^)]*)?\)")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 FROZEN_REPOSITORY_FILES = (
     ".codex/config.toml",
-    "scripts/codex-dispatch",
-    "scripts/codex-coordinator-profile",
     "scripts/codex-continuity-hook",
     "scripts/codex-compact-hook",
     "scripts/codex-hook",

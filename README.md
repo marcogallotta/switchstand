@@ -8,16 +8,14 @@ The implementation targets Python 3.14, PostgreSQL, SQLAlchemy 2, Alembic, HTTPX
 
 | Mode | Entry | Boundary |
 | --- | --- | --- |
-| Ordinary Codex Coordinator | Raw `codex` in the canonical repository | The materialized host shim delegates to `scripts/codex-dispatch`, which supplies the isolated Coordinator environment and canonical Switchstand MCP with no launch-bound WorkId. Coordinator duty and tool access grant no work or provider effect. |
+| Ordinary Codex Coordinator | Official raw `codex` in the repository | Loads repository instructions and the authenticated Switchstand integration. It has no launch-bound WorkId; role and tool access grant no work or provider effect. |
 | Ordinary Claude Code Coordinator | Raw `claude` in the canonical repository | The materialized host shim (`scripts/install-claude-shim`) delegates to `scripts/claude-dispatch`, which loads only the repository Coordinator settings and `switchstand` MCP, excludes the global `~/.claude/CLAUDE.md`, and fences the shared primary checkout via `scripts/codex-hook` on Bash, Edit, MultiEdit, Write and NotebookEdit. Elsewhere it runs plain Claude Code. |
 | Managed Codex worker | `scripts/switchstand --active <Asana task ID or URL> -- <assignment>` | Trusted launch binds one active WorkId, bounded references, runtime currentness, and the available managed tools. It is a one-task worker, not workspace discovery. |
 | Ordinary ChatGPT | Authenticated repository-configured `switchstand` HTTP/OAuth MCP | Uses admitted WorkIds and durable messaging. One chat should have one stable named agent identity distinct from OAuth authentication; the current implementation does not yet fully provide that separation. |
 
 Exact-candidate managed qualification uses `scripts/switchstand --isolated --active <task> --commit <SHA>`. It remains fail-closed until the separately managed external selector has an ACTIVE CONTROL manifest; repository landing alone does not deploy or activate that path.
 
-`scripts/install-codex-shim` atomically installs `~/.local/bin/codex` as an independent executable file; rerun it after an approved launcher-source update. The installed shim delegates to the repository Coordinator dispatcher only from the canonical Switchstand Git common directory (including its linked worktrees). Everywhere else it directly launches `$HOME/.codex/packages/standalone/current/bin/codex`, so ordinary Codex startup does not depend on the checkout being present or healthy.
-
-Each repository Coordinator launch records its starting commit in durable local state and names that exact file in its developer context. The handoff procedure is documented in [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md#coordinator-handoff).
+Install or update official Codex with `npm install -g @openai/codex@latest`. Repository sessions use normal Codex resume semantics and the stock mailbox flow documented in [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md).
 
 See [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for the current usage and identity model. The executable factories, schemas, repository MCP allowlist, and tests own exact tool inventory; raw `source_*` reads are bounded managed compatibility, not the ordinary mental model.
 
@@ -28,8 +26,8 @@ scripts/bootstrap
 docker compose up --build
 sh scripts/check
 
-# Install/update the stable host launcher, then start an ordinary Coordinator
-scripts/install-codex-shim
+# Install/update official Codex, then start an ordinary Coordinator
+npm install -g @openai/codex@latest
 codex
 
 # One managed task-bound worker
