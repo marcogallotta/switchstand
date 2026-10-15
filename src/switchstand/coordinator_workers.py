@@ -98,6 +98,7 @@ class CoordinatorWorkers:
             f"--machine={self.host}",
             "--quiet",
             "--no-block",
+            "--collect",
             "--service-type=exec",
             f"--unit={unit}",
             f"--working-directory={self.repo}",
