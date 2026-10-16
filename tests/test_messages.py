@@ -540,3 +540,31 @@ async def test_admitted_message_path_uses_binding_generation_without_work_grants
         ),
     )
     assert disposed.status == "ok" and disposed.state == "DISPOSITIONED"
+
+
+async def test_pending_lists_newest_first_and_pages_through_backlog(subject):
+    state, *_ = subject
+    sender_work, recipient_work = uuid4(), uuid4()
+    sent = []
+    for index in range(5):
+        submitted = await state.submit_admitted(
+            sender_work,
+            MessageRoute(recipient_work_id=recipient_work, recipient_grant_version=1),
+            MessageSubmitRequest(
+                api_version="1", message_id=uuid4(), grant_version=1,
+                route_ref="agent.recipient", kind="request", payload={"index": index},
+            ),
+        )
+        assert submitted.status == "ok" and submitted.message is not None
+        sent.append(submitted.message.delivery_id)
+    seen, cursor = [], None
+    while True:
+        page = await state.pending_admitted(recipient_work, MessagePendingRequest(
+            api_version="1", grant_version=1, limit=2, cursor=cursor,
+        ))
+        assert page.status == "ok"
+        seen.extend(item.delivery_id for item in page.messages)
+        if not page.has_more:
+            break
+        cursor = page.next_cursor
+    assert seen == sent[::-1]

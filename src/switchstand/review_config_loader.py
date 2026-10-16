@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Annotated, Literal, Self
 
 from pydantic import ConfigDict, Field, model_validator
@@ -34,7 +33,8 @@ class InstalledReviewConfig(ClosedModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal[1]
     policy_version: str = Field(min_length=1, max_length=120)
-    reviewer_by_kind: dict[ReviewKind, ReviewerName] = Field(max_length=6)
+    # Legacy key, accepted and ignored: every review goes to the Coordinator.
+    reviewer_by_kind: dict[ReviewKind, ReviewerName] = Field(default_factory=dict[ReviewKind, ReviewerName], max_length=6)
     guidelines_version: str = Field(min_length=1, max_length=120)
     guidelines_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -56,7 +56,6 @@ def load_review_config(path: Path) -> ReviewEdgeConfig:
     envelope = InstalledReviewConfig.model_validate_json(payload)
     policy = ReviewPolicy(
         version=envelope.policy_version,
-        reviewer_by_kind=MappingProxyType(dict(envelope.reviewer_by_kind)),
     )
     guidelines = ReviewGuidelines(
         version=envelope.guidelines_version,
