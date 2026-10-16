@@ -43,17 +43,24 @@ jobs:
           docker run --rm
           -e CODEX_EXEC_PATH=/opt/codex
           -v "$CODEX_NATIVE:/opt/codex:ro"
+          -v "$RUNNER_TEMP:/proof-output"
           -v "$PWD:/workspace:ro" -w /workspace
           switchstand-codex-proof sh -c
           'PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider
+          --junitxml=/proof-output/codex-stateful-client.xml
           tests/test_codex_stateful_client.py'
       - name: Record activation proof result
         if: ${{ always() }}
         env:
           PROOF_OUTCOME: ${{ steps.proof.outcome }}
+          PROOF_REPORT: ${{ runner.temp }}/codex-stateful-client.xml
         run: |
           if test "$PROOF_OUTCOME" = success; then
-            result=PASS
+            if test ! -f "$PROOF_REPORT" || grep -Eq 'skipped="[1-9][0-9]*"' "$PROOF_REPORT"; then
+              result=NOT_RUN
+            else
+              result=PASS
+            fi
           elif test "$PROOF_OUTCOME" = failure; then
             result=FAIL
           else
