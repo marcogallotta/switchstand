@@ -763,6 +763,7 @@ class ReviewOccurrenceState:
 
     async def pass_status_in_transaction(
         self, connection: AsyncConnection, subject_work_id: UUID, subject_revision: str,
+        review_kind: ReviewKind, candidate_ref: str | None,
     ) -> Literal["PASS", "NOT_PASS", "UNKNOWN"]:
         try:
             row_version = await connection.scalar(select(canonical_work.c.row_version).where(
@@ -783,7 +784,10 @@ class ReviewOccurrenceState:
             outcomes = [
                 outcome for value in review_ids if value
                 for outcome in await self.outcome_envelopes(UUID(value), connection)
-                if outcome.brief.basis.subject_revision == subject_revision
+                if outcome.brief.basis.subject_work_id == subject_work_id
+                and outcome.brief.basis.subject_revision == subject_revision
+                and outcome.brief.basis.review_kind == review_kind
+                and outcome.brief.basis.candidate_ref == candidate_ref
             ]
             return "PASS" if any(value.outcome.verdict == "PASS" for value in outcomes) else "NOT_PASS"
         except (SQLAlchemyError, TypeError, ValueError):

@@ -670,7 +670,7 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
     assert submitted.status == "SUBMITTED"
     async with engine.begin() as connection:
         assert await occurrences.pass_status_in_transaction(
-            connection, subject_id, revision,
+            connection, subject_id, revision, "CODE", None,
         ) == "PASS"
         await connection.execute(text(
             "UPDATE canonical_work SET notes = 'advanced', row_version = row_version + 1 "
@@ -721,8 +721,54 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
     assert (mixed.status, mixed.reason) == ("STALE", "subject_revision_changed")
     async with engine.begin() as connection:
         assert await occurrences.pass_status_in_transaction(
-            connection, subject_id, current_revision,
+            connection, subject_id, current_revision, "CODE", None,
         ) == "NOT_PASS"
+
+
+async def test_pass_status_requires_exact_review_kind_and_candidate(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a"
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Coordinator", "principal-b", "chat-b"
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    revision = canonical_revision(subject.work_id, subject.row_version)
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id, observed_revision=revision,
+        review_kind="CODE", candidate_ref="git:exact",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id, grant_version=1,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    submitted = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+    ), reviewer)
+    assert submitted.status == "SUBMITTED"
+    async with engine.begin() as connection:
+        assert await occurrences.pass_status_in_transaction(
+            connection, subject_id, revision, "IMPLEMENTATION", "git:exact",
+        ) == "NOT_PASS"
+        assert await occurrences.pass_status_in_transaction(
+            connection, subject_id, revision, "CODE", "git:other",
+        ) == "NOT_PASS"
+        assert await occurrences.pass_status_in_transaction(
+            connection, subject_id, revision, "CODE", "git:exact",
+        ) == "PASS"
 
 
 async def test_recovery_rejects_concluded_historical_delivery(occurrence_runtime):
@@ -940,6 +986,7 @@ async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
         assert await occurrences.pass_status_in_transaction(
             connection, subject_id,
             canonical_revision(subject.work_id, subject.row_version),
+            "CODE", None,
         ) == "PASS"
 
 
