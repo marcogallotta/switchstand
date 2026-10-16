@@ -311,6 +311,41 @@ async def test_root_takeover_does_not_audit_or_log_message_or_passcode(
     assert "private-message-marker" not in evidence
 
 
+async def test_root_takeover_ambiguous_result_does_not_overwrite_newer_owner(
+    agent_messaging, monkeypatch,
+):
+    tools, actor, session, owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    actor[0], session[0] = other, "replacement-chat"
+    configured = root_tools(service, session)
+    original = AgentMailboxState.takeover_root
+    calls = 0
+
+    async def ambiguous_then_newer(self, principal_key, replacement_session):
+        nonlocal calls
+        calls += 1
+        stored = await original(self, principal_key, replacement_session)
+        assert stored.status == "ok"
+        newer = await original(self, owner.key, "newer-chat")
+        assert newer.status == "ok"
+        return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
+    monkeypatch.setattr(AgentMailboxState, "takeover_root", ambiguous_then_newer)
+
+    result = await configured["agent_takeover"](
+        "1", "/root", "takeover /root with france"
+    )
+
+    assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
+    assert calls == 1
+    assert service.messages is not None
+    observed = await AgentMailboxState(service.messages.engine).for_actor(
+        owner.key, "newer-chat"
+    )
+    assert observed.status == "ok" and observed.mailbox is not None
+    assert observed.mailbox.name_key == "root"
+
+
 async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(
     agent_messaging, monkeypatch,
 ):

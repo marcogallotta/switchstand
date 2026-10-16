@@ -1017,10 +1017,10 @@ def build_ordinary_tools(
 
     unregistered_agent_next_action = (
         "Call agent_register for this exact session using its intended durable agent name, "
-        "then retry. Do not infer /root from an internal role label. Only after Marco "
-        "explicitly authorizes taking over an existing /root, use agent_takeover for the "
-        "same authenticated principal; cross-principal replacement requires "
-        "agent_transfer_request and host approval."
+        "then retry. Do not infer /root from an internal role label. When Marco's current "
+        "message asks this session to take over /root, pass that full message to "
+        "agent_takeover; on failure ask Marco for the passcode. For other cross-principal "
+        "names, use agent_transfer_request and host approval."
     )
 
     def agent_transition_failure(
@@ -1158,20 +1158,26 @@ def build_ordinary_tools(
                 else await mailboxes.takeover(name, principal.key, chat_session)
             )
             if stored.status == "recovery_required" and stored.reason == "state_unavailable":
-                # Takeover is replay-safe for this exact replacement session.
-                # Retry only the ambiguous state result, with the already-captured identity
-                # and unchanged arguments, then require an authoritative binding readback.
-                stored = (
-                    await mailboxes.takeover_root(principal.key, chat_session)
-                    if root_request
-                    else await mailboxes.takeover(name, principal.key, chat_session)
-                )
-                if stored.status == "ok" and stored.mailbox is not None:
+                if root_request:
+                    # A newer authorized /root takeover may have committed after the
+                    # ambiguous response. Never overwrite it: read back this caller only.
                     observed = await mailboxes.for_actor(principal.key, chat_session)
-                    if observed.status != "ok" or observed.mailbox != stored.mailbox:
-                        stored = AgentMailboxResult(
-                            status="recovery_required", reason="state_unavailable"
-                        )
+                    if (
+                        observed.status == "ok"
+                        and observed.mailbox is not None
+                        and observed.mailbox.name_key == "root"
+                    ):
+                        stored = observed
+                else:
+                    # Same-principal takeover is replay-safe for this exact replacement
+                    # session. Retry unchanged, then require authoritative readback.
+                    stored = await mailboxes.takeover(name, principal.key, chat_session)
+                    if stored.status == "ok" and stored.mailbox is not None:
+                        observed = await mailboxes.for_actor(principal.key, chat_session)
+                        if observed.status != "ok" or observed.mailbox != stored.mailbox:
+                            stored = AgentMailboxResult(
+                                status="recovery_required", reason="state_unavailable"
+                            )
             result = (
                 AgentRegistrationResult(status="ok", name=stored.mailbox.name)
                 if stored.status == "ok" and stored.mailbox is not None
