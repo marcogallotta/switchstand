@@ -141,7 +141,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     ordinary.add("outcome_state_update")
     ordinary.add("implementation_request")
     switchstand = servers["switchstand"]
-    assert switchstand["required"] is False
+    assert switchstand["required"] is True
     assert switchstand["default_tools_approval_mode"] == "approve"
     assert "command" not in switchstand
     assert switchstand["url"] == "https://laptop.tail46f0b9.ts.net/switchstand/mcp"

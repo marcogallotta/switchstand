@@ -240,6 +240,19 @@ E. **Outcome / qualification.** Does the candidate deliver the governing behavio
 F. **Scope / decomposition.** Does each PR/layer represent the smallest independently useful, valid, reviewable and recoverable intermediate state? Could an obvious smaller slice safely land with meaningful acceptance evidence and independent rollback/rework? If yes, prefer it. If no, name the reason the behavior/evidence/recovery must remain together. Dependency order alone does not justify bundling; sub-500 splitting does not prove good decomposition; split laundering is a defect.
 G. **Documentation currency.** For Implementation Specification-scoped work: verify the candidate's UPDATE/HISTORICALIZE/DELETE documentation-impact dispositions (under 1218218678917862) are reconciled to the actual retained candidate, not the spec's original projection. For work outside that process: does the candidate's diff touch something [architecture](architecture.md) describes? If so, does the same PR update `docs/architecture.md`? Either way, a qualifying diff that leaves its documentation stale is a material finding under Findings, remedies and challenge, not optional polish.
 
+Every approving or clearing review also checks this danger hotlist:
+- **D1 WRONG OUTCOME** — technically successful work solves a different problem from Marco's current outcome.
+- **D2 INVENTED SCOPE** — a new requirement, blocker, restriction, or capability lacks current authority.
+- **D3 WAR MACHINE / OVERENGINEERING** — machinery precedes a working slice that proves its need; name its concrete cost.
+- **D4 ANTI-MALICE OVERBUILD** — agents can fail but are not malicious; do not assume internal-agent malice without an explicit current threat or direction.
+- **D5 SECURITY LAUNDERING** — “security” grants no authority; name the actor, attack path/capability, and material consequence.
+- **D6 DUPLICATE / SHADOW MACHINERY** — a second owner or path exists where one canonical path plus a local guard suffices.
+- **D7 COMPLEXITY / EXEMPTION RATCHET** — material aggregate growth, a >=500 diff, or an exemption has not proved CUT/SPLIT/SIMPLIFY/REPLACE worse; splitting does not erase growth.
+- **D8 SAFEGUARD-GENERATED HARM** — protection removes required capability, blocks ordinary use, creates disproportionate burden, or makes Marco the routine control plane.
+- **D9 FALSE / PROXY SUCCESS** — PASS rests on proxy evidence while the real path, identity, or readback remains unproved.
+- **D10 UNAUTHORIZED REMOVAL / DEPLOYMENT** — removal/disablement and production deployment/activation require Marco's explicit go; calling something “security,” removing functions, then deploying without approval fires D5 + D10.
+A fire is a cue, not automatic blocker or remedy authority: record evidence, consequence, affected path, and minimum clearing condition; then use the smallest authorized fix/remove/reject/evidence route and focused rereview. Automatically resolved or clear cases produce no Marco noise; only a surviving genuine Human Input choice or separately protected effect reaches him with evidence, smaller routes tried, recommendation, and exact consequences. Otherwise report `DANGER CHECK: CLEAR`.
+
 PASS means materially good enough for the exact reviewed claim, not perfect and not approval/landing/activation authority. Style/nits do not serialize work.
 
 ## Findings, remedies and challenge
