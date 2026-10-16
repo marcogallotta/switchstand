@@ -21,7 +21,9 @@ from sqlalchemy import (
     UniqueConstraint,
     and_,
     func,
+    literal,
     select,
+    tuple_,
     update,
 )
 from sqlalchemy.dialects.postgresql import JSONB, insert
@@ -699,9 +701,16 @@ class MessageState:
             message_deliveries.c.recipient_work_id == work_id,
             message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
         )
+        # Newest first, so fresh deliveries are never buried behind an old backlog.
+        key = tuple_(messages.c.created_at, message_deliveries.c.delivery_id)
         if request.cursor is not None:
-            query = query.where(message_deliveries.c.delivery_id > request.cursor)
-        query = query.order_by(message_deliveries.c.delivery_id).limit(request.limit + 1)
+            anchor = self._pending_query().with_only_columns(messages.c.created_at).where(
+                message_deliveries.c.delivery_id == request.cursor,
+            ).scalar_subquery()
+            query = query.where(key < tuple_(anchor, literal(request.cursor)))
+        query = query.order_by(
+            messages.c.created_at.desc(), message_deliveries.c.delivery_id.desc(),
+        ).limit(request.limit + 1)
         async with self.engine.begin() as connection:
             if (
                 agent_binding is not None
