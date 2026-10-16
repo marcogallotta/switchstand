@@ -1,6 +1,8 @@
 {
   "autoCompactWindow": 300000,
   "claudeMdExcludes": ["**/.claude/CLAUDE.md"],
+  "voiceEnabled": true,
+  "voice": {"enabled": true, "mode": "hold"},
   "hooks": {
     "PreToolUse": [
       {
