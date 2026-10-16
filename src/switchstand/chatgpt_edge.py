@@ -604,7 +604,7 @@ async def resource_service(
             policy = (
                 review_config.policy
                 if review_config is not None
-                else ReviewPolicy(version="review-policy-v1", reviewer_by_kind={})
+                else ReviewPolicy(version="review-policy-v1")
             )
             review_occurrences = ReviewOccurrenceState(
                 canonical_repository, mailboxes, policy
