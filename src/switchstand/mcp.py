@@ -31,11 +31,13 @@ from .contracts import (
     WorkSearchItem,
 )
 from .core import Controller
+from .effects import CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
     GrantedWorkResult,
     GuardOutcome,
     PrincipalContext,
+    ProtectedAppend,
     ProtectedUpdate,
     ScalarPatch,
 )
@@ -381,6 +383,7 @@ def build_server(
     messages: MessageState | None = None, grants: GrantState | None = None,
     principal: PrincipalContext | None = None,
     currentness: Callable[[], RuntimeCurrentness | None] | None = None,
+    appends: Callable[[PrincipalContext, ProtectedAppend], Awaitable[GuardOutcome]] | None = None,
     updates: Callable[[PrincipalContext, ProtectedUpdate], Awaitable[GuardOutcome]] | None = None,
     task_runs: TaskRunState | None = None,
     priority_claims: PriorityClaimService | None = None,
@@ -418,14 +421,32 @@ def build_server(
             WorkEventRequest(api_version=api_version, work_id=work_id or active_work_id,
                              event_id=event_id, observed_revision=observed_revision))
 
-    async def _work_append(api_version: Literal["1"], work_id: UUID, text: str) -> AppendResult:
-        """Append one history entry to the active work item and return exact Asana effect identity."""
-        return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
+    if appends is None or grants is None or principal is None:
+        async def _legacy_work_append(
+            api_version: Literal["1"], work_id: UUID, text: str,
+        ) -> AppendResult:
+            """Append one history entry to the active work item and return exact Asana effect identity."""
+            return await service.append(WorkAppendRequest(api_version=api_version, work_id=work_id, text=text))  # type: ignore[attr-defined]
+        append_tool = _legacy_work_append
+    else:
+        async def _protected_work_append(
+            api_version: Literal["1"], operation_id: UUID,
+            observed_revision: Annotated[str, Field(min_length=1)], text: str,
+        ) -> GuardOutcome:
+            """Append one history entry to the active work item with exact retry protection."""
+            grant = await grants.current(principal.key)
+            request = ProtectedAppend(
+                api_version=api_version, operation_id=operation_id, work_id=active_work_id,
+                grant_version=1 if grant is None else grant.version,
+                observed_revision=observed_revision, text=text,
+            )
+            return await appends(principal, request)
+        append_tool = _protected_work_append
 
     closed_tool(server, "work_get", _work_get)
     closed_tool(server, "work_history", _work_history)
     closed_tool(server, "work_event", _work_event)
-    closed_tool(server, "work_append", _work_append)
+    closed_tool(server, "work_append", append_tool)
     if updates is not None and grants is not None and principal is not None:
         async def _work_update(
             api_version: Literal["1"], operation_id: UUID,
@@ -666,6 +687,7 @@ def server_from_env() -> MCPServer:
         service, active, service.authority.reference_work_ids,
         messages=messages, grants=grants, principal=managed_principal(active),
         currentness=currentness,
+        appends=CanonicalAppendGateway(grants, WorkEventRepository(engine)).append,
         updates=lambda principal, request: work.protected_update(grants, principal, request),
         task_runs=task_runs,
         priority_claims=priority_claims,

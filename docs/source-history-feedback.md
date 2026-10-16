@@ -60,12 +60,13 @@ provider-effect, and exact-readback rules. Reuse only that OperationId when
 reconciling an ambiguous result; an idempotent replay returns its recorded
 outcome.
 
-The managed launch-bound legacy `work_append` is narrower: the launcher locks
-writes to the active WorkId, and success requires the provider effect and exact
-story/work readback. It takes no caller-observed revision and provides no durable
-operation identity or idempotent replay contract. On either surface,
-`unknown` means an effect may have happened: reconcile current evidence and
-never blindly retry. `denied`, `stale`, and provider failure are not success.
+The managed launch-bound `work_append` is narrower: the launcher locks writes to
+the active WorkId, and callers supply its observed revision and one durable
+OperationId. Success requires the protected provider effect and exact story/work
+readback; an identical retry replays the recorded outcome. On either surface,
+`unknown` means an effect may have happened: reconcile current evidence using
+only the same OperationId, never a new one or a blind retry. `denied`, `stale`,
+and provider failure are not success.
 
 Managed legacy active-inbox behavior is instruction-led and applies only to
 bounded compatibility, investigation, or recovery. Ordinary agents use the
