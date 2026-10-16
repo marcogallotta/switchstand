@@ -6,7 +6,14 @@ from chatgpt_fixture import ACTIVE, PRINCIPAL, service
 
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxResult
 from switchstand.chatgpt_mcp import build_chatgpt_server, build_ordinary_tools
-from switchstand.reviews import ReviewFinding, ReviewResult, ReviewSubmit
+from switchstand.reviews import (
+    BaselineAssessment,
+    BaselineCheck,
+    ReviewFinding,
+    ReviewRequest,
+    ReviewResult,
+    ReviewSubmit,
+)
 
 
 class Messages:
@@ -30,6 +37,29 @@ def mailbox() -> AgentMailbox:
     )
 
 
+async def test_review_request_delegates_exact_baseline_check(monkeypatch):
+    subject, bound = service(), mailbox()
+    lookup = Mailboxes(AgentMailboxResult(status="ok", mailbox=bound))
+    monkeypatch.setattr("switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup)
+    subject.messages, subject.reviews = Messages(), AsyncMock()  # type: ignore[assignment]
+    work_id, review_id = uuid4(), uuid4()
+    expected = ReviewResult(
+        status="WAITING_REVIEWER", review_id=review_id, reason="reviewer_not_available",
+    )
+    subject.reviews.request.return_value = expected
+    check = BaselineCheck(
+        baseline_id=uuid4(), phase="PRE_IMPLEMENTATION",
+        owner_disposition="BASELINE_PRESERVED", comparison="Plan preserves baseline",
+        evidence_refs=("git:plan",),
+    )
+    tool = dict(build_ordinary_tools(subject, agent_identity=lambda: "chat"))["review_request"]
+    assert await tool("1", work_id, "r1", "CODE", baseline_check=check) == expected
+    subject.reviews.request.assert_awaited_once_with(ReviewRequest(
+        subject_work_id=work_id, observed_revision="r1", review_kind="CODE",
+        baseline_check=check,
+    ), bound)
+
+
 async def test_review_tools_are_default_off_and_closed(monkeypatch):
     subject = service()
     review_tools = {"review_request", "review_get", "review_recover", "review_submit"}
@@ -48,11 +78,13 @@ async def test_review_tools_are_default_off_and_closed(monkeypatch):
     submit_schema = next(tool.input_schema for tool in tools if tool.name == "review_submit")
     assert {
         "api_version", "review_id", "verdict", "context_provenance", "findings",
-        "evidence_refs",
+        "evidence_refs", "baseline_assessment",
     } == set(submit_schema["properties"])
     assert not {
         "reviewer", "reviewer_endpoint_id", "principal", "grant_id", "generation",
     } & set(submit_schema["properties"])
+    request_schema = next(tool.input_schema for tool in tools if tool.name == "review_request")
+    assert "baseline_check" in request_schema["properties"]
     for name in ("review_get", "review_recover"):
         schema = next(tool.input_schema for tool in tools if tool.name == name)
         assert set(schema["properties"]) == {"api_version", "review_id"}
@@ -146,9 +178,13 @@ async def test_review_submit_derives_current_reviewer_and_delegates_exact_verdic
         consequence="Consequence", affected_claim="Claim",
         minimum_clearing_condition="Clear it",
     )
+    assessment = BaselineAssessment(
+        baseline_id=uuid4(), phase="PRE_IMPLEMENTATION",
+        disposition="MATERIAL_DEVIATION", evidence_refs=("git:exact",),
+    )
 
     result = await tool(
-        "1", review_id, "FINDINGS", "INHERITED", (finding,), ("git:exact",),
+        "1", review_id, "FINDINGS", "INHERITED", (finding,), ("git:exact",), assessment,
     )
 
     assert result == expected
@@ -156,6 +192,7 @@ async def test_review_submit_derives_current_reviewer_and_delegates_exact_verdic
     subject.reviews.submit.assert_awaited_once_with(ReviewSubmit(
         review_id=review_id, verdict="FINDINGS", findings=(finding,),
         evidence_refs=("git:exact",), context_provenance="INHERITED",
+        baseline_assessment=assessment,
     ), bound)
     assert targets == [None]
     assert audits == [("review_submit", str(review_id), "SUBMITTED")]

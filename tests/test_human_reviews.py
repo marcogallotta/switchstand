@@ -17,6 +17,7 @@ from switchstand.canonical_work import (
 from switchstand.human_reviews import (
     HumanReviewConsequence,
     HumanReviewState,
+    approved_baseline_in_transaction,
     human_review_consequences,
 )
 
@@ -32,6 +33,37 @@ class ConsequenceSource:
             implementation_target="repository main through normal reviewed landing",
             excluded_effects=("deployment", "activation", "provider production writes"),
         )
+
+
+def v2_consequence(
+    revision: str, *, supersedes: UUID | None = None,
+    effects: tuple[str, ...] = ("IMPLEMENT", "LAND"),
+) -> HumanReviewConsequence:
+    return HumanReviewConsequence(
+        package_work_id=PACKAGE,
+        package_revision=revision,
+        implementation_scope=("Implement and land the approved package",),
+        implementation_target="repository main",
+        excluded_effects=("activation", "deployment"),
+        approval_effect="CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
+        baseline={
+            "human_source_refs": ("work:5998b00d",),
+            "opening": {
+                "what_you_asked": "Ship the behavior", "what_this_does": "Implement the package",
+                "what_this_does_not_or_changes_for_you": "Does not activate it",
+                "size": "Small repository change",
+            },
+            "approved_meaning": ("The approved behavior is durable",),
+            "protected_requirements": ("Preserve the reviewed outcome",),
+            "approved_non_goals": ("No activation",),
+            "decision_context": {
+                "size_or_burden": ("One implementation PR",), "scale_assumptions": (),
+                "material_risks_and_boundaries": ("Activation remains separate",),
+            },
+            "continuation_effects": effects,
+            "supersedes_baseline_id": supersedes,
+        },
+    )
 
 @pytest.fixture
 async def subject(database_prerequisite):
@@ -210,3 +242,45 @@ async def test_duplicate_proposal_rows_fail_closed(subject):
     )
     assert read.status == submit.status == "UNKNOWN"
     assert read.reason == submit.reason == "state_unavailable"
+
+
+async def test_v2_supersession_is_explicit_append_only_and_current(subject):
+    store, _, engine = subject
+    first = v2_consequence(canonical_revision(PACKAGE, 1))
+    prepared = await store.propose(first)
+    assert prepared.record is not None
+    await store.submit(prepared.record.consequence_id, PACKAGE, first.package_revision, "APPROVED")
+
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).where(
+            canonical_work.c.work_id == PACKAGE
+        ).values(row_version=2))
+    revision = canonical_revision(PACKAGE, 2)
+    missing_reference = await store.propose(v2_consequence(revision))
+    assert (missing_reference.status, missing_reference.reason) == (
+        "DENIED", "baseline_supersession_required",
+    )
+
+    successor = v2_consequence(revision, supersedes=first.consequence_id)
+    proposed = await store.propose(successor)
+    assert proposed.status == "PREPARED" and proposed.record is not None
+    approved = await store.submit(
+        proposed.record.consequence_id, PACKAGE, revision, "APPROVED"
+    )
+    assert approved.status == "RECORDED"
+
+    async with engine.connect() as connection:
+        baseline = await approved_baseline_in_transaction(connection, first.consequence_id, PACKAGE)
+        rows = (await connection.execute(
+            human_review_consequences.select().order_by(human_review_consequences.c.created_at)
+        )).mappings().all()
+    assert baseline is not None and baseline.consequence.baseline == first.baseline
+    assert len(rows) == 2
+    assert rows[0]["consequence_id"] == first.consequence_id
+    assert rows[1]["consequence_id"] == successor.consequence_id
+
+
+def test_v2_closed_shape_rejects_effect_exclusion():
+    revision = canonical_revision(PACKAGE, 1)
+    with pytest.raises(ValueError, match="also excluded"):
+        v2_consequence(revision, effects=("IMPLEMENT", "ACTIVATE"))

@@ -110,8 +110,8 @@ Managed Workers use only procedures/references in their bound current package. M
 
 ### Always-loaded triggers
 
-Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only the reviewed package. After approval stop and report exactly `Human Review approved. Dispatch ready: <WorkId>.`
+Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
 
-A mechanically established required-currentness/applicable-invariant contradiction or evidence of an ambiguous consequential effect requires one bounded situation review under the current review owner; low confidence alone does not. Detailed review, code-quality/rebase/testing, activation, canary, documentation-impact, research, and portfolio mechanics stay behind their routed owners.
+A mechanically established required-currentness/applicable-invariant contradiction or ambiguous consequential effect requires one bounded situation review under current owner; low confidence alone does not. Other review, quality, activation, canary, documentation, research, and portfolio mechanics stay behind routed owners.
 
 Implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Detail lives in [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns status/priority; references never grant authority.

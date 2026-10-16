@@ -206,6 +206,13 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "intended operating scale" in human_input
     assert "deliberate V1 deferrals" in human_review
     assert "Never present default-off or inert readiness as ordinary-use product completion" in human_review
+    assert "WHAT YOU ASKED" in human_review
+    assert "WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU" in human_review
+    assert "CONFORMS_TO_APPROVED_BASELINE" in human_review
+    assert "does not become a portfolio hold" in human_review
+    assert "Do not add a return-to-Marco stop solely because Human Review approved" in agents
+    assert "separately authorizes that effect" in agents
+    assert "Approved-baseline conformance" in quality
 
 
 def test_loc_exceptions_use_one_hard_challenge_and_rare_human_escalation():

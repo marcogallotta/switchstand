@@ -66,6 +66,34 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
     consequence = record.consequence
     details = "".join(f"<li>{escape(item)}</li>" for item in consequence.implementation_scope)
     excluded = "".join(f"<li>{escape(item)}</li>" for item in consequence.excluded_effects)
+    baseline_content = ""
+    opening = ""
+    if consequence.baseline is not None:
+        baseline = consequence.baseline
+        opening_values = baseline.opening
+        opening = (
+            f"<p>WHAT YOU ASKED — {escape(opening_values.what_you_asked)}</p>"
+            f"<p>WHAT THIS DOES — {escape(opening_values.what_this_does)}</p>"
+            "<p>WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU — "
+            f"{escape(opening_values.what_this_does_not_or_changes_for_you)}</p>"
+            f"<p>SIZE — {escape(opening_values.size)}</p>"
+        )
+
+        def listed(values: tuple[str, ...]) -> str:
+            return "".join(f"<li>{escape(value)}</li>" for value in values)
+
+        context = baseline.decision_context
+        baseline_content = (
+            f"<h2>Human sources</h2><ul>{listed(baseline.human_source_refs)}</ul>"
+            f"<h2>Approved meaning</h2><ul>{listed(baseline.approved_meaning)}</ul>"
+            f"<h2>Protected requirements</h2><ul>{listed(baseline.protected_requirements)}</ul>"
+            f"<h2>Approved non-goals</h2><ul>{listed(baseline.approved_non_goals)}</ul>"
+            f"<h2>Size or burden</h2><ul>{listed(context.size_or_burden)}</ul>"
+            f"<h2>Scale assumptions</h2><ul>{listed(context.scale_assumptions)}</ul>"
+            "<h2>Material risks and boundaries</h2>"
+            f"<ul>{listed(context.material_risks_and_boundaries)}</ul>"
+            f"<h2>Continuation effects</h2><ul>{listed(baseline.continuation_effects)}</ul>"
+        )
     controls = ""
     if form and record.decision is None:
         buttons = "".join(
@@ -81,11 +109,12 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
             f"{buttons}</form>"
         )
     return _page(
-        f"<h1>Human Review: {escape(result.status)}</h1>"
+        f"{opening}<h1>Human Review: {escape(result.status)}</h1>"
+        f"{baseline_content}"
         f"<p>Target: {escape(consequence.implementation_target)}</p>"
         f"<h2>Implementation scope</h2><ul>{details}</ul>"
         f"<h2>Excluded effects</h2><ul>{excluded}</ul>"
-        f"<p>Approval effect: {consequence.approval_effect}</p>"
+        f"<p>Approval effect: {escape(consequence.approval_effect)}</p>"
         f"<p>State: {record.state}</p>{controls}"
     )
 

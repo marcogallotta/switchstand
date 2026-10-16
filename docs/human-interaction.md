@@ -7,6 +7,9 @@ Root reports the portfolio. Other agents report only their assigned work and exp
 When Marco must decide, state in plain language the outcome, exact change, consequence, size, and
 recommendation.
 
+The attention-first four-line opening for a Human Review decision is owned by
+[Human Review](human-review.md); it does not replace the status and attention formats below.
+
 ## Never use Marco as a command relay
 
 Assume Marco will run any command an agent asks him to run without independently checking whether

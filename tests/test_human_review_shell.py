@@ -54,6 +54,32 @@ def _record() -> HumanReviewRecord:
     )
 
 
+def _v2_record() -> HumanReviewRecord:
+    consequence = HumanReviewConsequence(
+        package_work_id=WORK,
+        package_revision=REVISION,
+        implementation_scope=("land <reviewed> code",),
+        implementation_target="repository main",
+        excluded_effects=("activation",),
+        approval_effect="CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
+        baseline={
+            "human_source_refs": ("Marco <approved>",),
+            "opening": {"what_you_asked": "Ship <this>", "what_this_does": "Adds baseline",
+                "what_this_does_not_or_changes_for_you": "Does not activate", "size": "Small & bounded"},
+            "approved_meaning": ("Keep exact human meaning",),
+            "protected_requirements": ("No second Human Review for matching code",),
+            "approved_non_goals": ("No activation",),
+            "decision_context": {"size_or_burden": ("One PR",),
+                "scale_assumptions": ("One repository",),
+                "material_risks_and_boundaries": ("Effect authority stays separate",)},
+            "continuation_effects": ("IMPLEMENT", "LAND"),
+        },
+    )
+    return HumanReviewRecord(consequence_id=consequence.consequence_id, package_work_id=WORK,
+        package_revision=REVISION, consequence_digest=consequence.digest,
+        consequence=consequence, decision=None, state="PENDING")
+
+
 class FakeState:
     def __init__(self) -> None:
         self.record = _record()
@@ -116,6 +142,25 @@ def test_shell_is_basic_authenticated_and_renders_server_owned_consequence(shell
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert response.headers["x-frame-options"] == "DENY"
+
+
+def test_v2_shell_renders_escaped_four_line_opening_first(shell):
+    client, state, auth = shell
+    state.record = _v2_record()
+
+    response = client.get(f"/human-review/{WORK}?revision={REVISION}", headers=auth)
+
+    assert response.status_code == 200
+    labels = ["WHAT YOU ASKED —", "WHAT THIS DOES —",
+        "WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU —",
+        "SIZE —"]
+    positions = [response.text.index(label) for label in labels]
+    assert positions == sorted(positions)
+    assert positions[-1] < response.text.index("Human Review: PREPARED")
+    assert "Ship &lt;this&gt;" in response.text
+    assert "Small &amp; bounded" in response.text
+    assert "No second Human Review for matching code" in response.text
+    assert "IMPLEMENT" in response.text and "LAND" in response.text
 
 
 def test_exact_origin_and_bound_fields_fail_closed_before_decision(shell):
