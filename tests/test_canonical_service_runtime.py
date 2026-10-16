@@ -198,6 +198,29 @@ async def test_service_updates_and_projects_coherent_lifecycle_routing(
     }
 
 
+async def test_terminal_work_412ad158_closes_in_disposable_replica(
+    subject: Subject,
+) -> None:
+    work_id = UUID("412ad158-90e8-5754-94b0-81612be92a35")
+    await subject.runtime.works.create(CurrentWork(
+        work_id, "P0 CORRECTION — observability V1 misses reviewer-acquisition waits",
+        False, "Behavioral correction complete; only administrative cleanup remains",
+        priority="P0", work_type="Correction", lifecycle_state="TERMINAL",
+        canonical_root="UNKNOWN", owner_key="UNKNOWN", wait_kind="NONE",
+        unblock_condition="NONE", next_due="NONE", next_action_class="NONE",
+        next_action_ref="NONE",
+    ))
+    replica = replace(subject, work_id=work_id)
+
+    closed = await subject.service.update(update(replica, completed=True))
+    readback = await subject.runtime.get(work_id)
+
+    assert closed.effect == "applied"
+    assert readback.status == "ok" and readback.item is not None
+    assert readback.item.completed is True
+    assert readback.item.routing.lifecycle_state == "TERMINAL"
+
+
 async def test_updates_and_inherited_creates_reject_unbound_exact_root(
     subject: Subject,
 ) -> None:
