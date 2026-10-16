@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import time
@@ -15,6 +16,8 @@ SOURCE = Path(__file__).parents[1]
 
 
 def host_user_systemd_available() -> bool:
+    if os.environ.get("SWITCHSTAND_RUN_HOST_SYSTEMD_TESTS") != "1":
+        return False
     try:
         result = subprocess.run(
             [
@@ -29,15 +32,17 @@ def host_user_systemd_available() -> bool:
             check=False,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return False
     return result.returncode == 0 and bool(result.stdout.strip())
 
 
-pytestmark = pytest.mark.skipif(
-    not host_user_systemd_available(),
-    reason="NOT_RUN: causal worker lifecycle requires the host user-systemd boundary",
-)
+@pytest.fixture(autouse=True)
+def require_explicit_host_boundary(request: pytest.FixtureRequest) -> None:
+    if request.node.name == "test_worker_prefers_user_managed_codex_runtime":
+        return
+    if not host_user_systemd_available():
+        pytest.skip("set SWITCHSTAND_RUN_HOST_SYSTEMD_TESTS=1 for the explicit host boundary")
 
 
 def git(repo: Path, *arguments: str) -> str:
