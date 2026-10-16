@@ -246,6 +246,26 @@ async def approved_baseline_in_transaction(
     return record
 
 
+async def current_approved_baseline_in_transaction(
+    connection: AsyncConnection, package_work_id: UUID,
+) -> HumanReviewRecord | None:
+    rows = (await connection.execute(select(human_review_consequences).where(
+        human_review_consequences.c.package_work_id == package_work_id,
+        human_review_consequences.c.decision == "APPROVED",
+    ).with_for_update())).mappings().all()
+    approved = [human_review_record(row) for row in rows]
+    v2 = [record for record in approved if record.consequence.baseline is not None]
+    superseded = {
+        record.consequence.baseline.supersedes_baseline_id for record in v2
+        if record.consequence.baseline is not None
+        and record.consequence.baseline.supersedes_baseline_id is not None
+    }
+    current = [record for record in v2 if record.consequence_id not in superseded]
+    if len(current) > 1:
+        raise ValueError("multiple current approved baselines")
+    return current[0] if current else None
+
+
 class HumanReviewState:
     """Atomic consequence preparation and decision storage for a future trusted shell."""
 

@@ -1,7 +1,7 @@
 import asyncio
 import os
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -16,8 +16,10 @@ from switchstand.canonical_work import (
     canonical_metadata,
     canonical_revision,
 )
+from switchstand.contracts import LaunchAuthority
 from switchstand.flow_report import report
 from switchstand.grant_state import GrantState
+from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.human_reviews import (
     HumanReviewBaselineV2,
     HumanReviewConsequence,
@@ -25,6 +27,7 @@ from switchstand.human_reviews import (
     HumanReviewOpeningV2,
     HumanReviewState,
 )
+from switchstand.implementation_requests import ImplementationRequestState
 from switchstand.messages import (
     MessageReceiveRequest,
     MessageRoute,
@@ -152,7 +155,9 @@ async def occurrence_runtime(database_prerequisite) -> AsyncGenerator[
             id=subject_id, provider="postgres", provider_work_id=str(subject_id),
         ))
     works = CanonicalWorkRepository(engine)
-    await works.create(CurrentWork(subject_id, "Exact package", False, "Material claim"))
+    await works.create(CurrentWork(
+        subject_id, "Exact package", False, "Material claim", lifecycle_state="CURRENT",
+    ))
     mailboxes = AgentMailboxState(engine)
     policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={"CODE": "Reviewer"})
     yield ReviewOccurrenceState(works, mailboxes, policy), MessageState(
@@ -397,6 +402,20 @@ async def test_baseline_review_round_trip_binds_assessment_and_projects_proof(
             connection, subject_id, revision,
         )
     assert proof.status == "PASS" and proof.baseline_id == check.baseline_id
+    principal = PrincipalContext(
+        issuer="fixture", subject=f"implementation-{uuid4()}", client_id="codex", assurance="test",
+    )
+    grant = WorkGrant(
+        id=uuid4(), version=1, principal=principal,
+        authority=LaunchAuthority(active_work_id=subject_id),
+        operations=frozenset({"implementation_request"}), issuer="fixture",
+        provenance="direct assignment fixture", expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    await GrantState(engine).issue(grant, None)
+    admitted = await ImplementationRequestState(
+        engine, occurrences.works, occurrences,
+    ).request(principal, uuid4(), subject_id, revision)
+    assert (admitted.status, admitted.reason) == ("APPLIED", None)
 
 
 async def test_sent_request_replay_survives_reviewer_principal_transfer(occurrence_runtime):

@@ -162,14 +162,19 @@ async def test_v2_baseline_and_exact_preimplementation_pass_bind_full_authorizat
     proposed = await reviews.propose(approved)
     assert proposed.record is not None
     await reviews.submit(approved.consequence_id, PACKAGE, approved.package_revision, "APPROVED")
-    denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).where(
+            canonical_work.c.work_id == PACKAGE
+        ).values(row_version=2))
+    revision = canonical_revision(PACKAGE, 2)
+    denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, revision)
     assert (denied.status, denied.reason, await request_count(engine)) == ("DENIED", "baseline_review_not_passed", 0)
     review_id, verdict_digest = uuid4(), "a" * 64
     occurrences.baseline_pass_status_in_transaction.return_value = BaselineReviewProof(
         status="PASS", baseline_id=approved.consequence_id, phase="PRE_IMPLEMENTATION",
         review_id=review_id, verdict_digest=verdict_digest, reason="exact preserving review",
     )
-    applied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    applied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, revision)
     assert (applied.status, await request_count(engine)) == ("APPLIED", 1)
     occurrences.pass_status_in_transaction.assert_not_called()
     async with engine.connect() as connection:

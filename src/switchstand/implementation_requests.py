@@ -16,6 +16,7 @@ from .grant_state import work_grants
 from .grants import PrincipalContext, WorkGrant
 from .human_reviews import (
     approved_baseline_in_transaction,
+    current_approved_baseline_in_transaction,
     human_review_consequences,
     human_review_record,
 )
@@ -133,6 +134,9 @@ class ImplementationRequestState:
                         status="UNKNOWN", reason="human_review_ambiguous"
                     )
                 exact_review = human_review_record(reviews[0]) if reviews else None
+                current_baseline = await current_approved_baseline_in_transaction(
+                    connection, package_work_id
+                )
                 legacy_review = exact_review if exact_review is not None and (
                     exact_review.consequence.baseline is None
                     and exact_review.decision == "APPROVED"
@@ -157,10 +161,15 @@ class ImplementationRequestState:
                         return ImplementationRequestResult(
                             status="DENIED", reason="approved_baseline_not_found"
                         )
+                    if current_baseline is None or (
+                        current_baseline.consequence_id != baseline_review.consequence_id
+                    ):
+                        return ImplementationRequestResult(
+                            status="DENIED", reason="approved_baseline_not_found"
+                        )
                     legacy_review = None
                 elif legacy_review is None:
-                    reason = ("baseline_review_not_passed" if exact_review is not None
-                              and exact_review.consequence.baseline is not None
+                    reason = ("baseline_review_not_passed" if current_baseline is not None
                               else "human_review_not_approved")
                     return ImplementationRequestResult(status="DENIED", reason=reason)
 
