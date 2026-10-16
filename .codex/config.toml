@@ -26,7 +26,7 @@ enabled = true
 # Ordinary in-repo Codex owns the authenticated provider-neutral HTTP/OAuth endpoint
 # directly; it must not depend on a pre-existing user-level server with the same name.
 url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
-required = false
+required = true
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
