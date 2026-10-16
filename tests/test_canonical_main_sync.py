@@ -55,10 +55,18 @@ def setup_repositories(tmp_path: Path) -> tuple[Path, Path, str, str]:
 
 
 def test_clean_behind_checkout_fast_forwards(tmp_path: Path) -> None:
-    canonical, _source, started, final = setup_repositories(tmp_path)
+    canonical, source, started, final = setup_repositories(tmp_path)
     messages: list[str] = []
 
-    result = load_script().sync(canonical, git="git", emit=messages.append)
+    remote = str(source.parent / "remote.git")
+    result = load_script().sync(
+        canonical,
+        git="git",
+        emit=messages.append,
+        remote_source=remote,
+        accepted_origins=frozenset({remote}),
+        remote_protocol="file",
+    )
 
     assert result == 0
     assert git(canonical, "rev-parse", "HEAD") == final
@@ -69,10 +77,17 @@ def test_clean_behind_checkout_fast_forwards(tmp_path: Path) -> None:
 def test_dirty_and_diverged_checkouts_are_unchanged(tmp_path: Path) -> None:
     canonical, source, started, _final = setup_repositories(tmp_path)
     subject = load_script()
+    remote = str(source.parent / "remote.git")
+    arguments = {
+        "git": "git",
+        "remote_source": remote,
+        "accepted_origins": frozenset({remote}),
+        "remote_protocol": "file",
+    }
     dirty_messages: list[str] = []
     (canonical / "untracked.txt").write_text("preserve\n")
 
-    assert subject.sync(canonical, git="git", emit=dirty_messages.append) == 0
+    assert subject.sync(canonical, emit=dirty_messages.append, **arguments) == 0
     assert git(canonical, "rev-parse", "HEAD") == started
     assert (canonical / "untracked.txt").read_text() == "preserve\n"
     assert dirty_messages == ["skip: canonical main is dirty"]
@@ -88,10 +103,59 @@ def test_dirty_and_diverged_checkouts_are_unchanged(tmp_path: Path) -> None:
     git(source, "push", "origin", "main")
     diverged_messages: list[str] = []
 
-    assert subject.sync(canonical, git="git", emit=diverged_messages.append) == 0
+    assert subject.sync(canonical, emit=diverged_messages.append, **arguments) == 0
     assert git(canonical, "rev-parse", "HEAD") == local
     assert git(canonical, "status", "--porcelain", "--untracked-files=all") == ""
     assert diverged_messages == ["skip: canonical main is diverged from origin/main"]
+
+
+def test_wrong_origin_is_rejected_before_fetch(tmp_path: Path) -> None:
+    canonical, source, started, _final = setup_repositories(tmp_path)
+    expected = str(source.parent / "remote.git")
+    wrong = tmp_path / "wrong.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", wrong],
+        check=True,
+        capture_output=True,
+    )
+    git(canonical, "remote", "set-url", "origin", str(wrong))
+
+    result = load_script().sync(
+        canonical,
+        git="git",
+        remote_source=expected,
+        accepted_origins=frozenset({expected}),
+        remote_protocol="file",
+    )
+
+    assert result == 1
+    assert git(canonical, "rev-parse", "HEAD") == started
+
+
+def test_hooks_and_ambient_git_config_do_not_execute(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    canonical, source, _started, final = setup_repositories(tmp_path)
+    marker = tmp_path / "executed"
+    executable(canonical / ".git/hooks/post-merge", f"#!/bin/sh\ntouch '{marker}'\n")
+    helper = tmp_path / "helper"
+    executable(helper, f"#!/bin/sh\ntouch '{marker}'\nexit 1\n")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.fsmonitor")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(helper))
+    remote = str(source.parent / "remote.git")
+
+    result = load_script().sync(
+        canonical,
+        git="git",
+        remote_source=remote,
+        accepted_origins=frozenset({remote}),
+        remote_protocol="file",
+    )
+
+    assert result == 0
+    assert git(canonical, "rev-parse", "HEAD") == final
+    assert not marker.exists()
 
 
 def executable(path: Path, content: str) -> None:
