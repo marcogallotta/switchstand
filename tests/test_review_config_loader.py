@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-from types import MappingProxyType
 
 import pytest
 from pydantic import ValidationError
@@ -31,26 +30,26 @@ def write(path: Path, value: object) -> None:
     path.chmod(0o600)
 
 
-def test_loads_exact_immutable_partial_policy(tmp_path: Path) -> None:
+def test_loads_policy_and_routes_every_kind_to_coordinator(tmp_path: Path) -> None:
     path = tmp_path / "reviews.json"
     write(path, payload())
 
     loaded = load_review_config(path)
 
     assert loaded.policy.version == "policy-v1"
-    assert isinstance(loaded.policy.reviewer_by_kind, MappingProxyType)
-    assert loaded.policy.reviewer_by_kind == {"CODE": "Reviewer"}
     assert loaded.guidelines.version == "guidelines-v1"
     assert loaded.guidelines.digest == "a" * 64
-    with pytest.raises(TypeError):
-        loaded.policy.reviewer_by_kind["CODE"] = "Changed"  # type: ignore[index]
+    assert loaded.policy.reviewer_name("CODE") == "Coordinator"
+    assert loaded.policy.reviewer_name("DESIGN") == "Coordinator"
 
 
-def test_empty_mapping_preserves_reviewer_acquisition(tmp_path: Path) -> None:
+def test_legacy_reviewer_mapping_is_optional(tmp_path: Path) -> None:
     path = tmp_path / "reviews.json"
-    write(path, payload(reviewer_by_kind={}))
+    value = payload()
+    del value["reviewer_by_kind"]
+    write(path, value)
 
-    assert load_review_config(path).policy.reviewer_name("CODE") is None
+    assert load_review_config(path).policy.reviewer_name("CODE") == "Coordinator"
 
 
 def test_environment_path_is_literal_absolute_and_default_off(
