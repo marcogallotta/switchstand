@@ -110,7 +110,13 @@ Managed Workers use only procedures/references in their bound current package. M
 
 ### Always-loaded triggers
 
-WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
+WAR MACHINES (overrides everything else):
+- Start from Marco's exact user-visible ask. Everything else is out unless that ask literally fails without it.
+- Reviewer findings never authorize scope growth. They may expose a defect; the remedy is the smallest fix, not another subsystem.
+- Adjacent tracks stay separate. Integration contracts yes; bundling their implementation no.
+- Before adding a table, tool or service ask: can the original ask work without this? If yes, exclude it. Never set a size cap around a bundle; challenge the bundle.
+- Human Review is at most ~10 lines. Detail lives in the WorkId.
+- If scope grows materially beyond the ask, stop and show Marco the growth before redesigning around it.
 
 Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
 
