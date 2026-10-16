@@ -68,6 +68,8 @@ from .priority_claims import PriorityBand, RelationKind, SubjectKind
 from .priority_context import PriorityContextResult
 from .product_currentness import ProductCurrentness
 from .reviews import (
+    BaselineAssessment,
+    BaselineCheck,
     ContextProvenance,
     ReviewFinding,
     ReviewKind,
@@ -749,6 +751,7 @@ def build_ordinary_tools(
         candidate_ref: Annotated[str | None, Field(min_length=1, max_length=500)] = None,
         mode: ReviewMode = "FULL", prior_review_id: UUID | None = None,
         finding_ids: tuple[str, ...] = (),
+        baseline_check: BaselineCheck | None = None,
     ) -> ReviewResult:
         """Request one review as this registered caller at an exact subject revision."""
         del api_version
@@ -766,6 +769,7 @@ def build_ordinary_tools(
                 subject_work_id=subject_work_id, observed_revision=observed_revision,
                 review_kind=review_kind, candidate_ref=candidate_ref, mode=mode,
                 prior_review_id=prior_review_id, finding_ids=finding_ids,
+                baseline_check=baseline_check,
             ), context.mailbox)
         audited("review_request", str(subject_work_id), result.status)
         return result
@@ -858,6 +862,7 @@ def build_ordinary_tools(
         api_version: Literal["1"], review_id: UUID, verdict: ReviewVerdict,
         context_provenance: ContextProvenance,
         findings: tuple[ReviewFinding, ...] = (), evidence_refs: tuple[str, ...] = (),
+        baseline_assessment: BaselineAssessment | None = None,
     ) -> ReviewResult:
         """Submit one verdict as the current registered reviewer mailbox."""
         del api_version
@@ -877,6 +882,7 @@ def build_ordinary_tools(
                 findings=findings,
                 evidence_refs=evidence_refs,
                 context_provenance=context_provenance,
+                baseline_assessment=baseline_assessment,
             ), context.mailbox)
         audited("review_submit", str(review_id), result.status)
         return result

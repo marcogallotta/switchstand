@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 from uuid import UUID, uuid5
 
 from pydantic import Field, model_validator
@@ -69,6 +69,52 @@ human_review_consequences = Table(
 )
 
 
+BoundedBaselineText = Annotated[str, Field(min_length=1, max_length=1024, pattern=r"\S")]
+
+
+class HumanReviewOpeningV2(ClosedModel):
+    what_you_asked: BoundedBaselineText
+    what_this_does: BoundedBaselineText
+    what_this_does_not_or_changes_for_you: BoundedBaselineText
+    size: BoundedBaselineText
+
+
+class HumanReviewDecisionContextV2(ClosedModel):
+    size_or_burden: tuple[BoundedBaselineText, ...] = Field(min_length=1, max_length=16)
+    scale_assumptions: tuple[BoundedBaselineText, ...] = Field(max_length=16)
+    material_risks_and_boundaries: tuple[BoundedBaselineText, ...] = Field(max_length=32)
+
+
+class HumanReviewBaselineV2(ClosedModel):
+    schema_version: Literal["2"] = "2"
+    human_source_refs: tuple[BoundedBaselineText, ...] = Field(min_length=1, max_length=32)
+    opening: HumanReviewOpeningV2
+    approved_meaning: tuple[BoundedBaselineText, ...] = Field(min_length=1, max_length=32)
+    protected_requirements: tuple[BoundedBaselineText, ...] = Field(min_length=1, max_length=64)
+    approved_non_goals: tuple[BoundedBaselineText, ...] = Field(max_length=32)
+    decision_context: HumanReviewDecisionContextV2
+    continuation_effects: tuple[Literal["IMPLEMENT", "LAND", "ACTIVATE"], ...] = Field(
+        min_length=1, max_length=3
+    )
+    supersedes_baseline_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def unique_items(self) -> HumanReviewBaselineV2:
+        for values in (
+            self.human_source_refs,
+            self.approved_meaning,
+            self.protected_requirements,
+            self.approved_non_goals,
+            self.continuation_effects,
+            self.decision_context.size_or_burden,
+            self.decision_context.scale_assumptions,
+            self.decision_context.material_risks_and_boundaries,
+        ):
+            if len(set(values)) != len(values):
+                raise ValueError("baseline tuple items must be unique")
+        return self
+
+
 class HumanReviewConsequence(ClosedModel):
     """The exact server-owned meaning of approving one package revision."""
 
@@ -77,13 +123,31 @@ class HumanReviewConsequence(ClosedModel):
     implementation_scope: tuple[str, ...] = Field(min_length=1, max_length=32)
     implementation_target: str = Field(min_length=1, max_length=1024)
     excluded_effects: tuple[str, ...] = Field(min_length=1, max_length=32)
-    approval_effect: Literal["READY_FOR_IMPLEMENTATION_ONLY"] = "READY_FOR_IMPLEMENTATION_ONLY"
+    approval_effect: Literal[
+        "READY_FOR_IMPLEMENTATION_ONLY",
+        "CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
+    ] = "READY_FOR_IMPLEMENTATION_ONLY"
+    baseline: HumanReviewBaselineV2 | None = None
 
     @model_validator(mode="after")
     def bounded_unique_items(self) -> HumanReviewConsequence:
         for values in (self.implementation_scope, self.excluded_effects):
             if len(set(values)) != len(values) or any(not value or len(value) > 512 for value in values):
                 raise ValueError("consequence items must be unique strings of 1..512 characters")
+        if self.baseline is None:
+            if self.approval_effect != "READY_FOR_IMPLEMENTATION_ONLY":
+                raise ValueError("V2 approval effect requires a baseline")
+            return self
+        if self.approval_effect != "CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION":
+            raise ValueError("V2 baseline requires named-continuation approval effect")
+        excluded = {value.strip().casefold() for value in self.excluded_effects}
+        effect_exclusions = {
+            "IMPLEMENT": {"implement", "implementation"}, "LAND": {"land", "landing"},
+            "ACTIVATE": {"activate", "activation"},
+        }
+        for effect in self.baseline.continuation_effects:
+            if excluded & effect_exclusions[effect]:
+                raise ValueError("continuation effect is also excluded")
         return self
 
     @property
@@ -105,6 +169,8 @@ FailureReason = Literal[
     "consequence_unavailable",
     "consequence_changed",
     "decision_conflict",
+    "baseline_supersession_required",
+    "baseline_supersession_invalid",
     "state_unavailable",
 ]
 class HumanReviewRecord(ClosedModel):
@@ -161,6 +227,25 @@ def human_review_record(row: RowMapping) -> HumanReviewRecord:
     )
 
 
+async def approved_baseline_in_transaction(
+    connection: AsyncConnection, baseline_id: UUID, package_work_id: UUID,
+) -> HumanReviewRecord | None:
+    query = select(human_review_consequences).where(
+        human_review_consequences.c.consequence_id == baseline_id
+    )
+    row = (await connection.execute(query)).mappings().one_or_none()
+    if row is None:
+        return None
+    record = human_review_record(row)
+    if (
+        record.package_work_id != package_work_id
+        or record.decision != "APPROVED"
+        or record.consequence.baseline is None
+    ):
+        return None
+    return record
+
+
 class HumanReviewState:
     """Atomic consequence preparation and decision storage for a future trusted shell."""
 
@@ -191,6 +276,39 @@ class HumanReviewState:
             human_review_consequences.c.package_revision == package_revision,
         ).with_for_update())).mappings().all())
 
+    @staticmethod
+    async def _baseline_supersession_reason(
+        connection: AsyncConnection, consequence: HumanReviewConsequence
+    ) -> FailureReason | None:
+        baseline = consequence.baseline
+        if baseline is None:
+            return None
+        rows = (await connection.execute(
+            select(human_review_consequences).where(
+                human_review_consequences.c.package_work_id == consequence.package_work_id,
+                human_review_consequences.c.decision == "APPROVED",
+            ).with_for_update()
+        )).mappings().all()
+        approved = [human_review_record(row) for row in rows]
+        approved_v2 = [record for record in approved if record.consequence.baseline is not None]
+        referenced = {
+            record.consequence.baseline.supersedes_baseline_id
+            for record in approved_v2
+            if record.consequence.baseline is not None
+            and record.consequence.baseline.supersedes_baseline_id is not None
+        }
+        current = [record for record in approved_v2 if record.consequence_id not in referenced]
+        if len(current) > 1:
+            raise ValueError("multiple current approved baselines")
+        if baseline.supersedes_baseline_id is None:
+            return "baseline_supersession_required" if approved_v2 else None
+        if (
+            len(current) != 1
+            or current[0].consequence_id != baseline.supersedes_baseline_id
+        ):
+            return "baseline_supersession_invalid"
+        return None
+
     async def propose(self, consequence: HumanReviewConsequence) -> HumanReviewResult:
         """Persist non-authoritative typed intent for one exact canonical package revision."""
         try:
@@ -213,6 +331,11 @@ class HumanReviewState:
                     if existing.consequence_digest != consequence.digest:
                         return HumanReviewResult(status="CONFLICT", reason="consequence_changed")
                     return HumanReviewResult(status="REPLAYED", record=existing)
+                supersession_reason = await self._baseline_supersession_reason(
+                    connection, consequence
+                )
+                if supersession_reason is not None:
+                    return HumanReviewResult(status="DENIED", reason=supersession_reason)
                 values = {
                     "consequence_id": consequence.consequence_id,
                     "package_work_id": consequence.package_work_id,

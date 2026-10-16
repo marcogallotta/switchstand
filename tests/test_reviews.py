@@ -18,6 +18,13 @@ from switchstand.canonical_work import (
 )
 from switchstand.flow_report import report
 from switchstand.grant_state import GrantState
+from switchstand.human_reviews import (
+    HumanReviewBaselineV2,
+    HumanReviewConsequence,
+    HumanReviewDecisionContextV2,
+    HumanReviewOpeningV2,
+    HumanReviewState,
+)
 from switchstand.messages import (
     MessageReceiveRequest,
     MessageRoute,
@@ -29,6 +36,8 @@ from switchstand.messages import (
     messages as message_rows,
 )
 from switchstand.reviews import (
+    BaselineAssessment,
+    BaselineCheck,
     CanonicalReviewBrief,
     ReviewBasis,
     ReviewEnvelope,
@@ -100,6 +109,27 @@ async def _race_while_occurrence_locked(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
+
+
+def _v2_consequence(subject_id: UUID, revision: str) -> HumanReviewConsequence:
+    return HumanReviewConsequence(
+        package_work_id=subject_id, package_revision=revision,
+        implementation_scope=("Implement reviewed package",),
+        implementation_target="repository main", excluded_effects=("activation",),
+        approval_effect="CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
+        baseline=HumanReviewBaselineV2(
+            human_source_refs=("human:approved",),
+            opening=HumanReviewOpeningV2(
+                what_you_asked="Ship it", what_this_does="Implements it",
+                what_this_does_not_or_changes_for_you="Does not activate", size="Small",
+            ), approved_meaning=("Ship reviewed behavior",),
+            protected_requirements=("Preserve behavior",), approved_non_goals=("Activation",),
+            decision_context=HumanReviewDecisionContextV2(
+                size_or_burden=("Small",), scale_assumptions=(),
+                material_risks_and_boundaries=("No activation",),
+            ), continuation_effects=("IMPLEMENT", "LAND"),
+        ),
+    )
 
 
 @pytest.fixture
@@ -299,6 +329,74 @@ async def test_same_endpoint_reviewer_denial_leaves_no_review_state(occurrence_r
     assert await occurrences.works.get(basis.review_id) is None
     assert await occurrences.basis_sources(basis.review_id) == ()
     assert await occurrences.stored_request_sources(basis.review_id) == ()
+
+
+async def test_baseline_review_round_trip_binds_assessment_and_projects_proof(
+    occurrence_runtime,
+):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Reviewer", "principal-b", "chat-b",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    revision = canonical_revision(subject.work_id, subject.row_version)
+    consequence = _v2_consequence(subject_id, revision)
+    human_reviews = HumanReviewState(engine, occurrences.works)
+    assert (await human_reviews.propose(consequence)).status == "PREPARED"
+    assert (await human_reviews.submit(
+        consequence.consequence_id, subject_id, revision, "APPROVED",
+    )).status == "RECORDED"
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    check = BaselineCheck(
+        baseline_id=consequence.consequence_id, phase="PRE_IMPLEMENTATION",
+        owner_disposition="BASELINE_PRESERVED", comparison="Exact plan preserves baseline",
+        evidence_refs=("git:plan",),
+    )
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
+        baseline_check=check,
+    ), requester)
+    assert sent.status == "SENT" and sent.review_id and sent.delivery_id
+    assert (await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(api_version="1", delivery_id=sent.delivery_id, grant_version=1),
+        agent_binding=reviewer,
+    )).status == "ok"
+    missing = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+    ), reviewer)
+    assert (missing.status, missing.reason) == ("DENIED", "baseline_assessment_invalid")
+    assessment = BaselineAssessment(
+        baseline_id=check.baseline_id, phase=check.phase,
+        disposition="BASELINE_PRESERVED", evidence_refs=("git:plan",),
+    )
+    assert not service._assessment_matches(
+        check.model_copy(update={"owner_disposition": "UNKNOWN"}),
+        ReviewSubmit(
+            review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+            baseline_assessment=assessment,
+        ),
+    )
+    assert (await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+        baseline_assessment=assessment,
+    ), reviewer)).status == "SUBMITTED"
+    result = await service.get(sent.review_id, requester)
+    assert result.status == "PASS" and result.baseline_assessment == assessment
+    async with engine.begin() as connection:
+        proof = await occurrences.baseline_pass_status_in_transaction(
+            connection, subject_id, revision,
+        )
+    assert proof.status == "PASS" and proof.baseline_id == check.baseline_id
 
 
 async def test_sent_request_replay_survives_reviewer_principal_transfer(occurrence_runtime):

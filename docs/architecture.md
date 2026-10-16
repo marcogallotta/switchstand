@@ -337,9 +337,12 @@ messaging, and required continuation:
   or dispatch authority. The default-off switch removes the tool and result enrichment without
   deleting persisted revisions. This state does not own Stage 2 waits, dependencies, authorization,
   scheduling, activation, or implicit owner inference.
-- `human_reviews.py` owns an inert exact-consequence/decision store; approval records readiness only.
-  Internal typed proposal admission binds one immutable consequence to an exact canonical package
-  revision; a changed proposal requires a new package revision and human decision.
+- `human_reviews.py` owns an inert exact-consequence/decision store. V2 consequences retain an
+  immutable approved baseline: four-line Human Review opening, attributable sources, approved
+  meaning, protected requirements, non-goals, decision context, named continuation and optional
+  superseded baseline. The consequence digest is its baseline identity; approvals remain
+  append-only. Legacy V1 exact-revision rows remain readable but cannot authorize cross-revision
+  baseline conformance.
   `reviews.py` owns durable review requests and outcomes. Its default-off ordinary path is
   `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
   `review_recover` can rebind only an exact received delivery after a same-principal mailbox
@@ -359,7 +362,14 @@ messaging, and required continuation:
   `review.request`, `review.acquisition`, and `review.outcome` message routes; only the typed review
   owner writes them. Unmapped kinds remain `WAITING_REVIEWER`. Client-visible activation requires
   a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
-  `implementation_requests.py` converts that approved revision into an inert request through a default-off ordinary MCP adapter with only caller-owned identity fields; it never activates pickup or execution.
+  Baseline checks in the existing review basis bind the owner comparison to the exact candidate;
+  reviewer assessments bind the baseline, phase, typed disposition, evidence and verdict digest.
+  `implementation_requests.py` converts an approved V2 baseline plus an exact independent
+  PRE_IMPLEMENTATION `BASELINE_PRESERVED` proof into an inert request. Its authorization reference
+  binds baseline and review evidence, and its milestones derive only from named continuation.
+  Missing/ambiguous baseline evidence is scoped to dispatch and creates no lifecycle hold. The
+  default-off ordinary MCP adapter keeps baseline/review identities server-derived and never
+  activates pickup or execution.
   `activation_continuity.py` and `activation_continuity_store.py` own one append-only obligation
   per installed product/revision/phase contract after technical activation. The server derives
   transition actors from current grants plus a current exact-WorkId runtime binding, accepts only

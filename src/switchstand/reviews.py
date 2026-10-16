@@ -27,6 +27,7 @@ from .canonical_work import (
 )
 from .contracts import ClosedModel
 from .durable_capture import DurableCaptureGuidance, FindingRef, durable_capture_guidance
+from .human_reviews import approved_baseline_in_transaction
 from .messages import (
     MessageRoute,
     MessageState,
@@ -44,6 +45,12 @@ ReviewKind = Literal["CODE", "DESIGN", "IMPLEMENTATION", "PROCESS", "OPERATIONS"
 ReviewMode = Literal["FULL", "FOCUSED"]
 ReviewVerdict = Literal["PASS", "FINDINGS", "BLOCKED"]
 ContextProvenance = Literal["INHERITED", "UNSEEDED", "UNKNOWN"]
+BaselinePhase = Literal["PRE_IMPLEMENTATION", "FINAL_IMPLEMENTATION"]
+BaselineOwnerDisposition = Literal["BASELINE_PRESERVED", "MATERIAL_DEVIATION", "UNKNOWN"]
+BaselineDisposition = Literal[
+    "BASELINE_PRESERVED", "AUTHOR_CORRECTION_REQUIRED", "HUMAN_REVIEW_REQUIRED",
+    "CONFORMS_TO_APPROVED_BASELINE", "MATERIAL_DEVIATION", "NEW_HUMAN_CHOICE", "UNKNOWN",
+]
 
 
 def _digest(value: object) -> str:
@@ -56,6 +63,13 @@ def _stable(label: str, *parts: object) -> UUID:
     return uuid5(REVIEW_NAMESPACE, "\0".join((label, *(str(part) for part in parts))))
 
 
+def _validate_baseline_refs(values: tuple[str, ...]) -> None:
+    if len(set(values)) != len(values) or any(
+        not value.strip() or len(value) > 1024 for value in values
+    ):
+        raise ValueError("baseline evidence refs must be unique nonblank strings")
+
+
 def _request_message_id(basis: ReviewBasis, recipient_id: UUID) -> UUID:
     label = "reviewer-upgrade" if basis.upgrades_focused else "reviewer-request"
     return _stable(label, basis.review_id, basis.subject_revision, recipient_id)
@@ -65,6 +79,50 @@ def _basis_message_id(basis: ReviewBasis) -> UUID:
     return _stable("basis", basis.review_id, _digest(basis.model_dump(mode="json")))
 
 
+class BaselineCheck(ClosedModel):
+    baseline_id: UUID
+    phase: BaselinePhase
+    owner_disposition: BaselineOwnerDisposition
+    comparison: str = Field(min_length=1, max_length=4000)
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def bounded_unique_evidence(self) -> Self:
+        _validate_baseline_refs(self.evidence_refs)
+        if not self.comparison.strip():
+            raise ValueError("baseline comparison must be nonblank")
+        return self
+
+
+class BaselineAssessment(ClosedModel):
+    baseline_id: UUID
+    phase: BaselinePhase
+    disposition: BaselineDisposition
+    evidence_refs: tuple[str, ...] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def bounded_unique_evidence(self) -> Self:
+        _validate_baseline_refs(self.evidence_refs)
+        return self
+
+
+class BaselineReviewProof(ClosedModel):
+    status: Literal["PASS", "NOT_PASS", "UNKNOWN"]
+    baseline_id: UUID | None = None
+    phase: Literal["PRE_IMPLEMENTATION"] | None = None
+    review_id: UUID | None = None
+    verdict_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    reason: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        evidence = (self.baseline_id, self.phase, self.review_id, self.verdict_digest)
+        if (self.status == "PASS" and not all(value is not None for value in evidence)) or (
+            self.status != "PASS" and any(value is not None for value in evidence)
+        ):
+            raise ValueError("PASS requires exact baseline review evidence")
+        return self
+
 class ReviewRequest(ClosedModel):
     subject_work_id: UUID
     observed_revision: str = Field(min_length=1)
@@ -73,6 +131,7 @@ class ReviewRequest(ClosedModel):
     mode: ReviewMode = "FULL"
     prior_review_id: UUID | None = None
     finding_ids: tuple[str, ...] = ()
+    baseline_check: BaselineCheck | None = None
 
     @model_validator(mode="after")
     def exact_mode(self) -> Self:
@@ -101,6 +160,7 @@ class ReviewSubmit(ClosedModel):
     findings: tuple[ReviewFinding, ...] = ()
     evidence_refs: tuple[str, ...] = ()
     context_provenance: ContextProvenance
+    baseline_assessment: BaselineAssessment | None = None
 
     @model_validator(mode="after")
     def exact_verdict(self) -> Self:
@@ -124,6 +184,7 @@ class ReviewBasis(ClosedModel):
     policy_version: str
     guidelines_version: str
     guidelines_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    baseline_check: BaselineCheck | None = None
 
 
 class FocusedReviewTransition(ClosedModel):
@@ -167,6 +228,7 @@ class ReviewOutcome(ClosedModel):
     findings: tuple[ReviewFinding, ...]
     evidence_refs: tuple[str, ...]
     context_provenance: ContextProvenance
+    baseline_assessment: BaselineAssessment | None = None
     verdict_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -185,6 +247,7 @@ class ReviewResult(ClosedModel):
     verdict: ReviewVerdict | None = None
     findings: tuple[ReviewFinding, ...] = ()
     evidence_refs: tuple[str, ...] = ()
+    baseline_assessment: BaselineAssessment | None = None
     verdict_digest: str | None = None
     reason: Literal[
         "subject_not_found", "subject_revision_changed", "prior_review_not_found",
@@ -194,6 +257,7 @@ class ReviewResult(ClosedModel):
         "reviewer_binding_changed", "occurrence_conflict", "message_conflict",
         "review_basis_changed", "state_unavailable", "caller_not_owner",
         "occurrence_not_found", "duplicate_authoritative_state", "recovery_not_allowed",
+        "baseline_not_approved", "baseline_assessment_invalid",
     ] | None = None
     next_action: str = ""
     durable_capture: DurableCaptureGuidance | None = None
@@ -214,7 +278,7 @@ class ReviewResult(ClosedModel):
         terminal = self.status in {"FINDINGS", "PASS", "BLOCKED"}
         if terminal != (self.verdict is not None and self.verdict_digest is not None):
             raise ValueError("terminal review result requires verdict evidence only")
-        if not terminal and (self.findings or self.evidence_refs):
+        if not terminal and (self.findings or self.evidence_refs or self.baseline_assessment):
             raise ValueError("nonterminal review result cannot expose verdict evidence")
         if not self.next_action:
             value = {
@@ -591,6 +655,7 @@ class ReviewOccurrenceState:
                 review_id=outcome.review_id, verdict=outcome.verdict,
                 findings=outcome.findings, evidence_refs=outcome.evidence_refs,
                 context_provenance=outcome.context_provenance,
+                baseline_assessment=outcome.baseline_assessment,
             )
             delivery = record.delivery
             if (
@@ -723,6 +788,82 @@ class ReviewOccurrenceState:
         except (SQLAlchemyError, TypeError, ValueError):
             return "UNKNOWN"
 
+    async def baseline_pass_status_in_transaction(
+        self, connection: AsyncConnection, subject_work_id: UUID, subject_revision: str,
+    ) -> BaselineReviewProof:
+        not_pass = BaselineReviewProof(status="NOT_PASS", reason="baseline_review_not_passed")
+        unknown = BaselineReviewProof(status="UNKNOWN", reason="baseline_review_unavailable")
+        try:
+            row_version = await connection.scalar(select(canonical_work.c.row_version).where(
+                canonical_work.c.work_id == subject_work_id
+            ).with_for_update())
+            if row_version is None:
+                return unknown
+            if canonical_revision(subject_work_id, row_version) != subject_revision:
+                return not_pass
+            raw_ids = (await connection.scalars(select(
+                messages.c.payload["brief"]["basis"]["review_id"].astext,
+            ).where(
+                messages.c.payload["brief"]["basis"]["subject_work_id"].astext
+                == str(subject_work_id),
+                messages.c.payload["brief"]["basis"]["subject_revision"].astext
+                == subject_revision,
+                messages.c.payload["brief"]["basis"]["baseline_check"]["phase"].astext
+                == "PRE_IMPLEMENTATION",
+            ).distinct())).all()
+            try:
+                review_ids = {UUID(value) for value in raw_ids if value}
+            except (TypeError, ValueError):
+                return unknown
+            if len(review_ids) > 1:
+                return unknown
+            for review_id in review_ids:
+                bases = tuple(source for source in await self.basis_sources(
+                    review_id, connection,
+                ) if source[1].brief.basis.subject_work_id == subject_work_id
+                    and source[1].brief.basis.subject_revision == subject_revision
+                    and source[1].brief.basis.baseline_check is not None
+                    and source[1].brief.basis.baseline_check.phase == "PRE_IMPLEMENTATION")
+                requests = tuple(source for source in await self.stored_request_sources(
+                    review_id, connection,
+                ) if source[1].brief.basis.subject_work_id == subject_work_id
+                    and source[1].brief.basis.subject_revision == subject_revision
+                    and source[1].brief.basis.baseline_check is not None
+                    and source[1].brief.basis.baseline_check.phase == "PRE_IMPLEMENTATION")
+                if len(bases) != 1 or len(requests) != 1:
+                    return unknown
+                basis = bases[0][1].brief.basis
+                if requests[0][1].brief.basis != basis:
+                    return unknown
+                outcomes = tuple(source for source in await self.outcome_sources(
+                    review_id, connection, request_source=requests[0],
+                ) if source[1].brief.basis == basis)
+                raw_outcomes = tuple(record for record in await self.records(review_id, connection)
+                    if record.delivery.route_ref == "review.request"
+                    and record.delivery.kind == "result"
+                    and record.reply_to == requests[0][0].delivery.delivery_id)
+                if len(outcomes) > 1 or len(raw_outcomes) != len(outcomes):
+                    return unknown
+                if not outcomes:
+                    continue
+                outcome = outcomes[0][1].outcome
+                check = basis.baseline_check
+                assert check is not None
+                assessment = outcome.baseline_assessment
+                if assessment is None or assessment.baseline_id != check.baseline_id or (
+                    assessment.phase != check.phase
+                ):
+                    return unknown
+                if outcome.verdict == "PASS" and assessment.disposition == "BASELINE_PRESERVED":
+                    return BaselineReviewProof(
+                        status="PASS", baseline_id=check.baseline_id,
+                        phase="PRE_IMPLEMENTATION", review_id=review_id,
+                        verdict_digest=outcome.verdict_digest, reason="baseline_review_passed",
+                    )
+            return not_pass
+        except (SQLAlchemyError, TypeError, ValueError):
+            return unknown
+
 
 class ReviewService:
     def __init__(
@@ -740,6 +881,28 @@ class ReviewService:
     @policy.setter
     def policy(self, value: ReviewPolicy) -> None:
         self.occurrences.policy = value
+
+    @staticmethod
+    def _assessment_matches(
+        check: BaselineCheck | None, request: ReviewSubmit,
+    ) -> bool:
+        assessment = request.baseline_assessment
+        if check is None:
+            return assessment is None
+        if assessment is None or (
+            assessment.baseline_id != check.baseline_id or assessment.phase != check.phase
+        ):
+            return False
+        expected_pass = ("BASELINE_PRESERVED" if check.phase == "PRE_IMPLEMENTATION"
+                         else "CONFORMS_TO_APPROVED_BASELINE")
+        if request.verdict == "PASS" and check.owner_disposition != "BASELINE_PRESERVED":
+            return False
+        allowed = ({expected_pass} if request.verdict == "PASS" else {"UNKNOWN"}
+                   if request.verdict == "BLOCKED" else {
+                       "AUTHOR_CORRECTION_REQUIRED", "HUMAN_REVIEW_REQUIRED",
+                       "MATERIAL_DEVIATION", "NEW_HUMAN_CHOICE",
+                   })
+        return assessment.disposition in allowed
 
     async def hygiene_findings(
         self, subject_work_id: UUID, connection: AsyncConnection | None = None,
@@ -771,6 +934,8 @@ class ReviewService:
             "protocol": REVIEW_PROTOCOL, "subject": str(request.subject_work_id),
             "revision": request.observed_revision, "kind": request.review_kind,
             "candidate": request.candidate_ref, "requester": str(requester.endpoint_id),
+            "baseline_check": None if request.baseline_check is None else
+            request.baseline_check.model_dump(mode="json"),
         })
         return ReviewBasis(
             review_id=request.prior_review_id or _stable("occurrence", identity),
@@ -782,6 +947,7 @@ class ReviewService:
             requester_generation=requester.generation, policy_version=self.policy.version,
             guidelines_version=self.guidelines.version,
             guidelines_digest=self.guidelines.digest,
+            baseline_check=request.baseline_check,
         )
 
     @staticmethod
@@ -1063,6 +1229,7 @@ class ReviewService:
                 and prior.brief.basis.policy_version == basis.policy_version
                 and prior.brief.basis.guidelines_version == basis.guidelines_version
                 and prior.brief.basis.guidelines_digest == basis.guidelines_digest
+                and prior.brief.basis.baseline_check == basis.baseline_check
                 for _record, prior, _bound in await self.occurrences.request_sources(
                     basis.review_id
                 )
@@ -1072,6 +1239,13 @@ class ReviewService:
         brief = self._brief(basis, subject, focused_from)
         try:
             async with self.occurrences.engine.begin() as connection:
+                if basis.baseline_check is not None and await approved_baseline_in_transaction(
+                    connection, basis.baseline_check.baseline_id, basis.subject_work_id,
+                ) is None:
+                    return ReviewResult(
+                        status="DENIED", review_id=basis.review_id,
+                        reason="baseline_not_approved",
+                    )
                 if not await self.occurrences.ensure(brief, connection):
                     return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
                                         reason="occurrence_conflict")
@@ -1125,6 +1299,7 @@ class ReviewService:
                     delivery_id=request_record.delivery.delivery_id,
                     verdict=outcome.verdict, findings=outcome.findings,
                     evidence_refs=outcome.evidence_refs,
+                    baseline_assessment=outcome.baseline_assessment,
                     verdict_digest=outcome.verdict_digest,
                 )
             delivery = request_record.delivery
@@ -1414,6 +1589,11 @@ class ReviewService:
                         else "review_delivery_not_found"),
             )
         delivery, envelope = found
+        if not self._assessment_matches(envelope.brief.basis.baseline_check, request):
+            return ReviewResult(
+                status="DENIED", review_id=request.review_id,
+                reason="baseline_assessment_invalid",
+            )
         requester_result = await self.mailboxes.by_endpoint_id(envelope.requester_endpoint_id)
         requester = requester_result.mailbox
         if requester is None or not self.policy.eligible(requester, reviewer):
@@ -1425,6 +1605,7 @@ class ReviewService:
             verdict=request.verdict, findings=request.findings,
             evidence_refs=request.evidence_refs,
             context_provenance=request.context_provenance,
+            baseline_assessment=request.baseline_assessment,
             verdict_digest=verdict_digest,
         )
         immediate_result = await self.mailboxes.by_endpoint_id(delivery.sender_work_id)

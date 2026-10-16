@@ -14,7 +14,11 @@ from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
 from .grant_state import work_grants
 from .grants import PrincipalContext, WorkGrant
-from .human_reviews import human_review_consequences, human_review_record
+from .human_reviews import (
+    approved_baseline_in_transaction,
+    human_review_consequences,
+    human_review_record,
+)
 from .reviews import ReviewOccurrenceState
 from .task_runs import ImplementationTaskRequest, TaskRunRequest, TaskRunState
 
@@ -124,19 +128,41 @@ class ImplementationRequestState:
                     .mappings()
                     .all()
                 )
-                if not reviews:
-                    return ImplementationRequestResult(
-                        status="DENIED", reason="human_review_not_approved"
-                    )
-                if len(reviews) != 1:
+                if len(reviews) > 1:
                     return ImplementationRequestResult(
                         status="UNKNOWN", reason="human_review_ambiguous"
                     )
-                review = human_review_record(reviews[0])
-                if review.decision != "APPROVED" or review.state != "READY_FOR_IMPLEMENTATION":
-                    return ImplementationRequestResult(
-                        status="DENIED", reason="human_review_not_approved"
+                exact_review = human_review_record(reviews[0]) if reviews else None
+                legacy_review = exact_review if exact_review is not None and (
+                    exact_review.consequence.baseline is None
+                    and exact_review.decision == "APPROVED"
+                    and exact_review.state == "READY_FOR_IMPLEMENTATION"
+                ) else None
+                baseline_proof = (
+                    await self.review_occurrences.baseline_pass_status_in_transaction(
+                        connection, package_work_id, observed_revision
                     )
+                )
+                if baseline_proof.status == "UNKNOWN":
+                    return ImplementationRequestResult(
+                        status="UNKNOWN", reason="baseline_review_unavailable"
+                    )
+                baseline_review = None
+                if baseline_proof.status == "PASS":
+                    assert baseline_proof.baseline_id is not None
+                    baseline_review = await approved_baseline_in_transaction(
+                        connection, baseline_proof.baseline_id, package_work_id
+                    )
+                    if baseline_review is None:
+                        return ImplementationRequestResult(
+                            status="DENIED", reason="approved_baseline_not_found"
+                        )
+                    legacy_review = None
+                elif legacy_review is None:
+                    reason = ("baseline_review_not_passed" if exact_review is not None
+                              and exact_review.consequence.baseline is not None
+                              else "human_review_not_approved")
+                    return ImplementationRequestResult(status="DENIED", reason=reason)
 
                 raw_grant = (
                     await connection.execute(
@@ -159,20 +185,38 @@ class ImplementationRequestState:
                 ):
                     return ImplementationRequestResult(status="DENIED", reason="no_send_authority")
 
-                pass_status = await self.review_occurrences.pass_status_in_transaction(
-                    connection, package_work_id, observed_revision
-                )
-                if pass_status == "UNKNOWN":
-                    return ImplementationRequestResult(
-                        status="UNKNOWN", reason="independent_review_unavailable"
+                if legacy_review is not None:
+                    pass_status = await self.review_occurrences.pass_status_in_transaction(
+                        connection, package_work_id, observed_revision
                     )
-                if pass_status != "PASS":
-                    return ImplementationRequestResult(
-                        status="DENIED", reason="independent_review_not_passed"
+                    if pass_status == "UNKNOWN":
+                        return ImplementationRequestResult(
+                            status="UNKNOWN", reason="independent_review_unavailable"
+                        )
+                    if pass_status != "PASS":
+                        return ImplementationRequestResult(
+                            status="DENIED", reason="independent_review_not_passed"
+                        )
+                    review = legacy_review
+                    continuation_effects = ("IMPLEMENT",)
+                    authorization_ref = (
+                        f"human-review/{review.consequence_id}/{review.consequence_digest}"
                     )
-                authorization_ref = (
-                    f"human-review/{review.consequence_id}/{review.consequence_digest}"
-                )
+                else:
+                    assert baseline_review is not None
+                    review = baseline_review
+                    baseline = review.consequence.baseline
+                    if baseline is None:  # The approved reader promises V2; fail closed if violated.
+                        return ImplementationRequestResult(
+                            status="UNKNOWN", reason="approved_baseline_unavailable"
+                        )
+                    continuation_effects = baseline.continuation_effects
+                    authorization_ref = (
+                        f"human-review-v2/{review.consequence_id}/{review.consequence_digest}"
+                        f"/review/{baseline_proof.review_id}/{baseline_proof.verdict_digest}"
+                    )
+                milestone_for = {"IMPLEMENT": "IMPLEMENTED", "LAND": "MERGED",
+                                 "ACTIVATE": "ACTIVATED"}
                 stable = await self.tasks.get_implementation_in_transaction(
                     connection, package_work_id, observed_revision, authorization_ref
                 )
@@ -194,12 +238,19 @@ class ImplementationRequestState:
                     objective=f"Implement approved package {package_work_id} at {observed_revision}.",
                     result_contract={
                         "implementation_request_id": str(review.consequence_id),
-                        "authorization_ref": str(review.consequence_id),
+                        "authorization_ref": authorization_ref,
                         "return_to_work_id": str(package_work_id),
                         "implementation_scope": list(review.consequence.implementation_scope),
                         "implementation_target": review.consequence.implementation_target,
-                        "milestones": ["IMPLEMENTED", "MERGED", "ACTIVATED"],
+                        "milestones": [milestone_for[value] for value in continuation_effects],
                         "excluded_effects": list(review.consequence.excluded_effects),
+                        **({} if legacy_review is not None else {
+                            "baseline_id": str(review.consequence_id),
+                            "baseline_digest": review.consequence_digest,
+                            "preimplementation_review_id": str(baseline_proof.review_id),
+                            "preimplementation_verdict_digest": baseline_proof.verdict_digest,
+                            "continuation_effects": list(continuation_effects),
+                        }),
                     },
                 )
                 admitted = await self.tasks.request_in_transaction(
