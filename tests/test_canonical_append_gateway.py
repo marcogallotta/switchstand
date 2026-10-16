@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from mcp import Client
 from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
@@ -24,6 +25,7 @@ from switchstand.grants import (
     ProtectedAppend,
     WorkGrant,
 )
+from switchstand.mcp import build_server
 from switchstand.state import metadata
 from switchstand.work_events import WorkEventRepository, work_events
 
@@ -109,6 +111,28 @@ async def test_append_event_revision_and_receipt_commit_and_replay(subject: Subj
         )) == 1
         assert await connection.scalar(select(func.count()).select_from(effect_intents).where(
             effect_intents.c.operation_id == str(value.operation_id)
+        )) == 1
+
+
+async def test_managed_mcp_exact_append_retry_writes_one_event(subject: Subject) -> None:
+    value = request(subject)
+    server = build_server(
+        object(), subject.work_id, grants=GrantState(subject.engine),
+        principal=subject.principal, appends=subject.gateway.append,
+    )
+    arguments = {
+        "api_version": "1", "operation_id": str(value.operation_id),
+        "observed_revision": value.observed_revision, "text": value.text,
+    }
+
+    async with Client(server) as client:
+        first = (await client.call_tool("work_append", arguments)).structured_content
+        replay = (await client.call_tool("work_append", arguments)).structured_content
+
+    assert replay == first and first["effect"] == "applied"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(work_events).where(
+            work_events.c.work_id == subject.work_id
         )) == 1
 
 
