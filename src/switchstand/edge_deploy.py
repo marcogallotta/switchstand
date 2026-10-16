@@ -47,9 +47,8 @@ def db_command(tool: str, *arguments: str, interactive: bool = False) -> list[st
 
 
 def _runtime_literal(source: str) -> tuple[Path, int, int]:
-    tree = ast.parse(source)
     matches: list[ast.Constant] = []
-    for node in tree.body:
+    for node in ast.parse(source).body:
         if (
             isinstance(node, ast.Assign)
             and any(
