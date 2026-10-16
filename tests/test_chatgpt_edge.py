@@ -630,7 +630,7 @@ async def test_resource_service_activation_registry_is_explicit_and_default_off(
         chatgpt_edge, "load_activation_contracts_from_environment", lambda: contracts
     )
     review_config = ReviewEdgeConfig(
-        ReviewPolicy(version="policy-v1", reviewer_by_kind={}),
+        ReviewPolicy(version="policy-v1"),
         ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
     )
     monkeypatch.setattr(
@@ -663,7 +663,7 @@ async def test_resource_service_shares_review_dependencies_when_explicitly_injec
 
     monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
     monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
-    policy = ReviewPolicy(version="policy-v1", reviewer_by_kind={"CODE": "Reviewer"})
+    policy = ReviewPolicy(version="policy-v1")
     config = ReviewEdgeConfig(
         policy, ReviewGuidelines(version="guidelines-v1", digest="a" * 64)
     )

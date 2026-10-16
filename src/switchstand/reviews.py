@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Self, cast
@@ -317,9 +316,12 @@ class ReviewGuidelines:
 @dataclass(frozen=True)
 class ReviewPolicy:
     version: str
-    reviewer_by_kind: Mapping[ReviewKind, str]
-    def reviewer_name(self, review_kind: ReviewKind) -> str | None:
-        return self.reviewer_by_kind.get(review_kind)
+
+    @staticmethod
+    def reviewer_name(review_kind: ReviewKind) -> str:
+        # Every MCP review, of every kind, is delivered to the Coordinator.
+        del review_kind
+        return COORDINATOR_MAILBOX
 
     @staticmethod
     def eligible(requester: AgentMailbox, reviewer: AgentMailbox) -> bool:
@@ -560,8 +562,7 @@ class ReviewOccurrenceState:
                 continue
             basis = envelope.brief.basis
             reviewer_name = self.policy.reviewer_name(basis.review_kind)
-            reviewer = ((await self.mailboxes.by_name(reviewer_name, connection)).mailbox
-                        if reviewer_name else None)
+            reviewer = (await self.mailboxes.by_name(reviewer_name, connection)).mailbox
             if (
                 basis.policy_version != self.policy.version
                 or reviewer is None
@@ -1110,10 +1111,7 @@ class ReviewService:
             return ReviewResult(status="SENT", review_id=review_id,
                                 delivery_id=record.delivery.delivery_id)
         reviewer_name = self.policy.reviewer_name(basis.review_kind)
-        reviewer_result = None if reviewer_name is None else await self.mailboxes.by_name(
-            reviewer_name, connection,
-        )
-        reviewer = None if reviewer_result is None else reviewer_result.mailbox
+        reviewer = (await self.mailboxes.by_name(reviewer_name, connection)).mailbox
         if reviewer is None:
             return ReviewResult(status="WAITING_REVIEWER", review_id=review_id,
                                 reason="reviewer_not_available")
@@ -1458,10 +1456,7 @@ class ReviewService:
         requester_result = await self.mailboxes.by_endpoint_id(basis.requester_endpoint_id)
         requester = requester_result.mailbox
         reviewer_name = self.policy.reviewer_name(basis.review_kind)
-        reviewer_result = None if reviewer_name is None else await self.mailboxes.by_name(
-            reviewer_name
-        )
-        reviewer = None if reviewer_result is None else reviewer_result.mailbox
+        reviewer = (await self.mailboxes.by_name(reviewer_name)).mailbox
         if requester is None or reviewer is None:
             return ReviewResult(status="WAITING_REVIEWER", review_id=review_id,
                                 reason="reviewer_not_available")

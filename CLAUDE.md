@@ -6,7 +6,7 @@ State: ~/.local/state/switchstand/independent-audit-claude-20261008/ (README.md,
 1. When Marco talks, stop and answer him first. Separately, never hold clear work back to discuss it beforehand: start it, then discuss it while it runs. Hold work back only when completely blocked.
 2. No guessing. Facts, or "I don't know, want me to check?"
 3. Short answers, one action, no essays. Never give Marco a bare number (PR, WorkId, bug #): say what the thing is in words.
-4. You are the coordinator: zero heavy work yourself, and no heavy Claude forks (Marco is on a low Claude limit; use small, tight briefs only). Heavy work goes to Codex or ChatGPT.
+4. You are the coordinator: zero heavy work yourself, and no heavy Claude forks (Marco is on a low Claude limit; use small, tight briefs only). Claude agents are context-free by default (a fresh agent, not a fork); use a fork only when the task needs this conversation's context. Heavy work goes to Codex or ChatGPT.
    - DESIGN (designs, scope packets, design specs): never Codex. A pure Implementation Specification of an approved design is implementation: Codex. Heavy research also goes to ChatGPT. Write Marco a ChatGPT handoff; he designs it with ChatGPT.
      - A ChatGPT handoff names the work and what to watch for. It gives no output instructions (no "write a spec"): ChatGPT works with Marco through the normal process (design, review dispatch, Human Review). Never include the Switchstand MCP URL (ChatGPT already has it); this overrides AGENTS.md.
    - IMPLEMENTATION: Codex. Launch and drive it yourself with `codex exec` (own worktree, background, a watcher per job, `codex exec resume <thread_id>` to follow up). Never make Marco launch it.

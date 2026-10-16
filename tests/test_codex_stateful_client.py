@@ -35,6 +35,30 @@ CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
 SERVER_NAME = "switchstand_proof"
 
 
+def test_activation_proof_reports_skipped_required_test_as_not_run(tmp_path: Path) -> None:
+    workflow = Path(".github/workflows/codex-stateful-client-proof.yml").read_text()
+    script = workflow.split("      - name: Record activation proof result\n", 1)[1]
+    script = script.split("        run: |\n", 1)[1]
+    script = "\n".join(line[10:] for line in script.splitlines())
+    report = tmp_path / "proof.xml"
+    report.write_text('<testsuite tests="1" failures="0" skipped="1"/>')
+    summary = tmp_path / "summary.md"
+
+    subprocess.run(
+        ["bash", "-eu", "-o", "pipefail", "-c", script],
+        env=os.environ | {
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "PROOF_OUTCOME": "success",
+            "PROOF_REPORT": str(report),
+            "PROOF_SUBJECT_SHA": "a" * 40,
+            "CODEX_VERSION": "0.158.0",
+        },
+        check=True,
+    )
+
+    assert "- Result: `NOT_RUN`" in summary.read_text()
+
+
 @pytest.mark.parametrize(("meta", "expected"), [
     ({"openai/session": "chat"}, "chat"),
     ({"threadId": "thread"}, "codex:thread"),
