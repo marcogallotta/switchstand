@@ -86,6 +86,16 @@ substantive work still requires Marco's direct assignment or an explicit current
 exact WorkId. For the direct-assignment creation above, `Marco's asks` supplies placement, not
 authority. Project Settings may point there but is not parallel authority.
 
+### Always-loaded triggers
+
+WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
+
+Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
+
+A mechanically established required-currentness/applicable-invariant contradiction or ambiguous consequential effect requires one bounded situation review under current owner; low confidence alone does not. Other review, quality, activation, canary, documentation, research, and portfolio mechanics stay behind routed owners.
+
+Implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Detail lives in [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns status/priority; references never grant authority.
+
 ## Codex roles and shared engineering process
 
 Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overall assigned portfolio/integration; a delegated Coordinator owns only its lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
@@ -107,13 +117,3 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overa
 - **Incident / activation / Human Input / Human Review:** load only the applicable current owner when that phase/trigger is reached; the first-minute incident core above remains always loaded.
 
 Managed Workers use only procedures/references in their bound current package. Missing required guidance makes only that action `UNKNOWN`/unavailable; never broaden discovery. On role/function/phase change, load only the newly applicable package.
-
-### Always-loaded triggers
-
-WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
-
-Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
-
-A mechanically established required-currentness/applicable-invariant contradiction or ambiguous consequential effect requires one bounded situation review under current owner; low confidence alone does not. Other review, quality, activation, canary, documentation, research, and portfolio mechanics stay behind routed owners.
-
-Implementation/landing, deployment/activation, migration, credentials, and provider-production effects remain distinct. Detail lives in [architecture](docs/architecture.md), [development](docs/development.md), [code quality](docs/code-quality.md), [research sources](docs/research-sources.md), [north star](docs/north-star.md), and current routed work. Current work owns status/priority; references never grant authority.
