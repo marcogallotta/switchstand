@@ -29,12 +29,11 @@ CONTAINER = "switchstand-postgres-1"
 def command(
     arguments: list[str],
     *,
-    check: bool = True,
     env: dict[str, str] | None = None,
     timeout: int = 600,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        arguments, check=check, capture_output=True, text=True, env=env, timeout=timeout
+        arguments, check=True, capture_output=True, text=True, env=env, timeout=timeout
     )
 
 

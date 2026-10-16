@@ -53,8 +53,7 @@ def test_prepare_reuses_matching_retained_runtime(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = deployer(tmp_path, monkeypatch)
-    old = tmp_path / "old"
-    subject.LAUNCHER.write_text(launcher(old))
+    subject.LAUNCHER.write_text(launcher(tmp_path / "old"))
     target.runtime.mkdir(parents=True)
     calls: list[tuple[Path, tuple[str, ...]]] = []
 
@@ -89,16 +88,16 @@ def test_restore_recreates_and_verifies_database(
     monkeypatch.setattr(subject, "command", fake_command)
     monkeypatch.setattr(subject.subprocess, "run", Mock())
     target.restore_database()
-    assert [command[3] for command in commands[:2]] == ["dropdb", "createdb"]
+    assert [command[3] for command in commands[:3]] == ["dropdb", "createdb", "psql"]
+    assert commands[-1][1] == "fingerprints"
 
 
 def test_rollback_uses_only_local_runtime_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = deployer(tmp_path, monkeypatch)
-    old = tmp_path / "old"
     target.attempt.mkdir(parents=True)
-    target.launcher_before.write_text(launcher(old))
+    target.launcher_before.write_text(launcher(tmp_path / "old"))
     target.cutover_started = True
     doctor = Mock(return_value=Mock(stdout=""))
     monkeypatch.setattr(target, "restore_database", Mock())

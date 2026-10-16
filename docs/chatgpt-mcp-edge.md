@@ -182,9 +182,11 @@ must be credential-free loopback HTTP at exact path `/mcp`.
 `scripts/switchstand-edge-maintenance <sha>` is the sole production replacement command. It derives
 the exact fetched `origin/main` candidate from the production launcher, including its outcome-state
 flag. It reuses existing operational tools, verifies the running runtime, makes one logged-in MCP
-`work_get`, and logs each step's duration to `edge-deploy.log`. Any failure
-after shutdown cleanly restores and verifies the database and prior runtime. It uses no signed
-receipt, Caddy gate, or hand-built qualification environment.
+`work_get`, and logs each step's duration to `edge-deploy.log`. Any failure after shutdown cleanly
+restores and verifies the database and prior runtime. It uses no signed receipt or Caddy gate.
+
+Follow-up after a proven live deploy: remove the legacy transaction/tests, full R0 production probe,
+sealed qualifier, Caddy receipt gate, and hand-staged launcher procedure.
 
 The retained `switchstand.edge_maintenance` was the prior repository-owned production
 replacement transaction. It is inert until an operator invokes it with an exact
