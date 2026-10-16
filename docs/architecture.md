@@ -588,6 +588,10 @@ configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protoco
 submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
+For ordinary stock-Codex checkout freshness, `scripts/sync-canonical-main` is a separate narrow
+host path: its user timer fetches and runs `git pull --ff-only` only when the fixed canonical
+checkout is clean, on `main`, and strictly behind `origin/main`. Dirty, non-main, ahead, and
+diverged checkouts are left unchanged. It does not launch or resume agents.
 Legacy generation manifests and currentness controls remain temporarily readable for pre-cutover
 sessions. Stock Codex does not create or consume them. They retire after every old generation and
 pending handoff is drained.

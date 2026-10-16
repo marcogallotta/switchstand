@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+"""Safely fast-forward the fixed canonical Switchstand checkout."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from collections.abc import Callable, Sequence
+from pathlib import Path
+
+CANONICAL_REPO = Path("/home/marco/switchstand")
+GIT = "/usr/bin/git"
+
+
+def sync(
+    repo: Path = CANONICAL_REPO,
+    *,
+    git: str = GIT,
+    emit: Callable[[str], None] = print,
+) -> int:
+    def run(arguments: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        result = subprocess.run(
+            [git, "-C", str(repo), *arguments],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if check and result.returncode:
+            detail = result.stderr.strip() or result.stdout.strip() or "no detail"
+            raise RuntimeError(f"git {' '.join(arguments)} failed: {detail}")
+        return result
+
+    try:
+        root = Path(run(("rev-parse", "--show-toplevel")).stdout.strip())
+        if root.resolve() != repo.resolve():
+            raise RuntimeError(f"checkout root mismatch: {root}")
+
+        branch = run(("branch", "--show-current")).stdout.strip()
+        if branch != "main":
+            emit(f"skip: canonical checkout is on {branch or 'detached HEAD'}, not main")
+            return 0
+
+        if run(("status", "--porcelain", "--untracked-files=all")).stdout:
+            emit("skip: canonical main is dirty")
+            return 0
+
+        run(
+            (
+                "fetch",
+                "--quiet",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            )
+        )
+        local = run(("rev-parse", "HEAD^{commit}")).stdout.strip()
+        remote = run(("rev-parse", "refs/remotes/origin/main^{commit}")).stdout.strip()
+        if local == remote:
+            emit(f"current: canonical main is already at {local}")
+            return 0
+
+        relation = run(("merge-base", "--is-ancestor", local, remote), check=False)
+        if relation.returncode == 1:
+            reverse = run(("merge-base", "--is-ancestor", remote, local), check=False)
+            state = "ahead of" if reverse.returncode == 0 else "diverged from"
+            if reverse.returncode not in (0, 1):
+                raise RuntimeError("git merge-base failed while checking canonical main")
+            emit(f"skip: canonical main is {state} origin/main")
+            return 0
+        if relation.returncode != 0:
+            raise RuntimeError("git merge-base failed while checking canonical main")
+
+        if run(("status", "--porcelain", "--untracked-files=all")).stdout:
+            emit("skip: canonical main became dirty before pull")
+            return 0
+        if run(("branch", "--show-current")).stdout.strip() != "main":
+            emit("skip: canonical checkout left main before pull")
+            return 0
+
+        previous = local
+        run(("pull", "--ff-only", "--no-recurse-submodules", "origin", "main"))
+        resulting = run(("rev-parse", "HEAD^{commit}")).stdout.strip()
+        fetched = run(("rev-parse", "refs/remotes/origin/main^{commit}")).stdout.strip()
+        if resulting != fetched:
+            raise RuntimeError(
+                f"pull readback mismatch: HEAD={resulting} origin/main={fetched}"
+            )
+        emit(f"updated: canonical main {previous} -> {resulting}")
+        return 0
+    except (OSError, RuntimeError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(sync())
