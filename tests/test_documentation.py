@@ -157,9 +157,7 @@ def test_role_router_has_exact_function_routes_and_owner_links():
 
 
 def test_role_contract_preserves_boundaries_without_execution_detail():
-    roles = section(read("AGENTS.md"), "## Codex roles and shared engineering process").split(
-        "### Always-loaded triggers", 1
-    )[0]
+    roles = section(read("AGENTS.md"), "## Codex roles and shared engineering process")
     before_router = roles.split("### Route only the current function", 1)[0]
 
     assert "exactly two roles: **Coordinator** and **Worker**" in before_router
