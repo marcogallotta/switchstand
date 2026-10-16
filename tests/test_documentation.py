@@ -275,7 +275,9 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
     assert "Stock Codex has no implicit writer or launcher records" in agents
-    assert 'tells that exact session "you are /root"' in agents
+    assert "current message asks to take over `/root`" in agents
+    assert "pass his full message to `agent_takeover`" in agents
+    assert "use a passcode only from Marco's current message" in agents
     assert "After losing `/root`, never retake" in agents
     assert "A fresh launch is independent" in usage
     assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
