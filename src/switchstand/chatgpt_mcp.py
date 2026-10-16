@@ -284,6 +284,7 @@ def build_ordinary_tools(
     agent_identity: Callable[[], str] | None = None,
     correlate_work: Callable[[UUID | None], None] | None = None,
     review_bundle_enabled: bool = False,
+    root_takeover_passcode: str | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
@@ -1117,15 +1118,32 @@ def build_ordinary_tools(
     async def agent_takeover(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
+        message: Annotated[str | None, Field(max_length=4096)] = None,
     ) -> AgentRegistrationResult:
-        """Rebind a dead agent after Marco declares it dead; if unclear, ask Marco first."""
+        """Take over an agent. For /root, pass Marco's full current takeover message."""
         del api_version
         try:
             principal = await service.principal()
             chat_session = chat_identity()
         except (KeyError, RuntimeError, TypeError, ValueError):
             principal, chat_session = None, ""
-        if principal is None:
+        root_request = name.strip().casefold() in {"root", "/root"}
+        root_message = "" if message is None else message.casefold()
+        configured_passcode = (
+            "" if root_takeover_passcode is None else root_takeover_passcode.strip().casefold()
+        )
+        root_authorized = (
+            root_request
+            and bool(configured_passcode)
+            and "takeover" in root_message
+            and "/root" in root_message
+            and configured_passcode in root_message
+        )
+        if root_request and not root_authorized:
+            result = AgentRegistrationResult(
+                status="denied", reason="ask_marco_for_passcode"
+            )
+        elif principal is None:
             result = AgentRegistrationResult(status="denied", reason="no_current_grant")
         elif not chat_session:
             result = AgentRegistrationResult(
@@ -1134,12 +1152,20 @@ def build_ordinary_tools(
         elif mailboxes is None:
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
-            stored = await mailboxes.takeover(name, principal.key, chat_session)
+            stored = (
+                await mailboxes.takeover_root(principal.key, chat_session)
+                if root_request
+                else await mailboxes.takeover(name, principal.key, chat_session)
+            )
             if stored.status == "recovery_required" and stored.reason == "state_unavailable":
-                # Same-principal takeover is replay-safe for this exact replacement session.
+                # Takeover is replay-safe for this exact replacement session.
                 # Retry only the ambiguous state result, with the already-captured identity
                 # and unchanged arguments, then require an authoritative binding readback.
-                stored = await mailboxes.takeover(name, principal.key, chat_session)
+                stored = (
+                    await mailboxes.takeover_root(principal.key, chat_session)
+                    if root_request
+                    else await mailboxes.takeover(name, principal.key, chat_session)
+                )
                 if stored.status == "ok" and stored.mailbox is not None:
                     observed = await mailboxes.for_actor(principal.key, chat_session)
                     if observed.status != "ok" or observed.mailbox != stored.mailbox:
@@ -1150,6 +1176,10 @@ def build_ordinary_tools(
                 AgentRegistrationResult(status="ok", name=stored.mailbox.name)
                 if stored.status == "ok" and stored.mailbox is not None
                 else AgentRegistrationResult(status=stored.status, reason=stored.reason)
+            )
+        if root_request and result.status != "ok":
+            result = AgentRegistrationResult(
+                status="denied", reason="ask_marco_for_passcode"
             )
         audited("agent_takeover", name, result.status)
         return result

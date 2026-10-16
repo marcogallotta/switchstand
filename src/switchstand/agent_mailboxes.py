@@ -248,6 +248,48 @@ class AgentMailboxState:
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
+    async def takeover_root(
+        self, principal_key: str, replacement_session: str,
+    ) -> AgentMailboxResult:
+        """Move /root to an authorized caller while preserving its endpoint and mail."""
+        try:
+            session_key = chat_session_key(replacement_session)
+            async with self.engine.begin() as connection:
+                row = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == "root"
+                ).with_for_update())).mappings().one_or_none()
+                if row is None:
+                    return AgentMailboxResult(status="denied", reason="mailbox_not_found")
+                if (
+                    row["principal_key"] == principal_key
+                    and row["session_key"] == session_key
+                ):
+                    return AgentMailboxResult(status="ok", mailbox=self._view(row))
+                prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
+                    agent_mailboxes.c.principal_key == principal_key,
+                    agent_mailboxes.c.session_key == session_key,
+                    agent_mailboxes.c.name_key != "root",
+                ).with_for_update())).scalar_one_or_none()
+                if prior is not None:
+                    return AgentMailboxResult(
+                        status="conflict", reason="session_already_registered"
+                    )
+                moved = (await connection.execute(update(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key == "root",
+                    agent_mailboxes.c.generation == row["generation"],
+                ).values(
+                    principal_key=principal_key,
+                    session_key=session_key,
+                    generation=row["generation"] + 1,
+                ).returning(*agent_mailboxes.c))).mappings().one_or_none()
+                if moved is None:
+                    return AgentMailboxResult(
+                        status="recovery_required", reason="state_unavailable"
+                    )
+                return AgentMailboxResult(status="ok", mailbox=self._view(moved))
+        except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
+            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
     async def request_transfer(
         self, name: str, destination_principal_key: str, destination_session: str,
     ) -> AgentMailboxTransferResult:

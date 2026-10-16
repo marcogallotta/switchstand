@@ -3,10 +3,10 @@ import os
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState
+from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState, agent_mailboxes
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grant_state import GrantState
@@ -49,6 +49,24 @@ async def agent_messaging(database_prerequisite):
             "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions"
         ))
     await engine.dispose()
+
+
+async def bind_root(tools, service) -> None:
+    assert (await tools["agent_register"]("1", "Coordinator")).status == "ok"
+    assert service.messages is not None
+    async with service.messages.engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.name_key == "coordinator"
+        ).values(name_key="root", display_name="/root"))
+
+
+def root_tools(service, session, *, audit=None, passcode="france"):
+    return dict(build_ordinary_tools(
+        service,
+        audit=audit,
+        agent_identity=lambda: session[0],
+        root_takeover_passcode=passcode,
+    ))
 
 
 async def test_same_principal_two_chats_survive_transport_churn_and_restart(agent_messaging):
@@ -205,6 +223,92 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     stale = await tools["agent_message_result_send"]("1", delivery, uuid4(), {"result": "old"})
     assert (stale.status, stale.reason) == ("denied", "agent_not_registered")
     assert stale.next_action is None
+
+
+async def test_root_takeover_accepts_required_words_and_passcode_and_keeps_mail(
+    agent_messaging,
+):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    session[0] = "sender-chat"
+    assert (await tools["agent_register"]("1", "Sender")).status == "ok"
+    sent = await tools["agent_message_send"](
+        "1", "/root", uuid4(), {"request": "kept"}
+    )
+    assert sent.status == "ok" and sent.message is not None
+
+    actor[0], session[0] = other, "replacement-chat"
+    configured = root_tools(service, session)
+    moved = await configured["agent_takeover"](
+        "1", "/root", "Please TAKEOVER /root; passcode is FRANCE."
+    )
+
+    assert (moved.status, moved.name) == ("ok", "/root")
+    pending = await configured["agent_message_pending"]("1")
+    assert [item.delivery_id for item in pending.messages] == [sent.message.delivery_id]
+
+
+async def test_root_takeover_rejects_wrong_passcode(agent_messaging):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    actor[0], session[0] = other, "replacement-chat"
+
+    result = await root_tools(service, session)["agent_takeover"](
+        "1", "/root", "takeover /root; passcode is spain"
+    )
+
+    assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["move /root with france", "takeover root with france"],
+)
+async def test_root_takeover_rejects_a_missing_required_word(agent_messaging, message):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    actor[0], session[0] = other, "replacement-chat"
+
+    result = await root_tools(service, session)["agent_takeover"](
+        "1", "/root", message
+    )
+
+    assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
+
+
+async def test_root_takeover_fences_the_old_session(agent_messaging):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    configured = root_tools(service, session)
+    actor[0], session[0] = other, "replacement-chat"
+    assert (await configured["agent_takeover"](
+        "1", "/root", "takeover /root with france"
+    )).status == "ok"
+
+    actor[0], session[0] = _owner, "chat-a"
+    old = await configured["agent_message_pending"]("1")
+    assert (old.status, old.reason) == ("denied", "agent_not_registered")
+
+
+async def test_root_takeover_does_not_audit_or_log_message_or_passcode(
+    agent_messaging, caplog,
+):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    actor[0], session[0] = other, "replacement-chat"
+    records = []
+    configured = root_tools(
+        service, session, audit=lambda *record: records.append(record),
+        passcode="audit-secret",
+    )
+    message = "takeover /root using audit-secret and private-message-marker"
+
+    assert (await configured["agent_takeover"]("1", "/root", message)).status == "ok"
+
+    evidence = repr(records) + caplog.text
+    assert records == [("agent_takeover", "/root", "ok")]
+    assert "audit-secret" not in evidence
+    assert "private-message-marker" not in evidence
 
 
 async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(

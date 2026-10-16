@@ -429,9 +429,12 @@ messaging, and required continuation:
   unreferenced legacy residue. Registration is read-or-create for that authenticated session, except
   that the canonical `root` name key is reserved: an unbound session cannot create it through
   `agent_register`. A resume returns the session's existing immutable mailbox, including `/root`,
-  rather than renaming or taking it over. Rebinding an existing `/root` uses same-principal
-  `agent_takeover` only after Marco explicitly authorizes that takeover. For cross-principal
-  recovery, the destination authenticated session
+  rather than renaming or taking it over. Rebinding an existing `/root` uses `agent_takeover`
+  with Marco's full current message and the server-configured
+  `SWITCHSTAND_ROOT_TAKEOVER_PASSCODE`. This root-only path verifies the required message words
+  and passcode without auditing them, then preserves the endpoint and deliveries while replacing
+  the principal/session binding and incrementing its generation. Other names retain the existing
+  same-principal behavior. For older cross-principal recovery, the destination authenticated session
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination
