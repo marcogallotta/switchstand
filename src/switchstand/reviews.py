@@ -257,6 +257,7 @@ class ReviewResult(ClosedModel):
         "review_basis_changed", "state_unavailable", "caller_not_owner",
         "occurrence_not_found", "duplicate_authoritative_state", "recovery_not_allowed",
         "baseline_not_approved", "baseline_assessment_invalid",
+        "focused_finding_not_selected",
     ] | None = None
     next_action: str = ""
     durable_capture: DurableCaptureGuidance | None = None
@@ -1588,6 +1589,13 @@ class ReviewService:
                         else "review_delivery_not_found"),
             )
         delivery, envelope = found
+        if envelope.brief.basis.mode == "FOCUSED" and not {
+            finding.finding_id for finding in request.findings
+        }.issubset(envelope.brief.basis.finding_ids):
+            return ReviewResult(
+                status="DENIED", review_id=request.review_id,
+                reason="focused_finding_not_selected",
+            )
         if not self._assessment_matches(envelope.brief.basis.baseline_check, request):
             return ReviewResult(
                 status="DENIED", review_id=request.review_id,
