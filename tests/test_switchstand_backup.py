@@ -109,3 +109,32 @@ def test_stale_check_fires_visibly(tmp_path: Path) -> None:
 
     assert result.returncode == 2
     assert "switchstand backup alert: backup stale" in result.stderr
+
+
+def test_installer_enables_only_backup_timers(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    source = repo / "scripts/switchstand-backup"
+    source.parent.mkdir(parents=True)
+    source.write_text("#!/bin/sh\nexit 0\n")
+    source.chmod(0o755)
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    systemctl = tools / "systemctl"
+    systemctl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOME/systemctl-calls"\n')
+    systemctl.chmod(0o755)
+
+    subprocess.run(
+        [str(Path(__file__).parents[1] / "scripts/install-switchstand-backups"), str(repo)],
+        check=True,
+        env=os.environ | {"HOME": str(home), "PATH": f"{tools}:{os.environ['PATH']}"},
+    )
+
+    units = home / ".config/systemd/user"
+    timer = (units / "switchstand-backup.timer").read_text()
+    assert "OnActiveSec=10s" in timer and "OnCalendar=hourly" in timer
+    assert "OnCalendar=*:0/15" in (units / "switchstand-backup-stale.timer").read_text()
+    assert "--max-age-hours=2" in (units / "switchstand-backup-stale.service").read_text()
+    calls = (home / "systemctl-calls").read_text()
+    assert "enable --now switchstand-backup.timer switchstand-backup-stale.timer" in calls
+    assert "restart switchstand-backup.timer switchstand-backup-stale.timer" in calls
