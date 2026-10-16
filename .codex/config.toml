@@ -3,7 +3,7 @@ default_permissions = ":danger-full-access"
 
 [features]
 hooks = false
-multi_agent = false
+multi_agent = true
 
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
