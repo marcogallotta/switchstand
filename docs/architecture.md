@@ -172,7 +172,7 @@ Every current tool is explicitly non-destructive and bounded rather than open-wo
 are idempotent under their stable identity or transition contracts. Registration rejects a new
 ordinary tool until that classification is extended.
 
-`edge_maintenance.py` owns the service-specific maintenance-window transaction for replacing this
+`edge_maintenance.py` is the retained historical service-specific maintenance transaction for this
 edge. It gates all public Switchstand MCP/OAuth routes in Caddy before shutdown, snapshots FastMCP
 transport state only while the service is offline, and runs the existing shared-state upgrade only
 after the gate is public and the systemd service is confirmed stopped. Its receipt persists an
@@ -662,7 +662,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | --- | --- | --- |
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
-| Change production edge replacement sequencing | `edge_maintenance.py` | maintenance transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
+| Change production edge replacement sequencing | `edge_deploy.py` | deploy transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
 | Change shared private byte-file durability mechanics | `secure_file.py` | edge maintenance and rehearsal callers; keep schemas, state machines, path policy, and domain errors local |
 | Change first combined-to-split activation sequencing | `stable_auth_deployment.py` | stable-auth deployment/migration/host tests and `chatgpt-mcp-edge.md`; preserve the public gate and never rewind possibly-written OAuth state |
 | Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |

@@ -158,19 +158,14 @@ current evidence and the canonical record; it never blindly continues queued eff
 ## Known edge-maintenance window
 
 The production edge replacement deliberately uses one short single-runtime outage. The operator
-announces the exact attempt and its mode-`0600` `receipt.json` path before gating. That receipt's
-`phase` and `status` are the machine-readable deployment state; do not infer maintenance merely
-from a connection failure. The verified gate returns HTTP `503` with `Retry-After: 60` across the
-Switchstand MCP, OAuth, and metadata paths. ChatGPT or Codex may collapse that response to generic
-`McpServerError` or `Connection failed` text.
+announces the exact candidate and start time. `edge-deploy.log` records the timed steps; there is no
+Caddy gate or signed receipt. Do not infer planned maintenance merely from a connection failure.
 
-Only while that exact receipt says the deployment is running may agents wait and use bounded
-backoff for connection establishment and read-only calls. Respect `Retry-After` when exposed;
-otherwise retry after 2, 5, 10, then 20 seconds, bounded by 90 seconds from gate announcement.
+Only during that announced attempt may agents retry connection establishment and read-only calls
+after 2, 5, 10, then 20 seconds, bounded by 90 seconds from the announcement.
 Never automatically retry a write, OAuth transition, or `UNKNOWN` effect: preserve its OperationId
 and use its specified readback/reconciliation path. If service is not restored within 90 seconds,
-or the receipt becomes `UNKNOWN`, stop treating the error as planned maintenance and enter the
-incident procedure above immediately.
+stop treating the error as planned maintenance and enter the incident procedure above immediately.
 
 After restoration, agents resume their exact owned reads and watches rather than abandoning them.
 Client-visible schema or metadata changes still require the reinstall procedure in

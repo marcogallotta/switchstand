@@ -179,7 +179,16 @@ must be credential-free loopback HTTP at exact path `/mcp`.
 
 ## Maintenance-window replacement
 
-`scripts/switchstand-edge-maintenance` is the sole repository-owned production
+`scripts/switchstand-edge-maintenance <sha>` is the sole production replacement command. It derives
+the exact fetched `origin/main` candidate from the production launcher, including its outcome-state
+flag. It reuses existing operational tools, verifies the running runtime, makes one logged-in MCP
+`work_get`, and logs each step's duration to `edge-deploy.log`. Any failure after shutdown cleanly
+restores and verifies the database and prior runtime. It uses no signed receipt or Caddy gate.
+
+Follow-up after a proven live deploy: remove the legacy transaction/tests, full R0 production probe,
+sealed qualifier, Caddy receipt gate, and hand-staged launcher procedure.
+
+The retained `switchstand.edge_maintenance` was the prior repository-owned production
 replacement transaction. It is inert until an operator invokes it with an exact
 clean candidate checkout, staged launcher and their expected digests, the current
 runtime and launcher identities, the exact FastMCP OAuth state directory, a new attempt-directory
@@ -252,9 +261,7 @@ The retained snapshot, failed candidate state (when applicable), launcher backup
 and receipt stay in the attempt directory as recovery evidence. The tool does not
 prepare candidates, launchers, authorization, client reinstall, or activation
 approval. Landing it does not change the running service or Caddy configuration.
-This single-runtime maintenance path remains the **current deployed production model**.
-Agent-visible behavior during the gate is owned by
-[live-incident operations](operations-live-incident.md#known-edge-maintenance-window).
+This describes the retained historical implementation, not the current deployment command.
 
 The retired staged database-authority cutover is not part of the ordinary edge
 replacement CLI. The zero-Asana migration owns its separate stop, backup, import,
@@ -369,10 +376,9 @@ sends MCP/protected-resource metadata to port 8790, and does not expose
 `/internal/oauth/verify`. Operators must independently compare and qualify the exact generated
 assets before any install or Caddy mutation.
 
-The current `switchstand-edge-maintenance` preflight deliberately recognizes only the deployed
-combined proxy set, with every upstream on port 8790. It will reject this split route set. That is a
-useful activation fence: a reviewed split-aware replacement/rollback transaction and its readback
-proof must land before production can adopt these generated assets.
+The later `switchstand-stable-auth-deploy activate` transaction owns this fence: it requires the
+exact combined Caddy proxy set before installing and reading back split routes in its separately
+authorized cutover. The ordinary edge deployment command does not inspect Caddy.
 
 Layer 2A still performs no state migration, service/Caddy installation, activation, or live
 qualification. Layer 2B adds an inert offline state-copy tool; it does not control services,

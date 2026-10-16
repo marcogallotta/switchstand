@@ -307,7 +307,7 @@ def restore_test(root: Path, _source_container: str) -> dict[str, str]:
 
 def parser() -> argparse.ArgumentParser:
     subject = argparse.ArgumentParser()
-    subject.add_argument("command", choices=("run", "check-stale", "restore-test"))
+    subject.add_argument("command", choices=("run", "check-stale", "restore-test", "fingerprints"))
     subject.add_argument("--backup-root", type=Path, default=state_root() / "backups")
     subject.add_argument("--container", default="switchstand-postgres-1")
     subject.add_argument(
@@ -331,10 +331,12 @@ def main() -> None:
             )
         elif arguments.command == "check-stale":
             print(check_stale(arguments.backup_root, now, timedelta(hours=arguments.max_age_hours)))
-        else:
+        elif arguments.command == "restore-test":
             print(
                 json.dumps(restore_test(arguments.backup_root, arguments.container), sort_keys=True)
             )
+        else:
+            print(json.dumps(fingerprints(arguments.container), sort_keys=True))
     except (OSError, RuntimeError, subprocess.SubprocessError) as error:
         print(f"switchstand backup alert: {error}", file=sys.stderr)
         raise SystemExit(2) from error
