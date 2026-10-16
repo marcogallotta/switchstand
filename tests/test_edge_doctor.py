@@ -126,6 +126,7 @@ def test_probe_cancels_progressive_response_at_total_deadline(
     elapsed = time.monotonic() - started
 
     assert elapsed < 1
+    assert EdgeHandler.stream_finished.wait(1), "cancelled HTTP request remained active"
     assert "FAIL local_http: TimeoutError" in capsys.readouterr().out
 
 def env_file(tmp_path, port, *, missing=()):
