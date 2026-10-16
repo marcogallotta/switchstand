@@ -731,7 +731,7 @@ async def test_pass_status_requires_exact_review_kind_and_candidate(occurrence_r
         "Requester", "principal-a", "chat-a"
     )).mailbox
     reviewer = (await mailboxes.register_agent(
-        "Reviewer", "principal-b", "chat-b"
+        "Coordinator", "principal-b", "chat-b"
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
