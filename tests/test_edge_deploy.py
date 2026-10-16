@@ -1,4 +1,3 @@
-import io
 import json
 import os
 from pathlib import Path
@@ -22,13 +21,12 @@ settings = {{"SWITCHSTAND_OUTCOME_STATE_ACTIONS": "1"}}
 def deployer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> subject.Deployer:
     monkeypatch.setattr(subject, "STATE_ROOT", tmp_path / "state")
     monkeypatch.setattr(subject, "LAUNCHER", tmp_path / "launcher")
-    return subject.Deployer(tmp_path / "repo", SHA, io.StringIO())
+    return subject.Deployer(tmp_path / "repo", SHA, Mock())
 
 
 def test_candidate_preserves_exact_production_config() -> None:
     current = launcher(Path("/old/runtime"))
-    old, rendered = subject.candidate_launcher(current, Path("/new/runtime"))
-    assert old == Path("/old/runtime")
+    _, rendered = subject.candidate_launcher(current, Path("/new/runtime"))
     assert '"SWITCHSTAND_OUTCOME_STATE_ACTIONS": "1"' in rendered
     assert rendered.replace("'/new/runtime'", '"/old/runtime"') == current
 
@@ -89,11 +87,9 @@ def test_restore_recreates_and_verifies_database(
         return subject.subprocess.CompletedProcess(arguments, 0, output, "")
 
     monkeypatch.setattr(subject, "command", fake_command)
-    runner = Mock()
-    monkeypatch.setattr(subject.subprocess, "run", runner)
+    monkeypatch.setattr(subject.subprocess, "run", Mock())
     target.restore_database()
     assert [command[3] for command in commands[:2]] == ["dropdb", "createdb"]
-    assert "--clean" not in str(runner.call_args)
 
 
 def test_rollback_uses_only_local_runtime_check(

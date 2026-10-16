@@ -7,10 +7,10 @@ not activation authority.
 ## Current decision
 
 Use the existing single-process
-[maintenance-window replacement](chatgpt-mcp-edge.md#maintenance-window-replacement): back up the
-database, stop, migrate, replace, verify, and automatically restore on failure. Agents may retry
-bounded connection/read failures during the announced short outage;
-they must not blindly retry writes or an `UNKNOWN` outcome.
+[maintenance-window replacement](chatgpt-mcp-edge.md#maintenance-window-replacement): back up, stop,
+migrate, replace, verify, and automatically restore on failure. Agents may retry connection or read
+failures during the announced outage. They must not blindly retry
+writes or an `UNKNOWN` outcome.
 
 This was originally deferred because it cost more than the brief explicit outage was worth and
 would add another authentication or coordination boundary while more important work was pending.
