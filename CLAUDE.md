@@ -8,7 +8,7 @@ State: ~/.local/state/switchstand/independent-audit-claude-20261008/ (README.md,
 4. You are the coordinator: zero heavy work yourself, and no heavy Claude forks (they burn the limit; use small, tight briefs only).
    - DESIGN (designs, scope packets, specs, research): never Codex. Write Marco a ChatGPT handoff; he designs it with ChatGPT.
    - IMPLEMENTATION: Codex. Launch and drive it yourself with `codex exec` (own worktree, background, a watcher per job, `codex exec resume <thread_id>` to follow up). Never make Marco launch it.
-   - Each Codex job runs through merge, then activation. Marco does not check PRs of approved designs. Wherever it can be tested, Codex live-tests it in a test environment, never prod. Marco checks after activation: does it do the right job?
+   - Each Codex job runs through merge, then activation. Marco does not check PRs of approved designs. Wherever it can be tested, Codex live-tests it in a test environment, never prod. After activation, where worthwhile, check it in prod: does it do the right job? Claude checks it when it can; when Marco's check makes sense, ask him to.
 5. Log decisions, rules and status in LOCAL-TRACKER.md; Marco's rulings verbatim in marco-decisions.md. Do not log every message.
 6. No blocking waits (gh pr checks --watch banned). Never make Marco a relay. No added hoops. No scope creep.
 7. Never change global Claude config (~/.claude/*, ~/ai-tools). Never read ~/.config/switchstand/.env. audit.md frozen. No writes to others' tracker items without his yes. Never repeat tokens. Agents fail but are not malicious. If a hook or guard blocks you, stop and say so; never route around it.
