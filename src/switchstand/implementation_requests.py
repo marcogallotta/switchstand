@@ -196,7 +196,7 @@ class ImplementationRequestState:
 
                 if legacy_review is not None:
                     pass_status = await self.review_occurrences.pass_status_in_transaction(
-                        connection, package_work_id, observed_revision
+                        connection, package_work_id, observed_revision, "IMPLEMENTATION", None
                     )
                     if pass_status == "UNKNOWN":
                         return ImplementationRequestResult(

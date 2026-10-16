@@ -90,7 +90,9 @@ async def test_approved_current_send_authority_creates_one_inert_request(subject
     approved, operation_id = await approve(reviews), uuid4()
     applied, recovered = await asyncio.gather(facade.request(PRINCIPAL, operation_id, PACKAGE, approved.package_revision), facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision))
     assert (applied.status, recovered.status, applied.task_run_request_id) == ("APPLIED", "REPLAYED", recovered.task_run_request_id)
-    assert occurrences.pass_status_in_transaction.call_args.args[1:] == (PACKAGE, approved.package_revision)
+    assert occurrences.pass_status_in_transaction.call_args.args[1:] == (
+        PACKAGE, approved.package_revision, "IMPLEMENTATION", None,
+    )
     assert (applied.delivery_state, applied.next_action, await request_count(engine)) == ("PENDING", "await managed worker pickup", 1)
     async with engine.connect() as connection:
         row = (await connection.execute(select(task_run_requests))).mappings().one()
