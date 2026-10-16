@@ -86,6 +86,21 @@ def test_config_requires_numeric_identity_exact_resource_and_loopback(monkeypatc
         monkeypatch.setenv(name, values[name])
 
 
+def test_resource_edge_passes_root_takeover_passcode_from_server_config(monkeypatch):
+    captured = {}
+
+    def ordinary_tools(*_args, **kwargs):
+        captured.update(kwargs)
+        return ()
+
+    monkeypatch.setenv("SWITCHSTAND_ROOT_TAKEOVER_PASSCODE", "configured-secret")
+    monkeypatch.setattr(chatgpt_edge, "build_ordinary_tools", ordinary_tools)
+
+    create_app(service(), CONFIG, client_storage=MemoryStore())
+
+    assert captured["root_takeover_passcode"] == "configured-secret"
+
+
 async def test_provider_bridges_proxy_claims_and_rejects_wrong_identity_or_scope(monkeypatch):
     github_subject = GITHUB_ID
 
