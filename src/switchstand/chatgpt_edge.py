@@ -85,6 +85,7 @@ from .work_hygiene import WorkHygieneState
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
+CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 STATEFUL_MIGRATION_REVISION = "0025_task_control_checkpoints"
 _https_resource_url = normalize_resource_url
 
@@ -269,24 +270,46 @@ def _timing_identity() -> dict[str, str | None]:
     }
 
 
-def runtime_identity_from_meta(meta: dict[str, Any]) -> str:
-    """Read one supported host identity without conflating host namespaces."""
+def runtime_identity_from_meta(
+    meta: dict[str, Any],
+    *,
+    client_id: str | None = None,
+    mcp_session_id: str | None = None,
+) -> str:
+    """Read one supported host/session identity without conflating namespaces."""
     present = [(key, meta[key]) for key in ("openai/session", "threadId") if key in meta]
-    if len(present) != 1 or not isinstance(present[0][1], str) or not present[0][1]:
+    if present:
+        if (
+            len(present) != 1
+            or not isinstance(present[0][1], str)
+            or not present[0][1]
+        ):
+            return ""
+        key, value = present[0]
+        return value if key == "openai/session" else f"codex:{value}"
+    if (
+        client_id != CLAUDE_CODE_CLIENT_ID
+        or not isinstance(mcp_session_id, str)
+        or not mcp_session_id
+    ):
         return ""
-    key, value = present[0]
-    return value if key == "openai/session" else f"codex:{value}"
+    return f"claude:{mcp_session_id}"
 
 
 def _runtime_identity() -> str:
-    """Read the stable host identity from the current MCP call metadata."""
+    """Read the stable host identity from the current MCP call."""
     request_context = get_context().request_context
     if request_context is None:
         return ""
-    meta = request_context.meta
-    if meta is None:
-        return ""
-    return runtime_identity_from_meta(meta)
+    request = request_context.request
+    token = get_access_token()
+    return runtime_identity_from_meta(
+        request_context.meta or {},
+        client_id=None if token is None else token.client_id,
+        mcp_session_id=(
+            None if request is None else request.headers.get("mcp-session-id")
+        ),
+    )
 
 
 async def _activation_runtime(

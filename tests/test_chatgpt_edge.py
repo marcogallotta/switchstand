@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx2
@@ -37,6 +38,29 @@ RESOURCE = "https://switchstand.example.com/mcp"
 ISSUER = "https://switchstand.example.com/"
 GITHUB_ID = "192548"
 CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
+
+
+def test_runtime_identity_namespaces_claude_transport_session(monkeypatch):
+    request_context = SimpleNamespace(
+        meta=None,
+        request=SimpleNamespace(headers={"mcp-session-id": "transport-session"}),
+    )
+    token = AccessToken(
+        token="token",
+        client_id="https://claude.ai/oauth/claude-code-client-metadata",
+        scopes=[REQUIRED_SCOPE],
+        subject=GITHUB_ID,
+        claims={"iss": ISSUER},
+        resource=RESOURCE,
+        expires_at=int(time.time()) + 60,
+    )
+    monkeypatch.setattr(
+        chatgpt_edge, "get_context",
+        lambda: SimpleNamespace(request_context=request_context),
+    )
+    monkeypatch.setattr(chatgpt_edge, "get_access_token", lambda: token)
+
+    assert chatgpt_edge._runtime_identity() == "claude:transport-session"
 
 
 def _currentness_environment(monkeypatch):

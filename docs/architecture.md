@@ -459,9 +459,12 @@ The agent mailbox layer is current product behavior, but it is a compatibility b
 the final identity model. It reuses the UUID-shaped sender and recipient columns in `MessageState`
 without asserting WorkId identity or requiring or creating provider bindings. Migrated installations
 can retain the legacy handle residue described above. The HTTP edge reads exactly one hidden host
-identity—ChatGPT `openai/session` unchanged or Codex `threadId` namespaced as `codex:<id>`—and fails
-closed on missing, invalid, or ambiguous metadata; the mailbox stores its hash and binds one visible
-name per principal-and-chat pair.
+identity: ChatGPT `openai/session` unchanged, Codex `threadId` namespaced as `codex:<id>`, or, only
+for the exact authenticated Claude Code OAuth client, the validated incoming stateful
+`Mcp-Session-Id` namespaced as `claude:<id>`. The Claude identity is scoped to that live MCP
+transport session, not a persistent Claude conversation. Other missing, invalid, ambiguous, or
+header-only identities fail closed; the mailbox stores the identity hash and binds one visible name
+per principal-and-chat pair.
 Principal, chat identity, visible name, mailbox
 generation, MCP session currentness, and WorkId remain distinct. It should be retired or reshaped
 only after the canonical agent/work identity model and migration of outstanding mailbox state are
