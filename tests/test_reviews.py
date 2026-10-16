@@ -990,7 +990,7 @@ async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
         ) == "PASS"
 
 
-async def test_focused_rereview_requires_authoritative_named_finding(occurrence_runtime):
+async def test_focused_rereview_allows_only_authoritative_named_findings(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
@@ -1072,6 +1072,27 @@ async def test_focused_rereview_requires_authoritative_named_finding(occurrence_
     assert transition.prior_named_evidence == ()
     assert transition.changed_basis_fields == ("subject_revision",)
     assert delivery[1].brief.material_claim == "corrected"
+
+    focused_received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(
+            generation=str(reviewer.generation), current_generation=str(reviewer.generation),
+        ),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=focused.delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert focused_received.status == "ok"
+    new_finding = finding.model_copy(update={"finding_id": "F-2"})
+    rejected = await service.submit(ReviewSubmit(
+        review_id=initial.review_id, verdict="FINDINGS", findings=(new_finding,),
+        context_provenance="UNSEEDED",
+    ), reviewer)
+    assert (rejected.status, rejected.reason) == (
+        "DENIED", "focused_finding_not_selected",
+    )
 
     upgraded = await service.request(ReviewRequest(
         subject_work_id=subject_id,
