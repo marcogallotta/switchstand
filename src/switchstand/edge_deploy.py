@@ -22,6 +22,7 @@ SERVICE = "switchstand-chatgpt-mcp.service"
 LAUNCHER = Path.home() / ".local/libexec/switchstand-chatgpt-edge"
 ENV_FILE = Path.home() / ".config/switchstand/mcp.env"
 STATE_ROOT = Path.home() / ".local/state/switchstand"
+SMOKE_BIND_SECONDS = 10
 LOCAL_URL = "http://127.0.0.1:8790/mcp"
 CONTAINER = "switchstand-postgres-1"
 
@@ -210,13 +211,24 @@ class Deployer:
             raise RuntimeError(f"service did not quiesce: MainPID={pid or 'unknown'}")
 
     def local_smoke(self, runtime: Path, sha: str) -> None:
-        pid = self.service("show", "--property=MainPID", "--value").stdout.strip()
-        if not pid.isdigit() or pid == "0":
-            raise RuntimeError("service has no running MainPID")
-        command_line = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
         selected, _, _ = _runtime_literal(LAUNCHER.read_text())
-        if os.fsencode(LAUNCHER) not in command_line or selected != runtime:
+        if selected != runtime:
             raise RuntimeError("running service is not bound to the selected runtime")
+        # Right after restart MainPID can still be the pre-exec child; wait briefly for exec.
+        deadline = time.monotonic() + SMOKE_BIND_SECONDS
+        while True:
+            pid = self.service("show", "--property=MainPID", "--value").stdout.strip()
+            try:
+                command_line = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+            except OSError:
+                command_line = []
+            if pid.isdigit() and pid != "0" and os.fsencode(LAUNCHER) in command_line:
+                break
+            if time.monotonic() >= deadline:
+                if not pid.isdigit() or pid == "0":
+                    raise RuntimeError("service has no running MainPID")
+                raise RuntimeError("running service is not bound to the selected runtime")
+            time.sleep(0.2)
         doctor = str(runtime / "scripts/switchstand-edge-doctor")
         command(
             [doctor, "--env-file", str(ENV_FILE), "--repo", str(runtime), "--expected-sha", sha]
