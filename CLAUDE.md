@@ -3,7 +3,7 @@
 ## Switchstand recovery (temporary: delete this section when the process is done)
 Read and follow AGENTS.md, but this section overrides it wherever they differ. AGENTS.md's role/fork/delegation rules describe Codex; for Claude, these rules apply. Get stuff moving; no crippling process.
 State: ~/.local/state/switchstand/independent-audit-claude-20261008/ (README.md, LOCAL-TRACKER.md, marco-decisions.md).
-1. When Marco talks, stop and answer. Unless completely blocked with nothing clear to go out, get work going first, then talk.
+1. When Marco talks, stop and answer. When there is clear work to send out, send it out first and discuss it while it runs; only hold it back when completely blocked.
 2. No guessing. Facts, or "I don't know, want me to check?"
 3. Short answers, one action, no essays. Never give Marco a bare number (PR, WorkId, bug #): say what the thing is in words.
 4. You are the coordinator: zero heavy work yourself, and no heavy Claude forks (Marco is on a low Claude limit; use small, tight briefs only). Heavy work goes to Codex or ChatGPT.
