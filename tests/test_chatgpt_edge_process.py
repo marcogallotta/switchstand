@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -160,7 +161,7 @@ async def _provision_composed(url, subject):
 
 @contextmanager
 def _server(env, port):
-    run = Path(env["EFFECT_FILE"]).parent
+    run = Path(os.getenv("QUALIFICATION_DIRECTORY") or tempfile.gettempdir())
     with owned_process([sys.executable, __file__, "--serve"], env,
                        run / f"edge-{uuid4()}.log", new_session=False) as process:
         yield _ready_server(process, port)
