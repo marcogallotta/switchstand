@@ -41,10 +41,6 @@ from .creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
 from .effects import AppendGateway, CanonicalAppendGateway
 from .grant_state import GrantState
-from .human_trajectory import (
-    HumanTrajectoryData, HumanTrajectoryRevision, HumanTrajectoryStore,
-    SourceKind, TrajectoryRead, TrajectoryRecord,
-)
 from .grants import (
     GrantedWorkResult,
     GrantResult,
@@ -57,6 +53,14 @@ from .grants import (
     ScalarPatch,
     UpdateReceipt,
     WorkGrant,
+)
+from .human_trajectory import (
+    HumanTrajectoryData,
+    HumanTrajectoryRevision,
+    HumanTrajectoryStore,
+    SourceKind,
+    TrajectoryRead,
+    TrajectoryRecord,
 )
 from .implementation_requests import ImplementationRequestResult, ImplementationRequestState
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
@@ -91,6 +95,7 @@ from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
 from .work_hygiene import HygieneGate, WorkHygieneResult, WorkHygieneState, evaluate_work_hygiene
 from .workspace_admission import WorkspaceAdmissionState
+
 
 class HumanTrajectoryGetResponse(ClosedModel):
     status: Literal["CURRENT", "MISSING", "UNKNOWN", "DENIED"]
