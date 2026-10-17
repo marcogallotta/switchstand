@@ -16,12 +16,12 @@ from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import LaunchAuthority
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
-from switchstand.state import PostgresState
 from switchstand.human_trajectory import (
     HumanTrajectoryData,
     HumanTrajectoryStore,
     SourceKind,
 )
+from switchstand.state import PostgresState
 
 WORK_ID = UUID("10000000-0000-4000-8000-000000000001")
 
@@ -212,13 +212,13 @@ async def test_real_agent_mcp_get_record_replay_and_correction_without_attestati
 
     request_id = uuid4()
     data = trajectory()
-    args = dict(
-        api_version="1", operation_id=request_id, work_id=WORK_ID,
-        expected_generation=1, expected_predecessor_id=None,
-        source_kind=SourceKind.HUMAN_INPUT,
-        source_ref="agent working paraphrase: original chat not independently verified",
-        data=data,
-    )
+    args = {
+        "api_version": "1", "operation_id": request_id, "work_id": WORK_ID,
+        "expected_generation": 1, "expected_predecessor_id": None,
+        "source_kind": SourceKind.HUMAN_INPUT,
+        "source_ref": "agent working paraphrase: original chat not independently verified",
+        "data": data,
+    }
     first = await record(**args)
     replay = await record(**args)
     assert first.status == "APPLIED" and first.revision is not None
@@ -244,11 +244,12 @@ async def test_real_agent_mcp_get_record_replay_and_correction_without_attestati
 async def test_agent_record_requires_existing_write_grant_and_real_work(store):
     tools = _ordinary_agent_tools(store)
     record = tools["human_trajectory_record"]
-    args = dict(
-        api_version="1", operation_id=uuid4(), work_id=WORK_ID,
-        expected_generation=1, expected_predecessor_id=None,
-        source_kind=SourceKind.HUMAN_INPUT, source_ref="agent-paraphrased", data=trajectory(),
-    )
+    args = {
+        "api_version": "1", "operation_id": uuid4(), "work_id": WORK_ID,
+        "expected_generation": 1, "expected_predecessor_id": None,
+        "source_kind": SourceKind.HUMAN_INPUT, "source_ref": "agent-paraphrased",
+        "data": trajectory(),
+    }
     assert (await record(**{**args, "work_id": uuid4()})).status == "DENIED"
     denied = _ordinary_agent_tools(store, authenticated=False)
     assert (await denied["human_trajectory_get"](
