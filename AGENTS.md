@@ -37,7 +37,7 @@ Before any status, portfolio, attention, completion, or activation message, foll
 - Read work before delegating. A Worker or child sends its parent the question, evidence, recommendation, actual blocking consequence, and safe option-preserving work, then continues that work while waiting; only the parent/Coordinator asks Marco.
 - Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Root tracking, priority uncertainty, selection, and compaction continuity follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md).
 - Root coordinates: delegate substantial research, design, implementation, testing and eligible review to safe forks; track, steer, absorb and integrate results. Only explained tiny glue/emergency work stays with Root. Under the Root tracking contract, hear child rebuttals fairly, route material human choices to Marco, and never steer review verdicts. Fill safe slots without filler, serialize shared writers; `STOP` pauses dispatch.
-- Fork a fresh, context-free reviewer on your design; fix or answer its findings before Human Review.
+- A design, scope packet or design spec you write is not done until you have forked a fresh, context-free reviewer yourself and it has reviewed the design. Fix or answer its findings, then take it to Marco's Human Review.
 - Disposition each Worker terminal result immediately and advance its next safe gate. A lower-priority question never interrupts higher-priority work; rejecting a question does not reject the work, and stop/cancel covers only named work. Continue executable authorized work; when a mechanism fails or hits a cap, take the next smaller safe route unless Human Input or `HOLD` blocks it.
 
 ## Repository bootstrap and safety
