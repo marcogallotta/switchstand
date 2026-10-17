@@ -32,7 +32,7 @@ duplicated here, and changing them is a separately authorized activation action.
 
 ## GO or WAIT
 
-Immediately before the action:
+Immediately before the action, run `scripts/agent-resource-admission <estimate_mib>`. It:
 
 1. Read `MemAvailable` from `/proc/meminfo` and `some avg10` from
    `/proc/pressure/memory`.
@@ -41,8 +41,12 @@ Immediately before the action:
    host_page_size_bytes) / 1024`. A missing counter or either negative delta/reset means `WAIT`.
 3. Re-read `MemAvailable` and PSI after the swap window. Read the named `TasksCurrent`,
    `MemoryCurrent`, and `MemoryMax` properties for `agents.slice`; do not infer property order.
-4. Use the dispatch head's current job bookkeeping to count memory-bearing jobs. If ownership
-   or the count is ambiguous, return `WAIT`.
+4. Count active memory-bearing jobs from live `ss-codex-*.scope` units in `agents.slice` that
+   contain a live `codex exec` process. Report a live scope without that process as `LEFTOVER`
+   with its name and age, but do not count it.
+
+The script prints the measurements and reason. `GO` exits zero; `WAIT` and measurement failure
+exit nonzero.
 
 Return `GO` only when all are true:
 
