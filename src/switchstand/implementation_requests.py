@@ -20,8 +20,29 @@ from .human_reviews import (
     human_review_consequences,
     human_review_record,
 )
+from .human_trajectory import HumanTrajectoryStore
 from .reviews import ReviewOccurrenceState
 from .task_runs import ImplementationTaskRequest, TaskRunRequest, TaskRunState
+
+_HIHR_PREFIX = "hihr/"
+_HIHR_TRAJECTORY_PREFIX = "hihr/1.0/trajectory/"
+
+
+def _bound_trajectory(source_refs: tuple[str, ...]) -> tuple[UUID, UUID] | Literal["INVALID"] | None:
+    """Optional V1 continuity binding, not evidence of authenticated human words."""
+    matches = tuple(value for value in source_refs if value.startswith(_HIHR_PREFIX))
+    if not matches:
+        return None  # Existing packages keep their current admission contract.
+    if len(matches) != 1 or not matches[0].startswith(_HIHR_TRAJECTORY_PREFIX):
+        return "INVALID"
+    parts = matches[0][len(_HIHR_TRAJECTORY_PREFIX):].split("/")
+    if len(parts) != 2:
+        return "INVALID"
+    try:
+        ids = (UUID(parts[0]), UUID(parts[1]))
+    except ValueError:
+        return "INVALID"
+    return ids if all(str(value) == part for value, part in zip(ids, parts, strict=True)) else "INVALID"
 
 
 class ImplementationRequestResult(ClosedModel):
@@ -173,6 +194,34 @@ class ImplementationRequestState:
                               else "human_review_not_approved")
                     return ImplementationRequestResult(status="DENIED", reason=reason)
 
+                # An explicitly HIHR-bound package must retain its current trajectory.
+                # Do not turn missing chat provenance into a global admission hold.
+                hihr_binding: tuple[UUID, UUID] | None = None
+                if baseline_review is not None:
+                    baseline = baseline_review.consequence.baseline
+                    if baseline is None:
+                        return ImplementationRequestResult(
+                            status="UNKNOWN", reason="approved_baseline_unavailable"
+                        )
+                    binding = _bound_trajectory(baseline.human_source_refs)
+                    if binding == "INVALID":
+                        return ImplementationRequestResult(
+                            status="DENIED", reason="hihr_binding_invalid"
+                        )
+                    if binding is not None:
+                        checked = await HumanTrajectoryStore(self.engine).check_in_transaction(
+                            connection, binding[0], binding[1],
+                        )
+                        if checked.status == "STALE":
+                            return ImplementationRequestResult(
+                                status="DENIED", reason="hihr_trajectory_stale"
+                            )
+                        if checked.status != "CURRENT":
+                            return ImplementationRequestResult(
+                                status="UNKNOWN", reason="hihr_trajectory_unavailable"
+                            )
+                        hihr_binding = binding
+
                 raw_grant = (
                     await connection.execute(
                         select(work_grants.c.document)
@@ -253,6 +302,11 @@ class ImplementationRequestState:
                         "implementation_target": review.consequence.implementation_target,
                         "milestones": [milestone_for[value] for value in continuation_effects],
                         "excluded_effects": list(review.consequence.excluded_effects),
+                        **({} if hihr_binding is None else {
+                            "hihr_trajectory_ref": (
+                                f"{_HIHR_TRAJECTORY_PREFIX}{hihr_binding[0]}/{hihr_binding[1]}"
+                            ),
+                        }),
                         **({} if legacy_review is not None else {
                             "baseline_id": str(review.consequence_id),
                             "baseline_digest": review.consequence_digest,
