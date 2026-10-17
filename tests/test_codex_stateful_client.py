@@ -251,6 +251,9 @@ def codex_smoke(binary: Path, workspace: Path, env: dict[str, str]) -> None:
         # The real client sees every governing CURRENT/STALE action shape. Model-response
         # frequency targets remain activation evidence, not an inert CI claim.
         initial = get()
+        marker = os.getenv("SWITCHSTAND_E2E_CODEX_CALL_MARKER")
+        if marker:
+            Path(marker).write_text("called\n")
         assert "action_summary" not in initial
         needs_marco = {
             "item_key": "decision", "description": "Choose rollout", "kind": "DECISION",
