@@ -53,6 +53,10 @@ Agents accurately carry forward material decisions, rejected alternatives, corre
 
 Missing independent verification of original messages must not block otherwise authorized work or require routine human confirmation. When material ambiguity or conflict could change direction, investigate what is available and ask one useful question; continue unaffected work. At the next naturally relevant discussion, briefly surface important carried-forward decisions without requiring a response.
 
+## Durable trajectory, when available
+
+For substantive reviewed work, use `human_trajectory_get` on the exact WorkId to recover the current human outcome, settled/rejected choices, open questions, current slice and remainder. On a material correction or decision, the responsible agent uses `human_trajectory_record` with the same WorkId, expected generation/predecessor and stable operation ID. Record directly visible words accurately, or label an agent-authored paraphrase and give an available source pointer. Neither tool authenticates original human wording or grants any effect authority; **never ask Marco to validate routine records**. If typed storage is unavailable, continue authorized work using the current owner notes and mark typed continuity UNKNOWN; do not block the whole task.
+
 ## Continuity
 
 An unresolved Human Input question must survive handoff/replacement with the exact decision, why it matters, current recommendation, safe continuing work, and the action that would harden the choice.
