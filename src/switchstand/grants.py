@@ -65,6 +65,7 @@ class ProtectedAppend(ClosedModel):
     grant_version: int = Field(ge=1)
     observed_revision: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=8000)
+    confirm_cancels_review: bool = False
 
 
 class ProtectedCreate(ClosedModel):
@@ -139,6 +140,7 @@ class ProtectedUpdate(ClosedModel):
     grant_version: int = Field(ge=1)
     observed_revision: str = Field(min_length=1)
     patch: ScalarPatch
+    confirm_cancels_review: bool = False
 
 
 class RelationPatch(ClosedModel):
@@ -278,7 +280,9 @@ class PriorityClaimReceipt(ClosedModel):
 
 class EffectOutcomeView(ClosedModel):
     """Sanitized effect truth without provider or principal internals."""
-    status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
+    status: Literal[
+        "ok", "denied", "stale", "not_applied", "unknown", "CONFIRM_REQUIRED"
+    ]
     reason: str
     effect: Literal["not_sent", "applied", "unknown"]
     retry: Literal["none", "refresh", "reconcile"]
@@ -293,7 +297,9 @@ class EffectBlocker(ClosedModel):
 
 
 class GuardOutcome(ClosedModel):
-    status: Literal["ok", "denied", "stale", "not_applied", "unknown"]
+    status: Literal[
+        "ok", "denied", "stale", "not_applied", "unknown", "CONFIRM_REQUIRED"
+    ]
     operation: str
     work_id: UUID | None = None
     operation_id: UUID | None = None

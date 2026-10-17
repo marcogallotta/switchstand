@@ -516,6 +516,7 @@ def build_ordinary_tools(
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, text: str, purpose: AppendPurpose,
+        confirm_cancels_review: bool = False,
     ) -> GuardOutcome:
         """Append exceptional provenance/history only; never current state, results, or messaging."""
         correlate(work_id)
@@ -527,6 +528,7 @@ def build_ordinary_tools(
         result = await service.append(ProtectedAppend(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, text=text,
+            confirm_cancels_review=confirm_cancels_review,
         ))
         audited("work_append", f"{work_id}:purpose={purpose}", result.status)
         return result
@@ -630,6 +632,7 @@ def build_ordinary_tools(
     async def work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, patch: ScalarPatch,
+        confirm_cancels_review: bool = False,
     ) -> GuardOutcome:
         """Write canonical current state; use notes for intent, progress, findings, verdicts, and results."""
         correlate(work_id)
@@ -641,6 +644,7 @@ def build_ordinary_tools(
         result = await service.update(ProtectedUpdate(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, patch=patch,
+            confirm_cancels_review=confirm_cancels_review,
         ))
         audited("work_update", str(work_id), result.status)
         return result
@@ -648,10 +652,12 @@ def build_ordinary_tools(
     async def enriched_work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, patch: ScalarPatch,
+        confirm_cancels_review: bool = False,
     ) -> OrdinaryUpdateResult:
         """Write canonical state and enrich known outcomes from one fresh exact read."""
         result = await work_update(
             api_version, operation_id, work_id, observed_revision, patch,
+            confirm_cancels_review,
         )
         summary = None
         activation = None

@@ -8,8 +8,10 @@ from dataclasses import replace
 from typing import Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import insert, select
+from sqlalchemy import Text, exists, insert, select
+from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .canonical_relations import (
     CanonicalRelationsRepository,
@@ -18,7 +20,12 @@ from .canonical_relations import (
     projects,
     work_parents,
 )
-from .canonical_work import CanonicalWorkRepository, CurrentWork, canonical_revision
+from .canonical_work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
+)
 from .contracts import (
     Routing,
     WorkContext,
@@ -45,6 +52,7 @@ from .grants import (
     RelationReceipt,
     UpdateReceipt,
 )
+from .messages import messages
 from .mutation_effect import blocked_effect_next_action
 from .relations import RelationGateway
 from .state import work_handles
@@ -55,6 +63,47 @@ _SCALAR_FIELDS = frozenset({
     "review_next_action", "canonical_root", "owner_key", "wait_kind",
     "unblock_condition", "next_due", "next_action_class", "next_action_ref",
 })
+
+CONFIRM_CANCELS_REVIEW_MESSAGE = (
+    "This item is waiting for review {review_id}. This edit will cancel that review. "
+    "If you meant it, repeat the same call with confirm_cancels_review=true."
+)
+
+
+async def pending_review_id(
+    connection: AsyncConnection, work_id: UUID, revision: str,
+) -> UUID | None:
+    """Return one deterministic pending review bound to this exact work revision."""
+    review_id = sql_cast(canonical_work.c.work_id, Text)
+    has_basis = exists(select(1).where(
+        messages.c.kind == "request",
+        messages.c.route_ref.in_(("review.request", "review.acquisition")),
+        messages.c.payload["brief"]["basis"]["review_id"].astext == review_id,
+        messages.c.payload["brief"]["basis"]["subject_work_id"].astext
+        == str(work_id),
+        messages.c.payload["brief"]["basis"]["subject_revision"].astext == revision,
+    ))
+    has_outcome = exists(select(1).where(
+        messages.c.kind == "result",
+        messages.c.payload["outcome"]["type"].astext == "REVIEW_OUTCOME",
+        messages.c.payload["outcome"]["review_id"].astext == review_id,
+        messages.c.payload["brief"]["basis"]["subject_work_id"].astext
+        == str(work_id),
+        messages.c.payload["brief"]["basis"]["subject_revision"].astext == revision,
+    ))
+    return await connection.scalar(select(canonical_work.c.work_id).join(
+        work_parents,
+        work_parents.c.child_work_id == canonical_work.c.work_id,
+    ).where(
+        work_parents.c.parent_work_id == work_id,
+        canonical_work.c.work_type == "REVIEW",
+        has_basis,
+        ~has_outcome,
+    ).order_by(canonical_work.c.work_id).limit(1))
+
+
+def confirmation_message(review_id: UUID) -> str:
+    return CONFIRM_CANCELS_REVIEW_MESSAGE.format(review_id=review_id)
 
 
 class _TypedUpdateRequest(Protocol):
@@ -287,6 +336,16 @@ class CanonicalWorkRuntime:
                         request.work_id, current.row_version
                     ):
                         return self._guard(request, "stale", "source_revision_changed")
+                    if not request.confirm_cancels_review:
+                        review_id = await pending_review_id(
+                            connection, request.work_id, request.observed_revision,
+                        )
+                        if review_id is not None:
+                            return self._guard(
+                                request, "CONFIRM_REQUIRED", "pending_review",
+                            ).model_copy(update={
+                                "next_action": confirmation_message(review_id),
+                            })
                     fields = request.patch.model_fields_set
                     if not fields <= _SCALAR_FIELDS:
                         return self._guard(request, "denied", "invalid_database_metadata")

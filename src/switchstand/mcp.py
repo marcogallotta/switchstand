@@ -432,6 +432,7 @@ def build_server(
         async def _protected_work_append(
             api_version: Literal["1"], operation_id: UUID,
             observed_revision: Annotated[str, Field(min_length=1)], text: str,
+            confirm_cancels_review: bool = False,
         ) -> GuardOutcome:
             """Append one history entry to the active work item with exact retry protection."""
             grant = await grants.current(principal.key)
@@ -439,6 +440,7 @@ def build_server(
                 api_version=api_version, operation_id=operation_id, work_id=active_work_id,
                 grant_version=1 if grant is None else grant.version,
                 observed_revision=observed_revision, text=text,
+                confirm_cancels_review=confirm_cancels_review,
             )
             return await appends(principal, request)
         append_tool = _protected_work_append
@@ -451,12 +453,14 @@ def build_server(
         async def _work_update(
             api_version: Literal["1"], operation_id: UUID,
             observed_revision: Annotated[str, Field(min_length=1)], patch: ScalarPatch,
+            confirm_cancels_review: bool = False,
         ) -> GuardOutcome:
             grant = await grants.current(principal.key)
             request = ProtectedUpdate(
                 api_version=api_version, operation_id=operation_id, work_id=active_work_id,
                 grant_version=1 if grant is None else grant.version,
                 observed_revision=observed_revision, patch=patch,
+                confirm_cancels_review=confirm_cancels_review,
             )
             return await updates(principal, request)
 

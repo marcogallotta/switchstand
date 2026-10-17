@@ -288,6 +288,7 @@ async def test_managed_update_derives_active_identity_and_current_grant(subject)
         assert {"priority", "work_type", "review_next_action"} <= patch_schema["properties"].keys() and "gid" not in json.dumps(patch_schema).lower()
         assert set(tool.input_schema["properties"]) == {
             "api_version", "operation_id", "observed_revision", "patch",
+            "confirm_cancels_review",
         }
         first = (await client.call_tool("work_update", arguments)).structured_content
         assert first["receipt"]["work_id"] == str(authority.active_work_id)
