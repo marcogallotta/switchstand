@@ -6,6 +6,22 @@ This is the repository semantic owner for substantive code/config/test implement
 
 A good change delivers the exact governing behavior with the simplest sound current design, lives in the correct owner, preserves explicit authority/trust/resource/dependency boundaries, avoids duplicate truth and speculative machinery, has discriminating maintainable evidence, and leaves the touched system no harder for a fresh competent agent to understand and safely change. Green tests are evidence, not the definition of correctness or quality.
 
+### Root AGENTS admission
+
+Root `AGENTS.md` is a bootstrap/router, not a process manual. Any addition to it must satisfy
+all of these in the existing review; this is not a separate ceremony:
+
+1. essentially every fresh agent needs it before role/function selection;
+2. omission can cause immediate unsafe or materially misrouted behavior before owner guidance loads;
+3. no narrower current semantic owner can carry it;
+4. the text is an invariant, first-minute trigger, or routing pointer rather than procedure; and
+5. it does not duplicate owner-document semantics.
+
+Any `NO` routes the detail to its current owner and leaves at most the needed trigger/pointer in
+root `AGENTS.md`. A serious incident does not automatically qualify a new bootstrap rule. Do not
+use a total byte/line cap as the semantic gate: size may be reported diagnostically, but review
+must challenge ownership and necessity rather than compress prose to hit a threshold.
+
 ## Author / implementer
 
 Prefer the smallest safe vertical end-to-end stage that produces representative useful behavior and evidence. Use a foundation-only or inert first stage only when a vertical stage is unsafe or impractical; state why, keep the foundation independently stable, exclude speculative later-stage machinery, and name the immediate route to the first representative useful end-to-end proof. Default-off or inert readiness is a landing claim, not ordinary-use product completion.
@@ -39,6 +55,16 @@ package database, or parallel review ceremony. At approval freeze:
 - the ORIGINAL APPROVED upper forecasts for production and support;
 - the explicit approved margins and resulting production, support and total hard caps;
 - the strongest credible simpler alternative, economy proof and material replan triggers.
+
+### Material design review before Human Review
+
+A material Design Specification, scope packet, or equivalent design owned by the current author
+receives one fresh context-free reviewer before Human Review. The reviewer gets the exact design,
+current work identity, and only the current owner documents needed to judge it; do not seed the
+author's overall verdict as review truth. Review challenges V1 scope, owner placement, the
+strongest smaller route, evidence shape, and any material human choice. The author fixes or
+answers material findings before Human Review. This review supplies evidence only: it grants no
+implementation, landing, deployment, activation, or provider-effect authority.
 
 ### Mandatory scope blocks
 

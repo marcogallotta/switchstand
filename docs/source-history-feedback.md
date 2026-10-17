@@ -74,6 +74,13 @@ dedicated message tools. There is no daemon, generic inbox scan,
 inactive-session wake, or authority inferred from message delivery. A sender's
 successful send is not recipient pickup.
 
+When Marco says `poll` or `keep polling` for an exact inbox, message, or review, keep that exact
+watch active while the session can run: use supported bounded waits, reread the exact surface,
+and continue until terminal result, explicit human stop/pause/reassignment, or a real
+access/execution blocker. Empty reads and arbitrary check counts are nonterminal. Persist the
+exact watch for re-entry if the session ends. A Scheduled task or condition watch is a different
+future-running product and never substitutes for this live obligation unless Marco explicitly asks.
+
 Typed `FINDINGS` at review, message, and handoff boundaries require an attributable
 `ACCEPT`, `CHALLENGE`, `NARROW`, or `NEEDS_EVIDENCE` disposition. Accepted findings
 must link an existing exact WorkId, record an authorized self-owned create, or preserve
