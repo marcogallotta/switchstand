@@ -377,7 +377,7 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     raw_agents = read("AGENTS.md")
     agents = normalized("AGENTS.md")
     triggers = section(raw_agents, "### Always-loaded triggers")
-    incident = section(raw_agents, "### Live incidents")
+    incident = " ".join(section(raw_agents, "### Live incidents").split())
 
     war_machines = (
         "WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing "
