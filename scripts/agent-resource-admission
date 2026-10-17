@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import time
@@ -18,8 +19,8 @@ REQUIRED_CONFIG = {
     "swap_window_seconds": int,
     "max_swap_growth_kib": int,
     "psi_avg10_max": float,
-    "max_memory_jobs": int,
 }
+OPTIONAL_CONFIG = {"max_memory_jobs": int}
 
 
 def fail(reason: str) -> int:
@@ -28,19 +29,20 @@ def fail(reason: str) -> int:
 
 
 def read_config(path: Path) -> dict[str, int | float]:
-    values: dict[str, int | float] = {}
+    values: dict[str, int | float] = {"max_memory_jobs": 0}
     for raw_line in path.read_text().splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
         key, separator, raw_value = line.partition("=")
-        if not separator or key not in REQUIRED_CONFIG:
+        converters = REQUIRED_CONFIG | OPTIONAL_CONFIG
+        if not separator or key not in converters:
             raise ValueError(f"invalid_config_line:{line}")
-        values[key] = REQUIRED_CONFIG[key](raw_value)
+        values[key] = converters[key](raw_value)
     missing = REQUIRED_CONFIG.keys() - values.keys()
     if missing:
         raise ValueError(f"missing_config:{','.join(sorted(missing))}")
-    if any(value < 0 for value in values.values()) or values["max_memory_jobs"] < 1:
+    if any(value < 0 for value in values.values()):
         raise ValueError("invalid_config_value")
     return values
 
@@ -113,12 +115,33 @@ def has_codex_exec(cgroup: str) -> bool:
     return False
 
 
-def memory_jobs(scope_pattern: str) -> tuple[list[str], list[tuple[str, str]]]:
+def cgroup_memory_bytes(cgroup: str) -> int:
+    return int((CGROUP_ROOT / cgroup.lstrip("/") / "memory.current").read_text())
+
+
+def caller_scope(scope_pattern: str) -> str | None:
+    for line in Path("/proc/self/cgroup").read_text().splitlines():
+        _, separator, cgroup = line.partition("::")
+        if not separator:
+            continue
+        path = PurePosixPath(cgroup)
+        for candidate in (path, *path.parents):
+            if fnmatch.fnmatchcase(candidate.name, scope_pattern):
+                return candidate.name
+    return None
+
+
+def memory_jobs(
+    scope_pattern: str,
+) -> tuple[list[str], list[tuple[str, str]], str | None, int]:
     output = systemctl(
         "list-units", scope_pattern, "--type=scope", "--all", "--no-legend", "--plain"
     )
     active: list[str] = []
     leftovers: list[tuple[str, str]] = []
+    own_scope = caller_scope(scope_pattern)
+    excluded_scope = None
+    memory_bytes = 0
     now_usec = int(time.monotonic() * 1_000_000)
     for line in output.splitlines():
         if not line.strip():
@@ -130,14 +153,18 @@ def memory_jobs(scope_pattern: str) -> tuple[list[str], list[tuple[str, str]]]:
         if properties["ActiveState"] != "active" or properties["Slice"] != "agents.slice":
             continue
         if has_codex_exec(properties["ControlGroup"]):
-            active.append(unit)
+            memory_bytes += cgroup_memory_bytes(properties["ControlGroup"])
+            if unit == own_scope:
+                excluded_scope = unit
+            else:
+                active.append(unit)
             continue
         entered = properties["ActiveEnterTimestampMonotonic"]
         age = "unknown"
         if entered.isdigit() and int(entered) <= now_usec:
             age = str((now_usec - int(entered)) // 1_000_000)
         leftovers.append((unit, age))
-    return active, leftovers
+    return active, leftovers, excluded_scope, memory_bytes
 
 
 def parse_args() -> argparse.Namespace:
@@ -172,7 +199,7 @@ def main() -> int:
         slice_properties = show_properties(
             "agents.slice", "TasksCurrent", "MemoryCurrent", "MemoryMax"
         )
-        active, leftovers = memory_jobs(args.scope_pattern)
+        active, leftovers, self_scope, jobs_memory_bytes = memory_jobs(args.scope_pattern)
         memory_max = slice_properties["MemoryMax"]
         memory_max_mib = None if memory_max == "infinity" else int(memory_max) // (1024 * 1024)
         slice_tasks = int(slice_properties["TasksCurrent"])
@@ -185,13 +212,15 @@ def main() -> int:
 
     reasons: list[str] = []
     required_mib = int(config["reserve_mib"]) + args.estimate_mib
+    jobs_memory_mib = (jobs_memory_bytes + 1024 * 1024 - 1) // (1024 * 1024)
     if mem_available_mib < required_mib:
         reasons.append("headroom")
     if swap_growth_kib > config["max_swap_growth_kib"]:
         reasons.append("swap_growth")
     if psi_avg10 > config["psi_avg10_max"]:
         reasons.append("memory_psi")
-    if len(active) >= config["max_memory_jobs"]:
+    max_memory_jobs = int(config["max_memory_jobs"])
+    if max_memory_jobs and len(active) >= max_memory_jobs:
         reasons.append("active_jobs")
     if memory_max_mib is not None:
         used_mib = slice_memory_mib if slice_tasks else 0
@@ -202,7 +231,8 @@ def main() -> int:
     fields = [
         f"reason={','.join(reasons) if reasons else 'all_checks_passed'}",
         f"active_memory_jobs={len(active)}",
-        f"max_memory_jobs={config['max_memory_jobs']}",
+        f"max_memory_jobs={max_memory_jobs if max_memory_jobs else 'off'}",
+        f"active_jobs_memory_mib={jobs_memory_mib}",
         f"before_mem_available_mib={before_mem_available_mib}",
         f"mem_available_mib={mem_available_mib}",
         f"required_mib={required_mib}",
@@ -213,6 +243,8 @@ def main() -> int:
         f"slice_memory_mib={slice_memory_mib}",
         f"slice_max_mib={memory_max_mib if memory_max_mib is not None else 'infinity'}",
     ]
+    if self_scope is not None:
+        fields.append(f"self_scope={self_scope}")
     print(f"{verdict} {' '.join(fields)}")
     return 1 if reasons else 0
 
