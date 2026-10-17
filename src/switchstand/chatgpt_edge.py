@@ -274,9 +274,11 @@ def runtime_identity_from_meta(
     meta: dict[str, Any],
     *,
     client_id: str | None = None,
-    mcp_session_id: str | None = None,
 ) -> str:
-    """Read one supported host/session identity without conflating namespaces."""
+    """Read one supported host identity without conflating namespaces."""
+    if client_id == CLAUDE_CODE_CLIENT_ID:
+        # The mailbox also keys this namespace by the authenticated principal.
+        return "claude:oauth-principal"
     present = [(key, meta[key]) for key in ("openai/session", "threadId") if key in meta]
     if present:
         if (
@@ -287,13 +289,7 @@ def runtime_identity_from_meta(
             return ""
         key, value = present[0]
         return value if key == "openai/session" else f"codex:{value}"
-    if (
-        client_id != CLAUDE_CODE_CLIENT_ID
-        or not isinstance(mcp_session_id, str)
-        or not mcp_session_id
-    ):
-        return ""
-    return f"claude:{mcp_session_id}"
+    return ""
 
 
 def _runtime_identity() -> str:
@@ -301,14 +297,10 @@ def _runtime_identity() -> str:
     request_context = get_context().request_context
     if request_context is None:
         return ""
-    request = request_context.request
     token = get_access_token()
     return runtime_identity_from_meta(
         request_context.meta or {},
         client_id=None if token is None else token.client_id,
-        mcp_session_id=(
-            None if request is None else request.headers.get("mcp-session-id")
-        ),
     )
 
 
