@@ -30,6 +30,10 @@ Keep exact WorkId and protected-effect authority boundaries. This rule removes r
 relay; it does not turn repository authority into deployment, credential, migration, or production
 authority.
 
+## Agent-owned decision carry-forward
+
+Carry forward material settled directions, corrections, rejected remedies and deferrals. Quote human words only if actually visible; otherwise label the agent-authored working paraphrase. Surface a short reminder when naturally useful for correction, without requiring the human to revalidate ordinary records. Silence never grants new approval.
+
 ## Item update
 
 ```text
