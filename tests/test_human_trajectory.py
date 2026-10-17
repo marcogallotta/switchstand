@@ -1,5 +1,6 @@
 import asyncio
 import os
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -10,6 +11,12 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.chatgpt import ChatGPTService
+from switchstand.chatgpt_mcp import build_ordinary_tools
+from switchstand.contracts import LaunchAuthority
+from switchstand.grant_state import GrantState
+from switchstand.grants import PrincipalContext, WorkGrant
+from switchstand.state import PostgresState
 from switchstand.human_trajectory import (
     HumanTrajectoryData,
     HumanTrajectoryStore,
@@ -182,3 +189,93 @@ def test_payload_is_closed_bounded_and_cannot_mint_authorization():
         )
     with pytest.raises(ValueError, match="1..512"):
         trajectory().model_copy(update={"settled_decisions": ("x" * 513,)}).canonical()
+
+
+def _ordinary_agent_tools(store, *, authenticated=True):
+    async def principal():
+        return (PrincipalContext(
+            issuer="fixture", subject="owner", client_id="agent-test", assurance="test"
+        ) if authenticated else None)
+
+    subject = ChatGPTService(
+        principal, PostgresState(store.engine), GrantState(store.engine), {},
+        ordinary_workspace_admission=True,
+    )
+    return dict(build_ordinary_tools(subject))
+
+
+async def test_real_agent_mcp_get_record_replay_and_correction_without_attestation(store):
+    tools = _ordinary_agent_tools(store)
+    get, record = tools["human_trajectory_get"], tools["human_trajectory_record"]
+    empty = await get(api_version="1", work_id=WORK_ID)
+    assert empty.status == "MISSING" and empty.head is None
+
+    request_id = uuid4()
+    data = trajectory()
+    args = dict(
+        api_version="1", operation_id=request_id, work_id=WORK_ID,
+        expected_generation=1, expected_predecessor_id=None,
+        source_kind=SourceKind.HUMAN_INPUT,
+        source_ref="agent working paraphrase: original chat not independently verified",
+        data=data,
+    )
+    first = await record(**args)
+    replay = await record(**args)
+    assert first.status == "APPLIED" and first.revision is not None
+    assert (replay.status, replay.revision) == ("REPLAYED", first.revision)
+    read = await get(api_version="1", work_id=WORK_ID)
+    assert read.status == "CURRENT" and read.head is not None
+    assert read.head.data == data
+    assert read.head.source_ref.startswith("agent working paraphrase")
+
+    corrected = await record(
+        **{**args, "operation_id": uuid4(), "expected_generation": 2,
+           "expected_predecessor_id": first.revision.trajectory_id,
+           "source_kind": SourceKind.HUMAN_STEERING,
+           "data": trajectory(current="Human correction supersedes earlier agent guess")},
+    )
+    assert corrected.status == "APPLIED" and corrected.revision is not None
+    stale = await record(**{**args, "operation_id": uuid4()})
+    conflicting = await record(**{**args, "data": trajectory(current="changed replay")})
+    assert (stale.status, conflicting.status) == ("STALE", "CONFLICT")
+    assert (await get(api_version="1", work_id=WORK_ID)).head == corrected.revision
+
+
+async def test_agent_record_requires_existing_write_grant_and_real_work(store):
+    tools = _ordinary_agent_tools(store)
+    record = tools["human_trajectory_record"]
+    args = dict(
+        api_version="1", operation_id=uuid4(), work_id=WORK_ID,
+        expected_generation=1, expected_predecessor_id=None,
+        source_kind=SourceKind.HUMAN_INPUT, source_ref="agent-paraphrased", data=trajectory(),
+    )
+    assert (await record(**{**args, "work_id": uuid4()})).status == "DENIED"
+    denied = _ordinary_agent_tools(store, authenticated=False)
+    assert (await denied["human_trajectory_get"](
+        api_version="1", work_id=WORK_ID
+    )).status == "DENIED"
+    assert (await denied["human_trajectory_record"](**args)).status == "DENIED"
+
+    principal = PrincipalContext(
+        issuer="fixture", subject="readonly", client_id="agent-test", assurance="test",
+    )
+    async def actor():
+        return principal
+    grants = GrantState(store.engine)
+    await grants.issue(WorkGrant(
+        id=uuid4(), version=1, principal=principal,
+        authority=LaunchAuthority(active_work_id=WORK_ID),
+        operations=frozenset({"work_get"}),
+        issuer="fixture", provenance="read-only case",
+        expires_at=datetime.now(UTC) + timedelta(minutes=5),
+    ), None)
+    readonly = ChatGPTService(actor, PostgresState(store.engine), grants, {})
+    limited = dict(build_ordinary_tools(readonly))
+    assert (await limited["human_trajectory_get"](
+        api_version="1", work_id=WORK_ID
+    )).status == "MISSING"
+    rejected = await limited["human_trajectory_record"](**args)
+    assert (rejected.status, rejected.reason) == ("DENIED", "work_not_granted")
+    assert (await tools["human_trajectory_get"](
+        api_version="1", work_id=WORK_ID
+    )).status == "MISSING"
