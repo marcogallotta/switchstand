@@ -13,7 +13,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import insert, select
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .state import human_trajectory_revisions, work_handles
 
@@ -185,6 +185,31 @@ class HumanTrajectoryStore:
             return TrajectoryCheck("UNKNOWN")
         if rows[-1].trajectory_id == expected_trajectory_id:
             return TrajectoryCheck("CURRENT", rows[-1].trajectory_id)
+        if any(row.trajectory_id == expected_trajectory_id for row in rows[:-1]):
+            return TrajectoryCheck("STALE", rows[-1].trajectory_id)
+        return TrajectoryCheck("UNKNOWN", rows[-1].trajectory_id)
+
+    async def check_in_transaction(
+        self, connection: AsyncConnection, work_id: UUID, expected_trajectory_id: UUID,
+    ) -> TrajectoryCheck:
+        """Check a bound trajectory without racing a concurrent trajectory append.
+
+        The existing recorder takes the same work_handles row lock. No assertion
+        about cryptographic authenticity of the human source is made here.
+        """
+        handle = (await connection.execute(select(work_handles.c.id).where(
+            work_handles.c.id == work_id
+        ).with_for_update())).scalar_one_or_none()
+        if handle is None:
+            return TrajectoryCheck("UNKNOWN")
+        values = (await connection.execute(select(*_COLUMNS).where(
+            human_trajectory_revisions.c.work_id_ref == work_id
+        ).order_by(human_trajectory_revisions.c.generation))).all()
+        rows = _chain([tuple(value) for value in values])
+        if not rows:
+            return TrajectoryCheck("UNKNOWN")
+        if rows[-1].trajectory_id == expected_trajectory_id:
+            return TrajectoryCheck("CURRENT", expected_trajectory_id)
         if any(row.trajectory_id == expected_trajectory_id for row in rows[:-1]):
             return TrajectoryCheck("STALE", rows[-1].trajectory_id)
         return TrajectoryCheck("UNKNOWN", rows[-1].trajectory_id)
