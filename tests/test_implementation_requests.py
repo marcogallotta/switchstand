@@ -21,6 +21,7 @@ from switchstand.contracts import LaunchAuthority
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.human_reviews import HumanReviewConsequence, HumanReviewState
+from switchstand.human_trajectory import HumanTrajectoryData, HumanTrajectoryStore, SourceKind
 from switchstand.implementation_requests import ImplementationRequestState
 from switchstand.reviews import BaselineReviewProof
 from switchstand.state import PostgresState
@@ -57,11 +58,11 @@ def consequence() -> HumanReviewConsequence:
     return HumanReviewConsequence(package_work_id=PACKAGE, package_revision=canonical_revision(PACKAGE, 1), implementation_scope=("Implement the exact reviewed package",), implementation_target="the package WorkId in an owned writer", excluded_effects=("deployment", "activation", "provider production writes"))
 
 
-def v2_consequence() -> HumanReviewConsequence:
+def v2_consequence(human_source_refs: tuple[str, ...] = ("Marco 2026-10-16",)) -> HumanReviewConsequence:
     return HumanReviewConsequence.model_validate({**consequence().model_dump(),
         "approval_effect": "CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
         "baseline": {
-            "human_source_refs": ("Marco 2026-10-16",),
+            "human_source_refs": human_source_refs,
             "opening": {"what_you_asked": "Approved redesign", "what_this_does": "Binds admission", "what_this_does_not_or_changes_for_you": "No activation", "size": "600-1000 lines"},
             "approved_meaning": ("Preserve the approved baseline",),
             "protected_requirements": ("Only preserving review dispatches",),
@@ -187,3 +188,74 @@ async def test_v2_baseline_and_exact_preimplementation_pass_bind_full_authorizat
     contract = row["result_contract"]
     assert (contract["baseline_id"], contract["baseline_digest"], contract["preimplementation_review_id"], contract["preimplementation_verdict_digest"]) == (str(approved.consequence_id), approved.digest, str(review_id), verdict_digest)
     assert (contract["continuation_effects"], contract["milestones"], contract["excluded_effects"]) == (["IMPLEMENT", "LAND"], ["IMPLEMENTED", "MERGED"], list(approved.excluded_effects))
+
+
+async def _trajectory(engine, predecessor=None, generation=1):
+    return await HumanTrajectoryStore(engine).record(
+        work_id=PACKAGE, append_request_id=uuid4(), expected_generation=generation,
+        expected_predecessor_id=predecessor, source_kind=SourceKind.HUMAN_INPUT,
+        source_ref="agent-captured human direction", source_revision=None,
+        data=HumanTrajectoryData(
+            outcome="Preserve the actual outcome without Marco attestation",
+            current_slice="Implementation V1", remaining_outcome="Recheck when corrected",
+        ),
+    )
+
+
+async def _approved_v2(reviews, occurrences, source_refs):
+    approved = v2_consequence(source_refs)
+    prepared = await reviews.propose(approved)
+    assert prepared.status == "PREPARED"
+    result = await reviews.submit(
+        approved.consequence_id, PACKAGE, approved.package_revision, "APPROVED"
+    )
+    assert result.status == "RECORDED"
+    review_id = uuid4()
+    occurrences.baseline_pass_status_in_transaction.return_value = BaselineReviewProof(
+        status="PASS", baseline_id=approved.consequence_id, phase="PRE_IMPLEMENTATION",
+        review_id=review_id, verdict_digest="a" * 64,
+    )
+    return approved
+
+
+async def test_opt_in_hihr_current_trajectory_allows_regular_approval(subject):
+    facade, reviews, engine, _, occurrences = subject
+    recorded = await _trajectory(engine)
+    assert recorded.status == "APPLIED" and recorded.revision is not None
+    marker = f"hihr/1.0/trajectory/{PACKAGE}/{recorded.revision.trajectory_id}"
+    approved = await _approved_v2(reviews, occurrences, ("agent working source", marker))
+    applied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    assert (applied.status, await request_count(engine)) == ("APPLIED", 1)
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(task_run_requests))).mappings().one()
+    assert row["result_contract"]["hihr_trajectory_ref"] == marker
+
+
+async def test_opt_in_hihr_stale_trajectory_denies_without_request(subject):
+    facade, reviews, engine, _, occurrences = subject
+    first = await _trajectory(engine)
+    assert first.revision is not None
+    marker = f"hihr/1.0/trajectory/{PACKAGE}/{first.revision.trajectory_id}"
+    approved = await _approved_v2(reviews, occurrences, ("agent working source", marker))
+    second = await _trajectory(engine, first.revision.trajectory_id, 2)
+    assert second.status == "APPLIED"
+    denied = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    assert (denied.status, denied.reason, await request_count(engine)) == (
+        "DENIED", "hihr_trajectory_stale", 0,
+    )
+
+
+@pytest.mark.parametrize("marker,expected_status,expected_reason", [
+    ("hihr/2.0/trajectory/not-supported", "DENIED", "hihr_binding_invalid"),
+    (f"hihr/1.0/trajectory/{PACKAGE}/{UUID('11111111-1111-4111-8111-111111111111')}",
+     "UNKNOWN", "hihr_trajectory_unavailable"),
+])
+async def test_opt_in_hihr_invalid_or_missing_binding_never_dispatches(
+    subject, marker, expected_status, expected_reason,
+):
+    facade, reviews, engine, _, occurrences = subject
+    approved = await _approved_v2(reviews, occurrences, ("agent working source", marker))
+    result = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    assert (result.status, result.reason, await request_count(engine)) == (
+        expected_status, expected_reason, 0,
+    )
