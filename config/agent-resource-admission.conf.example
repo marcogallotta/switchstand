@@ -1,0 +1,5 @@
+reserve_mib=3072
+swap_window_seconds=5
+max_swap_growth_kib=32
+psi_avg10_max=2
+max_memory_jobs=1
