@@ -8,6 +8,8 @@ Do enough bounded research first to understand the real problem, plausible route
 
 Raise Human Input before the next material commitment would harden a choice about product outcome, architecture, scope, scale, cost or support burden, material risk, workflow, or a mechanism that materially governs agent behavior, the human's workflow, or durable operating policy — when human judgment could materially change that choice.
 
+When Marco explicitly signals availability, a useful diagnostic question can be asked after bounded research without turning the entire task into a hold. Never infer his availability from silence or response latency.
+
 Broadness alone is not a trigger. Narrow, local, reversible work and questions that cheap evidence can settle stay agent-owned.
 
 Continue research and option-preserving work while waiting. Hold only the branch that would consume the material choice.
