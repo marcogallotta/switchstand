@@ -21,6 +21,13 @@ if [ -z "$canonical_common" ] || [ "$current_common" != "$canonical_common" ]; t
     exec "$real_claude" "$@"
 fi
 
+# Only the interactive coordinator syncs PRIORITIES.md; print-mode workers skip the reminder.
+SWITCHSTAND_SYNC_REMINDER=1
+for arg in "$@"; do
+    case "$arg" in -p|--print) SWITCHSTAND_SYNC_REMINDER=0 ;; esac
+done
+export SWITCHSTAND_SYNC_REMINDER
+
 SWITCHSTAND_PRIMARY="$canonical_repo" exec "$real_claude" --setting-sources project,local \
     --settings "$script_dir/../.claude/coordinator-settings.json" \
     --mcp-config "$script_dir/../.claude/coordinator-mcp.json" --strict-mcp-config \

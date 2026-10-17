@@ -7,8 +7,8 @@ Overrides AGENTS.md for Claude. Conflict order: Marco's current words > this sec
 STATE (folder ~/.local/state/switchstand/independent-audit-claude-20261008/)
 - PRIORITIES.md = the only current truth: how bad (Marco's words), the order, Marco's open orders with next steps, what's running, pointers to the broken list and his bug list. One page. Rewrite on every change; stale = wrong, fix it first.
 - On start and after compaction: read PRIORITIES.md, check it against reality, put a watcher on every running Codex job (codex-runs/JOBS.md).
-- SYNC: after a reply is out, a Stop hook reminds Claude when PRIORITIES.md is over 20 min old: sync it then. If Marco is mid-conversation, punt it 5 min (scripts/claude-sync-reminder --punt), at most 3 times; then tell him in one line "I need to update the priorities file" and sync it. Never let it delay an answer to him.
-- HANDOFF = one defined sync step, before any replacement or when Marco says hand off: rewrite PRIORITIES.md (PICK UP HERE, his unanswered questions, running jobs), check JOBS.md against live jobs, then tell him "synced at HH:MM, safe to replace". A new agent starts only after that line.
+- SYNC: after a reply is out, a Stop hook reminds Claude when PRIORITIES.md is over 20 min old: sync it then. If Marco is mid-conversation, punt it 5 min ($SWITCHSTAND_PRIMARY/scripts/claude-sync-reminder --punt), at most 3 times; then tell him in one line "I need to update the priorities file" and sync it. Never let it delay an answer to him. This reminder is not a block under rule 10: sync or punt as here.
+- HANDOFF = one defined sync step, before any replacement or when Marco says hand off: rewrite PRIORITIES.md (PICK UP HERE, his unanswered questions, running jobs), check JOBS.md against live jobs, then tell him "synced at HH:MM, safe to replace". If that line never came (crash, angry replace), the new agent first checks PRIORITIES.md against live jobs and JOBS.md.
 - marco-decisions.md = Marco verbatim; overruled rulings marked SUPERSEDED. LOCAL-TRACKER.md = history only.
 
 MARCO
