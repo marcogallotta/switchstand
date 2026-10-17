@@ -10,7 +10,7 @@ It does not kill applications, change cgroup limits, reserve memory atomically, 
 old resource broker. It can be bypassed and two uncoordinated heads can race. Stage 2 owns
 enforcement research.
 
-## Five trial settings
+## Trial settings
 
 The live trial reads `/home/marco/.config/switchstand/agent-resource-admission.conf`. Its initial
 contents are copied from `config/agent-resource-admission.conf.example`:
@@ -20,7 +20,8 @@ reserve_mib=3072
 swap_window_seconds=5
 max_swap_growth_kib=32
 psi_avg10_max=2
-max_memory_jobs=1
+# Optional hard cap; absent or 0 disables the count gate.
+# max_memory_jobs=0
 ```
 
 These are conservative starting points, not permanent limits. Change this file, not source code,
@@ -43,7 +44,10 @@ Immediately before the action, run `scripts/agent-resource-admission <estimate_m
    `MemoryCurrent`, and `MemoryMax` properties for `agents.slice`; do not infer property order.
 4. Count active memory-bearing jobs from live `ss-codex-*.scope` units in `agents.slice` that
    contain a live `codex exec` process. Report a live scope without that process as `LEFTOVER`
-   with its name and age, but do not count it.
+   with its name and age, but do not count it. When called from inside one of those active job
+   scopes, exclude that caller scope from the count and report it as `self_scope`. Report the
+   summed `memory.current` for all active job scopes (including the caller) as information only;
+   `MemAvailable` already accounts for that memory.
 
 The script prints the measurements and reason. `GO` exits zero; `WAIT` and measurement failure
 exit nonzero.
@@ -53,7 +57,8 @@ Return `GO` only when all are true:
 - `MemAvailable >= reserve_mib + estimate_mib`;
 - `swap_growth_kib <= max_swap_growth_kib`;
 - memory PSI `some avg10 <= psi_avg10_max`;
-- active memory-bearing jobs are fewer than `max_memory_jobs`; and
+- when the optional `max_memory_jobs` is positive, active memory-bearing jobs other than the
+  caller are fewer than it; and
 - boxed work's estimate fits the effective slice capacity.
 
 After `WAIT`, pause for at least `swap_window_seconds` and take one fresh full reading. If that
