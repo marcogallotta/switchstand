@@ -1084,9 +1084,9 @@ class ReviewService:
                 return ReviewResult(status="DENIED", review_id=review_id,
                                     reason="acquisition_not_received")
         current = await self.mailboxes.by_endpoint_id(requester.endpoint_id, connection)
-        if current.status != "ok" or current.mailbox != requester or (
-            requester.endpoint_id != basis.requester_endpoint_id
-            or requester.generation != basis.requester_generation
+        if (
+            current.status != "ok" or current.mailbox != requester
+            or requester.endpoint_id != basis.requester_endpoint_id
         ):
             return ReviewResult(status="DENIED", review_id=review_id,
                                 reason="caller_not_owner")
