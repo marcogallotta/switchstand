@@ -990,6 +990,44 @@ async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
         ) == "PASS"
 
 
+async def test_current_owner_can_poll_after_mailbox_takeover(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a"
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Coordinator", "principal-b", "chat-b"
+    )).mailbox
+    other = (await mailboxes.register_agent(
+        "Other", "principal-c", "chat-c"
+    )).mailbox
+    assert requester is not None and reviewer is not None and other is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    ), requester)
+    assert sent.status == "SENT" and sent.review_id is not None
+
+    replacement = (await mailboxes.takeover(
+        requester.name, requester.principal_key, "replacement-chat"
+    )).mailbox
+    assert replacement is not None
+    assert replacement.endpoint_id == requester.endpoint_id
+    assert replacement.generation == requester.generation + 1
+    assert (await service.get(sent.review_id, replacement)).status == "REQUEST_UNPICKED"
+    displaced = await service.get(sent.review_id, requester)
+    assert (displaced.status, displaced.reason) == ("DENIED", "caller_not_owner")
+    denied = await service.get(sent.review_id, other)
+    assert (denied.status, denied.reason) == ("DENIED", "caller_not_owner")
+
+
 async def test_focused_rereview_allows_only_authoritative_named_findings(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
