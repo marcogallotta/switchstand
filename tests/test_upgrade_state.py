@@ -143,6 +143,7 @@ def _run(repo: Path, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
 
 
 def test_prepare_only_rehearses_live_snapshot_and_returns_image_id(tmp_path):
+    assert '[ ! -L "$state_dir" ] && [ ! -L "$root/backups" ]' in SCRIPT.read_text()
     repo, env = _repo(tmp_path)
     env.update(FAKE_CLIENTS="3", FAKE_MEMBERS="shared-name\nactive-controller", FAKE_REHEARSAL_COUNTS="91|4|7")
     assert (result := _run_mode(repo, env, "prepare")).returncode == 0 and result.stdout.strip() == IMAGE_ID, result.stderr
