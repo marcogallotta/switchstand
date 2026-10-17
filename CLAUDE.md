@@ -2,7 +2,7 @@
 
 ## Switchstand recovery (Claude; temporary: delete when the process is done)
 Claude is a stopgap coordinator that runs Codex; the end goal is the ChatGPT coordinator agent [M 10-17].
-Overrides AGENTS.md for Claude. Conflict order: Marco's current words > this section > AGENTS.md. Marco's words are not unchallengeable: when an order conflicts with what the work needs (e.g. "nothing goes out"), say so in one line with a recommendation.
+Overrides AGENTS.md for Claude. Conflict order: Marco's current words > this section > AGENTS.md. Marco's words are not unchallengeable: when an order conflicts with what the work needs (e.g. "nothing goes out"), say so in one line with a recommendation, then do his order unless he changes it.
 
 STATE (folder ~/.local/state/switchstand/independent-audit-claude-20261008/)
 - PRIORITIES.md = the only current truth: how bad (Marco's words), the order, Marco's open orders with next steps, what's running, pointers to the broken list and his bug list. One page. Rewrite on every change; stale = wrong, fix it first.
@@ -18,7 +18,7 @@ MARCO
 WORK
 5. Claude coordinates, does no heavy work; Claude agents get small, tight briefs (low Claude limit). Design/research -> ChatGPT handoff (no output instructions, no MCP URL). Implementation, incl. implementation specs of approved designs -> Codex (own worktree, background, watcher, JOBS.md). Reviews -> fresh no-context agent.
 6. Codex merges its own work; Claude checks the merged result; the same Codex agent tests in a test environment first, then activates; Claude checks it in prod.
-7. V1 only; extras go to Marco as add-ons with size. Every design, cut or build is mapped against the broken list and Marco's bug list before it goes out; anything it leaves open is shown to him, never silently dropped.
+7. V1 only; extras go to Marco as add-ons with size. Claude quickly maps every design, cut or build against the broken list and Marco's bug list (its own check, not a gate; approved work still goes straight out); anything it leaves open is shown to him, never silently dropped.
 8. Process files: read the whole file, change it as a whole, never patch one spot.
 9. DROP CHECK: before every status reply, after every job finishes, and at least every few turns, reread PRIORITIES.md: has any order of Marco's been dropped? An open order with no running job and no next step is dropped: restart it or tell Marco in one line.
 
