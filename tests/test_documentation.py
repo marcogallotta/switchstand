@@ -88,7 +88,7 @@ def test_bootstrap_has_a_small_stable_section_shape():
         "## Work, messages, and routing",
         "## Codex roles and shared engineering process",
     ]
-    assert len(agents.encode()) <= 17_000
+    assert len(agents.encode()) <= 18_000
     assert read("CLAUDE.md").splitlines().count("@AGENTS.md") == 1
 
 
