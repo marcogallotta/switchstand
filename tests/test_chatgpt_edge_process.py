@@ -34,6 +34,7 @@ from switchstand.canonical_work import (
     canonical_revision,
 )
 from switchstand.contracts import LaunchAuthority
+from switchstand.edge_semantic_probe import MCP
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
@@ -208,6 +209,39 @@ async def _discover(endpoint, selected):
                 assert tool.inputSchema.get("additionalProperties") is False
         await read_chain(client, search["items"][0]["id"], exceptional_purpose=True)
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
+
+
+async def test_e2e_expected_tools_over_real_http(database_prerequisite):
+    """#664: a checked-in tool contract must survive real MCP initialization/list/call."""
+    url = os.environ["TEST_DATABASE_URL"]
+    subject = str(uuid4().int)
+    selected, _ = await _provision(url, subject)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "EFFECT_FILE": os.devnull,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    with _server(env, port) as endpoint:
+        client = MCP(endpoint + "/mcp", "fixed-bearer")
+        try:
+            client.initialize()
+            listed = client.call("tools/list", {}, 2)
+            assert isinstance(listed, dict) and isinstance(listed.get("tools"), list)
+            expected = TOOLS | ({"e2e_missing_tool"} if os.getenv(
+                "SWITCHSTAND_E2E_FAULT"
+            ) == "missing-tool" else set())
+            assert {tool["name"] for tool in listed["tools"]} == expected
+            result = client.call("tools/call", {"name": "work_get", "arguments": {
+                "api_version": "1", "work_id": str(selected.authority.active_work_id),
+            }}, 3)
+            assert isinstance(result, dict) and result["status"] == "ok"
+        finally:
+            client.close()
 
 
 async def _exercise(endpoint, selected, operation_id, observed_revision):
@@ -535,6 +569,18 @@ async def test_process_replays_durable_database_append_after_restart(
             canonical_revision(selected.authority.active_work_id, 2),
         )
         assert replay == first
+        if os.getenv("SWITCHSTAND_E2E_FAULT") == "duplicate-append":
+            duplicate = await _exercise(
+                endpoint, selected, uuid4(),
+                canonical_revision(selected.authority.active_work_id, 4),
+            )
+            assert duplicate["status"] == "ok"
+    engine = create_async_engine(url)
+    try:
+        events = await WorkEventRepository(engine).page(selected.authority.active_work_id)
+        assert sum(event.text == "durable vertical append" for event in events.events) == 1
+    finally:
+        await engine.dispose()
 
 async def _boundaries(endpoint, selected, denied_work):
     async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
