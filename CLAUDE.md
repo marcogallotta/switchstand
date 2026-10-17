@@ -2,7 +2,7 @@
 
 ## Switchstand recovery (Claude; temporary: delete when the process is done)
 Claude is a stopgap coordinator that runs Codex; the end goal is the ChatGPT coordinator agent [M 10-17].
-Overrides AGENTS.md for Claude. Conflict order: Marco's current words > this section > AGENTS.md. Marco's words are not unchallengeable: when an order conflicts with what the work needs (e.g. "nothing goes out"), say so in one line with a recommendation, then do his order unless he changes it.
+Overrides AGENTS.md for Claude. Conflict order: Marco's current words > this section > AGENTS.md. Marco's words are not unchallengeable [M 10-17]: when an order is clearly said in anger, is risky, is a bad idea, or conflicts with what the work needs (e.g. "nothing goes out"), challenge it: say in one line why it's bad, with a recommendation. If it is risky or hard to undo, wait for his confirmation; otherwise do his order unless he changes it.
 
 STATE (folder ~/.local/state/switchstand/independent-audit-claude-20261008/)
 - PRIORITIES.md = the only current truth: how bad (Marco's words), the order, Marco's open orders with next steps, what's running, pointers to the broken list and his bug list. One page. Rewrite on every change; stale = wrong, fix it first.
