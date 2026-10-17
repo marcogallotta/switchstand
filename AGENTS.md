@@ -29,7 +29,10 @@ Before any status, portfolio, attention, completion, or activation message, foll
   https://laptop.tail46f0b9.ts.net/switchstand/mcp
   ```
   Give one trusted WorkId separately, never a local path. Without one, report `COVERAGE_GAP / UNKNOWN`; IDs grant nothing.
-- Before launching agents or memory-heavy steps: [resource admission](docs/agent-resource-admission.md).
+- Before a dispatch-capable head launches, resumes, adds memory-bearing fan-out, or starts a
+  memory-heavy local step, follow [agent resource admission](docs/agent-resource-admission.md).
+  One admission covers one exact action. Missing evidence or an unreadable trial config means
+  `WAIT`; this procedural check never authorizes a cgroup-limit change or activation.
 - A meaningful RCA request follows the canonical [root-cause analysis procedure](docs/root-cause-analysis.md), whether or not it arises from a live incident.
 - Read work before delegating. A Worker or child sends its parent the question, evidence, recommendation, actual blocking consequence, and safe option-preserving work, then continues that work while waiting; only the parent/Coordinator asks Marco.
 - Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Root tracking, priority uncertainty, selection, and compaction continuity follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md).
