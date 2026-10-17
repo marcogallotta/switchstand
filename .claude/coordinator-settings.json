@@ -31,6 +31,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$SWITCHSTAND_PRIMARY\"/scripts/claude-sync-reminder",
+            "timeout": 10
+          }
+        ]
+      }
     ]
   }
 }
