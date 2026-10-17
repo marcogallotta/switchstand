@@ -73,18 +73,16 @@ def test_runtime_identity_accepts_exactly_one_supported_host_identity(
     assert runtime_identity_from_meta(meta) == expected
 
 
-def test_runtime_identity_requires_exact_claude_client_and_session() -> None:
+def test_runtime_identity_requires_exact_claude_client() -> None:
     client_id = "https://claude.ai/oauth/claude-code-client-metadata"
+    assert runtime_identity_from_meta({}, client_id=client_id) == "claude:oauth-principal"
     assert runtime_identity_from_meta(
-        {}, client_id=client_id, mcp_session_id="session",
-    ) == "claude:session"
+        {"openai/session": "foreign"}, client_id=client_id,
+    ) == "claude:oauth-principal"
     assert runtime_identity_from_meta(
-        {}, client_id="other-client", mcp_session_id="session",
-    ) == ""
-    assert runtime_identity_from_meta({}, client_id=client_id) == ""
-    assert runtime_identity_from_meta(
-        {"threadId": ""}, client_id=client_id, mcp_session_id="session",
-    ) == ""
+        {"threadId": "foreign"}, client_id=client_id,
+    ) == "claude:oauth-principal"
+    assert runtime_identity_from_meta({}, client_id="other-client") == ""
 
 
 class AppServerClient:

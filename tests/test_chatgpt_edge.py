@@ -40,10 +40,10 @@ GITHUB_ID = "192548"
 CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
 
 
-def test_runtime_identity_namespaces_claude_transport_session(monkeypatch):
+def test_runtime_identity_uses_stable_claude_oauth_principal_namespace(monkeypatch):
     request_context = SimpleNamespace(
         meta=None,
-        request=SimpleNamespace(headers={"mcp-session-id": "transport-session"}),
+        request=SimpleNamespace(headers={}),
     )
     token = AccessToken(
         token="token",
@@ -60,7 +60,7 @@ def test_runtime_identity_namespaces_claude_transport_session(monkeypatch):
     )
     monkeypatch.setattr(chatgpt_edge, "get_access_token", lambda: token)
 
-    assert chatgpt_edge._runtime_identity() == "claude:transport-session"
+    assert chatgpt_edge._runtime_identity() == "claude:oauth-principal"
 
 
 def _currentness_environment(monkeypatch):
