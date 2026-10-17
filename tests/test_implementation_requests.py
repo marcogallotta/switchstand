@@ -214,6 +214,7 @@ async def _approved_v2(reviews, occurrences, source_refs):
     occurrences.baseline_pass_status_in_transaction.return_value = BaselineReviewProof(
         status="PASS", baseline_id=approved.consequence_id, phase="PRE_IMPLEMENTATION",
         review_id=review_id, verdict_digest="a" * 64,
+        reason="exact preserving review",
     )
     return approved
 
