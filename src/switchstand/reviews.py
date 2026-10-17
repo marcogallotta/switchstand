@@ -1059,6 +1059,9 @@ class ReviewService:
             and source[1].brief.basis.subject_revision == revision
         ))
         if len(current_bases) != 1:
+            if not current_bases and bases:
+                return ReviewResult(status="STALE", review_id=review_id,
+                                    reason="review_basis_changed")
             return ReviewResult(status="UNKNOWN", review_id=review_id,
                                 reason="duplicate_authoritative_state")
         _basis_record, basis_envelope = current_bases[0]
@@ -1325,7 +1328,7 @@ class ReviewService:
                 occurrence = (await connection.execute(select(canonical_work).where(
                     canonical_work.c.work_id == review_id
                 ).with_for_update())).mappings().one_or_none()
-                bases = await self.occurrences.basis_sources(review_id, connection)
+                all_bases = await self.occurrences.basis_sources(review_id, connection)
                 parent = await connection.scalar(select(work_parents.c.parent_work_id).where(
                     work_parents.c.child_work_id == review_id
                 ))
@@ -1336,11 +1339,14 @@ class ReviewService:
                     return ReviewResult(status="UNKNOWN", review_id=review_id,
                                         reason="occurrence_not_found")
                 revision = canonical_revision(cast(UUID, parent), subject["row_version"])
-                bases = tuple(source for source in bases if (
+                bases = tuple(source for source in all_bases if (
                     source[1].brief.basis.subject_work_id == parent
                     and source[1].brief.basis.subject_revision == revision
                 ))
                 if len(bases) != 1:
+                    if not bases and all_bases:
+                        return ReviewResult(status="STALE", review_id=review_id,
+                                            reason="review_basis_changed")
                     return ReviewResult(status="UNKNOWN", review_id=review_id,
                                         reason="duplicate_authoritative_state")
                 basis = bases[0][1].brief.basis
@@ -1519,9 +1525,9 @@ class ReviewService:
                     and source[1].brief.basis.subject_revision == revision
                 ))
                 if len(current_bases) != 1:
-                    status, reason = (("STALE", "review_basis_changed") if bases else
-                                      ("UNKNOWN", "duplicate_authoritative_state"))
-                    return ReviewBundleAccess(status, reason)
+                    if not current_bases and bases:
+                        return ReviewBundleAccess("STALE", "review_basis_changed")
+                    return ReviewBundleAccess("UNKNOWN", "duplicate_authoritative_state")
                 basis = current_bases[0][1].brief.basis
                 stored = tuple(source for source in stored
                                if source[1].brief.basis == basis)
