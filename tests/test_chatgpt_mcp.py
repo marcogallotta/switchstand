@@ -762,6 +762,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             event.input_schema["required"]
         )
         assert "purpose" in append.input_schema["required"]
+        assert append.input_schema["properties"]["confirm_cancels_review"]["default"] is False
+        assert "confirm_cancels_review" not in append.input_schema["required"]
         assert "current notes" in next(
             tool for tool in tools if tool.name == "work_get"
         ).description
@@ -773,6 +775,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             if tool.name in ordinary_effects:
                 assert "grant_version" not in tool.input_schema["properties"]
         update = next(tool for tool in tools if tool.name == "work_update")
+        assert update.input_schema["properties"]["confirm_cancels_review"]["default"] is False
+        assert "confirm_cancels_review" not in update.input_schema["required"]
         patch = update.input_schema["$defs"]["ScalarPatch"]
         assert {"priority", "work_type", "review_next_action"} <= patch["properties"].keys() and "gid" not in str(patch).lower()
         create = next(tool for tool in tools if tool.name == "work_create")

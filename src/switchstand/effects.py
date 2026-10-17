@@ -8,6 +8,7 @@ from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .canonical_work import canonical_revision, canonical_work
+from .canonical_work_runtime import confirmation_message, pending_review_id
 from .core import (
     Provider,
     ProviderError,
@@ -231,6 +232,16 @@ class CanonicalAppendGateway:
                         return AppendGateway.guard(
                             request, "stale", "source_revision_changed"
                         )
+                    if not request.confirm_cancels_review:
+                        review_id = await pending_review_id(
+                            connection, request.work_id, request.observed_revision,
+                        )
+                        if review_id is not None:
+                            return AppendGateway.guard(
+                                request, "CONFIRM_REQUIRED", "pending_review",
+                            ).model_copy(update={
+                                "next_action": confirmation_message(review_id),
+                            })
                     appended = await self.events.append_locked(
                         connection, request.work_id, observed_version=current.row_version,
                         operation_id=request.operation_id, subtype="comment_added",
