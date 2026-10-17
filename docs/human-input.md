@@ -45,6 +45,12 @@ Do not raise Human Input for local realization inside an agreed design, reversib
 
 Silence is not approval.
 
+## Agent-owned decision continuity
+
+Agents accurately carry forward material decisions, rejected alternatives, corrections, and deferrals. Quote human words only when directly visible; otherwise mark the working summary as an agent paraphrase, with referent and available source pointer. A paraphrase is not independently authenticated and grants no new effect authority.
+
+Missing independent verification of original messages must not block otherwise authorized work or require routine human confirmation. When material ambiguity or conflict could change direction, investigate what is available and ask one useful question; continue unaffected work. At the next naturally relevant discussion, briefly surface important carried-forward decisions without requiring a response.
+
 ## Continuity
 
 An unresolved Human Input question must survive handoff/replacement with the exact decision, why it matters, current recommendation, safe continuing work, and the action that would harden the choice.
