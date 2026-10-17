@@ -45,7 +45,8 @@ from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
     "repository_bundle_get", "repository_candidate_qualification_get",
-    "work_get", "work_search", "work_resolve_reference",
+    "work_get", "human_trajectory_get", "human_trajectory_record",
+    "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append", "capability_preflight_get",
     "work_create", "work_update", "work_relate",
     "task_control_get", "task_control_checkpoint", "work_hygiene_check",
@@ -241,6 +242,30 @@ async def test_e2e_expected_tools_over_real_http(database_prerequisite):
                 "api_version": "1", "work_id": str(selected.authority.active_work_id),
             }}, 3)
             assert isinstance(result, dict) and result["status"] == "ok"
+            # Same isolated HTTP process + PostgreSQL boundary; no original
+            # chat authentication or user confirmation is involved.
+            human_source = {
+                "version": 1, "outcome": "Preserve Marco's chosen scope",
+                "settled_decisions": ["Agents keep the requested behavior"],
+                "current_slice": "One bounded implementation", "remaining_outcome": "",
+            }
+            stored = client.call("tools/call", {"name": "human_trajectory_record",
+                "arguments": {
+                    "api_version": "1", "operation_id": str(uuid4()),
+                    "work_id": str(selected.authority.active_work_id),
+                    "expected_generation": 1, "expected_predecessor_id": None,
+                    "source_kind": "HUMAN_INPUT", "source_ref": "agent working paraphrase",
+                    "data": human_source,
+                }}, 3)
+            assert isinstance(stored, dict) and stored["status"] == "APPLIED"
+            recovered = client.call("tools/call", {"name": "human_trajectory_get",
+                "arguments": {"api_version": "1",
+                              "work_id": str(selected.authority.active_work_id)}}, 3)
+            assert isinstance(recovered, dict) and recovered["status"] == "CURRENT"
+            assert recovered["head"]["trajectory_id"] == stored["revision"]["trajectory_id"]
+            assert recovered["head"]["data"]["settled_decisions"] == (
+                ["Agents keep the requested behavior"]
+            )
         finally:
             client.close()
 

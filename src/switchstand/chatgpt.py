@@ -54,6 +54,14 @@ from .grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from .human_trajectory import (
+    HumanTrajectoryData,
+    HumanTrajectoryRevision,
+    HumanTrajectoryStore,
+    SourceKind,
+    TrajectoryRead,
+    TrajectoryRecord,
+)
 from .implementation_requests import ImplementationRequestResult, ImplementationRequestState
 from .lifecycle import LifecycleEvent, ProfileState, RequiredResultPersistence
 from .messages import (
@@ -87,6 +95,20 @@ from .task_ref import parse_legacy_task_reference
 from .updates import UpdateGateway
 from .work_hygiene import HygieneGate, WorkHygieneResult, WorkHygieneState, evaluate_work_hygiene
 from .workspace_admission import WorkspaceAdmissionState
+
+
+class HumanTrajectoryGetResponse(ClosedModel):
+    status: Literal["CURRENT", "MISSING", "UNKNOWN", "DENIED"]
+    head: HumanTrajectoryRevision | None = None
+    reason: str | None = None
+
+
+class HumanTrajectoryRecordResponse(ClosedModel):
+    status: Literal["APPLIED", "REPLAYED", "STALE", "CONFLICT", "UNKNOWN", "DENIED"]
+    revision: HumanTrajectoryRevision | None = None
+    current_id: UUID | None = None
+    reason: str | None = None
+
 
 PrincipalResolver = Callable[[], Awaitable[PrincipalContext | None]]
 ActivationTechnicalResolver = Callable[
@@ -445,6 +467,86 @@ class ChatGPTService:
                 return GrantedWorkResult(status=result.status, item=result.item)
         except (SQLAlchemyError, ProviderError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
+
+    async def human_trajectory_get(self, work_id: UUID) -> HumanTrajectoryGetResponse:
+        """Read agent-recorded human decisions only within current work_get authority."""
+        principal = await self.principal()
+        if principal is None:
+            return HumanTrajectoryGetResponse(
+                status="DENIED", reason="authenticated_principal_required",
+            )
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                authority, reason = await self._read_authority(
+                    principal, grant, operations=frozenset({"work_get"}),
+                    work_id=work_id, explicit_target=True,
+                )
+                if authority is None:
+                    return HumanTrajectoryGetResponse(
+                        status="DENIED", reason=reason or "work_not_granted",
+                    )
+                value: TrajectoryRead = await HumanTrajectoryStore(
+                    self.admission_grants.engine
+                ).get(work_id)
+                return HumanTrajectoryGetResponse(status=value.status, head=value.head)
+        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
+            return HumanTrajectoryGetResponse(status="UNKNOWN", reason="state_unavailable")
+
+    async def human_trajectory_record(
+        self, *, work_id: UUID, operation_id: UUID,
+        expected_generation: int, expected_predecessor_id: UUID | None,
+        source_kind: SourceKind, source_ref: str, source_revision: str | None,
+        data: HumanTrajectoryData,
+    ) -> HumanTrajectoryRecordResponse:
+        """Append a best-effort agent record under the existing work_update grant.
+
+        Neither the source pointer nor this append is authenticated human approval.
+        Generation/predecessor and operation ID enforce one durable succession.
+        """
+        principal = await self.principal()
+        if principal is None:
+            return HumanTrajectoryRecordResponse(
+                status="DENIED", reason="authenticated_principal_required",
+            )
+        try:
+            async with self.admission_grants.locked(principal.key) as grant:
+                if not self.gateway.admitted(principal, grant) or grant is None:
+                    return HumanTrajectoryRecordResponse(
+                        status="DENIED", reason="no_current_grant",
+                    )
+                if "work_update" not in grant.operations or not grant.can_write(work_id):
+                    return HumanTrajectoryRecordResponse(
+                        status="DENIED", reason="work_not_granted",
+                    )
+                qualification = grant.update_qualification
+                if (qualification is None or
+                        (principal.assurance == "test") != qualification.startswith("test:")):
+                    return HumanTrajectoryRecordResponse(
+                        status="DENIED", reason="write_not_qualified",
+                    )
+                if await self.state.get(work_id) is None:
+                    return HumanTrajectoryRecordResponse(
+                        status="DENIED", reason="work_not_bound",
+                    )
+                value: TrajectoryRecord = await HumanTrajectoryStore(
+                    self.admission_grants.engine
+                ).record(
+                    work_id=work_id, append_request_id=operation_id,
+                    expected_generation=expected_generation,
+                    expected_predecessor_id=expected_predecessor_id,
+                    source_kind=source_kind, source_ref=source_ref,
+                    source_revision=source_revision, data=data,
+                )
+                return HumanTrajectoryRecordResponse(
+                    status=value.status, revision=value.revision,
+                    current_id=value.current_id,
+                )
+        except (SQLAlchemyError, ProviderError, TypeError, ValueError, KeyError):
+            # An ambiguous transport result must be reconciled by a read, then
+            # replayed only with the original operation ID and exact arguments.
+            return HumanTrajectoryRecordResponse(
+                status="UNKNOWN", reason="state_unavailable",
+            )
 
     async def outcome_state_update(
         self, *, operation_id: UUID, owner_work_id: UUID,

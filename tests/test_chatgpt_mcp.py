@@ -45,6 +45,19 @@ from switchstand.repository_candidate import QualificationGate, RepositoryCandid
 from switchstand.reviews import ReviewBasis, ReviewBundleAccess
 
 
+def test_agent_trajectory_surface_cannot_supply_authentication_or_extra_authority():
+    tools = dict(build_ordinary_tools(service()))
+    read = signature(tools["human_trajectory_get"]).parameters
+    write = signature(tools["human_trajectory_record"]).parameters
+    assert set(read) == {"api_version", "work_id"}
+    assert {"operation_id", "work_id", "expected_generation",
+            "expected_predecessor_id", "data", "source_kind", "source_ref"} <= set(write)
+    assert not {"principal", "grant", "grant_version", "approval",
+                "human_attestation", "authenticated_source"} & set(write)
+    assert "human_trajectory_get" in ORDINARY_GENUINE_READ_TOOLS
+    assert "human_trajectory_record" in ORDINARY_EFFECT_TOOLS
+
+
 def test_ordinary_annotation_policy_is_exhaustive():
     tool_names = {name for name, _ in build_ordinary_tools(service())}
     assert ORDINARY_GENUINE_READ_TOOLS.isdisjoint(ORDINARY_EFFECT_TOOLS)
@@ -689,6 +702,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         tools = (await client.list_tools()).tools
         assert {t.name for t in tools} == {
             "repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
+            "human_trajectory_get", "human_trajectory_record",
             "work_history", "work_event", "work_append", "capability_preflight_get",
             "work_create", "work_update", "work_relate",
             "task_control_get", "task_control_checkpoint", "work_hygiene_check",
