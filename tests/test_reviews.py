@@ -725,6 +725,135 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         ) == "NOT_PASS"
 
 
+async def test_late_findings_are_saved_for_focused_rereview(occurrence_runtime):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Coordinator", "principal-b", "chat-b",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    old_revision = canonical_revision(subject.work_id, subject.row_version)
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id, observed_revision=old_revision,
+        review_kind="CODE",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    assert (await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id, grant_version=1,
+        ),
+        agent_binding=reviewer,
+    )).status == "ok"
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET notes = 'advanced', row_version = row_version + 1 "
+            "WHERE work_id = :id"
+        ), {"id": subject_id})
+    finding = ReviewFinding(
+        finding_id="F-late", defect="Missing proof", evidence="No boundary result",
+        consequence="Claim is unsafe", affected_claim="landing",
+        minimum_clearing_condition="Supply boundary proof",
+    )
+
+    stale = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="FINDINGS", findings=(finding,),
+        context_provenance="UNSEEDED",
+    ), reviewer)
+
+    assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
+    outcomes = await occurrences.outcome_envelopes(sent.review_id)
+    assert len(outcomes) == 1
+    assert outcomes[0].brief.basis.subject_revision == old_revision
+    assert outcomes[0].outcome.findings == (finding,)
+    projected = await service.get(sent.review_id, requester)
+    assert (projected.status, projected.reason) == ("STALE", "review_basis_changed")
+    occurrence = await occurrences.works.get(sent.review_id)
+    assert occurrence is not None and occurrence.completed is False
+    current = await occurrences.works.get(subject_id)
+    assert current is not None
+    focused = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(current.work_id, current.row_version),
+        review_kind="CODE", mode="FOCUSED", prior_review_id=sent.review_id,
+        finding_ids=(finding.finding_id,),
+    ), requester)
+    assert focused.status == "SENT" and focused.delivery_id is not None
+    assert (await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=focused.delivery_id, grant_version=1,
+        ),
+        agent_binding=reviewer,
+    )).status == "ok"
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET row_version = row_version + 1 WHERE work_id = :id"
+        ), {"id": subject_id})
+    unselected = finding.model_copy(update={"finding_id": "F-unselected"})
+    rejected = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict="FINDINGS", findings=(unselected,),
+        context_provenance="UNSEEDED",
+    ), reviewer)
+    assert (rejected.status, rejected.reason) == (
+        "DENIED", "focused_finding_not_selected",
+    )
+    assert len(await occurrences.outcome_envelopes(sent.review_id)) == 1
+
+
+@pytest.mark.parametrize("verdict", ["PASS", "BLOCKED"])
+async def test_late_nonfinding_verdict_is_dropped(occurrence_runtime, verdict):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-a", "chat-a",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Coordinator", "principal-b", "chat-b",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    service = ReviewService(
+        occurrences, mailboxes, messages, occurrences.policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    subject = await occurrences.works.get(subject_id)
+    assert subject is not None
+    sent = await service.request(ReviewRequest(
+        subject_work_id=subject_id,
+        observed_revision=canonical_revision(subject.work_id, subject.row_version),
+        review_kind="CODE",
+    ), requester)
+    assert sent.review_id is not None and sent.delivery_id is not None
+    assert (await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=sent.delivery_id, grant_version=1,
+        ),
+        agent_binding=reviewer,
+    )).status == "ok"
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET row_version = row_version + 1 WHERE work_id = :id"
+        ), {"id": subject_id})
+
+    stale = await service.submit(ReviewSubmit(
+        review_id=sent.review_id, verdict=verdict, context_provenance="UNSEEDED",
+    ), reviewer)
+
+    assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
+    assert await occurrences.outcome_envelopes(sent.review_id) == ()
+
+
 async def test_pass_status_requires_exact_review_kind_and_candidate(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
     requester = (await mailboxes.register_agent(
