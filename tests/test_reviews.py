@@ -1101,6 +1101,9 @@ async def test_focused_rereview_allows_only_authoritative_named_findings(occurre
     ), requester)
     assert (upgraded.status, upgraded.reason) == ("UNKNOWN", "duplicate_authoritative_state")
     assert (await service.recover(initial.review_id, reviewer)).reason == "duplicate_authoritative_state"
+    assert (await service.bundle_access(initial.review_id, reviewer)).reason == (
+        "duplicate_authoritative_state"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1194,3 +1197,9 @@ async def test_coordinator_bundle_access_is_fenced(occurrence_runtime):
     assert (await service.bundle_access(
         sent.review_id, coordinator, access.basis,
     )).status == "STALE"
+    stale_get = await service.get(sent.review_id, requester)
+    assert (stale_get.status, stale_get.reason) == ("STALE", "review_basis_changed")
+    stale_recover = await service.recover(sent.review_id, coordinator)
+    assert (stale_recover.status, stale_recover.reason) == (
+        "STALE", "review_basis_changed",
+    )
