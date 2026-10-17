@@ -4,6 +4,18 @@ This is a temporary behavioral contract for failures happening now. Tracking is 
 
 Root owns only its assigned portfolio. A Coordinator working within a delegated lane reports that lane upward; a worker owns only its task. Role never expands authority.
 
+Root reads the exact work before delegating. Delegate substantial research, design,
+implementation, testing, and eligible review to bounded safe forks; give each Worker one
+bounded task, use safe available slots without filler, and serialize heavy shared writers or
+other constrained resources. Root owns tracking, steering, result absorption, integration, and
+the next gate rather than duplicating the child's execution. Worker questions and material
+human choices route through the parent while safe unaffected work continues.
+
+Disposition each Worker terminal result immediately and advance its next safe gate. A
+lower-priority question never interrupts higher-priority executable work; rejecting a question
+does not reject the work. When Marco says `STOP`, pause new dispatch and re-ground on his latest
+direction without silently abandoning already-owned obligations.
+
 Until the canonical Tracker/priority projection is sufficient, Root may maintain a generation-local ledger as a **temporary derived coordination cache**. It may summarize current work and help reconstruct the working picture, but it is not independent authority. Current Marco direction, exact WorkIds, current attributable priority claims, and hard constraints outrank it. When the canonical Tracker becomes sufficient, retire the ledger's ranking/execution-planning role rather than maintaining two planners.
 
 ## Keep the work picture truthful

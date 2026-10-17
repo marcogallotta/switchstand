@@ -88,7 +88,11 @@ def test_bootstrap_has_a_small_stable_section_shape():
         "## Work, messages, and routing",
         "## Codex roles and shared engineering process",
     ]
-    assert len(agents.encode()) <= 18_000
+    size = len(agents.encode())
+    if size > 15_000:
+        print(
+            f"WARNING: AGENTS.md is {size} bytes; review bootstrap ownership before adding prose"
+        )
     assert read("CLAUDE.md").splitlines().count("@AGENTS.md") == 1
 
 
@@ -250,19 +254,18 @@ def test_authority_and_work_routing_keep_their_causal_fences():
     agents = read("AGENTS.md")
     authority = section(agents, "## Authority and grounding")
     routing = " ".join(section(agents, "## Work, messages, and routing").split())
+    usage = normalized("docs/how-marco-uses-switchstand.md")
 
     assert "Role, docs, placement, readability, login/tools and procedures never grant authority" in authority
-    assert "An ordinary unbound Coordinator instead reads an assigned/handoff ID" in authority
-    assert "mailbox registration/takeover supplies neither identity nor authority" in authority
-    assert "otherwise use only the legacy create's required arguments" in authority
-    assert "Use one stable OperationId" in authority
-    assert '`owner_key="SELF"`' in authority
-    assert "only with identical arguments/OperationId" in authority
-    assert "Never create from a question, status, correction, approval" in authority
+    assert "An ordinary unbound Coordinator uses an assigned/handoff WorkId" in authority
+    assert "Mailbox registration/takeover supplies neither work identity nor authority" in authority
+    assert "never create work from a question, status, correction, approval" in authority
     assert "Landing requires current independent review and exact-head/composition gates" in authority
-    assert "exact WorkId/message identity, owner/purpose, state, next check, and terminal condition" in routing
-    assert "inactive sessions do not poll or wake" in routing
-    assert "never supplies assignment, focus, ownership, or effect authority" in routing
+    assert "work_type=\"Task\"" in usage
+    assert 'owner_key=\"SELF\"' in usage
+    assert "Use one stable OperationId" in usage
+    assert "replay only the identical OperationId and arguments" in usage
+    assert "never supplies assignment" in routing
 
 
 def test_repository_safety_routes_detail_to_the_operational_owner():
@@ -271,9 +274,23 @@ def test_repository_safety_routes_detail_to_the_operational_owner():
 
     assert "Shared canonical `main` is read-only except Git reads/fetches" in safety
     assert "Source edits, staging, commits, and worktree mutation stay in that writer" in safety
-    assert "repo-local Git-ignored `friction.md`" in safety
+    assert "docs/how-marco-uses-switchstand.md" in markdown_links(safety)
+    assert "docs/development.md" in markdown_links(safety)
+    assert "friction register" in usage
     assert "attempted claim, observed result, state-change truth, and smallest clearing action" in usage
     assert "`repository_bundle_get`, accepts only `current`" in usage
+    assert "Durable worktrees, clones, evidence, and handoff artifacts live under" in usage
+    assert "`~/.local/state/switchstand`" in usage
+    assert "`~/.cache/switchstand`" in usage
+    assert "do not use `/tmp` for durable work" in usage
+    assert "Before any replacement write, reread the exact target" in usage
+    assert "Stock Codex has no implicit linked writer, launch manifest, or launcher state" in usage
+    assert "never synthesize missing launcher state" in usage
+    assert "`~/.config/switchstand/.env` only when current authority permits" in usage
+    assert "Auxiliary Coordinator bookkeeping failure degrades only the smallest affected capability" in usage
+    assert "do not make Marco the routine repair operator" in usage
+    assert "Codex and Claude sessions with a repository use Git" in usage
+    assert "ordinary ChatGPT without a normal checkout uses `repository_bundle_get`" in usage
 
 
 def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
@@ -281,14 +298,17 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     architecture = normalized("docs/architecture.md")
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
-    assert "Stock Codex has no implicit writer or launcher records" in agents
-    assert "current message asks to take over `/root`" in agents
-    assert "pass his full message to `agent_takeover`" in agents
+    assert "When Marco's current message asks this session to take over `/root`" in agents
     assert "use a passcode only from Marco's current message" in agents
-    assert "After losing `/root`, never retake" in agents
+    assert "never retake `/root` after losing it" in agents
+    assert "without a launcher-created writer, manifest, hooks" in usage
+    assert 'agent_takeover("/root", message=<Marco\'s full current message>)' in usage
+    assert "on failure it asks Marco for the passcode" in usage
+    assert "never retakes the name after losing it" in usage
+    assert "checks pending mail at the start and end of each Marco turn" in usage
+    assert "whenever Marco says `check mail`" in usage
     assert "A fresh launch is independent" in usage
     assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
-    assert "Failure after reconciliation is `COVERAGE_GAP / UNKNOWN`" in agents
     assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
 
 
@@ -306,10 +326,77 @@ def test_human_guidance_is_linked_not_duplicated_in_bootstrap():
 
 
 def test_chatgpt_connection_url_is_copy_safe():
-    agents = read("AGENTS.md")
+    agents = normalized("AGENTS.md")
+    usage = read("docs/how-marco-uses-switchstand.md")
 
-    assert "\n  ```text\n  https://laptop.tail46f0b9.ts.net/switchstand/mcp\n  ```\n" in agents
-    assert "no trailing punctuation" in agents
+    assert "give the exact bare MCP endpoint and one trusted WorkId separately" in agents
+    assert "https://laptop.tail46f0b9.ts.net/switchstand/mcp" in usage
+    assert "on its own line with no trailing punctuation" in usage
+
+
+def test_polling_trigger_is_small_and_detail_lives_with_message_owners():
+    agents = normalized("AGENTS.md")
+    usage = normalized("docs/how-marco-uses-switchstand.md")
+    source = normalized("docs/source-history-feedback.md")
+
+    assert "`poll` or `keep polling` means continue the exact review/message/watch until terminal result" in agents
+    assert "Interactive polling." in usage
+    assert "Empty reads and arbitrary check counts are nonterminal" in source
+    assert "Scheduled task or condition watch is a different future-running product" in source
+
+
+def test_root_delegation_detail_lives_in_tracker_owner():
+    agents = normalized("AGENTS.md")
+    tracker = normalized("docs/coordinator-tracker-contract.md")
+
+    assert "Root coordination, delegation, child challenge/disposition, scheduling" in agents
+    assert "Delegate substantial research, design, implementation, testing, and eligible review" in tracker
+    assert "use safe available slots without filler" in tracker
+    assert "serialize heavy shared writers" in tracker
+    assert "The child may answer `ACCEPT_FIX`" in tracker
+    assert "Disposition each Worker terminal result immediately" in tracker
+    assert "lower-priority question never interrupts higher-priority executable work" in tracker
+    assert "When Marco says `STOP`, pause new dispatch" in tracker
+
+
+def test_material_design_review_and_root_agents_admission_live_in_code_quality():
+    agents = read("AGENTS.md")
+    quality = normalized("docs/code-quality.md")
+    router = section(agents, "### Route only the current function")
+
+    assert "docs/code-quality.md" in markdown_links(router)
+    assert "Root `AGENTS.md` is a bootstrap/router, not a process manual" in quality
+    assert "essentially every fresh agent needs it before role/function selection" in quality
+    assert "invariant, first-minute trigger, or routing pointer rather than procedure" in quality
+    assert "Do not use a total byte/line cap as the semantic gate" in quality
+    assert "Material design review before Human Review" in quality
+    assert "one fresh context-free reviewer before Human Review" in quality
+
+
+def test_always_loaded_bootstrap_anchors_remain_explicit():
+    raw_agents = read("AGENTS.md")
+    agents = normalized("AGENTS.md")
+    triggers = section(raw_agents, "### Always-loaded triggers")
+    incident = " ".join(section(raw_agents, "### Live incidents").split())
+
+    war_machines = (
+        "WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing "
+        "that does Marco's job today. Anything beyond V1 (new table, tool, feature, "
+        "cross-track requirement, reviewer finding outside V1) is never folded in: list it "
+        "separately as an add-on with size and why it is needed now. Never set a size cap "
+        "around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject."
+    )
+    assert war_machines in " ".join(triggers.split())
+    assert "Effects require Marco's direct active assignment or an explicit `CURRENT` grant" in agents
+    assert "challenge and confirm seriously destructive or irreversible action" in agents
+    assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
+    assert "Prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
+    assert "do not delay mitigation for repository synchronization" in incident
+    assert "Before a consequential choice hardens, follow [Human Input]" in triggers
+    assert "Every material implementation gets final live [Human Review]" in triggers
+    assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
+    assert "agent resource admission" in agents
+    assert "Shared canonical `main` is read-only" in agents
 
 
 def test_research_and_rca_procedures_have_discoverable_entry_contracts():

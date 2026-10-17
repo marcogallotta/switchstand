@@ -34,7 +34,7 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 
 ### Ordinary Codex Coordinator
 
-Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, hooks, Wakeful supervisor, or launch-bound WorkId. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `/root` calls `agent_takeover("/root", message=<Marco's full current message>)`; on failure it asks Marco for the passcode. It checks pending mail each turn and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, hooks, Wakeful supervisor, or launch-bound WorkId. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `/root` calls `agent_takeover("/root", message=<Marco's full current message>)`; on failure it asks Marco for the passcode. It checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
 
 Switchstand-authored policy remains subordinate to Marco. A Coordinator executes ordinary
 reversible direction, warns briefly and continues through bounded risk unless material ambiguity
@@ -119,7 +119,7 @@ The managed surface is not general workspace discovery and is not interchangeabl
 
 ChatGPT uses the authenticated repository-configured HTTP/OAuth MCP. It works with admitted provider-neutral WorkIds, durable messages, and protected operations. A chat without a repository uses `repository_bundle_get`, accepts only `current`, verifies the advertised SHA-256, and materializes the bundle as a normal repository. It retries `refresh_pending` and never substitutes stale cache. Use bundled current `main`, or prove and check out the exact requested SHA for review. A chat with a normal checkout uses Git normally.
 
-When Marco must connect, reconnect, or reinstall Switchstand in ChatGPT, give him the exact MCP endpoint URL in that same instruction (currently `https://laptop.tail46f0b9.ts.net/switchstand/mcp`). Give the new chat exactly one trusted WorkId as its continuation anchor. Never use a Coordinator-local filesystem path as the ChatGPT-facing handoff mechanism: ordinary ChatGPT cannot read that path, and a list of WorkIds obscures which work actually grounds the session. The one WorkId must come from Marco's direct assignment or an explicit `CURRENT` grant; it neither expands authority nor replaces internal Coordinator handoff bookkeeping. Without one trusted WorkId, report `COVERAGE_GAP / UNKNOWN`.
+When Marco must connect, reconnect, or reinstall Switchstand in ChatGPT, give the exact MCP endpoint on its own line with no trailing punctuation (currently `https://laptop.tail46f0b9.ts.net/switchstand/mcp`). Give the new chat exactly one trusted WorkId separately as its continuation anchor. Never use a Coordinator-local filesystem path as the ChatGPT-facing handoff mechanism: ordinary ChatGPT cannot read that path, and a list of WorkIds obscures which work actually grounds the session. The one WorkId must come from Marco's direct assignment or an explicit `CURRENT` grant; it neither expands authority nor replaces internal Coordinator handoff bookkeeping. Without one trusted WorkId, report `COVERAGE_GAP / UNKNOWN`.
 
 The desired user model is one chat equals one stable named agent identity. The visible name, authenticated OAuth principal, hidden ChatGPT chat identity, MCP session generation, and any WorkId are distinct. The HTTP edge reads `openai/session` from MCP call metadata; the mailbox stores a hash of that value and binds one visible name to each principal-and-chat pair. Distinct chats under the same OAuth principal can register distinct names, while one chat cannot register multiple names. Repeating registration from an already-bound session returns its existing immutable name rather than creating another name or performing a takeover. The agent does not supply or see the hidden chat value. An unavailable chat identity yields a recovery result. Explicit same-principal takeover of a non-root name fences the old chat. `/root` instead accepts only Marco's full current message containing `takeover`, `/root`, and the configured passcode, and it may cross authenticated principals. For other names owned by another authenticated identity, the replacement session uses `agent_transfer_request` and reports its request ID. A host operator then runs `switchstand-agent-mailbox-transfer <request-id>` with the edge database environment. That command approves only the exact recorded mailbox preimage and destination session; it preserves the endpoint and pending deliveries, increments generation, and blocks the old owner. A stale request or a destination session already bound elsewhere is terminal and must not be retried under a new ID without rereading current state. The transfer-request machinery remains available for non-root names and is now unused for `/root`; removing that root-only legacy path is follow-up work, not part of this change. This describes the code contract, not a claim that the live client journey has been accepted. Activation still requires app reinstall, a fresh chat, and exact schema/behavior verification.
 
@@ -247,6 +247,21 @@ evidence lanes, checkpoints, correction watches, and matching-event validation.
 ## Repository delivery
 
 Ordinary source work happens in an owned linked writer based on an accepted exact green SHA; the shared primary checkout stays read-only apart from fetching and writer creation. Managed workers use the trusted task-private writer supplied by launch.
+
+Codex and Claude sessions with a repository use Git; ordinary ChatGPT without a normal checkout
+uses `repository_bundle_get` and never reconstructs the repository from stale cache. Stock Codex
+has no implicit linked writer, launch manifest, or launcher state: inspect the checkout, use an
+explicitly assigned writer or create one from shared `main`, and never synthesize missing launcher
+state. Durable worktrees, clones, evidence, and handoff artifacts live under
+`~/.local/state/switchstand`; reproducible caches live under `~/.cache/switchstand`; do not use
+`/tmp` for durable work. Before any replacement write, reread the exact target and preserve user
+changes. Use existing `~/.config/switchstand/.env` only when current authority permits the
+corresponding capability; missing capability never justifies broader credentials or permissions.
+
+Auxiliary Coordinator bookkeeping failure degrades only the smallest affected capability. Preserve
+or quarantine meaningful malformed state where safe, repair or recreate it automatically when
+possible, and continue unrelated diagnosis/edit/test work; do not make Marco the routine repair
+operator. Missing consequential-effect authority disables only that effect.
 
 Review and tests name their exact subject. Candidate review, exact-head checks, current-target composition, landing, deployment, and live reliance are different claims. Target advancement alone does not require a rebase: preserve the immutable reviewed candidate when composition can establish safety, and rebase only when needed or materially helpful. A rewritten head is a new exact candidate.
 
