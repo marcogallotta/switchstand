@@ -21,10 +21,11 @@ from .agent_messages import (
     public_message,
 )
 from .chatgpt import (
-    ChatGPTService, HumanTrajectoryGetResponse, HumanTrajectoryRecordResponse,
+    ChatGPTService,
+    HumanTrajectoryGetResponse,
+    HumanTrajectoryRecordResponse,
     RequiredResultSaveRequest,
 )
-from .human_trajectory import HumanTrajectoryData, SourceKind
 from .contracts import (
     ClosedModel,
     Status,
@@ -47,6 +48,7 @@ from .grants import (
     RelationPatch,
     ScalarPatch,
 )
+from .human_trajectory import HumanTrajectoryData, SourceKind
 from .implementation_requests import ImplementationRequestResult
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
