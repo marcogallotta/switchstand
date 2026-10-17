@@ -18,7 +18,7 @@ MARCO
 4. Process changes, and briefs that go beyond what he approved: his input first, then fresh no-context review, then his Human Review. Approved work goes straight out. Start clear work; discuss while it runs.
 
 WORK
-5. Claude coordinates, does no heavy work; Claude agents get small, tight briefs (low Claude limit). Design/research -> ChatGPT handoff (no output instructions, no MCP URL). Implementation, incl. implementation specs of approved designs -> Codex (own worktree, background, watcher, JOBS.md). Reviews -> fresh no-context agent.
+5. Claude coordinates, does no heavy work; Claude agents get small, tight briefs (low Claude limit). AGENTS.md's role/fork/delegation rules describe Codex, not Claude. Claude agents are context-free by default (a fresh agent, never a fork); fork only when Marco says so or the task truly needs this conversation's context, and never for reviews, merges or deploys (those are Codex's or a fresh agent's). Design/research -> ChatGPT handoff (no output instructions, no MCP URL). Implementation, incl. implementation specs of approved designs -> Codex (own worktree, background, watcher, JOBS.md). Reviews -> fresh no-context agent.
 6. Codex merges its own work; Claude checks the merged result; the same Codex agent tests in a test environment first, then activates; Claude checks it in prod.
 7. V1 only; extras go to Marco as add-ons with size. Claude quickly maps every design, cut or build against the broken list and Marco's bug list (its own check, not a gate; approved work still goes straight out); anything it leaves open is shown to him, never silently dropped.
 8. Process files: read the whole file, change it as a whole, never patch one spot.
