@@ -56,13 +56,15 @@ from switchstand.grants import (
     WorkGrant,
 )
 from switchstand.mcp import controller_from_env
-from switchstand.messages import MessageState
+from switchstand.messages import MessageReceiveRequest, MessageState, RuntimeCurrentness
 from switchstand.reviews import (
+    ReviewFinding,
     ReviewGuidelines,
     ReviewOccurrenceState,
     ReviewPolicy,
     ReviewRequest,
     ReviewService,
+    ReviewSubmit,
 )
 from switchstand.state import PostgresState, metadata, work_handles
 from switchstand.work_events import WorkEventRepository
@@ -172,7 +174,9 @@ def relation(
 
 async def pending_review(
     subject: Subject,
-) -> tuple[UUID, ReviewService, AgentMailbox]:
+) -> tuple[
+    UUID, UUID, ReviewService, AgentMailbox, AgentMailbox, MessageState,
+]:
     mailboxes = AgentMailboxState(subject.engine)
     requester = (await mailboxes.register_agent(
         "Requester", "principal-requester", "chat-requester",
@@ -183,8 +187,9 @@ async def pending_review(
     assert requester is not None and reviewer is not None
     policy = ReviewPolicy(version="policy-v1")
     occurrences = ReviewOccurrenceState(subject.runtime.works, mailboxes, policy)
+    messages = MessageState(subject.engine, subject.grants)
     reviews = ReviewService(
-        occurrences, mailboxes, MessageState(subject.engine, subject.grants), policy,
+        occurrences, mailboxes, messages, policy,
         ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
     )
     requested = await reviews.request(ReviewRequest(
@@ -192,14 +197,19 @@ async def pending_review(
         observed_revision=canonical_revision(subject.work_id, 1),
         review_kind="CODE",
     ), requester)
-    assert requested.status == "SENT" and requested.review_id is not None
-    return requested.review_id, reviews, requester
+    assert requested.status == "SENT"
+    assert requested.review_id is not None and requested.delivery_id is not None
+    return (
+        requested.review_id, requested.delivery_id, reviews,
+        requester, reviewer, messages,
+    )
 
 
 async def guarded_write(
     subject: Subject, kind: str, operation_id: UUID, *, confirm: bool = False,
+    observed_version: int = 1,
 ):
-    revision = canonical_revision(subject.work_id, 1)
+    revision = canonical_revision(subject.work_id, observed_version)
     if kind == "update":
         return await subject.service.update(ProtectedUpdate(
             api_version="1", operation_id=operation_id, work_id=subject.work_id,
@@ -510,7 +520,7 @@ async def test_active_service_routes_append_to_canonical_events(subject: Subject
 async def test_pending_review_requires_confirmation_without_writing(
     subject: Subject, kind: str,
 ) -> None:
-    review_id, _reviews, _requester = await pending_review(subject)
+    review_id, *_rest = await pending_review(subject)
     operation_id = uuid4()
 
     warned = await guarded_write(subject, kind, operation_id)
@@ -534,7 +544,9 @@ async def test_pending_review_requires_confirmation_without_writing(
 async def test_confirmed_pending_review_write_applies_and_stales_review(
     subject: Subject, kind: str,
 ) -> None:
-    review_id, reviews, requester = await pending_review(subject)
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
     operation_id = uuid4()
     warned = await guarded_write(subject, kind, operation_id)
 
@@ -550,6 +562,44 @@ async def test_confirmed_pending_review_write_applies_and_stales_review(
         assert await connection.scalar(select(effect_intents.c.operation_id).where(
             effect_intents.c.operation_id == str(operation_id)
         )) == str(operation_id)
+
+
+async def test_saved_stale_findings_do_not_trigger_spurious_confirmation(
+    subject: Subject,
+) -> None:
+    review_id, delivery_id, reviews, _requester, reviewer, messages = (
+        await pending_review(subject)
+    )
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    first = await guarded_write(subject, "update", uuid4(), confirm=True)
+    assert first.status == "ok"
+    finding = ReviewFinding(
+        finding_id="F-late", defect="Missing proof", evidence="No boundary result",
+        consequence="Claim is unsafe", affected_claim="landing",
+        minimum_clearing_condition="Supply boundary proof",
+    )
+    stale = await reviews.submit(ReviewSubmit(
+        review_id=review_id, verdict="FINDINGS", findings=(finding,),
+        context_provenance="UNSEEDED",
+    ), reviewer)
+    assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
+
+    second = await guarded_write(
+        subject, "update", uuid4(), observed_version=2,
+    )
+
+    assert second.status == "ok" and second.effect == "applied"
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 3
 
 
 @pytest.mark.parametrize("kind", ["update", "append"])
