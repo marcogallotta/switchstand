@@ -753,7 +753,10 @@ def build_ordinary_tools(
         finding_ids: tuple[str, ...] = (),
         baseline_check: BaselineCheck | None = None,
     ) -> ReviewResult:
-        """Request one review as this registered caller at an exact subject revision."""
+        """Request one review as this registered caller at an exact subject revision.
+
+        Review verdicts go through review_submit; agent_message_* is not review submission.
+        """
         del api_version
         correlate(subject_work_id)
         context = await agent_context()
@@ -864,7 +867,10 @@ def build_ordinary_tools(
         findings: tuple[ReviewFinding, ...] = (), evidence_refs: tuple[str, ...] = (),
         baseline_assessment: BaselineAssessment | None = None,
     ) -> ReviewResult:
-        """Submit one verdict as the current registered reviewer mailbox."""
+        """Submit one verdict as the current registered reviewer mailbox.
+
+        Review verdicts go through review_submit; agent_message_* is not review submission.
+        """
         del api_version
         correlate(None)
         context = await agent_context()
@@ -888,7 +894,10 @@ def build_ordinary_tools(
         return result
 
     async def review_get(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
-        """Poll one exact review as its current registered requester."""
+        """Poll one exact review as its current registered requester.
+
+        Review verdicts go through review_submit; agent_message_* is not review submission.
+        """
         del api_version
         correlate(review_id)
         context = await agent_context()
@@ -906,7 +915,10 @@ def build_ordinary_tools(
         return result
 
     async def review_recover(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
-        """Recover one received review after same-principal mailbox takeover."""
+        """Recover one received review after same-principal mailbox takeover.
+
+        Review verdicts go through review_submit; agent_message_* is not review submission.
+        """
         del api_version
         correlate(review_id)
         context = await agent_context()

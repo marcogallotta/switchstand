@@ -152,11 +152,15 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     activation_gated = {
         "task_control_get", "task_control_checkpoint", "work_hygiene_check",
     }
-    assert set(switchstand["enabled_tools"]) == ordinary - activation_gated
+    review_tools = {"review_request", "review_get", "review_recover", "review_submit"}
+    expected_ordinary = (ordinary | review_tools) - activation_gated
+    assert review_tools <= set(switchstand["enabled_tools"])
+    assert set(switchstand["enabled_tools"]) == expected_ordinary
     assert "tools" not in switchstand
     assert servers["switchstand_oauth_proof"]["enabled"] is False
     certification = servers["switchstand_certification"]
-    assert set(certification["enabled_tools"]) == ordinary - activation_gated
+    assert review_tools <= set(certification["enabled_tools"])
+    assert set(certification["enabled_tools"]) == expected_ordinary
 
     managed = {
         "work_get", "work_history", "work_event", "work_append", "work_update", "message_pending",
