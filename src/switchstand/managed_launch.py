@@ -105,6 +105,9 @@ def managed_parent_command(
         enabled_tools.append("activation_obligation_transition")
         if set(activation_environment) != set(ACTIVATION_ENV):
             raise ValueError("activation continuity requires its exact launch environment")
+    server_environment = {"SWITCHSTAND_MANAGED_PROFILE": "launch-bound"}
+    if activation_environment is not None:
+        server_environment.update(activation_environment)
     return (
         str(codex_executable),
         "exec",
@@ -116,13 +119,13 @@ def managed_parent_command(
         'approval_policy="never"',
         "--dangerously-bypass-hook-trust",
         "-c",
-        f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
+        f'mcp_servers.switchstand.command="{control / "scripts/switchstand-controller-mcp"}"',
         "-c",
         "mcp_servers.switchstand.env_vars="
         + json.dumps(forwarded_environment, separators=(",", ":")),
-        *(("-c", "mcp_servers.switchstand.env=" + json.dumps(
-            activation_environment, separators=(",", ":"), sort_keys=True))
-          if activation_environment is not None else ()),
+        "-c",
+        "mcp_servers.switchstand.env="
+        + json.dumps(server_environment, separators=(",", ":"), sort_keys=True),
         "-c",
         "mcp_servers.switchstand.enabled_tools="
         + json.dumps(enabled_tools, separators=(",", ":")),

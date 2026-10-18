@@ -22,7 +22,7 @@ from switchstand.contracts import (
 from switchstand.launch import Authority
 from switchstand.managed_launch import ACTIVATION_ENV, REPORTING_ENV
 from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
-from switchstand.mcp import build_context_server
+from switchstand.mcp import build_server
 
 ACTIVE = UUID("00000000-0000-0000-0000-000000000001")
 
@@ -45,16 +45,20 @@ def executable(path: Path, text: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: Path) -> None:
+def test_launch_bound_controller_mounts_activation_evidence_only_on_opt_in(
+    tmp_path: Path,
+) -> None:
     binary, capture = tmp_path / "docker", tmp_path / "arguments"
     executable(binary, '#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n')
     environment = os.environ | {
         "PATH": f"{tmp_path}:{os.environ['PATH']}", "CAPTURE": str(capture),
         "ACTIVE_WORK_ID": str(ACTIVE), "SWITCHSTAND_MANAGED": "1",
+        "SWITCHSTAND_MANAGED_PROFILE": "launch-bound",
         "SWITCHSTAND_GRANT_ID": str(ACTIVE), "SWITCHSTAND_GRANT_VERSION": "1",
     } | {name: str(ACTIVE) for name in REPORTING_ENV}
-    script = Path(__file__).parents[1] / "scripts/switchstand-context-mcp"
+    script = Path(__file__).parents[1] / "scripts/switchstand-controller-mcp"
     subprocess.run([script], env=environment, check=True)
+    assert "SWITCHSTAND_MANAGED_PROFILE=launch-bound" in capture.read_text()
     assert "SWITCHSTAND_ACTIVATION_CONTINUITY=0" in capture.read_text()
     for name in REPORTING_ENV:
         assert f"{name}={ACTIVE}" in capture.read_text()
@@ -422,7 +426,7 @@ def test_root_tools_are_not_misclassified_as_delegated_worker(tmp_path: Path) ->
 
 
 def test_context_server_exposes_only_bound_read_context():
-    server = build_context_server(FakeService(), ACTIVE)
+    server = build_server(FakeService(), ACTIVE, bound_context=True)
     assert set(server._tool_manager._tools) == {
         "work_get", "work_history", "capability_preflight_get"}
     schema = server._tool_manager.get_tool("work_get").parameters
@@ -440,10 +444,16 @@ def test_context_server_exposes_only_bound_read_context():
         assert annotations is not None
         assert annotations.read_only_hint is True
         assert annotations.destructive_hint is False
+    assert {
+        "work_event", "work_append", "work_update", "message_pending",
+        "agent_task_request",
+    }.isdisjoint(server._tool_manager._tools)
 
 
 def test_context_server_exposes_all_fixed_feedback_tools_when_configured():
-    server = build_context_server(FakeService(), ACTIVE, issue_reporter=object())
+    server = build_server(
+        FakeService(), ACTIVE, bound_context=True, issue_reporter=object(),
+    )
     assert {
         "file_bug", "file_feature", "file_process", "file_performance",
         "file_review_feedback",
@@ -465,7 +475,7 @@ async def test_context_server_real_stdio_exposes_only_bound_read_context():
         assert got.structured_content["item"]["id"] == str(ACTIVE)
         assert "raw-task" not in str(got) and "asana" not in str(got)
         rejected = await client.call_tool(
-            "work_get", {"api_version": "1", "include_related": True}
+            "work_get", {"api_version": "1", "work_id": str(UUID(int=2))}
         )
         assert rejected.is_error
         history = await client.call_tool(
@@ -1157,7 +1167,7 @@ def test_managed_codex_home_rejects_symlinked_config(monkeypatch, tmp_path):
 
 
 if __name__ == "__main__":
-    build_context_server(FakeService(), ACTIVE).run()
+    build_server(FakeService(), ACTIVE, bound_context=True).run()
 
 
 def test_preflight_from_linked_control_needs_only_pinned_uv(tmp_path):

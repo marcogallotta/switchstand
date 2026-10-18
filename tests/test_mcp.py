@@ -12,7 +12,6 @@ import pytest
 from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
 
-from switchstand import context_mcp
 from switchstand.contracts import (
     AppendResult,
     LaunchAuthority,
@@ -24,7 +23,6 @@ from switchstand.contracts import (
 from switchstand.grants import GrantedWorkResult
 from switchstand.managed_identity import managed_principal
 from switchstand.mcp import (
-    build_context_server,
     build_server,
     controller_from_env,
     project_work,
@@ -38,7 +36,6 @@ from switchstand.task_runs import AgentTaskResult, TaskRunResult, TaskRunResultR
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
-PERFORMANCE_ID = UUID("00000000-0000-0000-0000-000000000003")
 TASK_GID = "121"
 STORY_GID = "456"
 
@@ -152,11 +149,12 @@ async def test_launch_context_server_exposes_same_bound_priority_adapter():
             return PriorityContextResult(status="ok", scope_complete=True)
 
     grants = Grants()
-    server = build_context_server(
+    server = build_server(
         FakeService(), ID, (REFERENCE_ID,),
         grants=grants, principal=principal,
         priority_claims=Claims(),  # type: ignore[arg-type]
         priority_context=Context(),  # type: ignore[arg-type]
+        bound_context=True,
     )
     async with Client(server) as client:
         tools = {tool.name: tool for tool in (await client.list_tools()).tools}
@@ -173,65 +171,51 @@ async def test_launch_context_server_exposes_same_bound_priority_adapter():
         assert result.structured_content["status"] == "ok"
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch, enabled):
+def test_managed_server_rejects_unknown_profile(monkeypatch):
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.setenv("SWITCHSTAND_MANAGED_PROFILE", "historical-context")
+    with pytest.raises(ValueError, match="unknown managed MCP profile"):
+        server_from_env()
+
+
+def test_launch_bound_profile_constructs_only_approved_inventory(monkeypatch):
+    import switchstand.mcp as managed_mcp
+    from switchstand import chatgpt
+
     engine = object()
-    works = object()
-    relations = object()
     service = SimpleNamespace(
         authority=LaunchAuthority(active_work_id=ID, reference_work_ids=(REFERENCE_ID,)),
         state=SimpleNamespace(engine=engine),
-        work=SimpleNamespace(works=works, relations=relations),
+        work=SimpleNamespace(works=object(), relations=object()),
     )
-    captured = {}
 
-    class Server:
-        def run(self):
-            captured["ran"] = True
+    class Grants:
+        def __init__(self, passed_engine):
+            assert passed_engine is engine
 
-    def build(passed_service, active, references, **adapters):
-        captured.update({
-            "service": passed_service, "active": active,
-            "references": references, **adapters,
-        })
-        return Server()
+    class Reporter:
+        def __init__(self, *_args, issue_projects, **_kwargs):
+            self.issue_projects = issue_projects
 
-    monkeypatch.setattr(context_mcp, "protect_provider_logs", lambda: None)
-    monkeypatch.setattr(context_mcp, "require_current_schema", lambda: None)
-    monkeypatch.setattr(context_mcp, "controller_from_env", lambda: service)
-    monkeypatch.setattr(context_mcp, "build_context_server", build)
-    for variable in (
-        "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
-        "SWITCHSTAND_PROCESS_PROJECT_ID", "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
-        "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
-    ):
-        monkeypatch.delenv(variable, raising=False)
+        async def file_issue(self, *_args):
+            raise AssertionError("inventory construction called a reporting effect")
+
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.setenv("SWITCHSTAND_MANAGED_PROFILE", "launch-bound")
+    monkeypatch.setenv("SWITCHSTAND_ACTIVATION_CONTINUITY", "0")
     monkeypatch.setenv("SWITCHSTAND_PROCESS_PROJECT_ID", str(ID))
-    monkeypatch.setenv("SWITCHSTAND_PERFORMANCE_PROJECT_ID", str(PERFORMANCE_ID))
-    if enabled:
-        monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
-    else:
-        monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+    monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
+    monkeypatch.setattr(managed_mcp, "controller_from_env", lambda: service)
+    monkeypatch.setattr(managed_mcp, "GrantState", Grants)
+    monkeypatch.setattr(chatgpt, "ChatGPTService", Reporter)
 
-    context_mcp.main()
-
-    assert captured["ran"] is True
-    assert captured["service"] is service
-    assert captured["active"] == ID
-    assert captured["references"] == (REFERENCE_ID,)
-    assert captured["issue_reporter"].issue_projects == {
-        "PROCESS": ID, "PERFORMANCE": PERFORMANCE_ID,
+    server = server_from_env()
+    assert set(server._tool_manager._tools) == {
+        "work_get", "work_history", "capability_preflight_get",
+        "file_bug", "file_feature", "file_process", "file_performance",
+        "file_review_feedback",
     }
-    if enabled:
-        assert captured["principal"] == managed_principal(ID)
-        assert captured["grants"] is not None
-        assert captured["priority_claims"] is not None
-        assert captured["priority_context"] is not None
-    else:
-        assert captured["principal"] == managed_principal(ID)
-        assert captured["grants"] is not None
-        assert captured["priority_claims"] is captured["priority_context"] is None
-    assert captured["activation"] is None
+    assert "work_id" not in server._tool_manager.get_tool("work_get").parameters["properties"]
 
 
 @pytest.mark.parametrize("kind", [WorkResult, GrantedWorkResult])

@@ -9,7 +9,7 @@ from switchstand.activation_continuity import (
     open_obligation,
 )
 from switchstand.chatgpt_mcp import build_chatgpt_server
-from switchstand.mcp import build_context_server
+from switchstand.mcp import build_server
 from switchstand.product_currentness import ProductCurrentness
 
 
@@ -73,7 +73,9 @@ async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None
     async def resolve_proof(*_args):
         return None
 
-    plain = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL)
+    plain = build_server(
+        object(), ACTIVE, grants=grants, principal=PRINCIPAL, bound_context=True,
+    )
     assert "activation_obligation_transition" not in {
         tool.name for tool in await plain.list_tools()
     }
@@ -83,8 +85,8 @@ async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None
     selected = grant(operations=frozenset({"activation_continuity"}))
     grants.grant = selected
     activation = (continuity, resolve_technical, resolve_proof, (selected.id, selected.version))
-    server = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
-                                  activation=activation)
+    server = build_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+                          activation=activation, bound_context=True)
     names = {tool.name for tool in await server.list_tools()}
     assert "activation_obligation_transition" in names
     ready = await server.call_tool("capability_preflight_get", {"api_version": "1"})
@@ -95,14 +97,16 @@ async def test_managed_opt_in_is_ready_and_grant_rotation_fails_closed() -> None
         "transition": "ACTIVATED",
     })
     assert applied.structured_content["status"] == "APPLIED"
-    stale = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
-                                 activation=(*activation[:3], (uuid4(), selected.version)))
+    stale = build_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+                         activation=(*activation[:3], (uuid4(), selected.version)),
+                         bound_context=True)
     result = await stale.call_tool("capability_preflight_get", {"api_version": "1"})
     assert result.structured_content["reasons"] == ["ACTOR_GRANT_STALE", "RUNTIME_STALE"]
     selected = selected.model_copy(update={"state": "revoked"})
     grants.grant = selected
-    result = await build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
-        activation=(*activation[:3], (selected.id, selected.version))).call_tool(
+    result = await build_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+        activation=(*activation[:3], (selected.id, selected.version)),
+        bound_context=True).call_tool(
             "capability_preflight_get", {"api_version": "1"})
     assert result.structured_content["reasons"] == ["ACTOR_GRANT_STALE", "RUNTIME_STALE"]
 
@@ -118,8 +122,9 @@ async def test_managed_preflight_closes_missing_stale_mismatched_and_failed_inpu
                 raise basis
             return basis
         expected_grant = selected.id, selected.version
-        server = build_context_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
-            activation=(contracts, resolve, resolve if proof_route else None, expected_grant))
+        server = build_server(object(), ACTIVE, grants=grants, principal=PRINCIPAL,
+            activation=(contracts, resolve, resolve if proof_route else None, expected_grant),
+            bound_context=True)
         result = await server.call_tool("capability_preflight_get", {"api_version": "1"})
         return result.structured_content
     empty = Continuity(bound)

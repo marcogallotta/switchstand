@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from collections.abc import Awaitable, Callable
@@ -318,90 +319,6 @@ def register_activation_tools(
             return await continuity.transition(principal, grant, binding, intent, basis, sealed)
     closed_tool(server, "activation_obligation_transition", transition)
 
-def build_context_server(
-    service: object,
-    active_work_id: UUID,
-    reference_work_ids: tuple[UUID, ...] = (),
-    *,
-    priority_claims: PriorityClaimService | None = None,
-    priority_context: PriorityContextProjection | None = None,
-    grants: GrantState | None = None,
-    principal: PrincipalContext | None = None,
-    activation: ActivationContext | None = None,
-    issue_reporter: object | None = None,
-) -> MCPServer:
-    server = MCPServer("Switchstand launch-bound context")
-
-    async def _work_get(api_version: Literal["1"]) -> PublicWorkResult:
-        return project_work(await service.get(  # type: ignore[attr-defined]
-            WorkGetRequest(api_version=api_version, work_id=active_work_id)
-        ))
-
-    _work_get.__doc__ = "Read the exact launch-bound work."
-    closed_tool(server, "work_get", _work_get, ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=False,
-    ))
-
-    async def _work_history(
-        api_version: Literal["1"], observed_revision: str,
-        cursor: str | None = None, limit: int = 50,
-    ) -> WorkHistoryResult:
-        return await service.history(  # type: ignore[attr-defined]
-            WorkHistoryRequest(
-                api_version=api_version,
-                work_id=active_work_id,
-                observed_revision=observed_revision,
-                cursor=cursor,
-                limit=limit,
-            )
-        )
-
-    _work_history.__doc__ = (
-        "Exceptional bounded investigation/recovery history for the exact launch-bound work; "
-        "never normal startup, re-entry, review, polling, or implementation grounding. "
-        "Pagination is revision-checked; on stale, call work_get again before recovery continues."
-    )
-    closed_tool(server, "work_history", _work_history, ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=False,
-    ))
-    if issue_reporter is not None:
-        def report_tool(category: str, description: str):
-            async def report(
-                api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-            ) -> GuardOutcome:
-                del api_version
-                return await issue_reporter.file_issue(  # type: ignore[attr-defined]
-                    category, operation_id, title, evidence,
-                )
-            report.__doc__ = description
-            return report
-
-        closed_tool(server, "file_bug", report_tool(
-            "BUG", "Report a bug to the fixed BUGS triage list."))
-        closed_tool(server, "file_feature", report_tool(
-            "PRODUCT_FEATURE", "Report a missing capability to the fixed feature triage list."))
-        closed_tool(server, "file_process", report_tool(
-            "PROCESS", "Report a process complaint to the fixed PROCESS triage list."))
-        closed_tool(server, "file_performance", report_tool(
-            "PERFORMANCE", "Report avoidable process latency to the fixed PERFORMANCE triage list."))
-        closed_tool(server, "file_review_feedback", report_tool(
-            "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
-    register_priority_tools(
-        server, active_work_id, reference_work_ids,
-        priority_claims=priority_claims, priority_context=priority_context,
-        grants=grants, principal=principal,
-    )
-    register_activation_tools(server, active_work_id, grants=grants, principal=principal,
-                              activation=activation)
-    return server
-
-
 def build_server(
     service: object, active_work_id: UUID, reference_work_ids: tuple[UUID, ...] = (), *,
     messages: MessageState | None = None, grants: GrantState | None = None,
@@ -412,29 +329,57 @@ def build_server(
     task_runs: TaskRunState | None = None,
     priority_claims: PriorityClaimService | None = None,
     priority_context: PriorityContextProjection | None = None,
+    bound_context: bool = False,
+    activation: ActivationContext | None = None,
+    issue_reporter: object | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand")
 
-    async def _work_get(
-        api_version: Literal["1"], work_id: UUID | None = None,
-    ) -> PublicWorkResult:
-        request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
-        return project_work(await service.get(request))  # type: ignore[attr-defined]
+    if bound_context:
+        async def _bound_work_get(api_version: Literal["1"]) -> PublicWorkResult:
+            """Read the exact launch-bound work."""
+            return project_work(await service.get(  # type: ignore[attr-defined]
+                WorkGetRequest(api_version=api_version, work_id=active_work_id)
+            ))
 
-    references = ", ".join(map(str, reference_work_ids)) or "none"
-    _work_get.__doc__ = (
-        "Read launch-bound work. Omit work_id for the active assignment. "
-        f"Bounded read-only reference WorkIds: {references}."
-    )
+        async def _bound_work_history(
+            api_version: Literal["1"], observed_revision: str,
+            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> WorkHistoryResult:
+            """Exceptional bounded investigation/recovery history for the exact launch-bound work; never normal startup, re-entry, review, polling, or implementation grounding."""
+            return await service.history(  # type: ignore[attr-defined]
+                WorkHistoryRequest(
+                    api_version=api_version, work_id=active_work_id,
+                    observed_revision=observed_revision, cursor=cursor, limit=limit,
+                )
+            )
 
-    async def _work_history(
-        api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
-        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> WorkHistoryResult:
-        """Exceptional bounded investigation/recovery history; never normal grounding."""
-        return await service.history(  # type: ignore[attr-defined]
-            WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
-                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+        work_get_tool = _bound_work_get
+        work_history_tool = _bound_work_history
+    else:
+        async def _selectable_work_get(
+            api_version: Literal["1"], work_id: UUID | None = None,
+        ) -> PublicWorkResult:
+            request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
+            return project_work(await service.get(request))  # type: ignore[attr-defined]
+
+        references = ", ".join(map(str, reference_work_ids)) or "none"
+        _selectable_work_get.__doc__ = (
+            "Read launch-bound work. Omit work_id for the active assignment. "
+            f"Bounded read-only reference WorkIds: {references}."
+        )
+
+        async def _selectable_work_history(
+            api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
+            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> WorkHistoryResult:
+            """Exceptional bounded investigation/recovery history; never normal grounding."""
+            return await service.history(  # type: ignore[attr-defined]
+                WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
+                                   observed_revision=observed_revision, cursor=cursor, limit=limit))
+
+        work_get_tool = _selectable_work_get
+        work_history_tool = _selectable_work_history
 
     async def _work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
@@ -469,11 +414,16 @@ def build_server(
             return await appends(principal, request)
         append_tool = _protected_work_append
 
-    closed_tool(server, "work_get", _work_get)
-    closed_tool(server, "work_history", _work_history)
-    closed_tool(server, "work_event", _work_event)
-    closed_tool(server, "work_append", append_tool)
-    if updates is not None and grants is not None and principal is not None:
+    read_annotations = ToolAnnotations(
+        read_only_hint=True, destructive_hint=False,
+        idempotent_hint=True, open_world_hint=False,
+    ) if bound_context else None
+    closed_tool(server, "work_get", work_get_tool, read_annotations)
+    closed_tool(server, "work_history", work_history_tool, read_annotations)
+    if not bound_context:
+        closed_tool(server, "work_event", _work_event)
+        closed_tool(server, "work_append", append_tool)
+    if not bound_context and updates is not None and grants is not None and principal is not None:
         async def _work_update(
             api_version: Literal["1"], operation_id: UUID,
             observed_revision: Annotated[str, Field(min_length=1)], patch: ScalarPatch,
@@ -489,12 +439,36 @@ def build_server(
             return await updates(principal, request)
 
         closed_tool(server, "work_update", _work_update)
+    if issue_reporter is not None:
+        def report_tool(category: str, description: str):
+            async def report(
+                api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+            ) -> GuardOutcome:
+                del api_version
+                return await issue_reporter.file_issue(  # type: ignore[attr-defined]
+                    category, operation_id, title, evidence,
+                )
+            report.__doc__ = description
+            return report
+
+        closed_tool(server, "file_bug", report_tool(
+            "BUG", "Report a bug to the fixed BUGS triage list."))
+        closed_tool(server, "file_feature", report_tool(
+            "PRODUCT_FEATURE", "Report a missing capability to the fixed feature triage list."))
+        closed_tool(server, "file_process", report_tool(
+            "PROCESS", "Report a process complaint to the fixed PROCESS triage list."))
+        closed_tool(server, "file_performance", report_tool(
+            "PERFORMANCE", "Report avoidable process latency to the fixed PERFORMANCE triage list."))
+        closed_tool(server, "file_review_feedback", report_tool(
+            "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
     register_priority_tools(
         server, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,
         grants=grants, principal=principal,
     )
-    register_activation_tools(server, active_work_id, grants=grants, principal=principal)
+    register_activation_tools(
+        server, active_work_id, grants=grants, principal=principal, activation=activation,
+    )
     if messages is not None and grants is not None and principal is not None and currentness is not None:
         def runtime() -> RuntimeCurrentness:
             return currentness() or RuntimeCurrentness(
@@ -682,13 +656,15 @@ def build_server(
 def server_from_env() -> MCPServer:
     if os.getenv("SWITCHSTAND_MANAGED") != "1":
         return MCPServer("Switchstand (unbound)")
+    profile = os.getenv("SWITCHSTAND_MANAGED_PROFILE", "full")
+    if profile not in {"full", "launch-bound"}:
+        raise ValueError(f"unknown managed MCP profile: {profile}")
     service = controller_from_env()
     engine = cast(PostgresState, service.state).engine
     grants = GrantState(engine)
-    messages = MessageState(engine, grants)
     work = service.work
-    task_runs = TaskRunState(engine, work.works)
     active = service.authority.active_work_id
+    principal = managed_principal(active)
     priority_claims = None
     priority_context = None
     if os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1":
@@ -700,6 +676,107 @@ def server_from_env() -> MCPServer:
             relations=work.relations,
             claims=priority_claims,
         )
+
+    if profile == "launch-bound":
+        from . import chatgpt_edge
+        from .activation_continuity import TechnicalBasis
+        from .activation_continuity_store import ActivationContinuity
+        from .activation_contract_loader import load_activation_contracts_from_environment
+        from .chatgpt import ChatGPTService
+        from .product_currentness import (
+            STATEFUL_PRODUCT_WORK_ID,
+            evaluate_stateful_currentness,
+        )
+        from .product_currentness_stateful import (
+            LiveStatefulEvidenceReader,
+            StatefulServerSnapshot,
+        )
+
+        issue_projects: dict[str, UUID] = {}
+        for category, variable in {
+            "BUG": "SWITCHSTAND_BUGS_PROJECT_ID",
+            "PRODUCT_FEATURE": "SWITCHSTAND_FEATURES_PROJECT_ID",
+            "PROCESS": "SWITCHSTAND_PROCESS_PROJECT_ID",
+            "PERFORMANCE": "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
+            "HUMAN_REVIEW_FEEDBACK": "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+        }.items():
+            if value := os.getenv(variable):
+                issue_projects[category] = UUID(value)
+
+        async def resolve_principal() -> PrincipalContext:
+            return principal
+
+        issue_reporter = ChatGPTService(
+            resolve_principal, service.state, grants, {}, canonical_work=work,
+            canonical_work_active=True, issue_projects=issue_projects,
+        )
+        activation = None
+        if os.getenv("SWITCHSTAND_ACTIVATION_CONTINUITY") == "1":
+            contracts = load_activation_contracts_from_environment()
+            config = chatgpt_edge._ProductCurrentnessConfig.from_environment()  # pyright: ignore
+            names = cast(list[object], json.loads(
+                os.environ["SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES"]
+            ))
+            valid = isinstance(names, list) and 0 < len(names) <= 128  # pyright: ignore
+            valid = valid and len(set(names)) == len(names)  # pyright: ignore
+            valid = valid and all(
+                isinstance(name, str) and 0 < len(name) <= 120 for name in names
+            )
+            if contracts is None or config is None or not valid:
+                raise ValueError("activation continuity configuration is invalid")
+
+            async def read_principal() -> PrincipalContext:
+                return principal
+
+            async def read_snapshot() -> StatefulServerSnapshot:
+                return StatefulServerSnapshot(
+                    runtime_sha=config.runtime_sha,
+                    selected_runtime_sha=config.selected_runtime_sha,
+                    run_id=config.run_id,
+                    principal_key=principal.key,
+                    outcome_actions_enabled=True,
+                    tool_names=tuple(cast(list[str], names)),
+                    tools_schema_sha256=config.expected_tools_schema_sha256,
+                )
+
+            reader = LiveStatefulEvidenceReader(
+                engine, read_principal, read_snapshot,
+                expected_migration_revision=chatgpt_edge.STATEFUL_MIGRATION_REVISION,
+                expected_tools_schema_sha256=config.expected_tools_schema_sha256,
+                qualification_receipt=config.qualification_receipt,
+                qualification_key=config.qualification_key,
+            )
+
+            async def technical(
+                _principal: object, obligation_id: UUID,
+            ) -> TechnicalBasis | None:
+                contract = contracts.get(obligation_id)
+                if contract is None:
+                    return None
+                result = await evaluate_stateful_currentness(STATEFUL_PRODUCT_WORK_ID, reader)
+                return TechnicalBasis(
+                    target_revision=contract.target_revision,
+                    target_phase=contract.target_phase,
+                    currentness="CURRENT",
+                    result=result,
+                )
+
+            runs = TaskRunState(engine, work.works)
+            proof = chatgpt_edge.managed_activation_proof(runs, contracts)
+            grant = (
+                UUID(os.environ["SWITCHSTAND_GRANT_ID"]),
+                int(os.environ["SWITCHSTAND_GRANT_VERSION"]),
+            )
+            activation = ActivationContinuity(engine, contracts), technical, proof, grant
+        return build_server(
+            service, active, service.authority.reference_work_ids,
+            grants=grants, principal=principal,
+            priority_claims=priority_claims, priority_context=priority_context,
+            bound_context=True, activation=activation, issue_reporter=issue_reporter,
+        )
+
+    messages = MessageState(engine, grants)
+    task_runs = TaskRunState(engine, work.works)
 
     def currentness() -> RuntimeCurrentness | None:
         try:
@@ -713,7 +790,7 @@ def server_from_env() -> MCPServer:
             return None
     return build_server(
         service, active, service.authority.reference_work_ids,
-        messages=messages, grants=grants, principal=managed_principal(active),
+        messages=messages, grants=grants, principal=principal,
         currentness=currentness,
         appends=CanonicalAppendGateway(grants, WorkEventRepository(engine)).append,
         updates=lambda principal, request: work.protected_update(grants, principal, request),

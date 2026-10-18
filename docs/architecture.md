@@ -217,14 +217,16 @@ the managed surface derives the claim target and grant version from that trusted
 the active claim read/write tools, and bounds priority context to the active WorkId plus its
 launch-bound read-only references.
 
-`mcp.py::build_context_server` exposes launch-bound work, history, read-only preflight, and the
-same fixed-category reporting tools. Their project IDs cross the managed boundary only as
-sealed prepared-launch inputs and are passed explicitly through the scrubbed executor and Docker
-wrapper; a missing category remains unavailable rather than reading a mutable fallback.
-An explicit activation opt-in adds mutation, while priority claims additionally
-exposes the same active-work priority adapter and bounded context projection as the full managed
-server. Managed and ordinary MCPs reuse contracts and state, but their authority and inventories
-are intentionally not interchangeable.
+`mcp.py::build_server` also owns the launch-bound managed profile. The one canonical
+`scripts/switchstand-controller-mcp` wrapper selects that profile for managed-parent launches;
+there is no context-specific server, entrypoint, or tool inventory. The profile exposes
+selector-free work/history, read-only preflight, and the same fixed-category reporting tools.
+Their project IDs cross the managed boundary only as sealed prepared-launch inputs and are passed
+explicitly through the scrubbed executor and Docker wrapper; a missing category remains
+unavailable rather than reading a mutable fallback. An explicit activation opt-in adds mutation,
+while priority claims additionally expose the active-work priority adapter and bounded context
+projection. The profile restriction is enforced during server construction, not only by Codex
+`enabled_tools`.
 
 ### Managed resource-worker runtime
 
