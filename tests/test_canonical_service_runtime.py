@@ -787,6 +787,8 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
     conflict = await subject.service.file_issue(category, operation_id, "Changed", "raw evidence")
 
     assert applied == replay and applied.effect == "applied"
+    assert applied.suggestion_status == "OK" and not applied.candidates
+    assert "context-free fork" in applied.code_reconciliation_instruction
     assert conflict.reason == "operation_identity_conflict"
     stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
     assert stored.item is not None
@@ -799,6 +801,76 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
             project_memberships.c.work_id == applied.work_id
         ))
     assert membership == project_id
+
+
+@pytest.mark.parametrize(("classification", "closed"), [
+    ("NEW", False), ("AMEND", True), ("DUPLICATE", True),
+    ("SUB-ITEM", False), ("RELATED", False),
+])
+async def test_feedback_classification_is_atomic_exact_and_replayable(
+    subject: Subject, classification: str, closed: bool,
+) -> None:
+    category, project_id = "BUG", uuid4()
+    async with subject.engine.begin() as connection:
+        await connection.execute(projects.insert().values(project_id=project_id, name=category))
+    subject.service.issue_projects[category] = project_id
+    subject.grant = subject.grant.model_copy(update={
+        "version": 2, "operations": subject.grant.operations | {"file_issue"},
+        "report_qualification": "test:feedback",
+    })
+    await subject.grants.issue(subject.grant, 1)
+    target = await subject.service.file_issue(
+        category, uuid4(), "Shared crash target", "target evidence",
+    )
+    source = await subject.service.file_issue(
+        category, uuid4(), "Shared crash source", "source evidence",
+    )
+    assert target.work_id is not None and source.work_id is not None
+    assert [candidate.id for candidate in source.candidates] == [target.work_id]
+    source_item = (await subject.runtime.get(source.work_id)).item
+    target_item = (await subject.runtime.get(target.work_id)).item
+    assert source_item is not None and target_item is not None
+    operation_id = uuid4()
+    target_fields = {} if classification == "NEW" else {
+        "target_work_id": target.work_id,
+        "observed_target_revision": target_item.revision,
+    }
+    arguments = {
+        "mode": "CLASSIFY", "source_work_id": source.work_id,
+        "observed_source_revision": source_item.revision,
+        "classification": classification, **target_fields,
+    }
+    applied = await subject.service.file_issue(category, operation_id, **arguments)  # type: ignore[arg-type]
+    replay = await subject.service.file_issue(category, operation_id, **arguments)  # type: ignore[arg-type]
+    assert applied == replay and applied.effect == "applied"
+    changed = (await subject.runtime.get(source.work_id)).item
+    assert changed is not None and changed.completed is closed
+    assert f"Classification: {classification}" in changed.notes
+    if classification == "AMEND":
+        amended = (await subject.runtime.get(target.work_id)).item
+        assert amended is not None and str(source.work_id) in amended.notes
+    if classification == "SUB-ITEM":
+        assert (await subject.runtime.relations.get(source.work_id)).parent_work_id == target.work_id
+    if classification == "NEW":
+        unclassified = await subject.service.file_issue(category, uuid4(), "Source", "evidence")
+        assert unclassified.work_id is not None
+        stale = await subject.service.file_issue(
+            category, uuid4(), mode="CLASSIFY", source_work_id=unclassified.work_id,
+            observed_source_revision="stale", classification="NEW",
+        )
+        unchanged = (await subject.runtime.get(unclassified.work_id)).item
+        assert (stale.status == "stale" and unchanged is not None
+                and unchanged.notes == "evidence" and not unchanged.completed)
+        foreign = await subject.runtime.works.get(subject.work_id)
+        assert foreign is not None
+        foreign = await subject.runtime.works.replace(replace(foreign, work_type=category))
+        provenance = await subject.service.file_issue(
+            category, uuid4(), mode="CLASSIFY", source_work_id=foreign.work_id,
+            observed_source_revision=canonical_revision(foreign.work_id, foreign.row_version),
+            classification="NEW",
+        )
+        assert provenance.reason == "source_not_filed_here"
+        assert (await subject.runtime.works.get(foreign.work_id)) == foreign
 
 
 async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:

@@ -290,9 +290,21 @@ async def test_issue_wrappers_fix_category_and_preserve_evidence(tool_name, cate
     )
 
     assert result.reason == "probe"
-    subject.file_issue.assert_awaited_once_with(
-        category, operation_id, "Observed", "exact text",
+    arguments = subject.file_issue.await_args
+    assert arguments.args == (category,)
+    assert arguments.kwargs["operation_id"] == operation_id
+    assert arguments.kwargs["title"] == "Observed"
+    assert arguments.kwargs["evidence"] == "exact text"
+    assert arguments.kwargs["mode"] == "FILE"
+    subject.file_issue.reset_mock()
+    source_id = uuid4()
+    await dict(build_ordinary_tools(subject))[tool_name](
+        api_version="1", operation_id=uuid4(), mode="CLASSIFY",
+        source_work_id=source_id, observed_source_revision="r1", classification="NEW",
     )
+    classified = subject.file_issue.await_args.kwargs
+    assert classified["source_work_id"] == source_id
+    assert classified["classification"] == "NEW" and classified["mode"] == "CLASSIFY"
 
 
 async def test_canonical_create_derives_self_owner_from_registered_mailbox(monkeypatch):

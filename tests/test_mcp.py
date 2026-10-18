@@ -6,6 +6,7 @@ import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -67,6 +68,16 @@ def test_full_server_preserves_work_tool_schema_titles():
     assert "work_id" in work_get.parameters["properties"]
     assert work_history.parameters["properties"]["limit"]["minimum"] == 1
     assert work_history.parameters["properties"]["limit"]["maximum"] == 100
+
+
+def test_managed_feedback_tools_share_classification_schema():
+    server = build_server(FakeService(), ID, issue_reporter=SimpleNamespace(file_issue=AsyncMock()))
+    tools = [server._tool_manager.get_tool(name) for name in (
+        "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+    )]
+    for tool in tools:
+        assert tool.parameters["properties"]["mode"]["default"] == "FILE"
+        assert "classification" in tool.parameters["properties"]
 
 
 def test_managed_server_routes_only_known_profiles(monkeypatch):

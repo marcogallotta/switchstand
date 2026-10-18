@@ -7,7 +7,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
-from .contracts import ClosedModel, LaunchAuthority, WorkItem
+from .contracts import ClosedModel, LaunchAuthority, WorkItem, WorkSearchItem
 
 
 class PrincipalContext(ClosedModel):
@@ -97,6 +97,36 @@ class ProtectedCreate(ClosedModel):
             self.parent_work_id, self.project_id, self.project_gid,
         )) != 1:
             raise ValueError("create requires exactly one parent or project target")
+        return self
+
+
+FeedbackClassification = Literal["NEW", "AMEND", "DUPLICATE", "SUB-ITEM", "RELATED"]
+CodeReconciliation = Literal["FIXED", "CANDIDATE_EXISTS", "IN_PROGRESS", "NO_MATCHING_CHANGE"]
+
+
+class ProtectedFeedbackClassification(ClosedModel):
+    operation_id: UUID
+    grant_version: int = Field(ge=1)
+    source_work_id: UUID
+    observed_source_revision: str = Field(min_length=1)
+    classification: FeedbackClassification
+    target_work_id: UUID | None = None
+    observed_target_revision: str | None = Field(default=None, min_length=1)
+    code_status: CodeReconciliation | None = None
+    fork_runtime_seconds: float | None = Field(default=None, ge=0)
+    critical_path_wait_seconds: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def exact_target(self) -> Self:
+        targeted = self.classification != "NEW"
+        if (targeted != (self.target_work_id is not None)
+                or targeted != (self.observed_target_revision is not None)):
+            raise ValueError("classification target revision does not match class")
+        if self.target_work_id == self.source_work_id:
+            raise ValueError("feedback cannot target itself")
+        timings = (self.fork_runtime_seconds, self.critical_path_wait_seconds)
+        if (self.code_status is None) != any(value is None for value in timings):
+            raise ValueError("code status requires both timings")
         return self
 
 
@@ -263,6 +293,21 @@ class UpdateReceipt(ClosedModel):
     qualification: str
 
 
+class FeedbackClassificationReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    work_id: UUID
+    provider: Literal["postgres"]
+    task_gid: str
+    observed_revision: str
+    resulting_revision: str
+    classification: FeedbackClassification
+    target_work_id: UUID | None = None
+    qualification: str
+
+
 class PriorityClaimReceipt(ClosedModel):
     operation_id: UUID
     principal: PrincipalContext
@@ -310,7 +355,7 @@ class GuardOutcome(ClosedModel):
     next_action: str
     receipt: (
         EffectReceipt | CreateReceipt | RelationReceipt | UpdateReceipt
-        | PriorityClaimReceipt | None
+        | FeedbackClassificationReceipt | PriorityClaimReceipt | None
     ) = None
     blocked_by: EffectBlocker | None = None
 
@@ -325,6 +370,12 @@ class GuardOutcome(ClosedModel):
         ):
             raise ValueError("a blocked request must remain explicitly unsent")
         return self
+
+
+class FeedbackOutcome(GuardOutcome):
+    suggestion_status: Literal["OK", "UNKNOWN"] | None = None
+    candidates: tuple[WorkSearchItem, ...] = ()
+    code_reconciliation_instruction: str = "For code-related feedback, use a context-free fork to inspect current main and relevant PRs; record total fork runtime and actual critical-path wait when classifying."
 
 
 class GrantResult(ClosedModel):
