@@ -416,6 +416,7 @@ def codex_command(
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
                              "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
                              "SWITCHSTAND_PROCESS_PROJECT_ID",
+                             "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
                              "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID"]
     if priority_claims:
         enabled_tools.extend((

@@ -684,7 +684,7 @@ def build_ordinary_tools(
     async def file_performance(
         api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
     ) -> GuardOutcome:
-        """Report avoidable process latency to the fixed PROCESS triage list."""
+        """Report avoidable process latency to the fixed PERFORMANCE triage list."""
         del api_version
         result = await service.file_issue("PERFORMANCE", operation_id, title, evidence)
         audited("file_performance", None, result.status)

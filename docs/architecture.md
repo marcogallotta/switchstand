@@ -31,9 +31,9 @@ append/create/update/relation operations; registered-name `agent_message_*` mess
 required-result persistence; and repository bundle transport. Provider-era effects receive any
 provider readback through the exact pre-cutover deployment while its provider is still configured.
 Fixed reporting tools route bugs, missing features, process complaints, avoidable performance
-latency, and Human Review feedback to server-selected canonical projects. Performance feedback
-reuses the Process project. They share one private create path and a narrow
-`file_issue` grant operation; callers cannot select projects or gain generic create authority.
+latency, and Human Review feedback to separate server-selected canonical projects. They share one
+private create path and a narrow `file_issue` grant operation; callers cannot select projects or
+gain generic create authority.
 Separately authorized frozen-cutover operator action archives or deletes the adjudicated rows before
 the DB-native application is deployed. Managed task-bound runtimes separately retain the
 WorkId-addressed `message_*` family.
