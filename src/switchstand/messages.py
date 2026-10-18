@@ -43,6 +43,7 @@ PROCESSING_EFFECT_NAMESPACE = UUID("c790d50e-5ed0-4fac-aed3-09051a14d8df")
 REVIEW_CUTOFF_RECEIPT = "typed-review-v1-cutoff"
 REVIEW_ROUTE_REFS = frozenset({"review.request", "review.acquisition", "review.outcome"})
 AGENT_MESSAGE_PAYLOAD_LIMIT = 800
+OPEN_REQUEST_STATES = ("AVAILABLE", "RECEIVED", "ACKNOWLEDGED")
 
 messages = Table(
     "messages",
@@ -77,7 +78,7 @@ message_deliveries = Table(
         ondelete="RESTRICT",
     ),
     UniqueConstraint("sender_work_id", "message_id", "recipient_work_id"),
-    CheckConstraint("state IN ('AVAILABLE', 'RECEIVED', 'DISPOSITIONED')"),
+    CheckConstraint("state IN ('AVAILABLE', 'RECEIVED', 'ACKNOWLEDGED', 'DISPOSITIONED')"),
 )
 
 message_projection = Table(
@@ -149,7 +150,7 @@ class PendingMessage(ClosedModel):
     route_ref: str
     kind: Literal["request", "result"]
     payload: JsonValue
-    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
+    state: Literal["AVAILABLE", "RECEIVED", "ACKNOWLEDGED", "DISPOSITIONED"]
     recipient_grant_version: int
     receiving_generation: str | None = None
 
@@ -227,6 +228,43 @@ class MessageReceiveRequest(ClosedModel):
     grant_version: int = Field(ge=1)
 
 
+class MessageAcknowledgeRequest(ClosedModel):
+    api_version: ApiVersion
+    delivery_ids: tuple[UUID, ...] = Field(min_length=1, max_length=10)
+
+
+class MessageAcknowledgeItem(ClosedModel):
+    delivery_id: UUID
+    status: Literal["ok", "conflict", "denied"]
+    state: Literal["ACKNOWLEDGED"] | None = None
+    reason: Literal[
+        "delivery_not_found", "delivery_not_for_current_work", "reserved_route",
+        "delivery_already_dispositioned",
+    ] | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "ok" and (self.state != "ACKNOWLEDGED" or self.reason is not None):
+            raise ValueError("successful acknowledgement requires its state")
+        if self.status != "ok" and (self.state is not None or self.reason is None):
+            raise ValueError("failed acknowledgement requires only its reason")
+        return self
+
+
+class MessageAcknowledgeResult(ClosedModel):
+    status: Literal["ok", "denied", "stale", "recovery_required"]
+    results: tuple[MessageAcknowledgeItem, ...] = ()
+    reason: str | None = None
+
+    @model_validator(mode="after")
+    def exact_shape(self) -> Self:
+        if self.status == "ok" and (not self.results or self.reason is not None):
+            raise ValueError("successful acknowledgement requires per-ID results")
+        if self.status != "ok" and (self.results or self.reason is None):
+            raise ValueError("failed acknowledgement requires only its reason")
+        return self
+
+
 class DispositionEvidence(ClosedModel):
     kind: Literal["result", "provider_effect"]
     result_message_id: UUID | None = None
@@ -257,13 +295,14 @@ class MessageDispositionRequest(ClosedModel):
 
 class MessageTransitionResult(ClosedModel):
     status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
-    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"] | None = None
+    state: Literal["AVAILABLE", "RECEIVED", "ACKNOWLEDGED", "DISPOSITIONED"] | None = None
     disposition_digest: str | None = None
     reason: Literal[
         "no_current_grant", "grant_version_changed", "delivery_not_found",
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
         "runtime_identity_unavailable",
         "runtime_generation_changed", "receiving_binding_changed", "delivery_not_received",
+        "delivery_already_acknowledged",
         "delivery_already_dispositioned", "disposition_identity_conflict",
         "result_evidence_missing", "result_evidence_mismatch", "effect_evidence_missing",
         "effect_evidence_unknown", "effect_not_applied", "effect_evidence_mismatch",
@@ -393,7 +432,7 @@ class MessageState:
                     messages.c.sender_work_id == message_deliveries.c.sender_work_id,
                     messages.c.message_id == message_deliveries.c.message_id,
                 )).where(
-                    message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+                    message_deliveries.c.state.in_(OPEN_REQUEST_STATES),
                     messages.c.kind == "request",
                     messages.c.route_ref.not_in(REVIEW_ROUTE_REFS),
                     messages.c.payload["work_id"].astext == str(work_id),
@@ -421,7 +460,7 @@ class MessageState:
             ),
         ).where(
             message_deliveries.c.delivery_id == delivery_id,
-            message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+            message_deliveries.c.state.in_(OPEN_REQUEST_STATES),
             messages.c.kind == "request",
             messages.c.route_ref.not_in(REVIEW_ROUTE_REFS),
             messages.c.payload["work_id"].astext == str(work_id),
@@ -603,9 +642,14 @@ class MessageState:
                         status="denied", reason="reply_sender_not_recipient"
                     )
                 if received_binding is not None and (
-                    replied["state"] != "RECEIVED"
-                    or replied["recipient_grant_version"] != received_binding[0]
-                    or replied["receiving_generation"] != received_binding[1]
+                    replied["state"] not in ("RECEIVED", "ACKNOWLEDGED")
+                    or (
+                        replied["state"] == "RECEIVED"
+                        and (
+                            replied["recipient_grant_version"] != received_binding[0]
+                            or replied["receiving_generation"] != received_binding[1]
+                        )
+                    )
                 ):
                     return MessageSubmitResult(
                         status="conflict", reason="reply_delivery_not_found"
@@ -663,9 +707,9 @@ class MessageState:
             if replied["disposition_digest"] == digest and replied["evidence"] == evidence.model_dump(mode="json"):
                 return None
             return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
-        if replied["state"] != "RECEIVED":
+        if replied["state"] not in ("RECEIVED", "ACKNOWLEDGED"):
             return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
-        if (
+        if replied["state"] == "RECEIVED" and (
             replied["recipient_grant_version"] != agent_binding.generation
             or replied["receiving_generation"] != str(agent_binding.generation)
         ):
@@ -811,6 +855,67 @@ class MessageState:
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
 
+    async def acknowledge_admitted(
+        self, work_id: UUID, binding_version: int, request: MessageAcknowledgeRequest,
+        *, agent_binding: AgentMailbox,
+    ) -> MessageAcknowledgeResult:
+        """Clear ordinary notifications while preserving open request/reply semantics."""
+        try:
+            async with self.engine.begin() as connection:
+                if not await self._current_agent_binding(connection, agent_binding):
+                    return MessageAcknowledgeResult(
+                        status="stale", reason="receiving_binding_changed"
+                    )
+                results: list[MessageAcknowledgeItem] = []
+                for delivery_id in request.delivery_ids:
+                    row = (await connection.execute(select(
+                        message_deliveries, messages.c.route_ref,
+                    ).join(messages, and_(
+                        messages.c.sender_work_id == message_deliveries.c.sender_work_id,
+                        messages.c.message_id == message_deliveries.c.message_id,
+                    )).where(
+                        message_deliveries.c.delivery_id == delivery_id,
+                    ).with_for_update())).mappings().one_or_none()
+                    if row is None:
+                        results.append(MessageAcknowledgeItem(
+                            delivery_id=delivery_id, status="denied",
+                            reason="delivery_not_found",
+                        ))
+                    elif row["recipient_work_id"] != work_id:
+                        results.append(MessageAcknowledgeItem(
+                            delivery_id=delivery_id, status="denied",
+                            reason="delivery_not_for_current_work",
+                        ))
+                    elif row["route_ref"] in REVIEW_ROUTE_REFS:
+                        results.append(MessageAcknowledgeItem(
+                            delivery_id=delivery_id, status="denied", reason="reserved_route",
+                        ))
+                    elif row["state"] == "DISPOSITIONED":
+                        results.append(MessageAcknowledgeItem(
+                            delivery_id=delivery_id, status="conflict",
+                            reason="delivery_already_dispositioned",
+                        ))
+                    else:
+                        if row["state"] != "ACKNOWLEDGED":
+                            await connection.execute(update(message_deliveries).where(
+                                message_deliveries.c.delivery_id == delivery_id,
+                            ).values(
+                                state="ACKNOWLEDGED",
+                                recipient_grant_version=binding_version,
+                                receiving_generation=str(agent_binding.generation),
+                                received_at=func.coalesce(
+                                    message_deliveries.c.received_at, func.now()
+                                ),
+                            ))
+                        results.append(MessageAcknowledgeItem(
+                            delivery_id=delivery_id, status="ok", state="ACKNOWLEDGED",
+                        ))
+                return MessageAcknowledgeResult(status="ok", results=tuple(results))
+        except (SQLAlchemyError, ValueError):
+            return MessageAcknowledgeResult(
+                status="recovery_required", reason="state_unavailable"
+            )
+
     async def has_received(self, work_id: UUID, grant_version: int) -> bool | None:
         """Read whether this work/grant namespace still has nonterminal received work."""
         try:
@@ -858,6 +963,8 @@ class MessageState:
                 assert row is not None
                 if row["state"] == "DISPOSITIONED":
                     return _transition("conflict", "delivery_already_dispositioned", row)
+                if row["state"] == "ACKNOWLEDGED":
+                    return _transition("conflict", "delivery_already_acknowledged", row)
                 if row["state"] == "RECEIVED":
                     if (
                         row["recipient_grant_version"] != binding_version
@@ -942,9 +1049,9 @@ class MessageState:
                     ):
                         return _transition("ok", row=row)
                     return _transition("conflict", "disposition_identity_conflict", row)
-                if row["state"] != "RECEIVED":
+                if row["state"] not in ("RECEIVED", "ACKNOWLEDGED"):
                     return _transition("conflict", "delivery_not_received", row)
-                if (
+                if row["state"] == "RECEIVED" and (
                     row["recipient_grant_version"] != binding_version
                     or row["receiving_generation"] != runtime.generation
                 ):
@@ -988,6 +1095,8 @@ class MessageState:
                     assert row is not None
                     if row["state"] == "DISPOSITIONED":
                         return _transition("conflict", "delivery_already_dispositioned", row)
+                    if row["state"] == "ACKNOWLEDGED":
+                        return _transition("conflict", "delivery_already_acknowledged", row)
                     if row["state"] == "RECEIVED":
                         if (row["recipient_grant_version"] != grant.version
                                 or row["receiving_generation"] != runtime.generation):
@@ -1067,10 +1176,12 @@ class MessageState:
                                 and row["evidence"] == request.evidence.model_dump(mode="json")):
                             return _transition("ok", row=row)
                         return _transition("conflict", "disposition_identity_conflict", row)
-                    if row["state"] != "RECEIVED":
+                    if row["state"] not in ("RECEIVED", "ACKNOWLEDGED"):
                         return _transition("conflict", "delivery_not_received", row)
-                    if (row["recipient_grant_version"] != grant.version
-                            or row["receiving_generation"] != runtime.generation):
+                    if row["state"] == "RECEIVED" and (
+                        row["recipient_grant_version"] != grant.version
+                        or row["receiving_generation"] != runtime.generation
+                    ):
                         return _transition("recovery_required", "receiving_binding_changed", row)
                     evidence_failure = await self._evidence_failure(
                         connection, grant, row, request.evidence, work_id=work_id

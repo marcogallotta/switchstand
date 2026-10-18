@@ -42,7 +42,7 @@ enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_ge
                  "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
-                 "agent_message_recover", "agent_message_result_send",
+                 "agent_message_recover", "agent_message_result_send", "agent_message_acknowledge",
                  "agent_message_disposition"]
 
 # Supersede the temporary user-level proof alias. Both names target the same endpoint,
@@ -61,7 +61,7 @@ enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_ge
                  "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
-                 "agent_message_recover", "agent_message_result_send",
+                 "agent_message_recover", "agent_message_result_send", "agent_message_acknowledge",
                  "agent_message_disposition"]
 
 

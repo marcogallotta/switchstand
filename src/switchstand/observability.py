@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 LOG = logging.getLogger("uvicorn.error")
 TIMING_SCHEMA = "switchstand.mcp_call_timing.v1"
 TIMING_PREFIX = "switchstand_mcp_timing "
-TIMING_SCHEMA_GENERATION = "0025_task_control_checkpoints"
+TIMING_SCHEMA_GENERATION = "0026_agent_message_ack"
 _SQL_STACK = "switchstand_observability_sql_stack"
 
 

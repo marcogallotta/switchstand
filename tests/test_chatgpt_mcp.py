@@ -709,6 +709,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "agent_register", "agent_takeover", "agent_transfer_request",
             "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
+            "agent_message_acknowledge",
             "agent_message_result_send", "agent_message_disposition",
             "required_result_save",
         }

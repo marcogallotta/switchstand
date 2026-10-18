@@ -5,7 +5,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import insert, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -222,8 +222,16 @@ async def test_persistent_hygiene_validates_accepted_routes(
         await connection.execute(insert(message_deliveries).values(
             delivery_id=delivery_id, sender_work_id=subject.work_id,
             message_id=message_id, recipient_work_id=other.work_id,
-            state="DISPOSITIONED", recipient_grant_version=1,
+            state="ACKNOWLEDGED", recipient_grant_version=1,
         ))
+    async with engine.begin() as connection:
+        assert await message_state.has_open_owner_proposal(
+            connection, work_id=subject.work_id,
+            proposal_ref=f"message:{delivery_id}", owner_ref="agent:other",
+        )
+        await connection.execute(update(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id
+        ).values(state="DISPOSITIONED"))
     assert await result(AcceptedFindingRoute(
         kind="ROUTE_PROPOSED_OWNER", owner_ref="agent:other",
         proposal_ref=f"message:{delivery_id}",

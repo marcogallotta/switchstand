@@ -63,7 +63,7 @@ class AgentPendingMessage(ClosedModel):
     payload: JsonValue | None = None
     payload_omitted: bool = False
     payload_chars: int = Field(ge=0)
-    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
+    state: Literal["AVAILABLE", "RECEIVED", "ACKNOWLEDGED", "DISPOSITIONED"]
     durable_capture: DurableCaptureGuidance = Field(
         default_factory=lambda: durable_capture_guidance((), ()),
     )
