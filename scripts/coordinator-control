@@ -24,6 +24,7 @@ FROZEN_REPOSITORY_FILES = (
     "scripts/codex-continuity-hook",
     "scripts/codex-compact-hook",
     "scripts/codex-hook",
+    "scripts/codex-stop-mailbox",
     "scripts/codex-worker-inspect",
     "scripts/coordinator-control",
     "scripts/coordinator-handoff",

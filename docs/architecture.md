@@ -603,7 +603,12 @@ preflight. This is a transitional trusted-host bridge, not a provider API for ag
 
 Ordinary Codex uses the official npm-installed CLI directly. Repository configuration and
 instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
-global `codex` command.
+global `codex` command. Its synchronous `Stop` hook calls a loopback-only HTTP adapter on the
+existing authenticated edge. The adapter resolves only the current `codex:<threadId>` mailbox
+binding and returns paginated pending delivery IDs without receiving or changing them. The hook
+scans those pages and may request one continuation; Codex's `stop_hook_active` flag is the mandatory
+escape on the continued stop. Missing, replaced, malformed, timed-out, or unavailable state is a
+visible fail-open result. The public host does not route the adapter path.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
