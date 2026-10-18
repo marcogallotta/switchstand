@@ -2,7 +2,7 @@ approval_policy = "never"
 default_permissions = ":danger-full-access"
 
 [features]
-hooks = true # The repository primary-Git guard remains inactive pending safe reactivation.
+hooks = true
 multi_agent = true
 apps = false
 
@@ -12,6 +12,15 @@ apps = false
 type = "command"
 command = '"$(git rev-parse --show-toplevel)/scripts/codex-stop-mailbox"'
 timeout = 5
+
+[[hooks.PreToolUse]]
+matcher = "^Bash$"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/scripts/codex-hook" --coordinator-primary "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"'
+timeout = 10
+statusMessage = "Protecting canonical primary source"
 
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
