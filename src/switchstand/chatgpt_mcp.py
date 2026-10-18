@@ -20,7 +20,12 @@ from .agent_messages import (
     AgentTransferRequestResult,
     public_message,
 )
-from .chatgpt import ChatGPTService, RequiredResultSaveRequest
+from .chatgpt import (
+    ChatGPTService,
+    HumanTrajectoryGetResponse,
+    HumanTrajectoryRecordResponse,
+    RequiredResultSaveRequest,
+)
 from .contracts import (
     ClosedModel,
     Status,
@@ -43,6 +48,7 @@ from .grants import (
     RelationPatch,
     ScalarPatch,
 )
+from .human_trajectory import HumanTrajectoryData, SourceKind
 from .implementation_requests import ImplementationRequestResult
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
@@ -212,6 +218,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
     "repository_bundle_get",
     "repository_candidate_qualification_get",
     "work_get",
+    "human_trajectory_get",
     "work_search",
     "work_resolve_reference",
     "work_history",
@@ -225,6 +232,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
 ORDINARY_EFFECT_TOOLS = frozenset({
     "work_append",
     "work_create",
+    "human_trajectory_record",
     "work_update",
     "work_relate",
     "required_result_save",
@@ -406,6 +414,42 @@ def build_ordinary_tools(
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
 
+    async def human_trajectory_get(
+        api_version: Literal["1"], work_id: UUID,
+    ) -> HumanTrajectoryGetResponse:
+        """Read the current agent-captured human decisions for one admitted WorkId."""
+        del api_version
+        correlate(work_id)
+        result = await service.human_trajectory_get(work_id)
+        audited("human_trajectory_get", str(work_id), result.status)
+        return result
+
+    async def human_trajectory_record(
+        api_version: Literal["1"], operation_id: UUID, work_id: UUID,
+        expected_generation: Annotated[int, Field(ge=1)],
+        expected_predecessor_id: UUID | None,
+        source_kind: SourceKind,
+        source_ref: Annotated[str, Field(min_length=1, max_length=512)],
+        data: HumanTrajectoryData,
+        source_revision: Annotated[str | None, Field(min_length=1, max_length=512)] = None,
+    ) -> HumanTrajectoryRecordResponse:
+        """Record a best-effort agent interpretation; not verified human approval.
+
+        Reuse the existing work_update authority and trajectory CAS semantics.
+        Retry an uncertain result only with the SAME operation_id and arguments.
+        """
+        del api_version
+        correlate(work_id)
+        result = await service.human_trajectory_record(
+            work_id=work_id, operation_id=operation_id,
+            expected_generation=expected_generation,
+            expected_predecessor_id=expected_predecessor_id,
+            source_kind=source_kind, source_ref=source_ref,
+            source_revision=source_revision, data=data,
+        )
+        audited("human_trajectory_record", str(work_id), result.status)
+        return result
+
     async def action_summary(
         owner_work_id: UUID, currentness_token: str,
     ) -> ActionSummary | ActionSummaryUnavailable | None:
@@ -516,6 +560,7 @@ def build_ordinary_tools(
     async def work_append(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, text: str, purpose: AppendPurpose,
+        confirm_cancels_review: bool = False,
     ) -> GuardOutcome:
         """Append exceptional provenance/history only; never current state, results, or messaging."""
         correlate(work_id)
@@ -527,6 +572,7 @@ def build_ordinary_tools(
         result = await service.append(ProtectedAppend(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, text=text,
+            confirm_cancels_review=confirm_cancels_review,
         ))
         audited("work_append", f"{work_id}:purpose={purpose}", result.status)
         return result
@@ -630,6 +676,7 @@ def build_ordinary_tools(
     async def work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, patch: ScalarPatch,
+        confirm_cancels_review: bool = False,
     ) -> GuardOutcome:
         """Write canonical current state; use notes for intent, progress, findings, verdicts, and results."""
         correlate(work_id)
@@ -641,6 +688,7 @@ def build_ordinary_tools(
         result = await service.update(ProtectedUpdate(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision, patch=patch,
+            confirm_cancels_review=confirm_cancels_review,
         ))
         audited("work_update", str(work_id), result.status)
         return result
@@ -648,10 +696,12 @@ def build_ordinary_tools(
     async def enriched_work_update(
         api_version: Literal["1"], operation_id: UUID, work_id: UUID,
         observed_revision: str, patch: ScalarPatch,
+        confirm_cancels_review: bool = False,
     ) -> OrdinaryUpdateResult:
         """Write canonical state and enrich known outcomes from one fresh exact read."""
         result = await work_update(
             api_version, operation_id, work_id, observed_revision, patch,
+            confirm_cancels_review,
         )
         summary = None
         activation = None
@@ -1448,6 +1498,8 @@ def build_ordinary_tools(
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
         *(((("observability_get", observability_get),)) if service.reviews is not None else ()),
+        ("human_trajectory_get", human_trajectory_get),
+        ("human_trajectory_record", human_trajectory_record),
         ("work_get", enriched_work_get if (
             service.outcome_state_enabled or service.activation_continuity is not None
         ) else work_get),

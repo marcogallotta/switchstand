@@ -2,8 +2,16 @@ approval_policy = "never"
 default_permissions = ":danger-full-access"
 
 [features]
-hooks = false
+hooks = true # Off-switch: set hooks = false.
 multi_agent = true
+
+[[hooks.PreToolUse]]
+matcher = "Bash|Edit|MultiEdit|Write|NotebookEdit"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/scripts/codex-hook" --coordinator-primary "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"'
+timeout = 10
 
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
@@ -28,9 +36,9 @@ enabled = true
 url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
 required = true
 default_tools_approval_mode = "approve"
-enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
+enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
-                 "work_create", "work_update", "outcome_state_update", "implementation_request", "work_relate",
+                 "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "review_request", "review_get", "review_recover", "review_submit",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
@@ -48,9 +56,9 @@ enabled = false
 url = "https://laptop.tail46f0b9.ts.net:8446/mcp"
 required = false
 default_tools_approval_mode = "approve"
-enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
+enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
-                 "work_create", "work_update", "outcome_state_update", "implementation_request", "work_relate",
+                 "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "review_request", "review_get", "review_recover", "review_submit",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",

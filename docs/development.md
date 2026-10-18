@@ -22,6 +22,8 @@ cd ~/.local/state/switchstand/worktrees/<writer-name>
 sh scripts/check tests/test_example.py -k relevant_case
 ```
 
+For an ordinary fresh copy of the latest `main`, run `scripts/new-worktree <name>` and change to the printed path. The helper fetches `origin/main`, creates the copy under `~/.local/state/switchstand/worktrees` on branch `v2-<name>`, and refuses an existing name.
+
 `sh scripts/check <pytest args>` always runs Ruff and Pyright, then passes the supplied
 arguments to pytest. Use `sh scripts/check tests/test_example.py` for one test module or
 `sh scripts/check tests/test_example.py -k relevant_case` for one behavior. With no

@@ -167,6 +167,7 @@ def main():
             result = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT)
             status = result.si_status if result.si_code == os.CLD_EXITED else 128 + result.si_status
         print((run / "qualification.log").read_text(), end="")
+    print("Disposable PostgreSQL teardown: ok", flush=True)
     return status
 
 

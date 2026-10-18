@@ -1563,7 +1563,7 @@ class ReviewService:
         sources = await self.occurrences.request_sources(request.review_id)
         found = None
         current_source = False
-        stale_subject = False
+        stale_found: tuple[PendingMessage, ReviewEnvelope] | None = None
         for record, envelope, bound in sources:
             subject = await self.works.get(envelope.brief.basis.subject_work_id)
             authoritative = (
@@ -1584,16 +1584,22 @@ class ReviewService:
                     found = record.delivery, envelope
                     break
                 continue
-            stale_subject = stale_subject or received
+            if received:
+                stale_found = record.delivery, envelope
+        stale_subject = found is None and stale_found is not None and not current_source
         if found is None:
-            if stale_subject and not current_source:
+            if stale_subject and request.verdict != "FINDINGS":
                 return ReviewResult(status="STALE", review_id=request.review_id,
                                     reason="subject_revision_changed")
-            return ReviewResult(
-                status="DENIED", review_id=request.review_id,
-                reason=("review_delivery_not_received" if sources
-                        else "review_delivery_not_found"),
-            )
+            if stale_subject:
+                found = stale_found
+                assert found is not None
+            else:
+                return ReviewResult(
+                    status="DENIED", review_id=request.review_id,
+                    reason=("review_delivery_not_received" if sources
+                            else "review_delivery_not_found"),
+                )
         delivery, envelope = found
         if envelope.brief.basis.mode == "FOCUSED" and not {
             finding.finding_id for finding in request.findings
@@ -1646,6 +1652,9 @@ class ReviewService:
         if submitted.status != "ok" or submitted.message is None:
             return ReviewResult(status="UNKNOWN", review_id=request.review_id,
                                 reason="message_conflict")
+        if stale_subject:
+            return ReviewResult(status="STALE", review_id=request.review_id,
+                                reason="subject_revision_changed")
         final_delivery = submitted.message
         if immediate.endpoint_id != requester.endpoint_id:
             notification_request = MessageSubmitRequest(

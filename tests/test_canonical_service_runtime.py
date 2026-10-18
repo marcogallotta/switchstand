@@ -12,6 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from switchstand import chatgpt_edge
+from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState
 from switchstand.canonical_event_reads import CanonicalEventReader
 from switchstand.canonical_relations import (
     CanonicalRelationsRepository,
@@ -26,7 +27,10 @@ from switchstand.canonical_work import (
     canonical_metadata,
     canonical_revision,
 )
-from switchstand.canonical_work_runtime import CanonicalWorkRuntime
+from switchstand.canonical_work_runtime import (
+    CONFIRM_CANCELS_REVIEW_MESSAGE,
+    CanonicalWorkRuntime,
+)
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import (
     LaunchAuthority,
@@ -52,6 +56,16 @@ from switchstand.grants import (
     WorkGrant,
 )
 from switchstand.mcp import controller_from_env
+from switchstand.messages import MessageReceiveRequest, MessageState, RuntimeCurrentness
+from switchstand.reviews import (
+    ReviewFinding,
+    ReviewGuidelines,
+    ReviewOccurrenceState,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewService,
+    ReviewSubmit,
+)
 from switchstand.state import PostgresState, metadata, work_handles
 from switchstand.work_events import WorkEventRepository
 
@@ -156,6 +170,58 @@ def relation(
             subject.work_id, observed_version
         ), patch=patch,
     )
+
+
+async def pending_review(
+    subject: Subject,
+) -> tuple[
+    UUID, UUID, ReviewService, AgentMailbox, AgentMailbox, MessageState,
+]:
+    mailboxes = AgentMailboxState(subject.engine)
+    requester = (await mailboxes.register_agent(
+        "Requester", "principal-requester", "chat-requester",
+    )).mailbox
+    reviewer = (await mailboxes.register_agent(
+        "Coordinator", "principal-reviewer", "chat-reviewer",
+    )).mailbox
+    assert requester is not None and reviewer is not None
+    policy = ReviewPolicy(version="policy-v1")
+    occurrences = ReviewOccurrenceState(subject.runtime.works, mailboxes, policy)
+    messages = MessageState(subject.engine, subject.grants)
+    reviews = ReviewService(
+        occurrences, mailboxes, messages, policy,
+        ReviewGuidelines(version="guidelines-v1", digest="a" * 64),
+    )
+    requested = await reviews.request(ReviewRequest(
+        subject_work_id=subject.work_id,
+        observed_revision=canonical_revision(subject.work_id, 1),
+        review_kind="CODE",
+    ), requester)
+    assert requested.status == "SENT"
+    assert requested.review_id is not None and requested.delivery_id is not None
+    return (
+        requested.review_id, requested.delivery_id, reviews,
+        requester, reviewer, messages,
+    )
+
+
+async def guarded_write(
+    subject: Subject, kind: str, operation_id: UUID, *, confirm: bool = False,
+    observed_version: int = 1,
+):
+    revision = canonical_revision(subject.work_id, observed_version)
+    if kind == "update":
+        return await subject.service.update(ProtectedUpdate(
+            api_version="1", operation_id=operation_id, work_id=subject.work_id,
+            grant_version=subject.grant.version, observed_revision=revision,
+            patch=ScalarPatch(notes="confirmed edit"),
+            confirm_cancels_review=confirm,
+        ))
+    return await subject.service.append(ProtectedAppend(
+        api_version="1", operation_id=operation_id, work_id=subject.work_id,
+        grant_version=subject.grant.version, observed_revision=revision,
+        text="confirmed append", confirm_cancels_review=confirm,
+    ))
 
 async def test_service_routes_reads_and_search_to_canonical_runtime(subject: Subject) -> None:
     got = await subject.service.get(subject.work_id)
@@ -448,6 +514,101 @@ async def test_active_service_routes_append_to_canonical_events(subject: Subject
     assert applied.effect == "applied" and isinstance(applied.receipt, EffectReceipt)
     assert applied.receipt.provider == "postgres"
     assert await subject.service.append(request) == applied
+
+
+@pytest.mark.parametrize("kind", ["update", "append"])
+async def test_pending_review_requires_confirmation_without_writing(
+    subject: Subject, kind: str,
+) -> None:
+    review_id, *_rest = await pending_review(subject)
+    operation_id = uuid4()
+
+    warned = await guarded_write(subject, kind, operation_id)
+
+    assert (warned.status, warned.effect, warned.reason, warned.next_action) == (
+        "CONFIRM_REQUIRED", "not_sent", "pending_review",
+        CONFIRM_CANCELS_REVIEW_MESSAGE.format(review_id=review_id),
+    )
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 1 and stored.notes == "notes"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(operation_id)
+        )) is None
+        assert await connection.scalar(select(subject.events.events.c.id).where(
+            subject.events.events.c.operation_id == operation_id
+        )) is None
+
+
+@pytest.mark.parametrize("kind", ["update", "append"])
+async def test_confirmed_pending_review_write_applies_and_stales_review(
+    subject: Subject, kind: str,
+) -> None:
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
+    operation_id = uuid4()
+    warned = await guarded_write(subject, kind, operation_id)
+
+    applied = await guarded_write(subject, kind, operation_id, confirm=True)
+
+    assert warned.status == "CONFIRM_REQUIRED"
+    assert applied.status == "ok" and applied.effect == "applied"
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 2
+    stale = await reviews.get(review_id, requester)
+    assert (stale.status, stale.reason) == ("STALE", "review_basis_changed")
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(operation_id)
+        )) == str(operation_id)
+
+
+async def test_saved_stale_findings_do_not_trigger_spurious_confirmation(
+    subject: Subject,
+) -> None:
+    review_id, delivery_id, reviews, _requester, reviewer, messages = (
+        await pending_review(subject)
+    )
+    received = await messages.receive_admitted(
+        reviewer.endpoint_id, reviewer.generation,
+        RuntimeCurrentness(generation="1", current_generation="1"),
+        MessageReceiveRequest(
+            api_version="1", delivery_id=delivery_id,
+            grant_version=reviewer.generation,
+        ),
+        agent_binding=reviewer,
+    )
+    assert received.status == "ok"
+    first = await guarded_write(subject, "update", uuid4(), confirm=True)
+    assert first.status == "ok"
+    finding = ReviewFinding(
+        finding_id="F-late", defect="Missing proof", evidence="No boundary result",
+        consequence="Claim is unsafe", affected_claim="landing",
+        minimum_clearing_condition="Supply boundary proof",
+    )
+    stale = await reviews.submit(ReviewSubmit(
+        review_id=review_id, verdict="FINDINGS", findings=(finding,),
+        context_provenance="UNSEEDED",
+    ), reviewer)
+    assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
+
+    second = await guarded_write(
+        subject, "update", uuid4(), observed_version=2,
+    )
+
+    assert second.status == "ok" and second.effect == "applied"
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 3
+
+
+@pytest.mark.parametrize("kind", ["update", "append"])
+async def test_write_without_pending_review_is_unchanged(
+    subject: Subject, kind: str,
+) -> None:
+    applied = await guarded_write(subject, kind, uuid4())
+
+    assert applied.status == "ok" and applied.effect == "applied"
 
 
 async def test_workspace_create_uses_existing_project_alias(subject: Subject) -> None:
