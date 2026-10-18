@@ -6,12 +6,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import delete, select, text
+from sqlalchemy import Table, delete, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from switchstand import chatgpt_edge
+from switchstand import canonical_work_runtime, chatgpt_edge
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState
 from switchstand.canonical_event_reads import CanonicalEventReader
 from switchstand.canonical_relations import (
@@ -789,6 +789,7 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
     assert applied == replay and applied.effect == "applied"
     assert applied.suggestion_status == "OK" and not applied.candidates
     assert "context-free fork" in applied.code_reconciliation_instruction
+    assert "run in parallel where possible" in applied.code_reconciliation_instruction
     assert conflict.reason == "operation_identity_conflict"
     stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
     assert stored.item is not None
@@ -808,7 +809,7 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
     ("SUB-ITEM", False), ("RELATED", False),
 ])
 async def test_feedback_classification_is_atomic_exact_and_replayable(
-    subject: Subject, classification: str, closed: bool,
+    subject: Subject, monkeypatch: pytest.MonkeyPatch, classification: str, closed: bool,
 ) -> None:
     category, project_id = "BUG", uuid4()
     async with subject.engine.begin() as connection:
@@ -822,24 +823,39 @@ async def test_feedback_classification_is_atomic_exact_and_replayable(
     target = await subject.service.file_issue(
         category, uuid4(), "Shared crash target", "target evidence",
     )
+    await subject.service.file_issue(category, uuid4(), "unshared", "decoy evidence")
     source = await subject.service.file_issue(
         category, uuid4(), "Shared crash source", "source evidence",
     )
     assert target.work_id is not None and source.work_id is not None
     assert [candidate.id for candidate in source.candidates] == [target.work_id]
-    source_item = (await subject.runtime.get(source.work_id)).item
-    target_item = (await subject.runtime.get(target.work_id)).item
-    assert source_item is not None and target_item is not None
     operation_id = uuid4()
     target_fields = {} if classification == "NEW" else {
         "target_work_id": target.work_id,
-        "observed_target_revision": target_item.revision,
+        "observed_target_revision": canonical_revision(target.work_id, 1),
     }
     arguments = {
         "mode": "CLASSIFY", "source_work_id": source.work_id,
-        "observed_source_revision": source_item.revision,
+        "observed_source_revision": canonical_revision(source.work_id, 1),
         "classification": classification, **target_fields,
     }
+    if classification in {"AMEND", "SUB-ITEM"}:
+        def fail_journal(_table: Table):
+            raise SQLAlchemyError("injected classification failure")
+
+        failure_id = uuid4()
+        with monkeypatch.context() as failure_patch:
+            failure_patch.setattr(canonical_work_runtime, "insert", fail_journal)
+            failed = await subject.service.file_issue(category, failure_id, **arguments)  # type: ignore[arg-type]
+        rolled_source = await subject.runtime.works.get(source.work_id)
+        rolled_target = await subject.runtime.works.get(target.work_id)
+        assert failed.effect == "unknown" and rolled_source is not None and rolled_target is not None
+        assert rolled_source.notes == "source evidence" and rolled_target.notes == "target evidence"
+        assert (await subject.runtime.relations.get(source.work_id)).parent_work_id is None
+        async with subject.engine.connect() as connection:
+            assert await connection.scalar(select(effect_intents.c.operation_id).where(
+                effect_intents.c.operation_id == str(failure_id)
+            )) is None
     applied = await subject.service.file_issue(category, operation_id, **arguments)  # type: ignore[arg-type]
     replay = await subject.service.file_issue(category, operation_id, **arguments)  # type: ignore[arg-type]
     assert applied == replay and applied.effect == "applied"

@@ -256,7 +256,7 @@ class CanonicalWorkRuntime:
                 if result.status != "ok":
                     raise SQLAlchemyError("feedback suggestion search unavailable")
                 for item in result.items:
-                    if item.id != source_work_id:
+                    if item.id != source_work_id and token in normalize_title(item.title).split():
                         found[item.id] = item
         return tuple(sorted(found.values(), key=lambda item: (
             -len(set(normalize_title(title).split()) & set(normalize_title(item.title).split())),
@@ -332,9 +332,8 @@ class CanonicalWorkRuntime:
                 if blocked is not None:
                     return self._classification_guard(request, "unknown", "feedback_has_unresolved_effect")
                 code = "" if request.code_status is None else (
-                    f" Code reconciliation: {request.code_status}; fork "
-                    f"{request.fork_runtime_seconds}s; critical wait "
-                    f"{request.critical_path_wait_seconds}s."
+                    f" Code reconciliation: {request.code_status}; fork {request.fork_runtime_seconds}s; "
+                    f"critical wait {request.critical_path_wait_seconds}s."
                 )
                 ref = "" if target is None else f" {target.work_id}"
                 source_note, target_note, close, parent = {

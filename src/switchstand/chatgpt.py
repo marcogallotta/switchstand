@@ -285,10 +285,8 @@ class ChatGPTService:
             candidates = await self.canonical_work.feedback_candidates(
                 title, outcome.work_id, frozenset(self.issue_projects),
             )
-            return FeedbackOutcome(
-                **outcome.model_dump(), suggestion_status="OK",
-                candidates=candidates,
-            )
+            return FeedbackOutcome(**outcome.model_dump(), suggestion_status="OK",
+                                   candidates=candidates)
         except (SQLAlchemyError, ValueError):
             return FeedbackOutcome(**outcome.model_dump(), suggestion_status="UNKNOWN")
 

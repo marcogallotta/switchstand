@@ -6,7 +6,6 @@ import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -71,11 +70,10 @@ def test_full_server_preserves_work_tool_schema_titles():
 
 
 def test_managed_feedback_tools_share_classification_schema():
-    server = build_server(FakeService(), ID, issue_reporter=SimpleNamespace(file_issue=AsyncMock()))
-    tools = [server._tool_manager.get_tool(name) for name in (
+    server = build_server(FakeService(), ID, issue_reporter=object())
+    for tool in (server._tool_manager.get_tool(name) for name in (
         "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
-    )]
-    for tool in tools:
+    )):
         assert tool.parameters["properties"]["mode"]["default"] == "FILE"
         assert "classification" in tool.parameters["properties"]
 

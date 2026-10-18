@@ -375,7 +375,7 @@ class GuardOutcome(ClosedModel):
 class FeedbackOutcome(GuardOutcome):
     suggestion_status: Literal["OK", "UNKNOWN"] | None = None
     candidates: tuple[WorkSearchItem, ...] = ()
-    code_reconciliation_instruction: str = "For code-related feedback, use a context-free fork to inspect current main and relevant PRs; record total fork runtime and actual critical-path wait when classifying."
+    code_reconciliation_instruction: str = "For code-related feedback, use a context-free fork to inspect current main and relevant PRs, run in parallel where possible, and record total fork runtime plus actual critical-path wait when classifying."
 
 
 class GrantResult(ClosedModel):
