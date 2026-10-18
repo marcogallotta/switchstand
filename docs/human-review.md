@@ -2,7 +2,7 @@
 
 Human Review is the final decision conversation when the governing procedure requires it.
 
-In Switchstand, every material implementation gets final live Human Review before dispatch. Other work may also require Human Review where its governing procedure says so.
+Before committing to a new material solution, involve Marco if its consequences or tradeoffs are his choice. Approval of a roadmap or goal is not approval of an invented solution. An unchanged solution already covered by Marco's approval needs no second Human Review merely because implementation or landing is ready. Other work follows its governing Human Review procedure.
 
 Human Review closes the material decision trajectory. Prior Human Input is expected where a consequential choice actually required it, but is not a prerequisite.
 
@@ -41,23 +41,15 @@ Judge whether this is the right thing and scale to build before rewarding intern
 
 Do not dump the specification, review chronology, IDs, or implementation detail unless they change the decision.
 
-Assume the human may read only this opening, in this order:
+Before asking Marco, establish whether a genuinely new material human-owned decision remains. A roadmap or outcome agreement is not authorization for a new material solution. If an exact already-approved solution is unchanged, continue within existing effect authority rather than asking again. A completed or deployed change is reported as status, not a fresh approval request.
 
-```text
-WHAT YOU ASKED — <intended or approved outcome in the human's framing>
-WHAT THIS DOES — <actual ordinary-use change>
-WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU — <exclusions, cuts, burden, limits, or consequences>
-SIZE — <decision-useful implementation/support size or operating burden, with uncertainty>
-```
+For a real decision, use a natural, compact explanation in Marco's own context: what he asked for, what materially differs, the recommendation and its decisive reason against the strongest simpler alternative, relevant consequence or cut, and what his response would authorize. Do not replace reasoning with technical labels, a compulsory four-line opening, blanket multi-item permissions, or repeated "Go?" prompts. Do not exaggerate normal V1 staging as a crisis. Include material facts without making Marco read a specification.
 
-Add `RECOMMENDATION` and `DECISION` only when needed. No decision-changing fact may appear only
-after the opening. When Human Review is required, the author includes this actual proposed opening
-in the existing design/implementation/deviation review; findings that change its decision surface
-receive focused rereview, not a new review-of-review stage.
+When a material decision needs Human Review, include the actual proposed explanation in the existing independent design or implementation review; substantive corrections receive focused rereview, not a separate format-review stage.
 
 ## Do not
 
-Do not write the human's decision, present "Human Review: approve", ask a bare approve question without saying what yes causes, replay settled choices, hide aggregate size behind smaller PRs, or turn reviewer remedies into requirements unless the governing contract independently requires them.
+Do not write the human's decision, ask for permission already given, turn status/completion into a Human Review, present "Human Review: approve", ask a bare approve question without saying what yes causes, seek blanket approval for unrelated changes, hide aggregate size behind smaller PRs, or turn reviewer remedies into requirements unless the governing contract independently requires them.
 
 A strong recommendation is allowed. Recommendation and human decision remain separate facts.
 
