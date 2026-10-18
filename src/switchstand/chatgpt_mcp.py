@@ -313,12 +313,15 @@ def _takeover_message_confirms(
         normalized,
     ):
         return False
+    prefix = normalized[:directives[0].start()].strip()
+    if prefix not in {"", "please", "marco says:", "marco says: please"}:
+        return False
     if coordinator:
         target = r"(?:codex\s+coordinator|coordinator|/root)"
     else:
         target = re.escape(" ".join(name.strip().casefold().split())).replace(r"\ ", r"\s+")
     return re.match(
-        rf"(?:take\s+over|takeover)\s+(?:as\s+)?{target}(?=$|[.!;:])",
+        rf"(?:take\s+over|takeover)\s+(?:as\s+)?{target}(?=$|[.!])",
         normalized[directives[0].start():],
     ) is not None
 

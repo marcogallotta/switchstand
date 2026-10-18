@@ -357,6 +357,10 @@ async def test_named_cross_principal_takeover_rejects_missing_marco_authorizatio
     "Take over Alpha and take over Tests",
     "Take over Tests and Alpha",
     "Take over Tests, Alpha",
+    "Refuse to take over Tests.",
+    "Alice should take over Tests.",
+    "Take over Tests; and Alpha",
+    "Take over Tests: Alpha",
 ])
 async def test_named_cross_principal_takeover_requires_one_exact_affirmative_directive(
     agent_messaging, message,
@@ -548,7 +552,7 @@ async def test_root_takeover_does_not_audit_or_log_confirmation_message(
     actor[0], session[0] = other, "replacement-chat"
     records = []
     configured = root_tools(service, session, audit=lambda *record: records.append(record))
-    message = "Marco says takeover /root; private-message-marker"
+    message = "Marco says: takeover /root. private-message-marker"
 
     assert (await configured["agent_takeover"]("1", "/root", message)).status == "ok"
 
