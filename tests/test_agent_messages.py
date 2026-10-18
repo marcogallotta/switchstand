@@ -955,6 +955,35 @@ async def test_pending_default_page_is_ten_with_keyset_continuation(agent_messag
     assert len(second.messages) == 1 and not second.has_more
 
 
+async def test_fresh_pending_poll_finds_delivery_hidden_by_older_page_cursor(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+
+    session[0] = "chat-a"
+    for index in range(2):
+        assert (await tools["agent_message_send"](
+            "1", "Beta", uuid4(), {"index": index}
+        )).status == "ok"
+
+    session[0] = "chat-b"
+    initial = await tools["agent_message_pending"]("1", limit=1)
+    assert initial.has_more and initial.next_cursor is not None
+
+    session[0] = "chat-a"
+    new_message_id = uuid4()
+    assert (await tools["agent_message_send"](
+        "1", "Beta", new_message_id, {"index": "new"}
+    )).status == "ok"
+
+    session[0] = "chat-b"
+    older_page = await tools["agent_message_pending"]("1", initial.next_cursor)
+    fresh_page = await tools["agent_message_pending"]("1")
+    assert new_message_id not in {message.message_id for message in older_page.messages}
+    assert new_message_id in {message.message_id for message in fresh_page.messages}
+
+
 async def test_codex_stop_page_uses_current_session_binding_without_receiving(agent_messaging):
     tools, _actor, session, _owner, _other, service = agent_messaging
     session[0] = "chat-a"

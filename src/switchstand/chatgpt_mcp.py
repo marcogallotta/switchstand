@@ -1474,10 +1474,21 @@ def build_ordinary_tools(
         return await agent_submit_view(result, request=True)
 
     async def agent_message_pending(
-        api_version: Literal["1"], cursor: UUID | None = None,
+        api_version: Literal["1"],
+        cursor: Annotated[UUID | None, Field(description=(
+            "Continuation only: pass the preceding page's next_cursor while has_more is true "
+            "to page older messages. Omit cursor for every fresh mailbox poll; never reuse it "
+            "as a since/new-arrivals checkpoint."
+        ))] = None,
         limit: Annotated[int, Field(ge=1, le=10)] = 10,
     ) -> AgentMessagePendingResult:
-        """List this registered agent's durable pending deliveries without WorkId addressing."""
+        """List this registered agent's durable pending deliveries without WorkId addressing.
+
+        Omit cursor for every fresh mailbox poll. A returned next_cursor is only for paging
+        older messages while has_more is true; never reuse it as a since/new-arrivals
+        checkpoint. Track handled delivery IDs and acknowledge processed notifications rather
+        than reprocessing them.
+        """
         context = await agent_context()
         if isinstance(context, tuple):
             return AgentMessagePendingResult(
