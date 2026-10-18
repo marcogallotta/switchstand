@@ -58,7 +58,7 @@ from .grants import (
 )
 from .human_trajectory import HumanTrajectoryData, SourceKind
 from .implementation_requests import ImplementationRequestResult
-from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
+from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, feedback_report_tool, project_work
 from .messages import (
     AGENT_MESSAGE_PAYLOAD_LIMIT,
     DispositionEvidence,
@@ -681,50 +681,17 @@ def build_ordinary_tools(
         audited("work_create", str(parent_work_id or project_id), result.status)
         return result
 
-    async def file_bug(
-        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-    ) -> GuardOutcome:
-        """Report a bug to the fixed BUGS triage list; preserve observed evidence exactly."""
-        del api_version
-        result = await service.file_issue("BUG", operation_id, title, evidence)
-        audited("file_bug", None, result.status)
-        return result
+    def fixed_feedback(category: str, tool_name: str):
+        return feedback_report_tool(
+            service, category, tool_name, "File feedback or classify an exact report.",
+            audit=lambda status: audited(tool_name, None, status),
+        )
 
-    async def file_feature(
-        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-    ) -> GuardOutcome:
-        """Report a missing product capability to the fixed feature triage list."""
-        del api_version
-        result = await service.file_issue("PRODUCT_FEATURE", operation_id, title, evidence)
-        audited("file_feature", None, result.status)
-        return result
-
-    async def file_process(
-        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-    ) -> GuardOutcome:
-        """Report a process or system complaint to the fixed PROCESS triage list."""
-        del api_version
-        result = await service.file_issue("PROCESS", operation_id, title, evidence)
-        audited("file_process", None, result.status)
-        return result
-
-    async def file_performance(
-        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-    ) -> GuardOutcome:
-        """Report avoidable process latency to the fixed PERFORMANCE triage list."""
-        del api_version
-        result = await service.file_issue("PERFORMANCE", operation_id, title, evidence)
-        audited("file_performance", None, result.status)
-        return result
-
-    async def file_review_feedback(
-        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-    ) -> GuardOutcome:
-        """Record Human Review feedback in its fixed triage list, including praise or silence."""
-        del api_version
-        result = await service.file_issue("HUMAN_REVIEW_FEEDBACK", operation_id, title, evidence)
-        audited("file_review_feedback", None, result.status)
-        return result
+    file_bug = fixed_feedback("BUG", "file_bug")
+    file_feature = fixed_feedback("PRODUCT_FEATURE", "file_feature")
+    file_process = fixed_feedback("PROCESS", "file_process")
+    file_performance = fixed_feedback("PERFORMANCE", "file_performance")
+    file_review_feedback = fixed_feedback("HUMAN_REVIEW_FEEDBACK", "file_review_feedback")
 
     async def task_control_get(
         api_version: Literal["1"], work_id: UUID,

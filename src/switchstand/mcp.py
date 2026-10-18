@@ -34,6 +34,9 @@ from .core import Controller
 from .effects import CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
+    CodeReconciliation,
+    FeedbackClassification,
+    FeedbackOutcome,
     GrantedWorkResult,
     GuardOutcome,
     PrincipalContext,
@@ -80,6 +83,32 @@ from .work_events import WorkEventRepository
 TechnicalResolver = Callable[..., Awaitable[ac.TechnicalBasis | None]]
 ProofResolver = Callable[..., Awaitable[ac.TransitionProof | None]]
 ActivationContext = tuple[ActivationContinuity, TechnicalResolver, ProofResolver, tuple[UUID, int]]
+
+
+def feedback_report_tool(
+    reporter: object, category: str, tool_name: str, description: str,
+    audit: Callable[[str], None] | None = None,
+):
+    """Build the one flat FILE/CLASSIFY adapter shared by fixed reporting tools."""
+    async def report(
+        api_version: Literal["1"], operation_id: UUID,
+        mode: Literal["FILE", "CLASSIFY"] = "FILE",
+        title: str | None = None, evidence: str | None = None,
+        source_work_id: UUID | None = None, observed_source_revision: str | None = None,
+        classification: FeedbackClassification | None = None,
+        target_work_id: UUID | None = None, observed_target_revision: str | None = None,
+        code_status: CodeReconciliation | None = None,
+        fork_runtime_seconds: float | None = None,
+        critical_path_wait_seconds: float | None = None,
+    ) -> FeedbackOutcome:
+        arguments = locals()
+        del arguments["api_version"]
+        result = cast(FeedbackOutcome, await reporter.file_issue(category, **arguments))  # type: ignore[attr-defined]
+        if audit is not None:
+            audit(result.status)
+        return result
+    report.__name__, report.__doc__ = tool_name, description
+    return report
 
 
 class PublicWorkItem(WorkSearchItem):
@@ -468,15 +497,7 @@ def build_server(
         closed_tool(server, "work_update", _work_update)
     if issue_reporter is not None:
         def report_tool(category: str, description: str):
-            async def report(
-                api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-            ) -> GuardOutcome:
-                del api_version
-                return await issue_reporter.file_issue(  # type: ignore[attr-defined]
-                    category, operation_id, title, evidence,
-                )
-            report.__doc__ = description
-            return report
+            return feedback_report_tool(issue_reporter, category, "report", description)
 
         closed_tool(server, "file_bug", report_tool(
             "BUG", "Report a bug to the fixed BUGS triage list."))

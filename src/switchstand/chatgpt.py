@@ -42,12 +42,16 @@ from .discovery import DiscoveryProvider, WorkDiscovery
 from .effects import AppendGateway, CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
+    CodeReconciliation,
+    FeedbackClassification,
+    FeedbackOutcome,
     GrantedWorkResult,
     GrantResult,
     GuardOutcome,
     PrincipalContext,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedFeedbackClassification,
     ProtectedRelation,
     ProtectedUpdate,
     ScalarPatch,
@@ -206,24 +210,63 @@ class ChatGPTService:
         self.issue_projects = issue_projects or {}
 
     async def file_issue(
-        self, category: str, operation_id: UUID, title: str, evidence: str,
-    ) -> GuardOutcome:
-        """Create one ownerless report in its server-selected canonical list."""
+        self, category: str, operation_id: UUID, title: str | None = None,
+        evidence: str | None = None, *, mode: Literal["FILE", "CLASSIFY"] = "FILE",
+        source_work_id: UUID | None = None, observed_source_revision: str | None = None,
+        classification: FeedbackClassification | None = None,
+        target_work_id: UUID | None = None, observed_target_revision: str | None = None,
+        code_status: CodeReconciliation | None = None, fork_runtime_seconds: float | None = None,
+        critical_path_wait_seconds: float | None = None,
+    ) -> FeedbackOutcome:
+        """File feedback or apply one exact, atomic classification."""
         project_id = self.issue_projects.get(category)
         if project_id is None:
-            return GuardOutcome(
+            return FeedbackOutcome(
                 status="denied", operation="file_issue", operation_id=operation_id,
                 reason="reporting_list_unavailable", effect="not_sent", retry="none",
                 next_action="Provision and configure the exact reporting list.",
             )
         principal = await self.principal()
         if principal is None or self.canonical_work is None or not self.canonical_work_active:
-            return GuardOutcome(
+            return FeedbackOutcome(
                 status="unknown", operation="file_issue", operation_id=operation_id,
                 reason="canonical_reporting_unavailable", effect="not_sent", retry="none",
                 next_action="Restore the canonical reporting runtime.",
             )
         grant = await self.admission_grants.current(principal.key)
+        if mode == "CLASSIFY":
+            try:
+                request = ProtectedFeedbackClassification(
+                    operation_id=operation_id,
+                    grant_version=1 if grant is None else grant.version,
+                    source_work_id=source_work_id,  # type: ignore[arg-type]
+                    observed_source_revision=observed_source_revision,  # type: ignore[arg-type]
+                    classification=classification,  # type: ignore[arg-type]
+                    target_work_id=target_work_id,
+                    observed_target_revision=observed_target_revision,
+                    code_status=code_status, fork_runtime_seconds=fork_runtime_seconds,
+                    critical_path_wait_seconds=critical_path_wait_seconds,
+                )
+            except ValueError:
+                return FeedbackOutcome(
+                    status="denied", operation="feedback_classify",
+                    operation_id=operation_id, reason="invalid_classification_request",
+                    next_action="Supply the exact source, class, and required target revisions.",
+                )
+            outcome = await self.canonical_work.protected_feedback_classification(
+                self.admission_grants, principal, request, category,
+                frozenset(self.issue_projects),
+            )
+            return FeedbackOutcome(**outcome.model_dump())
+        if title is None or evidence is None or any(value is not None for value in (
+            source_work_id, observed_source_revision, classification, target_work_id,
+            observed_target_revision, code_status, fork_runtime_seconds,
+            critical_path_wait_seconds,
+        )):
+            return FeedbackOutcome(
+                status="denied", operation="file_issue", operation_id=operation_id,
+                reason="invalid_file_request", next_action="Supply only title and evidence.",
+            )
         request = ProtectedCreate(
             api_version="1", operation_id=operation_id,
             grant_version=1 if grant is None else grant.version,
@@ -232,10 +275,20 @@ class ChatGPTService:
             unblock_condition="TRIAGE_PICKUP", next_due="UNSCHEDULED",
             next_action_class="NONE", next_action_ref="NONE", project_id=project_id,
         )
-        return await self.canonical_work.protected_create(
+        outcome = await self.canonical_work.protected_create(
             self.admission_grants, principal, request,
             required_operation="file_issue", qualification_field="report_qualification",
         )
+        if outcome.status != "ok" or outcome.work_id is None:
+            return FeedbackOutcome(**outcome.model_dump())
+        try:
+            candidates = await self.canonical_work.feedback_candidates(
+                title, outcome.work_id, frozenset(self.issue_projects),
+            )
+            return FeedbackOutcome(**outcome.model_dump(), suggestion_status="OK",
+                                   candidates=candidates)
+        except (SQLAlchemyError, ValueError):
+            return FeedbackOutcome(**outcome.model_dump(), suggestion_status="UNKNOWN")
 
     async def activation_continuity_transition(
         self, operation_id: UUID, obligation_id: UUID, observed_revision: str,

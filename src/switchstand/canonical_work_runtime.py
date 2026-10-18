@@ -26,6 +26,7 @@ from .canonical_work import (
     CurrentWork,
     canonical_revision,
     canonical_work,
+    normalize_title,
 )
 from .contracts import (
     Routing,
@@ -45,9 +46,11 @@ from .grants import (
     CreateReceipt,
     EffectBlocker,
     EffectOutcomeView,
+    FeedbackClassificationReceipt,
     GuardOutcome,
     PrincipalContext,
     ProtectedCreate,
+    ProtectedFeedbackClassification,
     ProtectedRelation,
     ProtectedUpdate,
     RelationReceipt,
@@ -238,6 +241,159 @@ class CanonicalWorkRuntime:
                     status="ok", items=tuple(items), next_cursor=page.next_cursor,
                 )
         return WorkSearchResult(status="unknown")
+
+    async def feedback_candidates(
+        self, title: str, source_work_id: UUID, feedback_types: frozenset[str],
+    ) -> tuple[WorkSearchItem, ...]:
+        tokens = sorted(set(normalize_title(title).split()), key=lambda token: (-len(token), token))[:3]
+        found: dict[UUID, WorkSearchItem] = {}
+        for token in tokens:
+            for work_type in sorted(feedback_types):
+                result = await self.search(WorkSearchRequest(
+                    api_version="1", text=token, completed=False,
+                    work_type=work_type, limit=10,
+                ))
+                if result.status != "ok":
+                    raise SQLAlchemyError("feedback suggestion search unavailable")
+                for item in result.items:
+                    if item.id != source_work_id and token in normalize_title(item.title).split():
+                        found[item.id] = item
+        return tuple(sorted(found.values(), key=lambda item: (
+            -len(set(normalize_title(title).split()) & set(normalize_title(item.title).split())),
+            normalize_title(item.title), str(item.id),
+        ))[:10])
+
+    @staticmethod
+    def _classification_guard(
+        request: ProtectedFeedbackClassification, status: str, reason: str,
+        *, possible: bool = False,
+    ) -> GuardOutcome:
+        return GuardOutcome.model_validate({
+            "status": status, "operation": "feedback_classify",
+            "work_id": request.source_work_id, "operation_id": request.operation_id,
+            "reason": reason, "effect": "unknown" if possible else "not_sent",
+            "retry": "reconcile" if possible else "refresh" if status == "stale" else "none",
+            "next_action": (
+                "Replay this exact classification OperationId."
+                if possible else "Refresh the source, target, or reporting grant."
+            ),
+        })
+
+    async def protected_feedback_classification(
+        self, grants: GrantState, principal: PrincipalContext,
+        request: ProtectedFeedbackClassification, source_type: str,
+        feedback_types: frozenset[str],
+    ) -> GuardOutcome:
+        request_json = request.model_dump(mode="json")
+        fingerprint = hashlib.sha256(json.dumps([principal.key, request_json], sort_keys=True).encode()).hexdigest()
+        try:
+            async with grants.locked(principal.key) as grant, grants.engine.begin() as connection:
+                exact = (await connection.execute(select(effect_intents).where(
+                    effect_intents.c.operation_id == str(request.operation_id)
+                ))).mappings().one_or_none()
+                if exact is not None:
+                    if exact["principal_key"] != principal.key or exact["fingerprint"] != fingerprint:
+                        return self._classification_guard(request, "denied", "operation_identity_conflict")
+                    return GuardOutcome.model_validate(exact["outcome"])
+                if (grant is None or grant.principal != principal or not grant.current()
+                        or "file_issue" not in grant.operations):
+                    return self._classification_guard(request, "denied", "report_not_granted")
+                if request.grant_version != grant.version:
+                    return self._classification_guard(request, "stale", "grant_version_changed")
+                qualification = grant.report_qualification
+                expected = "test:" if principal.assurance == "test" else "real:"
+                if qualification is None or not qualification.startswith(expected):
+                    return self._classification_guard(request, "denied", "report_not_qualified")
+                ids = sorted(filter(None, (request.source_work_id, request.target_work_id)), key=str)
+                locked = {work_id: await self.works.get_locked(connection, work_id) for work_id in ids}
+                source, target = locked.get(request.source_work_id), locked.get(cast(UUID, request.target_work_id))
+                if source is None or source.completed or source.work_type != source_type:
+                    return self._classification_guard(request, "denied", "invalid_feedback_source")
+                if request.observed_source_revision != canonical_revision(source.work_id, source.row_version):
+                    return self._classification_guard(request, "stale", "source_revision_changed")
+                if request.target_work_id is not None:
+                    if target is None or target.completed or target.work_type not in feedback_types:
+                        return self._classification_guard(request, "denied", "invalid_feedback_target")
+                    if request.observed_target_revision != canonical_revision(target.work_id, target.row_version):
+                        return self._classification_guard(request, "stale", "target_revision_changed")
+                origin = (await connection.execute(select(effect_intents).where(
+                    (effect_intents.c.work_id == str(source.work_id))
+                    & (effect_intents.c.principal_key == principal.key) & (effect_intents.c.outcome["receipt"]["qualification"].astext == qualification)
+                    & (effect_intents.c.outcome["operation"].astext == "work_create")
+                    & (effect_intents.c.intent["request"]["work_type"].astext == source.work_type)
+                ).limit(1))).mappings().one_or_none()
+                if origin is None:
+                    return self._classification_guard(request, "denied", "source_not_filed_here")
+                blocked = (await connection.execute(select(effect_intents).where(
+                    effect_intents.c.work_id.in_([str(value) for value in ids])
+                    & (effect_intents.c.operation_id != str(request.operation_id))
+                    & (effect_intents.c.outcome["effect"].astext == "unknown")
+                ).limit(1))).mappings().one_or_none()
+                if blocked is not None:
+                    return self._classification_guard(request, "unknown", "feedback_has_unresolved_effect")
+                code = "" if request.code_status is None else (
+                    f" Code reconciliation: {request.code_status}; fork {request.fork_runtime_seconds}s; "
+                    f"critical wait {request.critical_path_wait_seconds}s."
+                )
+                ref = "" if target is None else f" {target.work_id}"
+                source_note, target_note, close, parent = {
+                    "NEW": ("Classification: NEW", None, False, None),
+                    "AMEND": (f"Classification: AMEND{ref}", f"Amended from {source.work_id}: {source.notes}", True, None),
+                    "DUPLICATE": (f"Classification: DUPLICATE of{ref}", None, True, None),
+                    "SUB-ITEM": (f"Classification: SUB-ITEM of{ref}", None, False, request.target_work_id),
+                    "RELATED": (f"Classification: RELATED to{ref}", None, False, None),
+                }[request.classification]
+                source_notes = f"{source.notes.rstrip()}\n\n{source_note}.{code}".strip()
+                target_notes = None if target is None or target_note is None else f"{target.notes.rstrip()}\n\n{target_note}".strip()
+                if len(source_notes) > 8000 or (target_notes is not None and len(target_notes) > 8000):
+                    return self._classification_guard(request, "denied", "classification_notes_overflow")
+                if target_notes is not None:
+                    target = await self.works.replace_locked(
+                        connection, replace(cast(CurrentWork, target), notes=target_notes)
+                    )
+                source = await self.works.replace_locked(connection, replace(
+                    source, notes=source_notes, completed=close,
+                    lifecycle_state="TERMINAL" if close else source.lifecycle_state,
+                    wait_kind="NONE" if close else source.wait_kind,
+                    unblock_condition="NONE" if close else source.unblock_condition,
+                    next_due="NONE" if close else source.next_due,
+                    next_action_class="NONE" if close else source.next_action_class,
+                    next_action_ref="NONE" if close else source.next_action_ref,
+                ))
+                if parent is not None:
+                    version = await self.relations.set_parent(
+                        source.work_id, parent, source.row_version, connection=connection,
+                    )
+                    source = replace(source, row_version=version)
+                receipt = FeedbackClassificationReceipt(
+                    operation_id=request.operation_id, principal=principal,
+                    grant_id=grant.id, grant_version=grant.version, work_id=source.work_id,
+                    provider="postgres", task_gid=str(source.work_id),
+                    observed_revision=request.observed_source_revision,
+                    resulting_revision=canonical_revision(source.work_id, source.row_version),
+                    classification=request.classification, target_work_id=request.target_work_id,
+                    qualification=qualification,
+                )
+                outcome = GuardOutcome(
+                    status="ok", operation="feedback_classify", work_id=source.work_id,
+                    operation_id=request.operation_id, reason="classification_converged",
+                    effect="applied", retry="none", next_action="Use the recorded receipt.",
+                    receipt=receipt,
+                )
+                await connection.execute(insert(effect_intents).values(
+                    operation_id=str(request.operation_id), fingerprint=fingerprint,
+                    principal_key=principal.key, work_id=str(source.work_id),
+                    grant_id=str(grant.id), grant_version=grant.version,
+                    intent={"request": request_json, "authority": "postgres"},
+                    outcome=outcome.model_dump(mode="json", exclude_none=True),
+                ))
+                return outcome
+        except (IntegrityError, TypeError, ValueError, KeyError, LookupError):
+            return self._classification_guard(request, "denied", "invalid_classification")
+        except SQLAlchemyError:
+            return self._classification_guard(
+                request, "unknown", "state_or_effect_unavailable", possible=True,
+            )
 
     async def update(self, request: WorkUpdateRequest) -> WorkResult:
         current = await self.works.get(request.work_id)

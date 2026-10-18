@@ -69,6 +69,15 @@ def test_full_server_preserves_work_tool_schema_titles():
     assert work_history.parameters["properties"]["limit"]["maximum"] == 100
 
 
+def test_managed_feedback_tools_share_classification_schema():
+    server = build_server(FakeService(), ID, issue_reporter=object())
+    for tool in (server._tool_manager.get_tool(name) for name in (
+        "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+    )):
+        assert tool.parameters["properties"]["mode"]["default"] == "FILE"
+        assert "classification" in tool.parameters["properties"]
+
+
 def test_managed_server_routes_only_known_profiles(monkeypatch):
     sentinel = object()
     monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")

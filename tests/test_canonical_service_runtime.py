@@ -6,12 +6,12 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import delete, select, text
+from sqlalchemy import Table, delete, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from switchstand import chatgpt_edge
+from switchstand import canonical_work_runtime, chatgpt_edge
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState
 from switchstand.canonical_event_reads import CanonicalEventReader
 from switchstand.canonical_relations import (
@@ -787,6 +787,9 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
     conflict = await subject.service.file_issue(category, operation_id, "Changed", "raw evidence")
 
     assert applied == replay and applied.effect == "applied"
+    assert applied.suggestion_status == "OK" and not applied.candidates
+    assert "context-free fork" in applied.code_reconciliation_instruction
+    assert "run in parallel where possible" in applied.code_reconciliation_instruction
     assert conflict.reason == "operation_identity_conflict"
     stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
     assert stored.item is not None
@@ -799,6 +802,91 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
             project_memberships.c.work_id == applied.work_id
         ))
     assert membership == project_id
+
+
+@pytest.mark.parametrize(("classification", "closed"), [
+    ("NEW", False), ("AMEND", True), ("DUPLICATE", True),
+    ("SUB-ITEM", False), ("RELATED", False),
+])
+async def test_feedback_classification_is_atomic_exact_and_replayable(
+    subject: Subject, monkeypatch: pytest.MonkeyPatch, classification: str, closed: bool,
+) -> None:
+    category, project_id = "BUG", uuid4()
+    async with subject.engine.begin() as connection:
+        await connection.execute(projects.insert().values(project_id=project_id, name=category))
+    subject.service.issue_projects[category] = project_id
+    subject.grant = subject.grant.model_copy(update={
+        "version": 2, "operations": subject.grant.operations | {"file_issue"},
+        "report_qualification": "test:feedback",
+    })
+    await subject.grants.issue(subject.grant, 1)
+    target = await subject.service.file_issue(
+        category, uuid4(), "Shared crash target", "target evidence",
+    )
+    await subject.service.file_issue(category, uuid4(), "unshared", "decoy evidence")
+    source = await subject.service.file_issue(
+        category, uuid4(), "Shared crash source", "source evidence",
+    )
+    assert target.work_id is not None and source.work_id is not None
+    assert [candidate.id for candidate in source.candidates] == [target.work_id]
+    operation_id = uuid4()
+    target_fields = {} if classification == "NEW" else {
+        "target_work_id": target.work_id,
+        "observed_target_revision": canonical_revision(target.work_id, 1),
+    }
+    arguments = {
+        "mode": "CLASSIFY", "source_work_id": source.work_id,
+        "observed_source_revision": canonical_revision(source.work_id, 1),
+        "classification": classification, **target_fields,
+    }
+    if classification in {"AMEND", "SUB-ITEM"}:
+        def fail_journal(_table: Table):
+            raise SQLAlchemyError("injected classification failure")
+
+        failure_id = uuid4()
+        with monkeypatch.context() as failure_patch:
+            failure_patch.setattr(canonical_work_runtime, "insert", fail_journal)
+            failed = await subject.service.file_issue(category, failure_id, **arguments)  # type: ignore[arg-type]
+        rolled_source = await subject.runtime.works.get(source.work_id)
+        rolled_target = await subject.runtime.works.get(target.work_id)
+        assert failed.effect == "unknown" and rolled_source is not None and rolled_target is not None
+        assert rolled_source.notes == "source evidence" and rolled_target.notes == "target evidence"
+        assert (await subject.runtime.relations.get(source.work_id)).parent_work_id is None
+        async with subject.engine.connect() as connection:
+            assert await connection.scalar(select(effect_intents.c.operation_id).where(
+                effect_intents.c.operation_id == str(failure_id)
+            )) is None
+    applied = await subject.service.file_issue(category, operation_id, **arguments)  # type: ignore[arg-type]
+    replay = await subject.service.file_issue(category, operation_id, **arguments)  # type: ignore[arg-type]
+    assert applied == replay and applied.effect == "applied"
+    changed = (await subject.runtime.get(source.work_id)).item
+    assert changed is not None and changed.completed is closed
+    assert f"Classification: {classification}" in changed.notes
+    if classification == "AMEND":
+        amended = (await subject.runtime.get(target.work_id)).item
+        assert amended is not None and str(source.work_id) in amended.notes
+    if classification == "SUB-ITEM":
+        assert (await subject.runtime.relations.get(source.work_id)).parent_work_id == target.work_id
+    if classification == "NEW":
+        unclassified = await subject.service.file_issue(category, uuid4(), "Source", "evidence")
+        assert unclassified.work_id is not None
+        stale = await subject.service.file_issue(
+            category, uuid4(), mode="CLASSIFY", source_work_id=unclassified.work_id,
+            observed_source_revision="stale", classification="NEW",
+        )
+        unchanged = (await subject.runtime.get(unclassified.work_id)).item
+        assert (stale.status == "stale" and unchanged is not None
+                and unchanged.notes == "evidence" and not unchanged.completed)
+        foreign = await subject.runtime.works.get(subject.work_id)
+        assert foreign is not None
+        foreign = await subject.runtime.works.replace(replace(foreign, work_type=category))
+        provenance = await subject.service.file_issue(
+            category, uuid4(), mode="CLASSIFY", source_work_id=foreign.work_id,
+            observed_source_revision=canonical_revision(foreign.work_id, foreign.row_version),
+            classification="NEW",
+        )
+        assert provenance.reason == "source_not_filed_here"
+        assert (await subject.runtime.works.get(foreign.work_id)) == foreign
 
 
 async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:
