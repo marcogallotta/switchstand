@@ -641,7 +641,7 @@ async def resource_service(
             "BUG": "SWITCHSTAND_BUGS_PROJECT_ID",
             "PRODUCT_FEATURE": "SWITCHSTAND_FEATURES_PROJECT_ID",
             "PROCESS": "SWITCHSTAND_PROCESS_PROJECT_ID",
-            "PERFORMANCE": "SWITCHSTAND_PROCESS_PROJECT_ID",
+            "PERFORMANCE": "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
             "HUMAN_REVIEW_FEEDBACK": "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
         }.items():
             if value := os.getenv(variable):

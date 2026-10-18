@@ -38,6 +38,7 @@ from switchstand.task_runs import AgentTaskResult, TaskRunResult, TaskRunResultR
 
 ID = UUID("00000000-0000-0000-0000-000000000001")
 REFERENCE_ID = UUID("00000000-0000-0000-0000-000000000002")
+PERFORMANCE_ID = UUID("00000000-0000-0000-0000-000000000003")
 TASK_GID = "121"
 STORY_GID = "456"
 
@@ -201,10 +202,12 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
     monkeypatch.setattr(context_mcp, "build_context_server", build)
     for variable in (
         "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
-        "SWITCHSTAND_PROCESS_PROJECT_ID", "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+        "SWITCHSTAND_PROCESS_PROJECT_ID", "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
+        "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
     ):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setenv("SWITCHSTAND_PROCESS_PROJECT_ID", str(ID))
+    monkeypatch.setenv("SWITCHSTAND_PERFORMANCE_PROJECT_ID", str(PERFORMANCE_ID))
     if enabled:
         monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
     else:
@@ -217,7 +220,7 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
     assert captured["active"] == ID
     assert captured["references"] == (REFERENCE_ID,)
     assert captured["issue_reporter"].issue_projects == {
-        "PROCESS": ID, "PERFORMANCE": ID,
+        "PROCESS": ID, "PERFORMANCE": PERFORMANCE_ID,
     }
     if enabled:
         assert captured["principal"] == managed_principal(ID)

@@ -542,6 +542,25 @@ async def test_resource_service_priority_surface_is_explicit_and_default_off(mon
         assert enabled.work_hygiene is not None
 
 
+async def test_resource_service_routes_performance_to_its_own_project(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
+    process_id = uuid4()
+    performance_id = uuid4()
+    monkeypatch.setenv("SWITCHSTAND_PROCESS_PROJECT_ID", str(process_id))
+    monkeypatch.setenv("SWITCHSTAND_PERFORMANCE_PROJECT_ID", str(performance_id))
+
+    class Engine:
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr(chatgpt_edge, "create_async_engine", lambda _url: Engine())
+    monkeypatch.setattr(chatgpt_edge, "register_sqlalchemy_timing", lambda _engine: None)
+
+    async with chatgpt_edge.resource_service() as (service, _runtime):
+        assert service.issue_projects["PROCESS"] == process_id
+        assert service.issue_projects["PERFORMANCE"] == performance_id
+
+
 async def test_resource_service_publishes_configured_currentness_runtime(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://ignored")
     values = _currentness_environment(monkeypatch)
