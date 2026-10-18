@@ -807,6 +807,22 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         assert next(
             tool for tool in tools if tool.name == "agent_message_send"
         ).annotations.read_only_hint is True
+        pending = next(tool for tool in tools if tool.name == "agent_message_pending")
+        pending_description = " ".join((pending.description or "").split())
+        assert "Omit cursor for every fresh mailbox poll." in pending_description
+        assert (
+            "A returned next_cursor is only for paging older messages while has_more is true; "
+            "never reuse it as a since/new-arrivals checkpoint."
+            in pending_description
+        )
+        assert (
+            "Track handled delivery IDs and acknowledge processed notifications rather than "
+            "reprocessing them."
+            in pending_description
+        )
+        cursor_description = pending.input_schema["properties"]["cursor"]["description"]
+        assert "Omit cursor for every fresh mailbox poll" in cursor_description
+        assert "never reuse it as a since/new-arrivals checkpoint" in cursor_description
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
         history = next(tool for tool in tools if tool.name == "work_history")
