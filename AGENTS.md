@@ -17,7 +17,7 @@ This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand
 
 ## Working with Marco
 
-Before any status, portfolio, attention, completion, or activation message, follow [human interaction](docs/human-interaction.md). Marco alone coordinates dozens of agents; needed asks are consequential, clear, and actionable.
+Before any status or plan update—or any portfolio, attention, completion, or activation message—follow [human interaction](docs/human-interaction.md). Marco alone coordinates dozens of agents; needed asks are consequential, clear, and actionable.
 
 - When Marco talks, answer first. Simple questions add no work. Give checkpoints while work continues. `STOP`, `LISTEN`, correction, pause, kill, or cancel preempts tools; confirm in one line. Otherwise resume authorized work; reread before consequential effects.
 - When Marco's current message asks this session to take over `Codex Coordinator`, first follow [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md): use a passcode only from Marco's current message, and never retake the Coordinator after losing it without a new direct instruction. `/root` is only a temporary inbound compatibility alias.
@@ -76,7 +76,7 @@ WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing
 
 Codex: reviews = a fresh native fork; never the `review_*` tools.
 
-Feedback V1: for each good/neutral exchange, make one rough random `0..99` draw and report on `0`; report every bad/frustrating exchange and every Human Review outcome. End every user-facing reply with `F:–`, `F:logged <WorkId>`, `F:bad <WorkId>`, or `F:unavailable`; use a WorkId mark only after readback and `F:unavailable` when required reporting/readback fails. Use the shared Tracker Issues V1-A reporting surface; never build a parallel reporting path.
+Feedback V1: for each good/neutral exchange, make one rough random `0..99` draw and report on `0`; report every bad/frustrating exchange and every Human Review outcome. End every user-facing reply with `F:–`, `F:logged <WorkId>`, `F:bad <WorkId>`, or `F:unavailable`; use a WorkId mark only after readback. Before reporting `F:unavailable`, inspect `ALL_TOOLS` for the four `mcp__switchstand__file_*` Tracker functions and invoke the applicable one through `functions.exec`; report `F:unavailable` only when no applicable function exists or its required result cannot be confirmed. Use the shared Tracker Issues V1-A reporting surface; never build a parallel reporting path.
 
 Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
 
@@ -96,8 +96,8 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overa
 
 ### Route only the current function
 
-- **Root:** [Root tracking](docs/coordinator-tracker-contract.md) + [human interaction](docs/human-interaction.md); do not preload implementation/review detail.
-- **Delegated Coordinator:** exact lane/parent obligations + lane-required procedures; Coordinator role alone does not grant Root portfolio authority.
+- **Root:** Root Coordinator only; load and follow [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md) before coordinating. Use the human-interaction contract for every status or plan update, promptly disposition completed agents under the tracking contract, and default memory-heavy work to context-free native forks unless a specific task reason requires inherited context. Do not preload implementation/review detail.
+- **Delegated Coordinator:** every other head follows exact lane/parent obligations + lane-required procedures; it does not inherit Root tracking or portfolio authority merely by being a head or Coordinator.
 - **Research/design Worker:** exact work + current bound research/design package; use [research sources](docs/research-sources.md) when researching and [code quality](docs/code-quality.md) for material design review before Human Review.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
 - **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + bound review owner; for substantive code/config/test review also load [code quality](docs/code-quality.md). No implementation execution detail unless needed to judge the candidate.
