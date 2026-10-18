@@ -217,6 +217,8 @@ Keep one semantic owner for each real concern. Preserve the same task GID and Wo
 
 ## Work, messages, and feedback
 
+**Tracker portfolio/handoff:** For an assigned multi-WorkId Tracker portfolio or named agent replacement, read the current Tracker guide `b974bf05-5397-53b5-ab5a-0932dbea1310` through authenticated MCP. It owns lightweight recovery, handoff and outstanding-obligation rules; it does not grant ownership or add a portfolio ceremony for narrow single-task workers.
+
 Tracker Issues V1-A owns Feedback V1's shared reporting function and its code/tests; agents use it rather than adding another reporting path. The always-loaded draw, mandatory-report, and reply-mark behavior lives in [AGENTS.md](../AGENTS.md).
 
 Durable message tools and state are the current agent-to-agent surface. Ordinary interactive agents address registered names through `agent_message_*`; managed task-bound runtimes retain WorkId-addressed `message_*`. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
