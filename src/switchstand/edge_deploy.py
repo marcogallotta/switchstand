@@ -15,7 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO, cast
 
-from .edge_semantic_probe import MCP, ProbeFailure, _private
+from .edge_semantic_probe import MCP, ProbeFailure, _private, _runtime
 from .stable_auth_deployment import _env
 
 SERVICE = "switchstand-chatgpt-mcp.service"
@@ -25,6 +25,8 @@ STATE_ROOT = Path.home() / ".local/state/switchstand"
 SMOKE_BIND_SECONDS = 10
 LOCAL_URL = "http://127.0.0.1:8790/mcp"
 CONTAINER = "switchstand-postgres-1"
+CURRENTNESS_START = "    # switchstand-deploy currentness start\n"
+CURRENTNESS_END = "    # switchstand-deploy currentness end\n"
 
 
 def command(
@@ -73,14 +75,37 @@ def _runtime_literal(source: str) -> tuple[Path, int, int]:
     return Path(cast(str, value.value)), start, end
 
 
-def candidate_launcher(current: str, runtime: Path) -> tuple[Path, str]:
+def candidate_launcher(current: str, runtime: Path, candidate_sha: str) -> tuple[Path, str]:
     old_runtime, start, end = _runtime_literal(current)
     if '"SWITCHSTAND_OUTCOME_STATE_ACTIONS": "1"' not in current:
         raise RuntimeError("production launcher lacks the outcome-state flag")
-    return old_runtime, current[:start] + repr(str(runtime)) + current[end:]
+    rendered = current[:start] + repr(str(runtime)) + current[end:]
+    block = (
+        CURRENTNESS_START
+        + "    os.environ.update(\n"
+        + "        {\n"
+        + f'            "SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA": "{candidate_sha}",\n'
+        + f'            "SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA": "{candidate_sha}",\n'
+        + f'            "SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID": "edge-deploy-{candidate_sha[:12]}",\n'
+        + "        }\n"
+        + "    )\n"
+        + CURRENTNESS_END
+    )
+    if CURRENTNESS_START in rendered or CURRENTNESS_END in rendered:
+        if rendered.count(CURRENTNESS_START) != 1 or rendered.count(CURRENTNESS_END) != 1:
+            raise RuntimeError("production launcher has malformed currentness block")
+        prefix, remainder = rendered.split(CURRENTNESS_START, 1)
+        _old, suffix = remainder.split(CURRENTNESS_END, 1)
+        rendered = prefix + block + suffix
+    else:
+        anchor = "    os.environ.update(oauth)\n"
+        if rendered.count(anchor) != 1:
+            raise RuntimeError("production launcher lacks the exact OAuth environment anchor")
+        rendered = rendered.replace(anchor, anchor + block)
+    return old_runtime, rendered
 
 
-def authenticated_smoke() -> None:
+def authenticated_smoke(expected_sha: str) -> None:
     values = _env(ENV_FILE)
     try:
         token_file = Path(values["SWITCHSTAND_R0_TOKEN_FILE"])
@@ -90,6 +115,7 @@ def authenticated_smoke() -> None:
     client = MCP(LOCAL_URL, _private(token_file))
     try:
         client.initialize()
+        _runtime(client.client, LOCAL_URL, expected_sha)
         result = client.call(
             "tools/call",
             {
@@ -162,7 +188,7 @@ class Deployer:
         else:
             git(self.repo, "worktree", "add", "--detach", str(self.runtime), self.candidate_sha)
         current = LAUNCHER.read_text()
-        old_runtime, rendered = candidate_launcher(current, self.runtime)
+        old_runtime, rendered = candidate_launcher(current, self.runtime, self.candidate_sha)
         if git(old_runtime, "status", "--porcelain").stdout:
             raise RuntimeError("current runtime is dirty")
         shutil.copy2(LAUNCHER, self.launcher_before)
@@ -236,7 +262,7 @@ class Deployer:
 
     def smoke(self, runtime: Path, sha: str) -> None:
         self.local_smoke(runtime, sha)
-        authenticated_smoke()
+        authenticated_smoke(sha)
 
     def restore_database(self) -> None:
         if self.database_backup is None:
