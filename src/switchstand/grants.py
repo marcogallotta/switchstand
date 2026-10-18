@@ -32,7 +32,7 @@ class WorkGrant(ClosedModel):
     operations: frozenset[Literal[
         "work_get", "work_search", "work_append", "work_create", "work_update",
         "work_relate", "priority_claim", "message", "agent_task", "implementation_request",
-        "activation_continuity", "task_control"
+        "activation_continuity", "task_control", "file_issue"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -40,6 +40,7 @@ class WorkGrant(ClosedModel):
     state: Literal["active", "revoked", "terminal"] = "active"
     append_qualification: str | None = Field(default=None, min_length=1)
     create_qualification: str | None = Field(default=None, min_length=1)
+    report_qualification: str | None = Field(default=None, min_length=1)
     update_qualification: str | None = Field(default=None, min_length=1)
     relation_qualification: str | None = Field(default=None, min_length=1)
     priority_claim_qualification: str | None = Field(default=None, min_length=1)

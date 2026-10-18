@@ -328,6 +328,7 @@ def build_context_server(
     grants: GrantState | None = None,
     principal: PrincipalContext | None = None,
     activation: ActivationContext | None = None,
+    issue_reporter: object | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand launch-bound context")
 
@@ -368,6 +369,26 @@ def build_context_server(
         idempotent_hint=True,
         open_world_hint=False,
     ))
+    if issue_reporter is not None:
+        def report_tool(category: str, description: str):
+            async def report(
+                api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+            ) -> GuardOutcome:
+                del api_version
+                return await issue_reporter.file_issue(  # type: ignore[attr-defined]
+                    category, operation_id, title, evidence,
+                )
+            report.__doc__ = description
+            return report
+
+        closed_tool(server, "file_bug", report_tool(
+            "BUG", "Report a bug to the fixed BUGS triage list."))
+        closed_tool(server, "file_feature", report_tool(
+            "PRODUCT_FEATURE", "Report a missing capability to the fixed feature triage list."))
+        closed_tool(server, "file_process", report_tool(
+            "PROCESS", "Report a process complaint to the fixed PROCESS triage list."))
+        closed_tool(server, "file_review_feedback", report_tool(
+            "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
     register_priority_tools(
         server, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,

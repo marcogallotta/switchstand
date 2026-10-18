@@ -646,6 +646,39 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
         assert set(memberships) == {(project_id, applied.work_id)}
 
 
+async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(subject: Subject) -> None:
+    project_id = uuid4()
+    async with subject.engine.begin() as connection:
+        await connection.execute(projects.insert().values(
+            project_id=project_id, name="BUGS",
+        ))
+    subject.service.issue_projects["BUG"] = project_id
+    subject.grant = subject.grant.model_copy(update={
+        "version": 2,
+        "operations": subject.grant.operations | {"file_issue"},
+        "report_qualification": "test:issue-report",
+    })
+    await subject.grants.issue(subject.grant, 1)
+    operation_id = uuid4()
+
+    applied = await subject.service.file_issue("BUG", operation_id, "Broken", "raw evidence")
+    replay = await subject.service.file_issue("BUG", operation_id, "Broken", "raw evidence")
+    conflict = await subject.service.file_issue("BUG", operation_id, "Changed", "raw evidence")
+
+    assert applied == replay and applied.effect == "applied"
+    assert conflict.reason == "operation_identity_conflict"
+    stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
+    assert stored.item is not None
+    assert stored.item.notes == "raw evidence"
+    assert stored.item.routing.owner_key == "NONE"
+    assert stored.item.routing.lifecycle_state == "WAITING"
+    async with subject.engine.connect() as connection:
+        membership = await connection.scalar(select(project_memberships.c.project_id).where(
+            project_memberships.c.work_id == applied.work_id
+        ))
+    assert membership == project_id
+
+
 async def test_authenticated_create_requires_real_qualification(subject: Subject) -> None:
     principal = subject.principal.model_copy(update={
         "subject": str(uuid4()), "assurance": "authenticated",

@@ -49,6 +49,7 @@ TOOLS = {
     "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append", "capability_preflight_get",
     "work_create", "work_update", "work_relate",
+    "file_bug", "file_feature", "file_process", "file_review_feedback",
     "task_control_get", "task_control_checkpoint", "work_hygiene_check",
     "agent_register", "agent_takeover", "agent_transfer_request",
     "agent_message_send", "agent_message_pending",

@@ -479,6 +479,7 @@ def _create_resource_app(
         activation_technical=service.activation_technical,
         activation_runtime=service.activation_runtime,
         activation_proof=service.activation_proof,
+        issue_projects=service.issue_projects,
     )
     currentness_config = _ProductCurrentnessConfig.from_environment()
     if currentness_config is not None:
@@ -635,6 +636,15 @@ async def resource_service(
             implementation_requests = ImplementationRequestState(
                 engine, canonical_repository, review_occurrences
             )
+        issue_projects: dict[str, UUID] = {}
+        for category, variable in {
+            "BUG": "SWITCHSTAND_BUGS_PROJECT_ID",
+            "PRODUCT_FEATURE": "SWITCHSTAND_FEATURES_PROJECT_ID",
+            "PROCESS": "SWITCHSTAND_PROCESS_PROJECT_ID",
+            "HUMAN_REVIEW_FEEDBACK": "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+        }.items():
+            if value := os.getenv(variable):
+                issue_projects[category] = UUID(value)
         service = ChatGPTService(unresolved_principal, PostgresState(engine), grants, {},
             messages, RequiredResultPersistence(LifecycleRepository(engine)),
             canonical_work=canonical_work, canonical_events=canonical_events,
@@ -652,6 +662,7 @@ async def resource_service(
             priority_context_enabled=priority_claims_enabled,
             implementation_requests=implementation_requests,
             reviews=review_service,
+            issue_projects=issue_projects,
             activation_continuity=(
                 None
                 if activation_contracts is None

@@ -273,6 +273,27 @@ async def test_work_create_routes_provider_neutral_project_target(monkeypatch):
     assert request.project_gid is None and request.canonical_root == str(ACTIVE)
 
 
+@pytest.mark.parametrize(("tool_name", "category"), [
+    ("file_bug", "BUG"),
+    ("file_feature", "PRODUCT_FEATURE"),
+    ("file_process", "PROCESS"),
+    ("file_review_feedback", "HUMAN_REVIEW_FEEDBACK"),
+])
+async def test_issue_wrappers_fix_category_and_preserve_evidence(tool_name, category):
+    subject = service()
+    subject.file_issue = AsyncMock(return_value=subject.denied("file_issue", "probe"))
+    operation_id = uuid4()
+
+    result = await dict(build_ordinary_tools(subject))[tool_name](
+        api_version="1", operation_id=operation_id, title="Observed", evidence="exact text",
+    )
+
+    assert result.reason == "probe"
+    subject.file_issue.assert_awaited_once_with(
+        category, operation_id, "Observed", "exact text",
+    )
+
+
 async def test_canonical_create_derives_self_owner_from_registered_mailbox(monkeypatch):
     subject = service()
     subject.canonical_work_active = True
@@ -705,6 +726,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "human_trajectory_get", "human_trajectory_record",
             "work_history", "work_event", "work_append", "capability_preflight_get",
             "work_create", "work_update", "work_relate",
+            "file_bug", "file_feature", "file_process", "file_review_feedback",
             "task_control_get", "task_control_checkpoint", "work_hygiene_check",
             "agent_register", "agent_takeover", "agent_transfer_request",
             "agent_message_send", "agent_message_pending",

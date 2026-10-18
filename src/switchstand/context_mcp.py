@@ -7,6 +7,7 @@ from . import chatgpt_edge
 from .activation_continuity import TechnicalBasis
 from .activation_continuity_store import ActivationContinuity
 from .activation_contract_loader import load_activation_contracts_from_environment
+from .chatgpt import ChatGPTService
 from .grant_state import GrantState
 from .managed_identity import managed_principal
 from .mcp import build_context_server, controller_from_env, protect_provider_logs
@@ -30,6 +31,23 @@ def main() -> None:
     priority_context = None
     grants = GrantState(engine)
     principal = managed_principal(active)
+    issue_projects: dict[str, UUID] = {}
+    for category, variable in {
+        "BUG": "SWITCHSTAND_BUGS_PROJECT_ID",
+        "PRODUCT_FEATURE": "SWITCHSTAND_FEATURES_PROJECT_ID",
+        "PROCESS": "SWITCHSTAND_PROCESS_PROJECT_ID",
+        "HUMAN_REVIEW_FEEDBACK": "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+    }.items():
+        if value := os.getenv(variable):
+            issue_projects[category] = UUID(value)
+
+    async def resolve_principal():
+        return principal
+
+    issue_reporter = ChatGPTService(
+        resolve_principal, service.state, grants, {}, canonical_work=service.work,
+        canonical_work_active=True, issue_projects=issue_projects,
+    )
     if os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1":
         priority_claims = PriorityClaimService(
             PriorityClaimRepository(engine), service.work.works,
@@ -87,6 +105,7 @@ def main() -> None:
         grants=grants,
         principal=principal,
         activation=activation,
+        issue_reporter=issue_reporter,
     ).run()
 
 

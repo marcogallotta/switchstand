@@ -247,6 +247,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_result_send",
     "agent_message_disposition",
     "task_control_checkpoint",
+    "file_bug", "file_feature", "file_process", "file_review_feedback",
 })
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
@@ -636,6 +637,42 @@ def build_ordinary_tools(
             next_action_class=next_action_class, next_action_ref=next_action_ref,
         ))
         audited("work_create", str(parent_work_id or project_id), result.status)
+        return result
+
+    async def file_bug(
+        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+    ) -> GuardOutcome:
+        """Report a bug to the fixed BUGS triage list; preserve observed evidence exactly."""
+        del api_version
+        result = await service.file_issue("BUG", operation_id, title, evidence)
+        audited("file_bug", None, result.status)
+        return result
+
+    async def file_feature(
+        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+    ) -> GuardOutcome:
+        """Report a missing product capability to the fixed feature triage list."""
+        del api_version
+        result = await service.file_issue("PRODUCT_FEATURE", operation_id, title, evidence)
+        audited("file_feature", None, result.status)
+        return result
+
+    async def file_process(
+        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+    ) -> GuardOutcome:
+        """Report a process or system complaint to the fixed PROCESS triage list."""
+        del api_version
+        result = await service.file_issue("PROCESS", operation_id, title, evidence)
+        audited("file_process", None, result.status)
+        return result
+
+    async def file_review_feedback(
+        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+    ) -> GuardOutcome:
+        """Record Human Review feedback in its fixed triage list, including praise or silence."""
+        del api_version
+        result = await service.file_issue("HUMAN_REVIEW_FEEDBACK", operation_id, title, evidence)
+        audited("file_review_feedback", None, result.status)
         return result
 
     async def task_control_get(
@@ -1528,6 +1565,10 @@ def build_ordinary_tools(
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
+        ("file_bug", file_bug),
+        ("file_feature", file_feature),
+        ("file_process", file_process),
+        ("file_review_feedback", file_review_feedback),
         ("task_control_get", task_control_get),
         ("work_hygiene_check", work_hygiene_check),
         ("task_control_checkpoint", task_control_checkpoint),

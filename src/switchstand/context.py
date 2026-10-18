@@ -410,8 +410,12 @@ def codex_command(
               "repeat work_get and restart the history read. Do not resume completed or "
               "superseded intent. Work only in this private task clone. This is ordinary "
               "development; the exact CONTROL hook remains active.")
-    enabled_tools = ["work_get", "work_history"]
-    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID"]
+    enabled_tools = ["work_get", "work_history", "file_bug", "file_feature",
+                     "file_process", "file_review_feedback"]
+    forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
+                             "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
+                             "SWITCHSTAND_PROCESS_PROJECT_ID",
+                             "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID"]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",

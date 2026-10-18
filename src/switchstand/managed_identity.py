@@ -32,8 +32,10 @@ async def rotate_managed_grant(
     operations: set[Literal[
         "work_get", "work_append", "work_update", "work_relate", "message",
         "agent_task", "priority_claim", "activation_continuity",
+        "file_issue",
     ]] = {
         "work_get", "work_append", "work_update", "work_relate", "message",
+        "file_issue",
     }
     if agent_task:
         operations.add("agent_task")
@@ -50,6 +52,7 @@ async def rotate_managed_grant(
         expires_at=datetime.max.replace(tzinfo=UTC),
         append_qualification="managed:task-bound",
         update_qualification="managed:task-bound",
+        report_qualification="real:issue-report",
         relation_qualification="managed:task-bound",
         priority_claim_qualification=(
             "managed:task-bound" if priority_claims else None

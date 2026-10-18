@@ -29,6 +29,8 @@ SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA SWITCHSTAND_PRODUCT_CURRENT
 SWITCHSTAND_PRODUCT_CURRENTNESS_EXPECTED_TOOLS_SCHEMA_SHA256
 SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT
 SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY""".split()  # noqa: SIM905
+REPORTING_ENV = """SWITCHSTAND_BUGS_PROJECT_ID SWITCHSTAND_FEATURES_PROJECT_ID
+SWITCHSTAND_PROCESS_PROJECT_ID SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID""".split()  # noqa: SIM905
 
 
 class PreparedLaunch(BaseModel):
@@ -86,9 +88,11 @@ def managed_parent_command(
         "Work only in the exact private writer. Native children inherit this WorkId and "
         "must use narrower authorization; messages and context never grant authority."
     )
-    enabled_tools = ["work_get", "work_history", "capability_preflight_get"]
+    enabled_tools = ["work_get", "work_history", "capability_preflight_get",
+                     "file_bug", "file_feature", "file_process", "file_review_feedback"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
-                             "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION"]
+                             "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION",
+                             *REPORTING_ENV]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",
