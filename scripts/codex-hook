@@ -180,11 +180,6 @@ def checkout_identity(prefix: list[str], cwd: str) -> tuple[str, str, str] | Non
     return os.path.realpath(lines[0]), os.path.realpath(lines[1]), os.path.realpath(lines[2])
 
 
-def primary_guard_off_switch() -> Path:
-    state = Path(os.environ.get("XDG_STATE_HOME", "~/.local/state")).expanduser()
-    return state / "switchstand/codex-primary-git-guard.disabled"
-
-
 def primary_mutation_reason(
     prefix: list[str], cwd: str, subcommand: str, coordinator_primary: str | None,
     advisories: list[str],
@@ -200,11 +195,6 @@ def primary_mutation_reason(
     root, git_dir, common = identity
     if git_dir == common and (coordinator_primary is None
             or root == os.path.realpath(coordinator_primary)):
-        if coordinator_primary is not None and primary_guard_off_switch().is_file():
-            advisories.append(
-                f"[primary-checkout] Git guard disabled by {primary_guard_off_switch()}."
-            )
-            return None
         return (f"[primary-checkout] git {subcommand} is denied in {root}; "
                 "use a linked writer worktree.")
     return None

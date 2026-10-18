@@ -951,13 +951,6 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     assert "hookSpecificOutput" not in advisory
     assert "could not establish the target" in advisory["systemMessage"]
 
-    off_switch = tmp_path / "state/switchstand/codex-primary-git-guard.disabled"
-    off_switch.parent.mkdir(parents=True)
-    off_switch.touch()
-    disabled = hook(primary, "git add tracked.txt", environment,
-                    coordinator_primary=primary)
-    assert "hookSpecificOutput" not in disabled
-    assert str(off_switch) in disabled["systemMessage"]
     foreign = tmp_path / "foreign"
     git(primary, "worktree", "add", "-b", "foreign", str(foreign))
     assert hook(writer, "git add tracked.txt", environment, coordinator_primary=primary, coordinator_writer=writer) == {}
