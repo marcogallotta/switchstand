@@ -55,10 +55,13 @@ def main() -> int:
     if not ALERT.exists() or not ALERT.read_text().strip():
         SNOOZE.unlink(missing_ok=True)
         return 0
+    alert = ALERT.read_text().strip()
+    if "# MAILBOX CHECK DUE" not in alert and "## Blocking" not in alert:
+        SNOOZE.unlink(missing_ok=True)
+        return 0
     count = punts()
     if count and time.time() - SNOOZE.stat().st_mtime < SNOOZE_SECONDS:
         return 0
-    alert = ALERT.read_text().strip()
     if count >= MAX_PUNTS:
         reason = f"{alert}\nAlready punted {MAX_PUNTS} times. Handle the checklist now."
     else:
