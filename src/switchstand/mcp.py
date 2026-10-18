@@ -479,7 +479,7 @@ def build_server(
 
         async def _message_pending(
             api_version: Literal["1"],
-            cursor: UUID | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+            cursor: UUID | None = None, limit: Annotated[int, Field(ge=1, le=10)] = 10,
         ) -> MessagePendingResult:
             return await pending_managed_messages(
                 cast(Controller, service).state,

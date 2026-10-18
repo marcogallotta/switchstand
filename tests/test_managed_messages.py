@@ -101,9 +101,14 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
                 tools[name].input_schema.get("additionalProperties") is False
                 for name in tools if name.startswith("message_")
             )
+            limit_schema = tools["message_pending"].input_schema["properties"]["limit"]
+            assert (limit_schema["default"], limit_schema["maximum"]) == (10, 10)
             base = {"api_version": "1"}
             pending = await client.call_tool("message_pending", base)
             assert pending.structured_content["messages"][0]["delivery_id"] == str(delivery_id)
+            assert (await client.call_tool(
+                "message_pending", base | {"limit": 11}
+            )).is_error
             before_receive = await client.call_tool("message_result_send", {
                 "api_version": "1", "in_reply_to_delivery_id": str(delivery_id),
                 "message_id": str(uuid4()), "payload": {"answer": "too early"},
@@ -120,6 +125,7 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
             )
             assert (await client.call_tool("message_pending", {
                 "api_version": "1",
+                "limit": 10,
             })).structured_content["status"] == "recovery_required"
             runtime[0] = RuntimeCurrentness(generation="run-2", current_generation="run-2")
             before_recover = await client.call_tool("message_result_send", {
@@ -216,7 +222,7 @@ async def test_managed_mcp_replacement_result_and_disposition_vertical(
                 "delivery_id": str(delivery_id), "result_message_id": str(result_id),
             })).structured_content == disposition.structured_content
             monkeypatch.setattr(grants, "current", AsyncMock(side_effect=SQLAlchemyError()))
-            unavailable = await client.call_tool("message_pending", {"api_version": "1"})
+            unavailable = await client.call_tool("message_pending", base | {"limit": 10})
             assert unavailable.structured_content["reason"] == "state_unavailable"
     finally:
         await engine.dispose()

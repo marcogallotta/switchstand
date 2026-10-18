@@ -3,7 +3,8 @@ import os
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text, update
+from sqlalchemy import insert, select, text, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState, agent_mailboxes
@@ -11,7 +12,7 @@ from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
-from switchstand.messages import MessageState
+from switchstand.messages import MessageState, message_deliveries, messages
 from switchstand.state import PostgresState, metadata
 
 
@@ -558,7 +559,7 @@ async def test_takeover_atomically_fences_every_inflight_message_operation(
     assert (stale_disposition.status, stale_disposition.reason) == (
         "stale", "receiving_binding_changed",
     )
-    assert (await tools["agent_message_recover"]("1", delivery)).status == "ok"
+    assert (await tools["agent_message_recover"]("1", delivery)).status == "conflict"
     assert (await tools["agent_message_disposition"]("1", delivery, result_id)).state \
         == "DISPOSITIONED"
 
@@ -628,3 +629,95 @@ async def test_message_transaction_linearizes_before_takeover(agent_messaging, m
     release.set()
     assert (await receiving).status == "ok"
     assert (await takeover).status == "ok"
+
+
+async def test_payload_boundary_and_bounded_legacy_replay(agent_messaging):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+
+    session[0] = "chat-a"
+    accepted_id, rejected_id = uuid4(), uuid4()
+    accepted = await tools["agent_message_send"]("1", "Beta", accepted_id, "a" * 798)
+    rejected = await tools["agent_message_send"]("1", "Beta", rejected_id, "a" * 799)
+    assert accepted.status == "ok" and accepted.message.payload_chars == 800
+    assert (rejected.status, rejected.reason) == ("denied", "payload_too_large")
+    assert "exact tracker WorkId" in rejected.next_action
+    assert service.messages is not None
+    async with service.messages.engine.connect() as connection:
+        assert await connection.scalar(select(messages.c.message_id).where(
+            messages.c.message_id == rejected_id
+        )) is None
+
+    # Pre-existing oversized rows remain replayable, but their public view is bounded.
+    alpha = await AgentMailboxState(service.messages.engine).by_name("Alpha")
+    beta = await AgentMailboxState(service.messages.engine).by_name("Beta")
+    assert alpha.mailbox is not None and beta.mailbox is not None
+    legacy_id, legacy_delivery = uuid4(), uuid4()
+    legacy_payload = "z" * 900
+    async with service.messages.engine.begin() as connection:
+        await connection.execute(insert(messages).values(
+            sender_work_id=alpha.mailbox.endpoint_id, message_id=legacy_id,
+            route_ref="agent.beta", kind="request", payload=legacy_payload,
+            digest="legacy", in_reply_to_delivery_id=None,
+        ))
+        await connection.execute(insert(message_deliveries).values(
+            delivery_id=legacy_delivery, sender_work_id=alpha.mailbox.endpoint_id,
+            message_id=legacy_id, recipient_work_id=beta.mailbox.endpoint_id,
+            recipient_grant_version=beta.mailbox.generation,
+        ))
+    replay = await tools["agent_message_send"]("1", "Beta", legacy_id, legacy_payload)
+    assert replay.status == "ok" and replay.message.payload is None
+    assert replay.message.payload_omitted is True and replay.message.payload_chars == 902
+    session[0] = "chat-b"
+    pending = await tools["agent_message_pending"]("1")
+    legacy = next(item for item in pending.messages if item.message_id == legacy_id)
+    assert legacy.payload is None and legacy.payload_omitted and legacy.payload_chars == 902
+
+
+async def test_pending_default_page_is_ten_with_keyset_continuation(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    for index in range(11):
+        assert (await tools["agent_message_send"](
+            "1", "Beta", uuid4(), {"index": index}
+        )).status == "ok"
+    session[0] = "chat-b"
+    first = await tools["agent_message_pending"]("1")
+    assert len(first.messages) == 10 and first.has_more and first.next_cursor is not None
+    second = await tools["agent_message_pending"]("1", first.next_cursor)
+    assert len(second.messages) == 1 and not second.has_more
+
+
+async def test_result_and_disposition_roll_back_together(agent_messaging, monkeypatch):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "atomic"})
+    assert sent.message is not None
+    session[0] = "chat-b"
+    assert (await tools["agent_message_receive"]("1", sent.message.delivery_id)).status == "ok"
+    assert service.messages is not None
+
+    async def fail_disposition(*_args, **_kwargs):
+        raise SQLAlchemyError("injected disposition failure")
+
+    monkeypatch.setattr(service.messages, "_disposition_result", fail_disposition)
+    result_id = uuid4()
+    failed = await tools["agent_message_result_send"](
+        "1", sent.message.delivery_id, result_id, {"result": "no commit"}
+    )
+    assert (failed.status, failed.reason) == ("recovery_required", "state_unavailable")
+    async with service.messages.engine.connect() as connection:
+        assert await connection.scalar(select(messages.c.message_id).where(
+            messages.c.message_id == result_id
+        )) is None
+        assert await connection.scalar(select(message_deliveries.c.state).where(
+            message_deliveries.c.delivery_id == sent.message.delivery_id
+        )) == "RECEIVED"

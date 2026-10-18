@@ -42,6 +42,7 @@ DELIVERY_NAMESPACE = UUID("8b7eedf9-138d-4a5e-9060-7c208138402d")
 PROCESSING_EFFECT_NAMESPACE = UUID("c790d50e-5ed0-4fac-aed3-09051a14d8df")
 REVIEW_CUTOFF_RECEIPT = "typed-review-v1-cutoff"
 REVIEW_ROUTE_REFS = frozenset({"review.request", "review.acquisition", "review.outcome"})
+AGENT_MESSAGE_PAYLOAD_LIMIT = 800
 
 messages = Table(
     "messages",
@@ -168,6 +169,7 @@ class MessageSubmitResult(ClosedModel):
         "delivery_not_for_current_work", "runtime_currentness_unavailable",
         "runtime_generation_changed", "sender_binding_changed", "state_unavailable",
         "reserved_route",
+        "payload_too_large",
     ] | None = None
 
     @model_validator(mode="after")
@@ -183,7 +185,7 @@ class MessagePendingRequest(ClosedModel):
     api_version: ApiVersion
     grant_version: int = Field(ge=1)
     cursor: UUID | None = None
-    limit: int = Field(default=50, ge=1, le=100)
+    limit: int = Field(default=10, ge=1, le=10)
 
 
 class MessagePendingResult(ClosedModel):
@@ -283,6 +285,12 @@ def _json_digest(value: object) -> str:
     ).hexdigest()
 
 
+def canonical_payload_chars(value: object) -> int:
+    return len(json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ))
+
+
 def disposition_digest(evidence: DispositionEvidence) -> str:
     return _json_digest(evidence.model_dump(mode="json"))
 
@@ -324,6 +332,11 @@ RuntimeAdmissionFailure = tuple[
     Literal["stale", "recovery_required"],
     Literal["runtime_generation_changed", "runtime_currentness_unavailable"],
 ]
+
+
+class _AtomicResultFailure(Exception):
+    def __init__(self, result: MessageSubmitResult):
+        self.result = result
 
 
 def message_admission(
@@ -497,23 +510,31 @@ class MessageState:
             ):
                 return MessageSubmitResult(status="stale", reason="sender_binding_changed")
             row = (await connection.execute(query)).mappings().one_or_none()
-        if row is None:
-            return None
-        is_request = request.in_reply_to_delivery_id is None
-        matches = (
-            row["kind"] == ("request" if is_request else "result")
-            and row["payload"] == request.payload
-            and row["in_reply_to_delivery_id"] == request.in_reply_to_delivery_id
-            and (not is_request or (
-                row["recipient_work_id"] == request.recipient_work_id
-                and row["route_ref"] == request.route_ref
-            ))
-        )
-        if not matches:
-            return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
-        view = dict(row)
-        view.pop("in_reply_to_delivery_id")
-        return MessageSubmitResult(status="ok", message=_view(view))
+            if row is None:
+                return None
+            is_request = request.in_reply_to_delivery_id is None
+            matches = (
+                row["kind"] == ("request" if is_request else "result")
+                and row["payload"] == request.payload
+                and row["in_reply_to_delivery_id"] == request.in_reply_to_delivery_id
+                and (not is_request or (
+                    row["recipient_work_id"] == request.recipient_work_id
+                    and row["route_ref"] == request.route_ref
+                ))
+            )
+            if not matches:
+                return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
+            if not is_request and agent_binding is not None:
+                assert request.in_reply_to_delivery_id is not None
+                failure = await self._disposition_result(
+                    connection, request.in_reply_to_delivery_id, sender_work_id,
+                    request.message_id, agent_binding,
+                )
+                if failure is not None:
+                    return failure
+            view = dict(row)
+            view.pop("in_reply_to_delivery_id")
+            return MessageSubmitResult(status="ok", message=_view(view))
 
     @staticmethod
     def _admission(
@@ -617,7 +638,45 @@ class MessageState:
             row = (await connection.execute(self._pending_query().where(
                 message_deliveries.c.delivery_id == delivery_id
             ))).mappings().one()
+            if request.in_reply_to_delivery_id is not None and agent_binding is not None:
+                failure = await self._disposition_result(
+                    connection, request.in_reply_to_delivery_id, sender_work_id,
+                    request.message_id, agent_binding,
+                )
+                if failure is not None:
+                    raise _AtomicResultFailure(failure)
         return MessageSubmitResult(status="ok", message=_view(dict(row)))
+
+    async def _disposition_result(
+        self, connection: AsyncConnection, delivery_id: UUID, sender_work_id: UUID,
+        result_message_id: UUID, agent_binding: AgentMailbox,
+    ) -> MessageSubmitResult | None:
+        """Converge an ordinary result and its exact-evidence disposition in one transaction."""
+        replied = (await connection.execute(select(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id
+        ).with_for_update())).mappings().one_or_none()
+        if replied is None or replied["recipient_work_id"] != sender_work_id:
+            return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+        evidence = DispositionEvidence(kind="result", result_message_id=result_message_id)
+        digest = disposition_digest(evidence)
+        if replied["state"] == "DISPOSITIONED":
+            if replied["disposition_digest"] == digest and replied["evidence"] == evidence.model_dump(mode="json"):
+                return None
+            return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
+        if replied["state"] != "RECEIVED":
+            return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+        if (
+            replied["recipient_grant_version"] != agent_binding.generation
+            or replied["receiving_generation"] != str(agent_binding.generation)
+        ):
+            return MessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
+        await connection.execute(update(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id
+        ).values(
+            state="DISPOSITIONED", dispositioned_at=func.now(),
+            disposition_digest=digest, evidence=evidence.model_dump(mode="json"),
+        ))
+        return None
 
     async def submit_review_internal(
         self, connection: AsyncConnection, sender: AgentMailbox, route: MessageRoute,
@@ -690,6 +749,8 @@ class MessageState:
                 sender_work_id, route, request, (grant_version, generation),
                 agent_binding=agent_binding,
             )
+        except _AtomicResultFailure as failure:
+            return failure.result
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 

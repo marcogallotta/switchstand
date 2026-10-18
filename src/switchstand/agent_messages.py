@@ -14,7 +14,7 @@ from .durable_capture import (
     message_capture_guidance,
 )
 from .grants import PrincipalContext
-from .messages import PendingMessage
+from .messages import AGENT_MESSAGE_PAYLOAD_LIMIT, PendingMessage, canonical_payload_chars
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,9 @@ class AgentPendingMessage(ClosedModel):
     sender_name: str
     recipient_name: str
     kind: Literal["request", "result"]
-    payload: JsonValue
+    payload: JsonValue | None = None
+    payload_omitted: bool = False
+    payload_chars: int = Field(ge=0)
     state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
     durable_capture: DurableCaptureGuidance = Field(
         default_factory=lambda: durable_capture_guidance((), ()),
@@ -114,13 +116,21 @@ async def public_message(
         or recipient.status != "ok" or recipient.mailbox is None
     ):
         return None
+    payload_chars = canonical_payload_chars(message.payload)
+    payload_omitted = payload_chars > AGENT_MESSAGE_PAYLOAD_LIMIT
     return AgentPendingMessage(
         delivery_id=message.delivery_id,
         message_id=message.message_id,
         sender_name=sender.mailbox.name,
         recipient_name=recipient.mailbox.name,
         kind=message.kind,
-        payload=message.payload,
+        payload=None if payload_omitted else message.payload,
+        payload_omitted=payload_omitted,
+        payload_chars=payload_chars,
         state=message.state,
-        durable_capture=message_capture_guidance(message.payload),
+        durable_capture=(
+            durable_capture_guidance((), ())
+            if payload_omitted
+            else message_capture_guidance(message.payload)
+        ),
     )
