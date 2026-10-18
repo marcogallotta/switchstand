@@ -120,6 +120,20 @@ def hook(
     return json.loads(result.stdout) if result.stdout else {}
 
 
+def test_project_guard_activates_only_for_bash() -> None:
+    config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    hooks = config["hooks"]["PreToolUse"]
+    assert len(hooks) == 1
+    assert hooks[0]["matcher"] == "^Bash$"
+    command_hooks = hooks[0]["hooks"]
+    assert len(command_hooks) == 1
+    assert command_hooks[0]["type"] == "command"
+    assert command_hooks[0]["command"].endswith(
+        'scripts/codex-hook" --coordinator-primary '
+        '"$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"'
+    )
+
+
 def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
     tmp_path: Path,
 ) -> None:
