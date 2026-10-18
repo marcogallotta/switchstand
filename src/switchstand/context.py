@@ -426,9 +426,10 @@ def codex_command(
     return [
         "codex", "-C", str(writer), "-m", "gpt-5.6-sol", "-a", "never",
         "--dangerously-bypass-hook-trust",
-        "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-context-mcp"}"',
+        "-c", f'mcp_servers.switchstand.command="{control / "scripts/switchstand-controller-mcp"}"',
         "-c", "mcp_servers.switchstand.env_vars="
         + json.dumps(forwarded_environment, separators=(",", ":")),
+        "-c", 'mcp_servers.switchstand.env={"SWITCHSTAND_MANAGED_PROFILE":"launch-bound"}',
         "-c", "mcp_servers.switchstand.enabled_tools="
         + json.dumps(enabled_tools, separators=(",", ":")),
         "-c", 'mcp_servers.switchstand.default_tools_approval_mode="auto"',
