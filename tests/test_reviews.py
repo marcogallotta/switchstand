@@ -51,11 +51,73 @@ from switchstand.reviews import (
     ReviewOccurrenceState,
     ReviewPolicy,
     ReviewRequest,
+    ReviewResult,
     ReviewService,
     ReviewSubmit,
     _stable,
 )
 from switchstand.state import work_handles, work_migration_receipts
+
+
+def test_review_result_guidance_preserves_role_and_authority_boundaries():
+    review_id, delivery_id = uuid4(), uuid4()
+    submitted = ReviewResult(
+        status="SUBMITTED", review_id=review_id, delivery_id=delivery_id,
+    )
+    assert "requester-only review_get" in submitted.next_action
+    assert "Poll review_get" not in submitted.next_action
+
+    finding = ReviewFinding(
+        finding_id="F1", defect="Defect", evidence="Evidence",
+        consequence="Consequence", affected_claim="Claim",
+        minimum_clearing_condition="Clear it",
+    )
+    findings = ReviewResult(
+        status="FINDINGS", review_id=review_id, delivery_id=delivery_id,
+        verdict="FINDINGS", findings=(finding,), verdict_digest="a" * 64,
+    )
+    for required in (
+        "against evidence", "accepted defects only", "mode=FOCUSED",
+        "prior_review_id=<this review_id>", "finding_ids=<accepted finding_ids>",
+        "observed_revision=<new revision>", "scope expansion",
+    ):
+        assert required in findings.next_action
+
+    passed = ReviewResult(
+        status="PASS", review_id=review_id, delivery_id=delivery_id,
+        verdict="PASS", verdict_digest="b" * 64,
+    )
+    for required in (
+        "evidence, not scope or effect authority", "runnable owned work",
+        "live docs/human-review.md decision conversation",
+    ):
+        assert required in passed.next_action
+
+
+def test_review_result_guidance_distinguishes_unavailable_reviewer_from_active_polling():
+    review_id, delivery_id = uuid4(), uuid4()
+    waiting = ReviewResult(
+        status="WAITING_REVIEWER", review_id=review_id,
+        reason="reviewer_not_available",
+    )
+    assert "No eligible reviewer" in waiting.next_action
+    assert "no reviewer delivery exists" in waiting.next_action
+    assert "distinct from REQUEST_UNPICKED" in waiting.next_action
+    assert "exact review_id and bounded watch" in waiting.next_action
+    assert "duplicate request" in waiting.next_action
+
+    for status in ("SENT", "REQUEST_UNPICKED", "RECEIVED"):
+        result = ReviewResult(
+            status=status, review_id=review_id, delivery_id=delivery_id,
+        )
+        for required in (
+            "While this chat can run", "bounded active polling", "Bash sleep 20",
+            "review_get for this exact review_id", "empty read is nonterminal",
+            "real host/session limit", "preserve the exact review_id and state",
+            "do not use an hourly Scheduled task",
+        ):
+            assert required in result.next_action
+        assert result.next_action != waiting.next_action
 
 
 def _independent_services(

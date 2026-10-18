@@ -287,13 +287,14 @@ class ReviewResult(ClosedModel):
             raise ValueError("nonterminal review result cannot expose verdict evidence")
         if not self.next_action:
             value = {
-                "FINDINGS": "Apply only the bounded findings, then call review_request in FOCUSED mode on the same review_id with exactly the returned finding_ids.",
-                "PASS": "Prepare/send the Human Review package now; review PASS is evidence, not implementation authority.",
+                "FINDINGS": "Evaluate and disposition each exact finding against evidence. For accepted defects only, make the smallest authorized clearing change, then call review_request(mode=FOCUSED, prior_review_id=<this review_id>, finding_ids=<accepted finding_ids>, observed_revision=<new revision>); do not silently accept a reviewer remedy or scope expansion.",
+                "PASS": "PASS is evidence, not scope or effect authority. Continue other runnable owned work first; if the assigned next step is Human Review, conduct the live docs/human-review.md decision conversation now rather than reporting READY or no action needed.",
                 "BLOCKED": "Resolve the stated blocker or replan; do not start another broad review automatically.",
-                "SUBMITTED": "Poll review_get for this review_id to read the authoritative verdict.",
+                "SUBMITTED": "Reviewer verdict submitted. Do not call requester-only review_get. Resume other currently assigned inbound review work, or close this review-only assignment only when its terminal condition is truly met.",
+                "WAITING_REVIEWER": "No eligible reviewer is available, so no reviewer delivery exists; this is distinct from REQUEST_UNPICKED. Preserve this exact review_id and bounded watch, continue other owned work with limited rechecks, and report a genuine actor/capability blocker if a reviewer cannot be activated; do not create a duplicate request.",
             }.get(self.status)
             if value is None:
-                value = ("Poll review_get for this review_id; do not stop merely because the request was sent." if self.status in {"SENT", "WAITING_REVIEWER", "REQUEST_UNPICKED", "RECEIVED"} else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly.")
+                value = ("While this chat can run, use supported bounded active polling: Bash sleep 20, then review_get for this exact review_id, repeatedly. An empty read is nonterminal. At a real host/session limit, preserve the exact review_id and state for continuation; do not use an hourly Scheduled task as a substitute." if self.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"} else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly.")
             object.__setattr__(self, "next_action", value)
         if self.durable_capture is None:
             refs = (

@@ -188,6 +188,8 @@ async def test_review_submit_derives_current_reviewer_and_delegates_exact_verdic
     )
 
     assert result == expected
+    assert "Poll review_get" not in result.next_action
+    assert "review-only assignment" in result.next_action
     assert lookup.seen == (PRINCIPAL.key, "reviewer-chat")
     subject.reviews.submit.assert_awaited_once_with(ReviewSubmit(
         review_id=review_id, verdict="FINDINGS", findings=(finding,),
