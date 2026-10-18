@@ -58,13 +58,13 @@ networking are available without a second approval path. Repository policy still
 primary source mutation. The repository primary-Git hook remains inactive pending safe reactivation.
 Its bounded implementation blocks recognized source-changing Git commands only when Git proves their
 target is the canonical primary checkout; routine push, upstream and repository-metadata operations
-remain available, and unavailable target identity fails open with an advisory. Creating
-`$XDG_STATE_HOME/switchstand/codex-primary-git-guard.disabled` (default
-`~/.local/state/switchstand/codex-primary-git-guard.disabled`) disables this one guard from outside
-the guarded checkout. It is a guardrail, not complete shell or operating-system isolation. Arbitrary
-local-user shell code remains technically capable of writing the canonical checkout, so implementation
-must stay in an owned writer. Unbound Workers stay read-only; bound Workers get writer-confined edits
-while it blocks auto-memory writes. Full local-user execution is not provider, deployment, activation, or other
+remain available, and unavailable target identity fails open with an advisory. It creates no
+separate state or service: when activated, Codex's `/hooks` browser is the direct emergency
+off-switch for this individual non-managed project hook and does not traverse the guarded Bash path.
+It is a guardrail, not complete shell or operating-system isolation. Arbitrary local-user shell code
+remains technically capable of writing the canonical checkout, so implementation must stay in an
+owned writer. Unbound Workers stay read-only; bound Workers get writer-confined edits while it blocks
+auto-memory writes. Full local-user execution is not provider, deployment, activation, or other
 consequential-effect authority; those exact grants and readbacks remain separate. Malformed auxiliary
 friction state is quarantined and regenerated visibly so launch and unrelated diagnosis remain usable.
 
