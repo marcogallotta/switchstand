@@ -6,14 +6,6 @@ hooks = true # Off-switch: set hooks = false.
 multi_agent = true
 apps = false
 
-[[hooks.PreToolUse]]
-matcher = "Bash|Edit|MultiEdit|Write|NotebookEdit"
-
-[[hooks.PreToolUse.hooks]]
-type = "command"
-command = '"$(git rev-parse --show-toplevel)/scripts/codex-hook" --coordinator-primary "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"'
-timeout = 10
-
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
 extends = ":workspace"
