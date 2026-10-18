@@ -1,6 +1,0 @@
-#!/bin/sh
-set -eu
-
-repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-echo "warning: scripts/switchstand-context is deprecated; use scripts/switchstand" >&2
-exec "$repo/scripts/switchstand" "$@"

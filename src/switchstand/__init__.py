@@ -1,1 +1,0 @@
-"""Switchstand Bootstrap V1."""

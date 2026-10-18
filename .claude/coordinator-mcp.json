@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "switchstand": {
-      "type": "http",
-      "url": "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
-    }
-  }
-}

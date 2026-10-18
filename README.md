@@ -1,54 +1,81 @@
-# Switchstand
+<p align="center"><strong>Codex CLI</strong> is a coding agent from OpenAI that runs locally on your computer.
+<p align="center">
+  <img src="https://github.com/openai/codex/blob/main/.github/codex-cli-splash.png" alt="Codex CLI splash" width="80%" />
+</p>
+</br>
+If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="https://developers.openai.com/codex/ide">install in your IDE.</a>
+</br>If you want the desktop app experience, run <code>codex app</code> or visit <a href="https://chatgpt.com/codex?app-landing-page=true">the Codex App page</a>.
+</br>If you are looking for the <em>cloud-based agent</em> from OpenAI, <strong>Codex Web</strong>, go to <a href="https://chatgpt.com/codex">chatgpt.com/codex</a>.</p>
 
-Switchstand is a provider-neutral controller for bounded engineering work. It keeps durable work, message, grant, and protected-effect identity behind stable application contracts while provider credentials and provider-specific behavior remain in trusted adapters. Readability and tool availability do not create authority.
+---
 
-The implementation targets Python 3.14, PostgreSQL, SQLAlchemy 2, Alembic, HTTPX, Pydantic 2, and the MCP Python SDK v2. `marcogallotta/switchstandold` is retired read-only evidence, not an implementation base.
+## Quickstart
 
-## Supported modes
+### Installing and running Codex CLI
 
-| Mode | Entry | Boundary |
-| --- | --- | --- |
-| Ordinary Codex Coordinator | Official raw `codex` in the repository | Loads repository instructions and the authenticated Switchstand integration. It has no launch-bound WorkId; role and tool access grant no work or provider effect. |
-| Ordinary Claude Code Coordinator | Raw `claude` in the canonical repository | The materialized host shim (`scripts/install-claude-shim`) delegates to `scripts/claude-dispatch`, which loads only the repository Coordinator settings and `switchstand` MCP, excludes the global `~/.claude/CLAUDE.md`, and fences the shared primary checkout via `scripts/codex-hook` on Bash, Edit, MultiEdit, Write and NotebookEdit. Elsewhere it runs plain Claude Code. |
-| Managed Codex worker | `scripts/switchstand --active <Asana task ID or URL> -- <assignment>` | Trusted launch binds one active WorkId, bounded references, runtime currentness, and the available managed tools. It is a one-task worker, not workspace discovery. |
-| Ordinary ChatGPT | Authenticated repository-configured `switchstand` HTTP/OAuth MCP | Uses admitted WorkIds and durable messaging. One chat should have one stable named agent identity distinct from OAuth authentication; the current implementation does not yet fully provide that separation. |
+Run the following on Mac or Linux to install Codex CLI:
 
-Exact-candidate managed qualification uses `scripts/switchstand --isolated --active <task> --commit <SHA>`. It remains fail-closed until the separately managed external selector has an ACTIVE CONTROL manifest; repository landing alone does not deploy or activate that path.
-
-Install or update official Codex with `npm install -g @openai/codex@latest`. Repository sessions use normal Codex resume semantics and the stock mailbox flow documented in [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md).
-
-See [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for the current usage and identity model. The executable factories, schemas, repository MCP allowlist, and tests own exact tool inventory; raw `source_*` reads are bounded managed compatibility, not the ordinary mental model.
-
-## Quick start
-
-```bash
-scripts/bootstrap
-docker compose up --build
-sh scripts/check
-
-# Install/update official Codex, then start an ordinary Coordinator
-npm install -g @openai/codex@latest
-codex
-
-# One managed task-bound worker
-scripts/switchstand --active <Asana task ID or URL> -- <exact initial assignment>
-
-# Create an owned writer at an accepted exact base
-scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-Ordinary ChatGPT without a checkout uses `repository_bundle_get` as specified in [AGENTS.md](AGENTS.md): accept only `current`, verify the advertised SHA-256, and materialize a normal repository. Existing Codex/Claude checkouts stay on normal Git.
-For candidate diagnostics, `repository_candidate_qualification_get` is the preferred compact read of the exact current PR base, head, composition, and code-owned Quality gates. It is provisional: direct public GitHub reads remain an allowed fallback when the semantic read is unavailable, `UNKNOWN`, or lacks needed detail.
+Run the following on Windows to install Codex CLI:
 
-## Documentation map
+```shell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```
 
-- [Agent bootstrap](AGENTS.md): load-bearing authority, safety, routing, and repository bootstrap.
-- [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md): current modes, identities, routing, and messaging model.
-- [Architecture](docs/architecture.md): runtime surfaces, semantic owners, durable state, and edit map.
-- [Development](docs/development.md): writers, checks, evidence subjects, launch, and recovery.
-- [Code quality and Code Review](docs/code-quality.md): implementation, review, qualification, and candidate/current-target rules.
-- [Work, messaging, and source compatibility](docs/source-history-feedback.md): WorkId reads, durable messages, feedback, and legacy source boundaries.
-- [North Star](docs/north-star.md): durable strategic direction; a guiding reference only, not an execution owner.
-- [Roadmap](docs/roadmap.md): historical 2026-09-29 planning snapshot; current status and priority come from live Switchstand work.
-- [Resource-governed agent workers](docs/resource-governed-agent-workers.md): inert broker/executor/canary trial and its evidence-gated adoption or retirement boundary.
-- [Research sources](docs/research-sources.md): where to research any task, with escalation when an agent cannot find enough; a lookup, not authority.
+The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+```
+
+```powershell
+$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
+```
+
+Codex CLI can also be installed via the following package managers:
+
+```shell
+# Install using npm
+npm install -g @openai/codex
+```
+
+```shell
+# Install using Homebrew
+brew install --cask codex
+```
+
+Then simply run `codex` to get started.
+
+<details>
+<summary>You can also go to the <a href="https://github.com/openai/codex/releases/latest">latest GitHub Release</a> and download the appropriate binary for your platform.</summary>
+
+Each GitHub Release contains many executables, but in practice, you likely want one of these:
+
+- macOS
+  - Apple Silicon/arm64: `codex-aarch64-apple-darwin.tar.gz`
+  - x86_64 (older Mac hardware): `codex-x86_64-apple-darwin.tar.gz`
+- Linux
+  - x86_64: `codex-x86_64-unknown-linux-musl.tar.gz`
+  - arm64: `codex-aarch64-unknown-linux-musl.tar.gz`
+
+Each archive contains a single entry with the platform baked into the name (e.g., `codex-x86_64-unknown-linux-musl`), so you likely want to rename it to `codex` after extracting it.
+
+</details>
+
+### Using Codex with your ChatGPT plan
+
+Run `codex` and select **Sign in with ChatGPT**. We recommend signing into your ChatGPT account to use Codex as part of your Plus, Pro, Business, Edu, or Enterprise plan. [Learn more about what's included in your ChatGPT plan](https://help.openai.com/en/articles/11369540-codex-in-chatgpt).
+
+You can also use Codex with an API key, but this requires [additional setup](https://developers.openai.com/codex/auth#sign-in-with-an-api-key).
+
+## Docs
+
+- [**Codex Documentation**](https://developers.openai.com/codex)
+- [**Contributing**](./docs/contributing.md)
+- [**Installing & building**](./docs/install.md)
+- [**Open source fund**](./docs/open-source-fund.md)
+
+This repository is licensed under the [Apache-2.0 License](LICENSE).
