@@ -394,6 +394,7 @@ def test_material_design_review_and_global_instruction_admission_live_in_code_qu
     assert "invariant, first-minute trigger, or routing pointer rather than procedure" in quality
     assert "If existing routing already reaches that owner, make no global change" in quality
     assert "Feature work never edits Project Settings opportunistically" in quality
+    assert "globally loaded bootstrap must change" in quality
     assert "Do not use a total byte/line cap as the semantic gate" in quality
     assert "Material design review before Human Review" in quality
     assert "one fresh context-free reviewer before Human Review" in quality
