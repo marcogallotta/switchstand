@@ -461,14 +461,20 @@ class CanonicalWorkRuntime:
                             except ValueError:
                                 inherited_root = None
                             if inherited_root is None:
-                                return CreateGateway.guard(
-                                    request, "denied", "parent_root_not_exact"
-                                )
-                            if root is not None and root != inherited:
+                                if current.work_type != "Context" or root is not None:
+                                    return CreateGateway.guard(
+                                        request, "denied", "parent_root_not_exact"
+                                    )
+                                # Imported navigation records intentionally have no rooted
+                                # work lineage. Keep them as placement-only parents while the
+                                # substantive child starts an exact canonical tree.
+                                root = str(work_id)
+                            elif root is not None and root != inherited:
                                 return CreateGateway.guard(
                                     request, "denied", "child_root_conflicts_with_parent"
                                 )
-                            root = inherited
+                            else:
+                                root = inherited
                         else:
                             if grant.scope != "workspace" and required_operation != "file_issue":
                                 return CreateGateway.guard(
@@ -516,7 +522,7 @@ class CanonicalWorkRuntime:
                             )
                         root_id = _exact_root(root)
                         if (root_id is not None
-                                and not (parent is None and root_id == work_id)
+                                and root_id != work_id
                                 and await self.works.get_locked(connection, root_id) is None):
                             return CreateGateway.guard(
                                 request, "denied", "canonical_root_not_bound"
