@@ -122,12 +122,11 @@ async def bind_root(tools, service) -> None:
         ).values(name_key="root", display_name="/root"))
 
 
-def root_tools(service, session, *, audit=None, passcode="france"):
+def root_tools(service, session, *, audit=None):
     return dict(build_ordinary_tools(
         service,
         audit=audit,
         agent_identity=lambda: session[0],
-        root_takeover_passcode=passcode,
     ))
 
 
@@ -265,7 +264,10 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     actor[0] = other
     session[0] = "other-chat"
     denied = await tools["agent_takeover"]("1", "Beta")
-    assert (denied.status, denied.reason) == ("denied", "principal_mismatch")
+    assert (denied.status, denied.reason) == (
+        "denied", "takeover_confirmation_required",
+    )
+    assert denied.next_action is not None
 
     actor[0] = _owner
     session[0] = "replacement"
@@ -305,7 +307,7 @@ async def test_marco_authorized_named_takeover_crosses_principal_and_keeps_mail(
     actor[0], session[0] = other, "replacement-chat"
     configured = root_tools(service, session)
     moved = await configured["agent_takeover"](
-        "1", "Tests", "Marco says: take over Tests using france.",
+        "1", "Tests", "Marco says: take over Tests.",
     )
 
     assert (moved.status, moved.name) == ("ok", "Tests")
@@ -330,21 +332,25 @@ async def test_named_cross_principal_takeover_rejects_missing_marco_authorizatio
     configured = root_tools(service, session)
 
     missing_message = await configured["agent_takeover"]("1", "Tests")
-    wrong_passcode = await configured["agent_takeover"](
-        "1", "Tests", "Marco says: take over Tests using spain.",
+    unrelated_message = await configured["agent_takeover"](
+        "1", "Tests", "Marco says: continue the current task.",
     )
 
     assert (missing_message.status, missing_message.reason) == (
-        "denied", "principal_mismatch",
+        "denied", "takeover_confirmation_required",
     )
-    assert (wrong_passcode.status, wrong_passcode.reason) == (
-        "denied", "principal_mismatch",
+    assert missing_message.next_action is not None
+    assert "Takeover was not performed" in missing_message.next_action
+    assert "Ask Marco" in missing_message.next_action
+    assert "'Tests'" in missing_message.next_action
+    assert (unrelated_message.status, unrelated_message.reason) == (
+        "denied", "takeover_confirmation_required",
     )
 
 
 @pytest.mark.parametrize("takeover_message", [
-    "Please takeover coordinator with FRANCE.",
-    "Take over as coordinator. France is the password.",
+    "Please takeover coordinator.",
+    "Take over as coordinator.",
 ])
 async def test_coordinator_takeover_canonicalizes_root_and_keeps_mail(
     agent_messaging, takeover_message,
@@ -388,7 +394,7 @@ async def test_legacy_root_sender_routes_to_canonical_coordinator(agent_messagin
     actor[0], session[0] = other, "replacement-chat"
     configured = root_tools(service, session)
     assert (await configured["agent_takeover"](
-        "1", "/root", "takeover /root with france"
+        "1", "/root", "takeover /root"
     )).name == CODEX_COORDINATOR_NAME
 
     session[0] = "sender-chat"
@@ -400,21 +406,26 @@ async def test_legacy_root_sender_routes_to_canonical_coordinator(agent_messagin
     assert sent.message.recipient_name == CODEX_COORDINATOR_NAME
 
 
-async def test_root_takeover_rejects_wrong_passcode(agent_messaging):
+async def test_cross_principal_coordinator_takeover_requires_confirmation(agent_messaging):
     tools, actor, session, _owner, other, service = agent_messaging
     await bind_root(tools, service)
     actor[0], session[0] = other, "replacement-chat"
 
     result = await root_tools(service, session)["agent_takeover"](
-        "1", CODEX_COORDINATOR_NAME, "takeover coordinator; passcode is spain"
+        "1", CODEX_COORDINATOR_NAME,
     )
 
-    assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
+    assert (result.status, result.reason) == (
+        "denied", "takeover_confirmation_required",
+    )
+    assert result.next_action is not None
+    assert "Takeover was not performed" in result.next_action
+    assert "Ask Marco" in result.next_action
 
 
 @pytest.mark.parametrize(
     "message",
-    ["move /root with france", "takeover root with france"],
+    ["move /root", "takeover root"],
 )
 async def test_root_takeover_rejects_a_missing_required_word(agent_messaging, message):
     tools, actor, session, _owner, other, service = agent_messaging
@@ -425,7 +436,9 @@ async def test_root_takeover_rejects_a_missing_required_word(agent_messaging, me
         "1", "/root", message
     )
 
-    assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
+    assert (result.status, result.reason) == (
+        "denied", "takeover_confirmation_required",
+    )
 
 
 async def test_root_takeover_fences_the_old_session(agent_messaging):
@@ -434,7 +447,7 @@ async def test_root_takeover_fences_the_old_session(agent_messaging):
     configured = root_tools(service, session)
     actor[0], session[0] = other, "replacement-chat"
     assert (await configured["agent_takeover"](
-        "1", "/root", "takeover /root with france"
+        "1", "/root", "takeover /root"
     )).status == "ok"
 
     actor[0], session[0] = _owner, "chat-a"
@@ -442,24 +455,20 @@ async def test_root_takeover_fences_the_old_session(agent_messaging):
     assert (old.status, old.reason) == ("denied", "agent_not_registered")
 
 
-async def test_root_takeover_does_not_audit_or_log_message_or_passcode(
+async def test_root_takeover_does_not_audit_or_log_confirmation_message(
     agent_messaging, caplog,
 ):
     tools, actor, session, _owner, other, service = agent_messaging
     await bind_root(tools, service)
     actor[0], session[0] = other, "replacement-chat"
     records = []
-    configured = root_tools(
-        service, session, audit=lambda *record: records.append(record),
-        passcode="audit-secret",
-    )
-    message = "takeover /root using audit-secret and private-message-marker"
+    configured = root_tools(service, session, audit=lambda *record: records.append(record))
+    message = "Marco says takeover /root; private-message-marker"
 
     assert (await configured["agent_takeover"]("1", "/root", message)).status == "ok"
 
     evidence = repr(records) + caplog.text
     assert records == [("agent_takeover", "/root", "ok")]
-    assert "audit-secret" not in evidence
     assert "private-message-marker" not in evidence
 
 
@@ -485,10 +494,10 @@ async def test_root_takeover_ambiguous_result_does_not_overwrite_newer_owner(
     monkeypatch.setattr(AgentMailboxState, "takeover_coordinator", ambiguous_then_newer)
 
     result = await configured["agent_takeover"](
-        "1", "/root", "takeover /root with france"
+        "1", "/root", "takeover /root"
     )
 
-    assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
+    assert (result.status, result.reason) == ("recovery_required", "state_unavailable")
     assert calls == 1
     assert service.messages is not None
     observed = await AgentMailboxState(service.messages.engine).for_actor(
@@ -548,7 +557,10 @@ async def test_takeover_does_not_retry_explicit_denial(agent_messaging, monkeypa
 
     result = await tools["agent_takeover"]("1", "Coordinator")
 
-    assert (result.status, result.reason) == ("denied", "principal_mismatch")
+    assert (result.status, result.reason) == (
+        "denied", "takeover_confirmation_required",
+    )
+    assert result.next_action is not None
     assert calls == 1
 
 

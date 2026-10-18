@@ -110,7 +110,7 @@ def test_config_requires_numeric_identity_exact_resource_and_loopback(monkeypatc
         monkeypatch.setenv(name, values[name])
 
 
-def test_resource_edge_passes_root_takeover_passcode_from_server_config(monkeypatch):
+def test_resource_edge_does_not_wire_legacy_takeover_passcode(monkeypatch):
     captured = {}
 
     def ordinary_tools(*_args, **kwargs):
@@ -122,7 +122,7 @@ def test_resource_edge_passes_root_takeover_passcode_from_server_config(monkeypa
 
     create_app(service(), CONFIG, client_storage=MemoryStore())
 
-    assert captured["root_takeover_passcode"] == "configured-secret"
+    assert "root_takeover_passcode" not in captured
 
 
 async def test_provider_bridges_proxy_claims_and_rejects_wrong_identity_or_scope(monkeypatch):

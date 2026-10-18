@@ -304,13 +304,15 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
     assert "asks this session to take over `Codex Coordinator`" in agents
-    assert "use a passcode only from Marco's current message" in agents
+    assert "pass his full current confirmation message to `agent_takeover`" in agents
+    assert "must stop and ask Marco for confirmation" in agents
     assert "never retake the Coordinator after losing it" in agents
     assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
     assert "A stateless repository hook re-injects the existing Feedback V1 obligation" in usage
     assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
     assert "`/root` remains a temporary inbound alias" in usage
-    assert "on failure it asks Marco for the passcode" in usage
+    assert "stops with `takeover_confirmation_required`" in usage
+    assert "tells the agent to ask Marco" in usage
     assert "never retakes the name after losing it" in usage
     assert "checks pending mail at the start and end of each Marco turn" in usage
     assert "whenever Marco says `check mail`" in usage
