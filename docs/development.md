@@ -223,8 +223,9 @@ services, state, settings, or routing.
   follows newer target main. Omitting `--target-repo` preserves legacy paths and behavior.
   Dish owns its native environment: `cd dish`, `python3 -m venv --clear .venv`, then
   `.venv/bin/python -m pip install -r requirements-test.txt` and task-relevant focused pytest.
-  Switchstand's pinned uv remains launcher-only. Credential stripping and CONTROL context MCP
-  remain active. Publication and live Dish proof are unproved here; the latter requires the separately
+  Switchstand's pinned uv remains launcher-only. Credential stripping and the launch-bound profile
+  of the canonical CONTROL MCP remain active. Publication and live Dish proof are unproved here;
+  the latter requires the separately
   authorized ai-tools bootstrap bridge. This prototype does not generalize isolated qualification.
 - Managed exact-candidate Codex qualification uses the isolated CONTROL route below; there is no
   candidate-local trusted launcher. The candidate remains writable work input only, while CONTROL owns launcher Python,
