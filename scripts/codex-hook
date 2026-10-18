@@ -532,7 +532,7 @@ def run() -> int:
     tool_input = payload.get("tool_input") or {}
     command = tool_input.get("command")
     cwd = str(payload.get("cwd") or os.getcwd())
-    declared_workdir = tool_input.get("workdir")
+    declared_workdir = payload.get("workdir", tool_input.get("workdir"))
     if isinstance(declared_workdir, str):
         cwd = os.path.realpath(os.path.join(cwd, declared_workdir))
     agent_id = payload.get("agent_id")
