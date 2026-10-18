@@ -1072,6 +1072,14 @@ def build_ordinary_tools(
         else:
             assert service.reviews is not None
             result = await service.reviews.recover(review_id, context.mailbox)
+        if result.status == "RECEIVED":
+            result = result.model_copy(update={
+                "next_action": (
+                    "Review recovery succeeded. Resume this exact recovered review and call "
+                    "review_submit with its evidence-based verdict; do not call requester-only "
+                    "review_get."
+                ),
+            })
         audited("review_recover", str(review_id), result.status)
         return result
 
