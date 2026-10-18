@@ -277,6 +277,7 @@ async def test_work_create_routes_provider_neutral_project_target(monkeypatch):
     ("file_bug", "BUG"),
     ("file_feature", "PRODUCT_FEATURE"),
     ("file_process", "PROCESS"),
+    ("file_performance", "PERFORMANCE"),
     ("file_review_feedback", "HUMAN_REVIEW_FEEDBACK"),
 ])
 async def test_issue_wrappers_fix_category_and_preserve_evidence(tool_name, category):
@@ -753,7 +754,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "human_trajectory_get", "human_trajectory_record",
             "work_history", "work_event", "work_append", "capability_preflight_get",
             "work_create", "work_update", "work_relate",
-            "file_bug", "file_feature", "file_process", "file_review_feedback",
+            "file_bug", "file_feature", "file_process", "file_performance",
+            "file_review_feedback",
             "task_control_get", "task_control_checkpoint", "work_hygiene_check",
             "agent_register", "agent_takeover", "agent_transfer_request",
             "agent_message_send", "agent_message_pending",

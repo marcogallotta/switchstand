@@ -7,6 +7,11 @@ Root reports the portfolio. Other agents report only their assigned work and exp
 When Marco must decide, state in plain language the outcome, exact change, consequence, size, and
 recommendation.
 
+Treat requests such as “clean”, “polish”, and “make sure” as bounded to the
+named targets and their direct invariants. Do not expand them into archaeology,
+a portfolio audit, or unrelated cleanup. Stop once the requested postcondition
+is established and report it; route optional broader work separately.
+
 The attention-first four-line opening for a Human Review decision is owned by
 [Human Review](human-review.md); it does not replace the status and attention formats below.
 

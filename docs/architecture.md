@@ -30,8 +30,9 @@ and behavior. It includes provider-neutral work discovery, history and events; p
 append/create/update/relation operations; registered-name `agent_message_*` messaging;
 required-result persistence; and repository bundle transport. Provider-era effects receive any
 provider readback through the exact pre-cutover deployment while its provider is still configured.
-Four fixed reporting tools route bugs, missing features, process complaints, and Human Review
-feedback to server-selected canonical projects. They share one private create path and a narrow
+Fixed reporting tools route bugs, missing features, process complaints, avoidable performance
+latency, and Human Review feedback to server-selected canonical projects. Performance feedback
+reuses the Process project. They share one private create path and a narrow
 `file_issue` grant operation; callers cannot select projects or gain generic create authority.
 Separately authorized frozen-cutover operator action archives or deletes the adjudicated rows before
 the DB-native application is deployed. Managed task-bound runtimes separately retain the
@@ -217,7 +218,7 @@ the active claim read/write tools, and bounds priority context to the active Wor
 launch-bound read-only references.
 
 `mcp.py::build_context_server` exposes launch-bound work, history, read-only preflight, and the
-same four fixed-category reporting tools. Their project IDs cross the managed boundary only as
+same fixed-category reporting tools. Their project IDs cross the managed boundary only as
 sealed prepared-launch inputs and are passed explicitly through the scrubbed executor and Docker
 wrapper; a missing category remains unavailable rather than reading a mutable fallback.
 An explicit activation opt-in adds mutation, while priority claims additionally

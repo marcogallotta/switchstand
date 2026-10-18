@@ -442,6 +442,14 @@ def test_context_server_exposes_only_bound_read_context():
         assert annotations.destructive_hint is False
 
 
+def test_context_server_exposes_all_fixed_feedback_tools_when_configured():
+    server = build_context_server(FakeService(), ACTIVE, issue_reporter=object())
+    assert {
+        "file_bug", "file_feature", "file_process", "file_performance",
+        "file_review_feedback",
+    }.issubset(server._tool_manager._tools)
+
+
 async def test_context_server_real_stdio_exposes_only_bound_read_context():
     server = StdioServerParameters(
         command=sys.executable,
