@@ -165,6 +165,11 @@ def test_managed_command_omits_priority_tools_without_explicit_opt_in(tmp_path: 
     assert not any(
         "SWITCHSTAND_PRIORITY_CLAIMS" in value for value in command
     )
+    configured = next(value for value in command
+                      if value.startswith("mcp_servers.switchstand.env="))
+    assert json.loads(configured.partition("=")[2]) == {
+        "SWITCHSTAND_MANAGED_PROFILE": "launch-bound",
+    }
 
 
 def test_managed_command_seals_activation_inputs_only_on_opt_in(tmp_path: Path) -> None:
@@ -177,7 +182,9 @@ def test_managed_command_seals_activation_inputs_only_on_opt_in(tmp_path: Path) 
     configured = next(value for value in command
                       if value.startswith("mcp_servers.switchstand.env="))
     assert "activation_obligation_transition" in enabled
-    assert json.loads(configured.partition("=")[2]) == environment
+    assert json.loads(configured.partition("=")[2]) == environment | {
+        "SWITCHSTAND_MANAGED_PROFILE": "launch-bound",
+    }
     with pytest.raises(ValueError, match="exact launch environment"):
         managed_parent_command(tmp_path / "codex", tmp_path / "control", tmp_path / "writer",
                                "task", activation_environment={})

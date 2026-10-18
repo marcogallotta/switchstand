@@ -12,7 +12,7 @@ import pytest
 from chatgpt_fixture import assert_public, read_chain
 from mcp import Client, StdioServerParameters
 
-from switchstand import context_mcp
+from switchstand import launch_bound_profile
 from switchstand.contracts import (
     AppendResult,
     LaunchAuthority,
@@ -67,6 +67,17 @@ def test_full_server_preserves_work_tool_schema_titles():
     assert "work_id" in work_get.parameters["properties"]
     assert work_history.parameters["properties"]["limit"]["minimum"] == 1
     assert work_history.parameters["properties"]["limit"]["maximum"] == 100
+
+
+def test_managed_server_routes_only_known_profiles(monkeypatch):
+    sentinel = object()
+    monkeypatch.setenv("SWITCHSTAND_MANAGED", "1")
+    monkeypatch.setenv("SWITCHSTAND_MANAGED_PROFILE", "launch-bound")
+    monkeypatch.setattr(launch_bound_profile, "build_from_env", lambda: sentinel)
+    assert server_from_env() is sentinel
+    monkeypatch.setenv("SWITCHSTAND_MANAGED_PROFILE", "historical-context")
+    with pytest.raises(ValueError, match="unknown managed MCP profile"):
+        server_from_env()
 
 
 async def test_managed_priority_tools_derive_launch_identity_and_bound_context():
@@ -185,7 +196,7 @@ async def test_launch_context_server_exposes_same_bound_priority_adapter():
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch, enabled):
+def test_launch_bound_profile_constructs_priority_adapters_only_when_enabled(monkeypatch, enabled):
     engine = object()
     works = object()
     relations = object()
@@ -197,8 +208,7 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
     captured = {}
 
     class Server:
-        def run(self):
-            captured["ran"] = True
+        pass
 
     def build(passed_service, active, references, **adapters):
         captured.update({
@@ -207,10 +217,8 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
         })
         return Server()
 
-    monkeypatch.setattr(context_mcp, "protect_provider_logs", lambda: None)
-    monkeypatch.setattr(context_mcp, "require_current_schema", lambda: None)
-    monkeypatch.setattr(context_mcp, "controller_from_env", lambda: service)
-    monkeypatch.setattr(context_mcp, "build_context_server", build)
+    monkeypatch.setattr(launch_bound_profile, "controller_from_env", lambda: service)
+    monkeypatch.setattr(launch_bound_profile, "build_context_server", build)
     for variable in (
         "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
         "SWITCHSTAND_PROCESS_PROJECT_ID", "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
@@ -224,9 +232,9 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
     else:
         monkeypatch.delenv("SWITCHSTAND_PRIORITY_CLAIMS", raising=False)
 
-    context_mcp.main()
+    server = launch_bound_profile.build_from_env()
 
-    assert captured["ran"] is True
+    assert isinstance(server, Server)
     assert captured["service"] is service
     assert captured["active"] == ID
     assert captured["references"] == (REFERENCE_ID,)
