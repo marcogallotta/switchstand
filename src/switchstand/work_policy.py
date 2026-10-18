@@ -83,7 +83,7 @@ def validate_create_state(
         raise ValueError("created work requires an exact root")
 
     report = not parented and work_type in {
-        "BUG", "PRODUCT_FEATURE", "PROCESS", "HUMAN_REVIEW_FEEDBACK",
+        "BUG", "PRODUCT_FEATURE", "PROCESS", "PERFORMANCE", "HUMAN_REVIEW_FEEDBACK",
     } and owner_key == "NONE"
     if report:
         if (

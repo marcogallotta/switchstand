@@ -388,6 +388,8 @@ def build_context_server(
             "PRODUCT_FEATURE", "Report a missing capability to the fixed feature triage list."))
         closed_tool(server, "file_process", report_tool(
             "PROCESS", "Report a process complaint to the fixed PROCESS triage list."))
+        closed_tool(server, "file_performance", report_tool(
+            "PERFORMANCE", "Report avoidable process latency to the fixed PROCESS triage list."))
         closed_tool(server, "file_review_feedback", report_tool(
             "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
     register_priority_tools(

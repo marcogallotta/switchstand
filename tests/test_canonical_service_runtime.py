@@ -653,13 +653,16 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
         assert set(memberships) == {(project_id, applied.work_id)}
 
 
-async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(subject: Subject) -> None:
+@pytest.mark.parametrize("category", ["BUG", "PERFORMANCE"])
+async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
+    subject: Subject, category: str,
+) -> None:
     project_id = uuid4()
     async with subject.engine.begin() as connection:
         await connection.execute(projects.insert().values(
-            project_id=project_id, name="BUGS",
+            project_id=project_id, name=category,
         ))
-    subject.service.issue_projects["BUG"] = project_id
+    subject.service.issue_projects[category] = project_id
     subject.grant = subject.grant.model_copy(update={
         "version": 2,
         "scope": "launch",
@@ -669,15 +672,16 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(subject: 
     await subject.grants.issue(subject.grant, 1)
     operation_id = uuid4()
 
-    applied = await subject.service.file_issue("BUG", operation_id, "Broken", "raw evidence")
-    replay = await subject.service.file_issue("BUG", operation_id, "Broken", "raw evidence")
-    conflict = await subject.service.file_issue("BUG", operation_id, "Changed", "raw evidence")
+    applied = await subject.service.file_issue(category, operation_id, "Broken", "raw evidence")
+    replay = await subject.service.file_issue(category, operation_id, "Broken", "raw evidence")
+    conflict = await subject.service.file_issue(category, operation_id, "Changed", "raw evidence")
 
     assert applied == replay and applied.effect == "applied"
     assert conflict.reason == "operation_identity_conflict"
     stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
     assert stored.item is not None
     assert stored.item.notes == "raw evidence"
+    assert stored.item.routing.work_type == category
     assert stored.item.routing.owner_key == "NONE"
     assert stored.item.routing.lifecycle_state == "WAITING"
     async with subject.engine.connect() as connection:

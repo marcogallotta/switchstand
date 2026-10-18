@@ -199,6 +199,12 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
     monkeypatch.setattr(context_mcp, "require_current_schema", lambda: None)
     monkeypatch.setattr(context_mcp, "controller_from_env", lambda: service)
     monkeypatch.setattr(context_mcp, "build_context_server", build)
+    for variable in (
+        "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
+        "SWITCHSTAND_PROCESS_PROJECT_ID", "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("SWITCHSTAND_PROCESS_PROJECT_ID", str(ID))
     if enabled:
         monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
     else:
@@ -210,6 +216,9 @@ def test_context_mcp_constructs_priority_adapters_only_when_enabled(monkeypatch,
     assert captured["service"] is service
     assert captured["active"] == ID
     assert captured["references"] == (REFERENCE_ID,)
+    assert captured["issue_reporter"].issue_projects == {
+        "PROCESS": ID, "PERFORMANCE": ID,
+    }
     if enabled:
         assert captured["principal"] == managed_principal(ID)
         assert captured["grants"] is not None
@@ -519,7 +528,8 @@ async def test_real_stdio_handshake_exposes_exact_surface():
             tool.name for tool in tools
         } | {
             "work_update",
-            "file_bug", "file_feature", "file_process", "file_review_feedback",
+            "file_bug", "file_feature", "file_process", "file_performance",
+            "file_review_feedback",
             "priority_claim_get", "priority_claim_record", "priority_context_get",
             "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",

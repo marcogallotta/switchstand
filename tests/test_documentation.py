@@ -326,6 +326,22 @@ def test_human_guidance_is_linked_not_duplicated_in_bootstrap():
     assert "exact change, consequence, size, and recommendation" not in agents
 
 
+def test_performance_feedback_and_definitive_receipt_rules_stay_bounded():
+    agents = normalized("AGENTS.md")
+    interaction = normalized("docs/human-interaction.md")
+    source = normalized("docs/source-history-feedback.md")
+
+    assert "file_performance" in agents
+    assert "duration/call count, cause, and the smallest acceleration" in agents
+    assert "four `mcp__switchstand__file_*`" not in agents
+    assert "definitive semantic receipt is the readback" in agents
+    assert "Stop once the requested postcondition is established" in interaction
+    assert "do not add a redundant client reread" in agents
+    assert "server's own readback remains mandatory" in source
+    assert "different targets may be issued together" in source
+    assert "same-target effects" in source
+
+
 def test_chatgpt_connection_url_is_copy_safe():
     agents = normalized("AGENTS.md")
     usage = read("docs/how-marco-uses-switchstand.md")

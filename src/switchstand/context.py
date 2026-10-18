@@ -412,7 +412,7 @@ def codex_command(
               'intent. Work only in this private task clone. This is ordinary development; the '
               'exact CONTROL hook remains active.')
     enabled_tools = ["work_get", "work_history", "file_bug", "file_feature",
-                     "file_process", "file_review_feedback"]
+                     "file_process", "file_performance", "file_review_feedback"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
                              "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
                              "SWITCHSTAND_PROCESS_PROJECT_ID",

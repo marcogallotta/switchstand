@@ -258,7 +258,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_result_send",
     "agent_message_disposition",
     "task_control_checkpoint",
-    "file_bug", "file_feature", "file_process", "file_review_feedback",
+    "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
 })
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
@@ -679,6 +679,15 @@ def build_ordinary_tools(
         del api_version
         result = await service.file_issue("PROCESS", operation_id, title, evidence)
         audited("file_process", None, result.status)
+        return result
+
+    async def file_performance(
+        api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+    ) -> GuardOutcome:
+        """Report avoidable process latency to the fixed PROCESS triage list."""
+        del api_version
+        result = await service.file_issue("PERFORMANCE", operation_id, title, evidence)
+        audited("file_performance", None, result.status)
         return result
 
     async def file_review_feedback(
@@ -1628,6 +1637,7 @@ def build_ordinary_tools(
         ("file_bug", file_bug),
         ("file_feature", file_feature),
         ("file_process", file_process),
+        ("file_performance", file_performance),
         ("file_review_feedback", file_review_feedback),
         ("task_control_get", task_control_get),
         ("work_hygiene_check", work_hygiene_check),
