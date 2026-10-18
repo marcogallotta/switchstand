@@ -2,7 +2,7 @@ approval_policy = "never"
 default_permissions = ":danger-full-access"
 
 [features]
-hooks = true # Off-switch: set hooks = false.
+hooks = true # The repository primary-Git guard remains inactive pending safe reactivation.
 multi_agent = true
 apps = false
 
