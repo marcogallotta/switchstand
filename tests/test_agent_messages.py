@@ -167,6 +167,29 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     assert actor[0] == owner
 
 
+async def test_registration_replay_names_the_existing_identity(agent_messaging):
+    tools, _actor, _session, _owner, _other, _service = agent_messaging
+    first = await tools["agent_register"]("1", "Alpha")
+    replay = await tools["agent_register"]("1", "Beta")
+
+    assert first.status == "ok" and first.name == "Alpha" and first.next_action is None
+    assert replay.status == "ok" and replay.name == "Alpha" and replay.reason is None
+    assert replay.next_action is not None
+    assert "remains registered as 'Alpha'" in replay.next_action
+    assert "requested name 'Beta' was not registered" in replay.next_action
+    assert "Do not treat this result as registration under 'Beta'" in replay.next_action
+
+
+async def test_registration_replay_accepts_equivalent_name(agent_messaging):
+    tools, _actor, _session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha Agent")).status == "ok"
+
+    replay = await tools["agent_register"]("1", "  ALPHA   agent  ")
+
+    assert replay.status == "ok" and replay.name == "Alpha Agent"
+    assert replay.next_action is None
+
+
 async def test_request_replay_watch_follows_current_delivery_state(agent_messaging):
     tools, _actor, session, _owner, _other, _service = agent_messaging
     assert (await tools["agent_register"]("1", "Alpha")).status == "ok"

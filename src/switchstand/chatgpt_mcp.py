@@ -1285,11 +1285,24 @@ def build_ordinary_tools(
                     audited("agent_register", name, result.status)
                     return result
                 stored = await mailboxes.register_agent(name, principal.key, chat_session)
-                result = (
-                    AgentRegistrationResult(status="ok", name=stored.mailbox.name)
-                    if stored.status == "ok" and stored.mailbox is not None
-                    else AgentRegistrationResult(status=stored.status, reason=stored.reason)
-                )
+                if stored.status == "ok" and stored.mailbox is not None:
+                    actual_name = stored.mailbox.name
+                    requested_name = " ".join(name.strip().split())
+                    result = AgentRegistrationResult(
+                        status="ok",
+                        name=actual_name,
+                        next_action=(
+                            f"This session remains registered as {actual_name!r}; requested "
+                            f"name {requested_name!r} was not registered. Do not treat this "
+                            f"result as registration under {requested_name!r}."
+                            if agent_name_key(actual_name) != agent_name_key(name)
+                            else None
+                        ),
+                    )
+                else:
+                    result = AgentRegistrationResult(
+                        status=stored.status, reason=stored.reason,
+                    )
         audited("agent_register", name, result.status)
         return result
 
