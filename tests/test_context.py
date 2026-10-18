@@ -955,6 +955,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     for command in (
         "git add tracked.txt", "git reset --hard HEAD", "git clean -fd",
         "git checkout -- tracked.txt", "git stash push",
+        f"git --git-dir {primary / '.git'} --work-tree {primary} add tracked.txt",
     ):
         denied = hook(primary, command, environment, coordinator_primary=primary)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
@@ -975,6 +976,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         (primary, f"env -C{foreign} git commit -m foreign"),
         (primary, f"env -vS'-C{foreign}' git commit -m foreign"),
         (primary, f"env -S '--chdir={foreign}' git commit -m foreign"),
+        (primary, f"cd -- {foreign} && git add tracked.txt"),
     ):
         assert hook(repo, command, environment, coordinator_primary=primary,
                     coordinator_writer=writer) == {}

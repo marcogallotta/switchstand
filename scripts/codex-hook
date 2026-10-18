@@ -70,6 +70,9 @@ def git_parts(tokens: list[str], cwd: str) -> tuple[list[str], str, list[str], s
                 name, expansion = value.split("=", 1)
                 aliases[name.removeprefix("alias.")] = expansion
             pos += 2
+        elif token in {"--git-dir", "--work-tree"} and pos + 1 < len(tokens):
+            prefix += [token, tokens[pos + 1]]
+            pos += 2
         elif token.startswith("-"):
             prefix.append(token)
             pos += 1
@@ -351,8 +354,12 @@ def classify(
                     prefix, command_cwd, subcommand, coordinator_primary, advisories
                 ):
                     return reason
-        if tokens[:1] == ["cd"] and len(tokens) == 2:
-            current = os.path.realpath(os.path.join(current, tokens[1]))
+        if tokens[:1] == ["cd"]:
+            cd_args = tokens[1:]
+            if cd_args[:1] == ["--"]:
+                cd_args = cd_args[1:]
+            if len(cd_args) == 1:
+                current = os.path.realpath(os.path.join(current, cd_args[0]))
     return None
 
 
