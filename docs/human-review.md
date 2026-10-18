@@ -49,6 +49,25 @@ For a real decision, use a natural, compact explanation in Marco's own context: 
 
 When a material decision needs Human Review, include the actual proposed explanation in the existing independent design or implementation review; substantive corrections receive focused rereview, not a separate format-review stage.
 
+## Use the response
+
+When Marco challenges a proposal or its explanation, identify what he challenged: the premise,
+usefulness, scope/order, recommendation, explanation or action authorization. Reconsider that
+part before another draft; change the route, obtain discriminating evidence, or justify keeping
+it. Rewriting the same proposal at another length does not clear a necessity objection. A style
+correction alone need not change a sound design. Preserve the existing authority state unless
+Marco changes it; rejection of the explanation is not automatically denial of the action.
+
+Supply the decision reasoning yourself. Do not ask Marco to design a review format or repeat a
+magic authorization phrase. A request for a useful Human Review does not itself call for another
+technical review; investigate an actual technical evidence gap when needed.
+
+The delivery owner records the actual decision/correction and why on the existing owner or
+trajectory and applies it to the next action/handoff. File every actual Human Review outcome
+through existing feedback and verify its readback, without sampling or synthetic outcomes.
+Nonresponse requires an independently valid response checkpoint; elapsed silence is not one.
+Feedback records do not grant effect authority or prove that the correction was used.
+
 ## Do not
 
 Do not write the human's decision, ask for permission already given, turn status/completion into a Human Review, present "Human Review: approve", ask a bare approve question without saying what yes causes, seek blanket approval for unrelated changes, hide aggregate size behind smaller PRs, or turn reviewer remedies into requirements unless the governing contract independently requires them.
