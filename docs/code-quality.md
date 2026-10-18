@@ -21,8 +21,9 @@ this is not a separate ceremony:
 Any `NO` routes the detail to its current owner and leaves at most the needed trigger/pointer in
 the applicable bootstrap. If existing routing already reaches that owner, make no global change.
 A serious incident does not automatically qualify a new bootstrap rule. Feature work never edits
-Project Settings opportunistically; change that manual provider surface only when its router must
-change, under the existing exact-text review, effect-authority, and readback rules. The existing
+Project Settings opportunistically; change that manual provider surface only when its globally
+loaded bootstrap must change, under the existing exact-text review, effect-authority, and readback
+rules. The existing
 review reports before/after bytes and any displaced owner text as diagnostics. Do not use a total
 byte/line cap as the semantic gate: review must challenge ownership and necessity rather than
 compress prose to hit a threshold.
