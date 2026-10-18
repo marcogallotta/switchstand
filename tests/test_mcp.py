@@ -58,6 +58,17 @@ class FakeService:
         return AppendResult(status="ok", task_gid=TASK_GID, story_gid=STORY_GID)
 
 
+def test_full_server_preserves_work_tool_schema_titles():
+    server = build_server(FakeService(), ID)
+    work_get = server._tool_manager.get_tool("work_get")
+    work_history = server._tool_manager.get_tool("work_history")
+    assert work_get.parameters["title"] == "_work_getArguments"
+    assert work_history.parameters["title"] == "_work_historyArguments"
+    assert "work_id" in work_get.parameters["properties"]
+    assert work_history.parameters["properties"]["limit"]["minimum"] == 1
+    assert work_history.parameters["properties"]["limit"]["maximum"] == 100
+
+
 async def test_managed_priority_tools_derive_launch_identity_and_bound_context():
     principal = managed_principal(ID)
     grant = SimpleNamespace(version=7)

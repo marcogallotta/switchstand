@@ -356,22 +356,28 @@ def build_server(
 
     if bound_context:
         async def _bound_work_get(api_version: Literal["1"]) -> PublicWorkResult:
-            """Read the exact launch-bound work."""
             return project_work(await service.get(  # type: ignore[attr-defined]
                 WorkGetRequest(api_version=api_version, work_id=active_work_id)
             ))
+        _bound_work_get.__name__ = "_work_get"
+        _bound_work_get.__doc__ = "Read the exact launch-bound work."
 
         async def _bound_work_history(
             api_version: Literal["1"], observed_revision: str,
-            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+            cursor: str | None = None, limit: int = 50,
         ) -> WorkHistoryResult:
-            """Exceptional bounded investigation/recovery history for the exact launch-bound work; never normal startup, re-entry, review, polling, or implementation grounding."""
             return await service.history(  # type: ignore[attr-defined]
                 WorkHistoryRequest(
                     api_version=api_version, work_id=active_work_id,
                     observed_revision=observed_revision, cursor=cursor, limit=limit,
                 )
             )
+        _bound_work_history.__name__ = "_work_history"
+        _bound_work_history.__doc__ = (
+            "Exceptional bounded investigation/recovery history for the exact launch-bound work; "
+            "never normal startup, re-entry, review, polling, or implementation grounding. "
+            "Pagination is revision-checked; on stale, call work_get again before recovery continues."
+        )
 
         work_get_tool = _bound_work_get
         work_history_tool = _bound_work_history
@@ -383,6 +389,7 @@ def build_server(
             return project_work(await service.get(request))  # type: ignore[attr-defined]
 
         references = ", ".join(map(str, reference_work_ids)) or "none"
+        _selectable_work_get.__name__ = "_work_get"
         _selectable_work_get.__doc__ = (
             "Read launch-bound work. Omit work_id for the active assignment. "
             f"Bounded read-only reference WorkIds: {references}."
@@ -396,6 +403,7 @@ def build_server(
             return await service.history(  # type: ignore[attr-defined]
                 WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
                                    observed_revision=observed_revision, cursor=cursor, limit=limit))
+        _selectable_work_history.__name__ = "_work_history"
 
         work_get_tool = _selectable_work_get
         work_history_tool = _selectable_work_history
