@@ -1,8 +1,10 @@
 import asyncio
 import os
-from uuid import uuid4
+from typing import Literal
+from uuid import UUID, uuid4
 
 import pytest
+from pydantic import JsonValue
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -10,10 +12,39 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState, agent_mailboxes
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
+from switchstand.contracts import ClosedModel
+from switchstand.durable_capture import DurableCaptureGuidance
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.messages import MessageState, message_deliveries, messages
 from switchstand.state import PostgresState, metadata
+
+
+class StrictPreDeployPendingItem(ClosedModel):
+    delivery_id: UUID
+    message_id: UUID
+    sender_name: str
+    recipient_name: str
+    kind: Literal["request", "result"]
+    payload: JsonValue
+    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
+    durable_capture: DurableCaptureGuidance
+
+
+class StrictPreDeployPendingResult(ClosedModel):
+    status: Literal["ok", "denied", "stale", "recovery_required"]
+    messages: tuple[StrictPreDeployPendingItem, ...]
+    next_cursor: UUID | None
+    has_more: bool
+    reason: str | None
+    next_action: str | None
+
+
+class StrictPreDeploySubmitResult(ClosedModel):
+    status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
+    message: StrictPreDeployPendingItem | None
+    reason: str | None
+    next_action: str | None
 
 
 @pytest.fixture
@@ -641,7 +672,8 @@ async def test_payload_boundary_and_bounded_legacy_replay(agent_messaging):
     accepted_id, rejected_id = uuid4(), uuid4()
     accepted = await tools["agent_message_send"]("1", "Beta", accepted_id, "a" * 798)
     rejected = await tools["agent_message_send"]("1", "Beta", rejected_id, "a" * 799)
-    assert accepted.status == "ok" and accepted.message.payload_chars == 800
+    assert accepted.status == "ok" and accepted.message.payload == "a" * 798
+    StrictPreDeploySubmitResult.model_validate(accepted.model_dump(mode="json"))
     assert (rejected.status, rejected.reason) == ("denied", "payload_too_large")
     assert "exact tracker WorkId" in rejected.next_action
     assert service.messages is not None
@@ -669,11 +701,12 @@ async def test_payload_boundary_and_bounded_legacy_replay(agent_messaging):
         ))
     replay = await tools["agent_message_send"]("1", "Beta", legacy_id, legacy_payload)
     assert replay.status == "ok" and replay.message.payload is None
-    assert replay.message.payload_omitted is True and replay.message.payload_chars == 902
+    StrictPreDeploySubmitResult.model_validate(replay.model_dump(mode="json"))
     session[0] = "chat-b"
     pending = await tools["agent_message_pending"]("1")
     legacy = next(item for item in pending.messages if item.message_id == legacy_id)
-    assert legacy.payload is None and legacy.payload_omitted and legacy.payload_chars == 902
+    assert legacy.payload is None
+    StrictPreDeployPendingResult.model_validate(pending.model_dump(mode="json"))
 
 
 async def test_pending_default_page_is_ten_with_keyset_continuation(agent_messaging):
@@ -757,7 +790,8 @@ async def test_acknowledge_batch_is_per_delivery_and_preserves_open_reply(agent_
     replay = await tools["agent_message_send"](
         "1", "Beta", request_id, sent.message.payload
     )
-    assert replay.message is not None and replay.message.state == "ACKNOWLEDGED"
+    assert replay.message is not None and replay.message.state == "RECEIVED"
+    StrictPreDeploySubmitResult.model_validate(replay.model_dump(mode="json"))
     assert replay.next_action is not None
     session[0] = "beta-new"
     assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
