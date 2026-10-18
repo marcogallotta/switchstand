@@ -165,6 +165,7 @@ class ChatGPTService:
         activation_technical: ActivationTechnicalResolver | None = None,
         activation_runtime: ActivationRuntimeResolver | None = None,
         activation_proof: ActivationProofResolver | None = None,
+        issue_projects: dict[str, UUID] | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -202,6 +203,39 @@ class ChatGPTService:
         self.activation_technical = activation_technical
         self.activation_runtime = activation_runtime
         self.activation_proof = activation_proof
+        self.issue_projects = issue_projects or {}
+
+    async def file_issue(
+        self, category: str, operation_id: UUID, title: str, evidence: str,
+    ) -> GuardOutcome:
+        """Create one ownerless report in its server-selected canonical list."""
+        project_id = self.issue_projects.get(category)
+        if project_id is None:
+            return GuardOutcome(
+                status="denied", operation="file_issue", operation_id=operation_id,
+                reason="reporting_list_unavailable", effect="not_sent", retry="none",
+                next_action="Provision and configure the exact reporting list.",
+            )
+        principal = await self.principal()
+        if principal is None or self.canonical_work is None or not self.canonical_work_active:
+            return GuardOutcome(
+                status="unknown", operation="file_issue", operation_id=operation_id,
+                reason="canonical_reporting_unavailable", effect="not_sent", retry="none",
+                next_action="Restore the canonical reporting runtime.",
+            )
+        grant = await self.admission_grants.current(principal.key)
+        request = ProtectedCreate(
+            api_version="1", operation_id=operation_id,
+            grant_version=1 if grant is None else grant.version,
+            title=title, notes=evidence, priority="UNSET", work_type=category,
+            lifecycle_state="WAITING", owner_key="NONE", wait_kind="TRIAGE",
+            unblock_condition="TRIAGE_PICKUP", next_due="UNSCHEDULED",
+            next_action_class="NONE", next_action_ref="NONE", project_id=project_id,
+        )
+        return await self.canonical_work.protected_create(
+            self.admission_grants, principal, request,
+            required_operation="file_issue", qualification_field="report_qualification",
+        )
 
     async def activation_continuity_transition(
         self, operation_id: UUID, obligation_id: UUID, observed_revision: str,

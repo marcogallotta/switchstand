@@ -402,6 +402,7 @@ class CanonicalWorkRuntime:
 
     async def protected_create(
         self, grants: GrantState, principal: PrincipalContext, request: ProtectedCreate,
+        *, required_operation: str = "work_create", qualification_field: str = "create_qualification",
     ) -> GuardOutcome:
         """Create and journal one canonical work item in one transaction."""
         try:
@@ -428,11 +429,11 @@ class CanonicalWorkRuntime:
                             return GuardOutcome.model_validate(exact["outcome"])
                         if grant is None or grant.principal != principal or not grant.current():
                             return CreateGateway.guard(request, "denied", "no_current_grant")
-                        if "work_create" not in grant.operations:
+                        if required_operation not in grant.operations:
                             return CreateGateway.guard(request, "denied", "operation_not_granted")
                         if request.grant_version != grant.version:
                             return CreateGateway.guard(request, "stale", "grant_version_changed")
-                        qualification = grant.create_qualification
+                        qualification = getattr(grant, qualification_field)
                         expected_qualification = (
                             "test:" if principal.assurance == "test" else "real:"
                         )
@@ -469,7 +470,7 @@ class CanonicalWorkRuntime:
                                 )
                             root = inherited
                         else:
-                            if grant.scope != "workspace":
+                            if grant.scope != "workspace" and required_operation != "file_issue":
                                 return CreateGateway.guard(
                                     request, "denied", "workspace_create_required"
                                 )

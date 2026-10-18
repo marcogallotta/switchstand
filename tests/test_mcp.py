@@ -519,6 +519,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
             tool.name for tool in tools
         } | {
             "work_update",
+            "file_bug", "file_feature", "file_process", "file_review_feedback",
             "priority_claim_get", "priority_claim_record", "priority_context_get",
             "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",

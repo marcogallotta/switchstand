@@ -20,7 +20,7 @@ from switchstand.contracts import (
     WorkSource,
 )
 from switchstand.launch import Authority
-from switchstand.managed_launch import ACTIVATION_ENV
+from switchstand.managed_launch import ACTIVATION_ENV, REPORTING_ENV
 from switchstand.managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 from switchstand.mcp import build_context_server
 
@@ -52,10 +52,12 @@ def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: 
         "PATH": f"{tmp_path}:{os.environ['PATH']}", "CAPTURE": str(capture),
         "ACTIVE_WORK_ID": str(ACTIVE), "SWITCHSTAND_MANAGED": "1",
         "SWITCHSTAND_GRANT_ID": str(ACTIVE), "SWITCHSTAND_GRANT_VERSION": "1",
-    }
+    } | {name: str(ACTIVE) for name in REPORTING_ENV}
     script = Path(__file__).parents[1] / "scripts/switchstand-context-mcp"
     subprocess.run([script], env=environment, check=True)
     assert "SWITCHSTAND_ACTIVATION_CONTINUITY=0" in capture.read_text()
+    for name in REPORTING_ENV:
+        assert f"{name}={ACTIVE}" in capture.read_text()
     assert ":ro" not in capture.read_text()
     inputs = {name: "value" for name in ACTIVATION_ENV} | {
         "SWITCHSTAND_ACTIVATION_CONTINUITY": "1", "SWITCHSTAND_PRODUCT_CURRENTNESS": "1",
@@ -71,6 +73,12 @@ def test_context_mcp_script_mounts_activation_evidence_only_on_opt_in(tmp_path: 
     assert "SWITCHSTAND_ACTIVATION_CONTINUITY=1" in arguments
     assert arguments.count(":ro") == 3
     assert "SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES" in arguments
+    without_reporting = environment.copy()
+    for name in REPORTING_ENV:
+        without_reporting.pop(name)
+    subprocess.run([script], env=without_reporting, check=True)
+    for name in REPORTING_ENV:
+        assert f"{name}=" in capture.read_text()
     (tmp_path / "nested").mkdir()
     inputs[paths[0]] = f"{tmp_path}/nested/../{paths[0]}"
     assert subprocess.run([script], env=environment | inputs, check=False).returncode != 0

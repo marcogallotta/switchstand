@@ -15,9 +15,11 @@ DEVELOPMENT_COMMAND = "scripts/switchstand-development-mcp"
 CODEX_BINARY_ENV = "SWITCHSTAND_CODEX_BINARY"
 AGENT_TASK_MANAGED_TOOLS = (
     "work_get", "work_history", "work_event", "work_append", "work_update",
+    "file_bug", "file_feature", "file_process", "file_review_feedback",
     "priority_claim_get", "priority_claim_record", "priority_context_get",
     "message_pending", "message_receive", "message_recover", "message_result_send",
-    "message_disposition", "capability_preflight_get", "agent_task_request", "agent_task_result",
+    "message_disposition", "capability_preflight_get",
+    "agent_task_request", "agent_task_result",
 )
 
 

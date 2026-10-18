@@ -37,10 +37,10 @@ class WorkspaceAdmissionState(GrantState):
         prefix = "test" if principal.assurance == "test" else "real"
         operations: set[Literal[
             "work_get", "work_search", "work_append", "work_create", "work_update",
-            "work_relate", "priority_claim", "task_control",
+            "work_relate", "priority_claim", "task_control", "file_issue",
         ]] = {
             "work_get", "work_search", "work_append", "work_create", "work_update",
-            "work_relate", "priority_claim",
+            "work_relate", "priority_claim", "file_issue",
         }
         if task_control_enabled:
             operations.add("task_control")
@@ -56,6 +56,7 @@ class WorkspaceAdmissionState(GrantState):
             expires_at=datetime.max.replace(tzinfo=UTC),
             append_qualification=f"{prefix}:ordinary-workspace",
             create_qualification=f"{prefix}:ordinary-workspace",
+            report_qualification=f"{prefix}:issue-report",
             update_qualification=f"{prefix}:ordinary-workspace",
             relation_qualification=f"{prefix}:ordinary-workspace",
             priority_claim_qualification=f"{prefix}:ordinary-workspace",

@@ -68,13 +68,21 @@ def test_substantive_create_requires_complete_action_or_wait(
     validate_create_state(parented=True, work_type="Task", **values)
 
 
-def test_ownerless_create_is_only_inert_parented_evidence() -> None:
+def test_ownerless_create_is_only_evidence_or_fixed_triage_report() -> None:
     values = state(
         owner_key="NONE", next_action_class="NONE", next_action_ref="NONE",
     )
     validate_create_state(parented=True, work_type="Evidence", **values)
     with pytest.raises(ValueError):
         validate_create_state(parented=False, work_type="Evidence", **values)
+    report = state(
+        lifecycle_state="WAITING", owner_key="NONE", wait_kind="TRIAGE",
+        unblock_condition="TRIAGE_PICKUP", next_due="UNSCHEDULED",
+        next_action_class="NONE", next_action_ref="NONE",
+    )
+    validate_create_state(parented=False, work_type="BUG", **report)
+    with pytest.raises(ValueError):
+        validate_create_state(parented=False, work_type="GENERAL", **report)
 
 
 @pytest.mark.parametrize("changes", [

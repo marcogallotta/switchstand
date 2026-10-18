@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from .agent_broker import CLASSES, ID, Broker, Budget, ChildBudget, LeaseRequest, Pressure
 from .managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
@@ -29,6 +29,8 @@ SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA SWITCHSTAND_PRODUCT_CURRENT
 SWITCHSTAND_PRODUCT_CURRENTNESS_EXPECTED_TOOLS_SCHEMA_SHA256
 SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_RECEIPT
 SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY""".split()  # noqa: SIM905
+REPORTING_ENV = """SWITCHSTAND_BUGS_PROJECT_ID SWITCHSTAND_FEATURES_PROJECT_ID
+SWITCHSTAND_PROCESS_PROJECT_ID SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID""".split()  # noqa: SIM905
 
 
 class PreparedLaunch(BaseModel):
@@ -50,6 +52,7 @@ class PreparedLaunch(BaseModel):
     codex_home: StrictStr
     codex_executable: StrictStr
     priority_claims: StrictBool = False
+    reporting_environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     command: tuple[StrictStr, ...]
 
     @field_validator("launch_id", "lease_id", "reservation_id", "attempt_id", "unit")
@@ -86,9 +89,11 @@ def managed_parent_command(
         "Work only in the exact private writer. Native children inherit this WorkId and "
         "must use narrower authorization; messages and context never grant authority."
     )
-    enabled_tools = ["work_get", "work_history", "capability_preflight_get"]
+    enabled_tools = ["work_get", "work_history", "capability_preflight_get",
+                     "file_bug", "file_feature", "file_process", "file_review_feedback"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
-                             "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION"]
+                             "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION",
+                             *REPORTING_ENV]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",
@@ -157,6 +162,7 @@ class PreparedLaunchStore:
         assignment: str,
         priority_claims: bool = False,
         activation_environment: dict[str, str] | None = None,
+        reporting_environment: dict[str, str] | None = None,
     ) -> Path:
         lease = self.broker.lease(lease_id)
         if lease.get("reservation_id") != reservation_id or lease["state"] != "reserved":
@@ -167,6 +173,11 @@ class PreparedLaunchStore:
         executable = codex_executable.resolve(strict=True)
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("Codex executable must be an executable regular file")
+        reporting = reporting_environment or {}
+        if not set(reporting) <= set(REPORTING_ENV):
+            raise ValueError("reporting environment contains an unknown key")
+        for value in reporting.values():
+            UUID(value)
         launch_id = uuid4().hex
         attempt_id = uuid4().hex
         unit = f"switchstand-managed-{launch_id[:20]}.service"
@@ -185,6 +196,7 @@ class PreparedLaunchStore:
             codex_home=str(resolved_home),
             codex_executable=str(executable),
             priority_claims=priority_claims,
+            reporting_environment=reporting,
             command=managed_parent_command(
                 executable, resolved_control, resolved_writer, assignment,
                 priority_claims=priority_claims,
@@ -351,6 +363,7 @@ class ManagedParentLauncher:
         assignment: str,
         priority_claims: bool = False,
         activation_environment: dict[str, str] | None = None,
+        reporting_environment: dict[str, str] | None = None,
         pressure: Pressure | None = None,
     ) -> dict[str, Any]:
         try:
@@ -390,6 +403,7 @@ class ManagedParentLauncher:
                 assignment=assignment,
                 priority_claims=priority_claims,
                 activation_environment=activation_environment,
+                reporting_environment=reporting_environment,
             )
         except Exception:
             store.reconcile_unlaunched(

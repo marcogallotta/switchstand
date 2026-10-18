@@ -80,6 +80,19 @@ def validate_create_state(
     if canonical_root in {None, "NONE", "UNKNOWN"}:
         raise ValueError("created work requires an exact root")
 
+    report = not parented and work_type in {
+        "BUG", "PRODUCT_FEATURE", "PROCESS", "HUMAN_REVIEW_FEEDBACK",
+    } and owner_key == "NONE"
+    if report:
+        if (
+            lifecycle_state != "WAITING"
+            or (wait_kind, unblock_condition, next_due)
+            != ("TRIAGE", "TRIAGE_PICKUP", "UNSCHEDULED")
+            or (next_action_class, next_action_ref) != ("NONE", "NONE")
+        ):
+            raise ValueError("ownerless reports must wait for triage")
+        return
+
     evidence = parented and work_type == "Evidence" and owner_key == "NONE"
     if evidence:
         if (
