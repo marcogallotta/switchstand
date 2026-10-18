@@ -602,7 +602,11 @@ def build_ordinary_tools(
         next_due: str = "UNKNOWN", next_action_class: str = "UNKNOWN",
         next_action_ref: str = "UNKNOWN",
     ) -> GuardOutcome:
-        """Create work under one admitted provider-neutral parent or project."""
+        """Create canonical work under one admitted provider-neutral parent or project.
+
+        A legacy Context parent without an exact root supplies placement only; each
+        substantive child starts a new exact canonical tree.
+        """
         correlate(parent_work_id)
         grant_version, admission = await current_grant_version()
         if admission == "unknown":
