@@ -60,10 +60,8 @@ class AgentPendingMessage(ClosedModel):
     sender_name: str
     recipient_name: str
     kind: Literal["request", "result"]
-    payload: JsonValue | None = None
-    payload_omitted: bool = False
-    payload_chars: int = Field(ge=0)
-    state: Literal["AVAILABLE", "RECEIVED", "ACKNOWLEDGED", "DISPOSITIONED"]
+    payload: JsonValue
+    state: Literal["AVAILABLE", "RECEIVED", "DISPOSITIONED"]
     durable_capture: DurableCaptureGuidance = Field(
         default_factory=lambda: durable_capture_guidance((), ()),
     )
@@ -125,9 +123,7 @@ async def public_message(
         recipient_name=recipient.mailbox.name,
         kind=message.kind,
         payload=None if payload_omitted else message.payload,
-        payload_omitted=payload_omitted,
-        payload_chars=payload_chars,
-        state=message.state,
+        state="RECEIVED" if message.state == "ACKNOWLEDGED" else message.state,
         durable_capture=(
             durable_capture_guidance((), ())
             if payload_omitted
