@@ -2,7 +2,7 @@
 
 Human Review is the final decision conversation when the governing procedure requires it.
 
-In Switchstand, every material implementation gets final live Human Review before dispatch. Other work may also require Human Review where its governing procedure says so.
+Before committing to a new material solution, involve Marco if its consequences or tradeoffs are his choice. Approval of a roadmap or goal is not approval of an invented solution. An unchanged solution already covered by Marco's approval needs no second Human Review merely because implementation or landing is ready. Other work follows its governing Human Review procedure.
 
 Human Review closes the material decision trajectory. Prior Human Input is expected where a consequential choice actually required it, but is not a prerequisite.
 
@@ -49,7 +49,7 @@ When a material decision needs Human Review, include the actual proposed explana
 
 ## Do not
 
-Do not write the human's decision, present "Human Review: approve", ask a bare approve question without saying what yes causes, replay settled choices, hide aggregate size behind smaller PRs, or turn reviewer remedies into requirements unless the governing contract independently requires them.
+Do not write the human's decision, ask for permission already given, turn status/completion into a Human Review, present "Human Review: approve", ask a bare approve question without saying what yes causes, seek blanket approval for unrelated changes, hide aggregate size behind smaller PRs, or turn reviewer remedies into requirements unless the governing contract independently requires them.
 
 A strong recommendation is allowed. Recommendation and human decision remain separate facts.
 
