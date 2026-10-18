@@ -342,8 +342,12 @@ async def test_named_cross_principal_takeover_rejects_missing_marco_authorizatio
     )
 
 
+@pytest.mark.parametrize("takeover_message", [
+    "Please takeover coordinator with FRANCE.",
+    "Take over as coordinator. France is the password.",
+])
 async def test_coordinator_takeover_canonicalizes_root_and_keeps_mail(
-    agent_messaging,
+    agent_messaging, takeover_message,
 ):
     tools, actor, session, _owner, other, service = agent_messaging
     await bind_root(tools, service)
@@ -360,7 +364,7 @@ async def test_coordinator_takeover_canonicalizes_root_and_keeps_mail(
     actor[0], session[0] = other, "replacement-chat"
     configured = root_tools(service, session)
     moved = await configured["agent_takeover"](
-        "1", CODEX_COORDINATOR_NAME, "Please takeover coordinator with FRANCE."
+        "1", CODEX_COORDINATOR_NAME, takeover_message,
     )
 
     assert (moved.status, moved.name) == ("ok", CODEX_COORDINATOR_NAME)

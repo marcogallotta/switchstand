@@ -1288,7 +1288,10 @@ def build_ordinary_tools(
             coordinator_request
             and bool(configured_passcode)
             and (
-                re.search(r"\btake\s*over\s+(?:codex\s+)?coordinator\b", coordinator_message)
+                re.search(
+                    r"\btake\s*over\s+(?:as\s+)?(?:codex\s+)?coordinator\b",
+                    coordinator_message,
+                )
                 is not None
                 or (
                     "takeover" in coordinator_message
