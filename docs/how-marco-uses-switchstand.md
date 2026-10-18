@@ -227,8 +227,8 @@ complete journey has passed live acceptance.
 
 Keep one semantic owner for each real concern. Preserve the same task GID and WorkId across area
 migration. Project migration changes routing only: never clone, recreate, delete, or reparent work
-merely to migrate it. Use current area registry `1218432271807843` only to find work whose exact
-identity is not already known.
+merely to migrate it. Current area registry `1218432271807843` controls topology and cutover state,
+and supplies discovery when exact identity is not already known.
 
 ## Work, messages, and feedback
 
