@@ -64,13 +64,14 @@ R0_ENV = {
     "tools_sha256": "SWITCHSTAND_R0_EXPECTED_TOOLS_SHA256",
     "principal": "SWITCHSTAND_R0_EXPECTED_PRINCIPAL",
 }
-STATE_REVISION = "0025_task_control_checkpoints"
+STATE_REVISION = "0026_agent_message_ack"
 UPGRADE_SOURCES = frozenset((  # noqa: SIM905 - compact exact protocol allowlist
     "0002_grants_and_effects 0004_required_result_persistence 0005_work_event_handles 0006_agent_mailboxes "
     "0007_agent_chat_identity 0012_outcome_state 0013_failure_journal 0014_canonical_routing "
     "0015_work_admission_time 0016_agent_mailbox_transfers 0017_priority_claims 0018_task_runs "
     "0019_task_run_executions 0020_task_run_results 0021_human_reviews "
-    "0022_implementation_requests 0023_activation_continuity 0024_mcp_operation_timings"
+    "0022_implementation_requests 0023_activation_continuity 0024_mcp_operation_timings "
+    "0025_task_control_checkpoints"
 ).split())
 
 
@@ -1193,7 +1194,7 @@ class HostOperations:
                 ),
             ]
         ).stdout.strip()
-        if database != "0024_mcp_operation_timings|ABSENT":
+        if database != "0025_task_control_checkpoints|task_control_checkpoints":
             raise Unknown("shared state is not the exact pre-upgrade state")
 
 

@@ -51,7 +51,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
         ))
     with pytest.raises(
         RuntimeError,
-        match="shared CONTROL schema mismatch: expected 0025_task_control_checkpoints; actual <none>",
+        match="shared CONTROL schema mismatch: expected 0026_agent_message_ack; actual <none>",
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
@@ -74,7 +74,7 @@ def test_activation_continuity_downgrade_preserves_durable_truth(database_prereq
         command.downgrade(config, "0022_implementation_requests")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
         assert connection.scalar(text(
             "SELECT count(*) FROM activation_obligation_revisions"
         )) == 1
@@ -97,7 +97,7 @@ def test_timing_downgrade_preserves_durable_evidence(database_prerequisite):
         command.downgrade(config, "0023_activation_continuity")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
         assert connection.scalar(text("SELECT count(*) FROM mcp_operation_timings")) == 1
 
 
@@ -235,7 +235,7 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
         command.downgrade(config, "0013_failure_journal")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
         assert connection.scalar(text(
             "SELECT owner_key FROM canonical_work WHERE work_id = :work_id"
         ), {"work_id": work_id}) == "coordinator"
@@ -247,7 +247,7 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
         command.downgrade(config, "0014_canonical_routing")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
 
 
 def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequisite):
@@ -277,7 +277,7 @@ def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequ
     } <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
         assert connection.execute(text(
             "SELECT name, source_digest FROM work_migration_receipts"
         )).one() == ("work-identity-migration-complete-v1", "a" * 64)
@@ -334,7 +334,7 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "recipient_grant_version, state FROM message_deliveries"
         )).one()
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
     assert endpoint == ("legacy", "Legacy", endpoint_id, "owner", "legacy:legacy", 1)
     assert message == (endpoint_id, message_id, "agent.legacy", "request", {}, "digest")
     assert delivery == (delivery_id, endpoint_id, message_id, endpoint_id, 1, "AVAILABLE")
@@ -387,7 +387,7 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
         assert connection.execute(text(
             "SELECT endpoint_id, principal_key, session_key, generation FROM agent_mailboxes"
         )).one() == (endpoint_id, "owner", "session", 4)
@@ -423,7 +423,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
     assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
         >= {"endpoint_id", "principal_key", "session_key", "generation"}
 
@@ -453,7 +453,39 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0025_task_control_checkpoints"
+            == "0026_agent_message_ack"
+
+
+def test_acknowledgement_migration_refuses_lossy_downgrade(database_prerequisite):
+    url = disposable_url()
+    engine = create_engine(url)
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
+    sender, message, delivery = uuid4(), uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO messages "
+            "(sender_work_id, message_id, route_ref, kind, payload, digest) "
+            "VALUES (:sender, :message, 'agent.recipient', 'request', '{}'::jsonb, 'digest')"
+        ), {"sender": sender, "message": message})
+        connection.execute(text(
+            "INSERT INTO message_deliveries "
+            "(delivery_id, sender_work_id, message_id, recipient_work_id, "
+            "recipient_grant_version, state) "
+            "VALUES (:delivery, :sender, :message, :recipient, 1, 'ACKNOWLEDGED')"
+        ), {
+            "delivery": delivery, "sender": sender, "message": message,
+            "recipient": uuid4(),
+        })
+    with pytest.raises(RuntimeError, match="preserve acknowledged agent notifications"):
+        command.downgrade(config, "0025_task_control_checkpoints")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0026_agent_message_ack"
+        assert connection.scalar(text(
+            "SELECT state FROM message_deliveries WHERE delivery_id = :delivery"
+        ), {"delivery": delivery}) == "ACKNOWLEDGED"
 
 
 def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite):

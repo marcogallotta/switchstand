@@ -54,6 +54,8 @@ from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
     AGENT_MESSAGE_PAYLOAD_LIMIT,
     DispositionEvidence,
+    MessageAcknowledgeRequest,
+    MessageAcknowledgeResult,
     MessageDispositionRequest,
     MessagePendingRequest,
     MessageReceiveRequest,
@@ -244,6 +246,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_send",
     "agent_message_receive",
     "agent_message_recover",
+    "agent_message_acknowledge",
     "agent_message_result_send",
     "agent_message_disposition",
     "task_control_checkpoint",
@@ -1126,7 +1129,7 @@ def build_ordinary_tools(
                 status="recovery_required", reason="state_unavailable"
             )
         next_action = None
-        if request and view.state in ("AVAILABLE", "RECEIVED"):
+        if request and view.state in ("AVAILABLE", "RECEIVED", "ACKNOWLEDGED"):
             next_action = (
                 "SENT is not a reply or completion. If this request needs a response, "
                 "keep its watch active while this chat can run: read pending results, "
@@ -1440,6 +1443,24 @@ def build_ordinary_tools(
             agent_binding=mailbox,
         )
 
+    async def agent_message_acknowledge(
+        api_version: Literal["1"],
+        delivery_ids: Annotated[list[UUID], Field(min_length=1, max_length=10)],
+    ) -> MessageAcknowledgeResult:
+        """Acknowledge processed ordinary notifications; this is not completion or reply."""
+        context = await agent_context()
+        if isinstance(context, tuple):
+            return MessageAcknowledgeResult(status=context[0], reason=context[1])
+        mailbox = context.mailbox
+        assert service.messages is not None
+        return await service.messages.acknowledge_admitted(
+            mailbox.endpoint_id, mailbox.generation,
+            MessageAcknowledgeRequest(
+                api_version=api_version, delivery_ids=tuple(delivery_ids),
+            ),
+            agent_binding=mailbox,
+        )
+
     async def agent_message_result_send(
         api_version: Literal["1"], delivery_id: UUID,
         message_id: UUID, payload: JsonValue,
@@ -1562,6 +1583,7 @@ def build_ordinary_tools(
         ("agent_message_pending", agent_message_pending),
         ("agent_message_receive", agent_message_receive),
         ("agent_message_recover", agent_message_recover),
+        ("agent_message_acknowledge", agent_message_acknowledge),
         ("agent_message_result_send", agent_message_result_send),
         ("agent_message_disposition", agent_message_disposition),
     )

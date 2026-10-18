@@ -86,7 +86,7 @@ LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 GRACEFUL_SHUTDOWN_SECONDS = 30
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
-STATEFUL_MIGRATION_REVISION = "0025_task_control_checkpoints"
+STATEFUL_MIGRATION_REVISION = "0026_agent_message_ack"
 _https_resource_url = normalize_resource_url
 
 

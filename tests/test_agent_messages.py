@@ -693,6 +693,111 @@ async def test_pending_default_page_is_ten_with_keyset_continuation(agent_messag
     assert len(second.messages) == 1 and not second.has_more
 
 
+async def test_acknowledge_batch_is_per_delivery_and_preserves_open_reply(agent_messaging):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-c"
+    assert (await tools["agent_register"]("1", "Gamma")).status == "ok"
+
+    session[0] = "chat-a"
+    request_id = uuid4()
+    tracked_work_id = uuid4()
+    sent = await tools["agent_message_send"](
+        "1", "Beta", request_id, {"work_id": str(tracked_work_id), "request": "act"}
+    )
+    session[0] = "chat-c"
+    foreign = await tools["agent_message_send"]("1", "Alpha", uuid4(), {"request": "x"})
+    assert sent.message is not None and foreign.message is not None
+
+    assert service.messages is not None
+    beta = await AgentMailboxState(service.messages.engine).by_name("Beta")
+    alpha = await AgentMailboxState(service.messages.engine).by_name("Alpha")
+    assert beta.mailbox is not None and alpha.mailbox is not None
+    review_id, review_delivery = uuid4(), uuid4()
+    async with service.messages.engine.begin() as connection:
+        await connection.execute(insert(messages).values(
+            sender_work_id=alpha.mailbox.endpoint_id, message_id=review_id,
+            route_ref="review.request", kind="request", payload={"review": "typed"},
+            digest="typed", in_reply_to_delivery_id=None,
+        ))
+        await connection.execute(insert(message_deliveries).values(
+            delivery_id=review_delivery, sender_work_id=alpha.mailbox.endpoint_id,
+            message_id=review_id, recipient_work_id=beta.mailbox.endpoint_id,
+            recipient_grant_version=beta.mailbox.generation,
+        ))
+
+    session[0] = "chat-b"
+    missing = uuid4()
+    mixed = await tools["agent_message_acknowledge"](
+        "1", [sent.message.delivery_id, foreign.message.delivery_id, missing, review_delivery]
+    )
+    assert mixed.status == "ok"
+    assert [(item.status, item.reason) for item in mixed.results] == [
+        ("ok", None), ("denied", "delivery_not_for_current_work"),
+        ("denied", "delivery_not_found"), ("denied", "reserved_route"),
+    ]
+    repeated = await tools["agent_message_acknowledge"]("1", [sent.message.delivery_id])
+    assert repeated.results[0].state == "ACKNOWLEDGED"
+    acknowledged_receive = await tools["agent_message_receive"](
+        "1", sent.message.delivery_id
+    )
+    assert (acknowledged_receive.status, acknowledged_receive.reason) == (
+        "conflict", "delivery_already_acknowledged",
+    )
+    assert await service.messages.open_handoff_watches(tracked_work_id) == (
+        f"message:{sent.message.delivery_id}",
+    )
+    assert all(item.message_id != request_id for item in (
+        await tools["agent_message_pending"]("1")
+    ).messages)
+
+    session[0] = "chat-a"
+    replay = await tools["agent_message_send"](
+        "1", "Beta", request_id, sent.message.payload
+    )
+    assert replay.message is not None and replay.message.state == "ACKNOWLEDGED"
+    assert replay.next_action is not None
+    session[0] = "beta-new"
+    assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
+    session[0] = "chat-b"
+    stale_reply = await tools["agent_message_result_send"](
+        "1", sent.message.delivery_id, uuid4(), {"result": "stale"}
+    )
+    assert (stale_reply.status, stale_reply.reason) == ("denied", "agent_not_registered")
+    session[0] = "beta-new"
+    result_id = uuid4()
+    result = await tools["agent_message_result_send"](
+        "1", sent.message.delivery_id, result_id, {"result": "done"}
+    )
+    assert result.status == "ok"
+    async with service.messages.engine.connect() as connection:
+        row = (await connection.execute(select(
+            message_deliveries.c.state, message_deliveries.c.evidence,
+        ).where(
+            message_deliveries.c.delivery_id == sent.message.delivery_id
+        ))).one()
+    assert row == ("DISPOSITIONED", {"kind": "result", "result_message_id": str(result_id),
+                                     "operation_id": None})
+    # A legacy crash could leave the exact result committed without its disposition.
+    async with service.messages.engine.begin() as connection:
+        await connection.execute(update(message_deliveries).where(
+            message_deliveries.c.delivery_id == sent.message.delivery_id
+        ).values(
+            state="ACKNOWLEDGED", dispositioned_at=None,
+            disposition_digest=None, evidence=None,
+        ))
+    replayed_result = await tools["agent_message_result_send"](
+        "1", sent.message.delivery_id, result_id, {"result": "done"}
+    )
+    assert replayed_result.status == "ok"
+    async with service.messages.engine.connect() as connection:
+        assert await connection.scalar(select(message_deliveries.c.state).where(
+            message_deliveries.c.delivery_id == sent.message.delivery_id
+        )) == "DISPOSITIONED"
+
+
 async def test_result_and_disposition_roll_back_together(agent_messaging, monkeypatch):
     tools, _actor, session, _owner, _other, service = agent_messaging
     assert (await tools["agent_register"]("1", "Alpha")).status == "ok"

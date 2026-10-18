@@ -303,6 +303,9 @@ messaging, and required continuation:
   `state.metadata` and are registered explicitly by the edge. Migration
   `0025_task_control_checkpoints` adds only the durable checkpoint table; schema migration,
   service deployment, grant issuance, client refresh, and live reliance remain separate effects.
+  Migration `0026_agent_message_ack` extends the existing delivery constraint with the
+  `ACKNOWLEDGED` processed-notification state; it adds no table or store and refuses a downgrade
+  while acknowledged rows exist.
   `SWITCHSTAND_TASK_CONTROL=1` is the explicit default-off service/grant selector; without it
   checkpoint and hygiene calls report unavailable and ordinary admission has no write operation.
 - `priority_claim_service.py` owns an injectable, default-off MCP projection. Reads expose exact
@@ -430,7 +433,7 @@ messaging, and required continuation:
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
-  AVAILABLE/RECEIVED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
+  AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Message routes accept and create only the durable PostgreSQL message and delivery records;
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
@@ -455,6 +458,9 @@ messaging, and required continuation:
   arguments and requires an actor-binding readback before returning success. Explicit denial or
   conflict is not retried. There is no public approval tool. `agent_messages.py` supplies
   public name-based views over `MessageState`; migration `0016_agent_mailbox_transfers` owns audit.
+  Ordinary agent payloads are at most 800 characters in canonical compact JSON and pending pages
+  are at most ten, newest first. Legacy oversized payloads remain server-side for identity checks
+  but public pending/replay views expose only omission and character-count metadata.
 - `lifecycle.py` owns `lifecycle_obligations`, the durable required-result continuation state.
 
 The agent mailbox layer is current product behavior, but it is a compatibility bridge rather than
@@ -471,6 +477,13 @@ Principal, chat identity, visible name, mailbox
 generation, MCP session currentness, and WorkId remain distinct. It should be retired or reshaped
 only after the canonical agent/work identity model and migration of outstanding mailbox state are
 implemented and verified.
+
+`agent_message_acknowledge` moves one to ten ordinary AVAILABLE/RECEIVED notifications to
+ACKNOWLEDGED. ACK means only that the notification was processed: it does not reply, complete,
+record a verdict/effect, or close a sender watch. Typed-review routes reject ACK. An exact result
+may reply from ACK and atomically stores the result plus exact-evidence disposition; replay
+converges both records. Recipient pending reads show only AVAILABLE/RECEIVED deliveries, while
+open request watches and proposed-owner references include ACKNOWLEDGED until disposition.
 
 Message receipt is fenced twice. The mailbox generation fences trusted principal takeover;
 `RuntimeCurrentness` fences replacement MCP sessions or managed runs. Recovery is an explicit
