@@ -111,7 +111,7 @@ def hook(
     if agent_id is not None:
         payload["agent_id"] = agent_id
     if tool_workdir is not None:
-        payload["tool_input"]["workdir"] = str(tool_workdir)
+        payload["workdir"] = str(tool_workdir)
     result = subprocess.run(
         arguments,
         input=json.dumps(payload),
@@ -915,6 +915,14 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     writer = tmp_path / "writer"
     git(primary, "worktree", "add", "-b", "writer", str(writer))
     environment = dict(os.environ)
+
+    upstream = "git branch --set-upstream-to=origin/writer"
+    assert hook(primary, upstream, environment, coordinator_primary=primary,
+                tool_workdir=writer) == {}
+    denied = hook(primary, upstream, environment, coordinator_primary=primary,
+                  tool_workdir=primary)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
 
     for command in (
         "git status --short", "git config --get user.name", "git remote -v", "git notes",
