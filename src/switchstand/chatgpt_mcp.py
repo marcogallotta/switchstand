@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Self
 from uuid import UUID
@@ -10,7 +11,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from . import activation_continuity as activation
 from . import flow_report, repository_bundle, repository_candidate
 from .activation_continuity import ContinuityResult, Transition, next_action
-from .agent_mailboxes import AgentMailboxResult, AgentMailboxState
+from .agent_mailboxes import (
+    CODEX_COORDINATOR_KEY,
+    CODEX_COORDINATOR_NAME,
+    LEGACY_ROOT_KEY,
+    AgentMailboxResult,
+    AgentMailboxState,
+    agent_name_key,
+)
 from .agent_messages import (
     AgentMessageContext,
     AgentMessagePendingResult,
@@ -629,7 +637,11 @@ def build_ordinary_tools(
                         reason=reason, effect="not_sent", retry="none",
                         next_action=unregistered_agent_next_action,
                     )
-                owner_key = f"agent:{context.mailbox.name_key}"
+                owner_key = (
+                    CODEX_COORDINATOR_NAME
+                    if context.mailbox.name_key == CODEX_COORDINATOR_KEY
+                    else f"agent:{context.mailbox.name_key}"
+                )
         result = await service.create(ProtectedCreate(
             api_version=api_version, operation_id=operation_id, parent_work_id=parent_work_id,
             project_id=project_id,
@@ -1127,8 +1139,9 @@ def build_ordinary_tools(
 
     unregistered_agent_next_action = (
         "Call agent_register for this exact session using its intended durable agent name, "
-        "then retry. Do not infer /root from an internal role label. When Marco's current "
-        "message asks this session to take over /root, pass that full message to "
+        "then retry. Do not infer Codex Coordinator from an internal role label. When "
+        "Marco's current message asks this session to take over Coordinator, pass that "
+        "full message to "
         "agent_takeover; on failure ask Marco for the passcode. For other cross-principal "
         "names, use agent_transfer_request and host approval."
     )
@@ -1199,7 +1212,7 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
     ) -> AgentRegistrationResult:
-        """Register an immutable name; /root requires authorized takeover or transfer."""
+        """Register a name; Codex Coordinator requires authorized takeover."""
         del api_version
         try:
             principal = await service.principal()
@@ -1241,26 +1254,37 @@ def build_ordinary_tools(
         name: Annotated[str, Field(min_length=1, max_length=80)],
         message: Annotated[str | None, Field(max_length=4096)] = None,
     ) -> AgentRegistrationResult:
-        """Take over an agent. For /root, pass Marco's full current takeover message."""
+        """Take over an agent. For Coordinator, pass Marco's full current takeover message."""
         del api_version
         try:
             principal = await service.principal()
             chat_session = chat_identity()
         except (KeyError, RuntimeError, TypeError, ValueError):
             principal, chat_session = None, ""
-        root_request = name.strip().casefold() in {"root", "/root"}
-        root_message = "" if message is None else message.casefold()
+        try:
+            coordinator_request = agent_name_key(name) in {
+                CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY,
+            }
+        except ValueError:
+            coordinator_request = False
+        coordinator_message = "" if message is None else message.casefold()
         configured_passcode = (
             "" if root_takeover_passcode is None else root_takeover_passcode.strip().casefold()
         )
-        root_authorized = (
-            root_request
+        coordinator_authorized = (
+            coordinator_request
             and bool(configured_passcode)
-            and "takeover" in root_message
-            and "/root" in root_message
-            and configured_passcode in root_message
+            and (
+                re.search(r"\btake\s*over\s+(?:codex\s+)?coordinator\b", coordinator_message)
+                is not None
+                or (
+                    "takeover" in coordinator_message
+                    and "/root" in coordinator_message
+                )
+            )
+            and configured_passcode in coordinator_message
         )
-        if root_request and not root_authorized:
+        if coordinator_request and not coordinator_authorized:
             result = AgentRegistrationResult(
                 status="denied", reason="ask_marco_for_passcode"
             )
@@ -1274,19 +1298,19 @@ def build_ordinary_tools(
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             stored = (
-                await mailboxes.takeover_root(principal.key, chat_session)
-                if root_request
+                await mailboxes.takeover_coordinator(principal.key, chat_session)
+                if coordinator_request
                 else await mailboxes.takeover(name, principal.key, chat_session)
             )
             if stored.status == "recovery_required" and stored.reason == "state_unavailable":
-                if root_request:
-                    # A newer authorized /root takeover may have committed after the
+                if coordinator_request:
+                    # A newer authorized Coordinator takeover may have committed after the
                     # ambiguous response. Never overwrite it: read back this caller only.
                     observed = await mailboxes.for_actor(principal.key, chat_session)
                     if (
                         observed.status == "ok"
                         and observed.mailbox is not None
-                        and observed.mailbox.name_key == "root"
+                        and observed.mailbox.name_key == CODEX_COORDINATOR_KEY
                     ):
                         stored = observed
                 else:
@@ -1304,7 +1328,7 @@ def build_ordinary_tools(
                 if stored.status == "ok" and stored.mailbox is not None
                 else AgentRegistrationResult(status=stored.status, reason=stored.reason)
             )
-        if root_request and result.status != "ok":
+        if coordinator_request and result.status != "ok":
             result = AgentRegistrationResult(
                 status="denied", reason="ask_marco_for_passcode"
             )

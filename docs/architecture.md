@@ -448,13 +448,15 @@ messaging, and required continuation:
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
   unreferenced legacy residue. Registration is read-or-create for that authenticated session, except
-  that the canonical `root` name key is reserved: an unbound session cannot create it through
-  `agent_register`. A resume returns the session's existing immutable mailbox, including `/root`,
-  rather than renaming or taking it over. Rebinding an existing `/root` uses `agent_takeover`
+  that the canonical `codex-coordinator` name key and temporary `root` alias are reserved: an
+  unbound session cannot create either through `agent_register`. A resume returns the session's
+  existing mailbox rather than renaming or taking it over. Rebinding `Codex Coordinator` uses `agent_takeover`
   with Marco's full current message and the server-configured
-  `SWITCHSTAND_ROOT_TAKEOVER_PASSCODE`. This root-only path verifies the required message words
-  and passcode without auditing them, then preserves the endpoint and deliveries while replacing
-  the principal/session binding and incrementing its generation. Other names retain the existing
+  `SWITCHSTAND_ROOT_TAKEOVER_PASSCODE`. This protected path verifies the required message words
+  and passcode without auditing them, then renames a legacy `root` row in place, preserves the
+  endpoint and deliveries, replaces the principal/session binding, and increments its generation.
+  `/root` resolves only as an inbound alias and successful readback uses `Codex Coordinator`.
+  Other names retain the existing
   same-principal behavior. For older cross-principal recovery, the destination authenticated session
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments

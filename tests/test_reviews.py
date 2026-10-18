@@ -5,11 +5,16 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, insert, text
+from sqlalchemy import event, insert, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
-from switchstand.agent_mailboxes import AgentMailboxState
+from switchstand.agent_mailboxes import (
+    CODEX_COORDINATOR_KEY,
+    CODEX_COORDINATOR_NAME,
+    AgentMailboxState,
+    agent_mailboxes,
+)
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -167,10 +172,25 @@ async def occurrence_runtime(database_prerequisite) -> AsyncGenerator[
     await engine.dispose()
 
 
+async def register_coordinator(
+    mailboxes: AgentMailboxState, principal: str, session: str,
+):
+    created = await mailboxes.register_agent("Fixture Coordinator", principal, session)
+    assert created.mailbox is not None
+    async with mailboxes.engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == created.mailbox.endpoint_id,
+        ).values(
+            name_key=CODEX_COORDINATOR_KEY,
+            display_name=CODEX_COORDINATOR_NAME,
+        ))
+    return await mailboxes.by_name(CODEX_COORDINATOR_NAME)
+
+
 async def test_occurrence_store_accepts_only_authenticated_direct_request(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
     requester_result = await mailboxes.register_agent("Requester", "principal-a", "chat-a")
-    reviewer_result = await mailboxes.register_agent("Coordinator", "principal-b", "chat-b")
+    reviewer_result = await register_coordinator(mailboxes, "principal-b", "chat-b")
     requester, reviewer = requester_result.mailbox, reviewer_result.mailbox
     assert requester is not None and reviewer is not None
     subject = await occurrences.works.get(subject_id)
@@ -224,7 +244,7 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
 ):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
     requester_result = await mailboxes.register_agent("Requester", "principal-a", "chat-a")
-    reviewer_result = await mailboxes.register_agent("Coordinator", "principal-b", "chat-b")
+    reviewer_result = await register_coordinator(mailboxes, "principal-b", "chat-b")
     requester, reviewer = requester_result.mailbox, reviewer_result.mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -259,8 +279,8 @@ async def test_same_principal_distinct_endpoints_complete_review(occurrence_runt
     requester = (await mailboxes.register_agent(
         "Requester", "principal-shared", "chat-requester",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-shared", "chat-reviewer",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-shared", "chat-reviewer",
     )).mailbox
     assert requester is not None and reviewer is not None
     assert requester.endpoint_id != reviewer.endpoint_id
@@ -303,8 +323,8 @@ async def test_same_principal_distinct_endpoints_complete_review(occurrence_runt
 
 async def test_same_endpoint_reviewer_denial_leaves_no_review_state(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
-    requester = (await mailboxes.register_agent(
-        "Coordinator", "principal-shared", "chat-requester",
+    requester = (await register_coordinator(
+        mailboxes, "principal-shared", "chat-requester",
     )).mailbox
     assert requester is not None
     self_review_policy = ReviewPolicy(version="policy-v1")
@@ -337,8 +357,8 @@ async def test_baseline_review_round_trip_binds_assessment_and_projects_proof(
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b",
     )).mailbox
     assert requester is not None and reviewer is not None
     subject = await occurrences.works.get(subject_id)
@@ -417,8 +437,8 @@ async def test_sent_request_replay_survives_reviewer_principal_transfer(occurren
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-requester",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-reviewer",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-reviewer",
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -435,7 +455,7 @@ async def test_sent_request_replay_survives_reviewer_principal_transfer(occurren
     sent = await service.request(request, requester)
     assert sent.status == "SENT" and sent.delivery_id is not None
     transfer = await mailboxes.request_transfer(
-        "Coordinator", "principal-a", "chat-reviewer-shared",
+        CODEX_COORDINATOR_NAME, "principal-a", "chat-reviewer-shared",
     )
     assert transfer.status == "pending" and transfer.request_id is not None
     approved = await mailboxes.approve_transfer(transfer.request_id)
@@ -454,8 +474,8 @@ async def test_concurrent_review_request_converges_on_one_occurrence_and_deliver
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b",
     )).mailbox
     assert requester is not None and reviewer is not None
     subject = await occurrences.works.get(subject_id)
@@ -511,8 +531,8 @@ async def test_concurrent_review_get_converges_on_one_reviewer_delivery(
         review_kind="CODE",
     ), requester)
     assert waiting.status == "WAITING_REVIEWER" and waiting.review_id is not None
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b",
     )).mailbox
     assert reviewer is not None
     policy = ReviewPolicy(version="policy-v1")
@@ -544,8 +564,8 @@ async def test_concurrent_review_recover_converges_on_one_generation_transition(
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b",
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -569,8 +589,8 @@ async def test_concurrent_review_recover_converges_on_one_generation_transition(
         agent_binding=reviewer,
     )
     assert received.status == "ok"
-    replacement = (await mailboxes.takeover(
-        "Coordinator", "principal-b", "chat-b-replacement",
+    replacement = (await mailboxes.takeover_coordinator(
+        "principal-b", "chat-b-replacement",
     )).mailbox
     assert replacement is not None and replacement.generation == 2
     services, engines, applications = _independent_services(
@@ -612,8 +632,8 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -645,8 +665,8 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         agent_binding=reviewer,
     )
     assert received.status == "ok"
-    reviewer = (await mailboxes.takeover(
-        "Coordinator", "principal-b", "chat-b-replacement",
+    reviewer = (await mailboxes.takeover_coordinator(
+        "principal-b", "chat-b-replacement",
     )).mailbox
     assert reviewer is not None and reviewer.generation == 2
     async with engine.begin() as connection:
@@ -730,8 +750,8 @@ async def test_late_findings_are_saved_for_focused_rereview(occurrence_runtime):
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b",
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -817,8 +837,8 @@ async def test_late_nonfinding_verdict_is_dropped(occurrence_runtime, verdict):
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a",
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b",
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b",
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -859,8 +879,8 @@ async def test_pass_status_requires_exact_review_kind_and_candidate(occurrence_r
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -905,8 +925,8 @@ async def test_recovery_rejects_concluded_historical_delivery(occurrence_runtime
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -934,8 +954,8 @@ async def test_recovery_rejects_concluded_historical_delivery(occurrence_runtime
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
     assert submitted.status == "SUBMITTED"
-    replacement = (await mailboxes.takeover(
-        "Coordinator", "principal-b", "chat-b-replacement",
+    replacement = (await mailboxes.takeover_coordinator(
+        "principal-b", "chat-b-replacement",
     )).mailbox
     assert replacement is not None and replacement.generation == 2
     denied = await service.recover(sent.review_id, replacement)
@@ -952,8 +972,8 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -1030,8 +1050,8 @@ async def test_flow_report_projects_exact_current_review_pickup(occurrence_runti
 
 async def test_review_pickup_rejects_multiple_current_occurrences(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-reviewer", "chat-reviewer"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-reviewer", "chat-reviewer"
     )).mailbox
     assert reviewer is not None
     subject = await occurrences.works.get(subject_id)
@@ -1075,8 +1095,8 @@ async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
         review_kind="CODE",
     ), requester)
     assert waiting.review_id is not None and waiting.delivery_id is None
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     assert reviewer is not None
     service.policy = ReviewPolicy(version="policy-v1")
@@ -1124,8 +1144,8 @@ async def test_current_owner_can_poll_after_mailbox_takeover(occurrence_runtime)
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     other = (await mailboxes.register_agent(
         "Other", "principal-c", "chat-c"
@@ -1162,8 +1182,8 @@ async def test_focused_rereview_allows_only_authoritative_named_findings(occurre
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
-    reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-b", "chat-b"
+    reviewer = (await register_coordinator(
+        mailboxes, "principal-b", "chat-b"
     )).mailbox
     assert requester is not None and reviewer is not None
     service = ReviewService(
@@ -1279,8 +1299,8 @@ async def test_focused_rereview_allows_only_authoritative_named_findings(occurre
 )
 async def test_every_review_kind_is_delivered_to_coordinator(occurrence_runtime, review_kind):
     occurrences, _messages, mailboxes, subject_id, _engine = occurrence_runtime
-    coordinator = (await mailboxes.register_agent(
-        "Coordinator", "principal-c", "chat-c",
+    coordinator = (await register_coordinator(
+        mailboxes, "principal-c", "chat-c",
     )).mailbox
     other = (await mailboxes.register_agent("Reviewer", "principal-b", "chat-b")).mailbox
     requester = (await mailboxes.register_agent(
@@ -1308,8 +1328,8 @@ async def test_every_review_kind_is_delivered_to_coordinator(occurrence_runtime,
 
 async def test_coordinator_bundle_access_is_fenced(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
-    coordinator = (await mailboxes.register_agent(
-        "Coordinator", "principal-c", "chat-c",
+    coordinator = (await register_coordinator(
+        mailboxes, "principal-c", "chat-c",
     )).mailbox
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a",

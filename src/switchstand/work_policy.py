@@ -2,6 +2,8 @@
 
 from uuid import UUID
 
+from .agent_mailboxes import CODEX_COORDINATOR_NAME
+
 SEMANTIC_FIELDS = frozenset({
     "completed", "priority", "work_type", "lifecycle_state", "canonical_root", "owner_key",
     "wait_kind", "unblock_condition", "next_due", "next_action_class", "next_action_ref",
@@ -107,7 +109,11 @@ def validate_create_state(
         raise ValueError("substantive create requires an explicit work type")
     if lifecycle_state not in {"CURRENT", "WAITING", "DEFERRED"}:
         raise ValueError("substantive create requires an actionable lifecycle")
-    if owner_key is None or not owner_key.startswith("agent:") or not _exact(owner_key):
+    if (
+        owner_key is None
+        or not _exact(owner_key)
+        or (owner_key != CODEX_COORDINATOR_NAME and not owner_key.startswith("agent:"))
+    ):
         raise ValueError("substantive create requires derived agent ownership")
     if lifecycle_state == "CURRENT":
         if (wait_kind, unblock_condition, next_due) != ("NONE", "NONE", "NONE"):

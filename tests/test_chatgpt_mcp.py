@@ -335,6 +335,33 @@ async def test_canonical_create_derives_self_owner_from_registered_mailbox(monke
     )
     assert denied.reason == "canonical_owner_must_be_self"
 
+
+async def test_canonical_create_uses_visible_codex_coordinator_owner(monkeypatch):
+    subject = service()
+    subject.canonical_work_active = True
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    subject.messages = SimpleNamespace(engine=object())
+    mailbox = AgentMailbox(
+        name="Codex Coordinator", name_key="codex-coordinator", endpoint_id=uuid4(),
+        principal_key=PRINCIPAL.key, session_key="session", generation=2,
+    )
+    lookup = SimpleNamespace(for_actor=AsyncMock(return_value=AgentMailboxResult(
+        status="ok", mailbox=mailbox,
+    )))
+    monkeypatch.setattr(chatgpt_mcp, "AgentMailboxState", lambda _engine: lookup)
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    tool = dict(build_ordinary_tools(subject, agent_identity=lambda: "session"))["work_create"]
+
+    await tool(
+        api_version="1", operation_id=uuid4(), title="Child", parent_work_id=ACTIVE,
+        work_type="Task", lifecycle_state="CURRENT", owner_key="SELF",
+        wait_kind="NONE", unblock_condition="NONE", next_due="NONE",
+        next_action_class="OWNER_CAN_DO", next_action_ref="implement",
+    )
+
+    assert create.await_args.args[0].owner_key == "Codex Coordinator"
+
 async def test_stateful_switch_serializes_exact_owner_actions_and_preserves_unknown(monkeypatch):
     subject = service()
     subject.outcome_state_enabled = True

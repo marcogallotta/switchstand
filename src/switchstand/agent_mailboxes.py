@@ -27,6 +27,10 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from .contracts import ClosedModel
 from .state import metadata
 
+CODEX_COORDINATOR_NAME = "Codex Coordinator"
+CODEX_COORDINATOR_KEY = "codex-coordinator"
+LEGACY_ROOT_KEY = "root"
+
 agent_mailboxes = Table(
     "agent_mailboxes", metadata,
     Column("name_key", Text, primary_key=True),
@@ -114,6 +118,14 @@ def chat_session_key(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def coordinator_name_keys(value: str) -> tuple[str, ...]:
+    """Resolve the canonical Coordinator name and its temporary /root alias."""
+    key = agent_name_key(value)
+    if key in {CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY}:
+        return CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY
+    return (key,)
+
+
 class AgentMailboxState:
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
@@ -140,7 +152,7 @@ class AgentMailboxState:
                     # Registration is idempotent for the already-bound session, including
                     # an existing /root. It never renames or takes over that mailbox.
                     return AgentMailboxResult(status="ok", mailbox=self._view(prior))
-                if key == "root":
+                if key in {CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY}:
                     return AgentMailboxResult(
                         status="denied", reason="reserved_name_requires_takeover",
                     )
@@ -167,16 +179,19 @@ class AgentMailboxState:
         self, name: str, connection: AsyncConnection | None = None,
     ) -> AgentMailboxResult:
         try:
-            key = agent_name_key(name)
+            keys = coordinator_name_keys(name)
             if connection is None:
                 async with self.engine.connect() as owned:
-                    row = (await owned.execute(select(agent_mailboxes).where(
-                        agent_mailboxes.c.name_key == key
-                    ))).mappings().one_or_none()
+                    rows = (await owned.execute(select(agent_mailboxes).where(
+                        agent_mailboxes.c.name_key.in_(keys)
+                    ))).mappings().all()
             else:
-                row = (await connection.execute(select(agent_mailboxes).where(
-                    agent_mailboxes.c.name_key == key
-                ))).mappings().one_or_none()
+                rows = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key.in_(keys)
+                ))).mappings().all()
+            if len(rows) > 1:
+                return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+            row = rows[0] if rows else None
             if row is None:
                 return AgentMailboxResult(status="denied", reason="mailbox_not_found")
             return AgentMailboxResult(status="ok", mailbox=self._view(row))
@@ -248,36 +263,46 @@ class AgentMailboxState:
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def takeover_root(
+    async def takeover_coordinator(
         self, principal_key: str, replacement_session: str,
     ) -> AgentMailboxResult:
-        """Move /root to an authorized caller while preserving its endpoint and mail."""
+        """Move the Coordinator to an authorized caller and canonicalize its name."""
         try:
             session_key = chat_session_key(replacement_session)
             async with self.engine.begin() as connection:
-                row = (await connection.execute(select(agent_mailboxes).where(
-                    agent_mailboxes.c.name_key == "root"
-                ).with_for_update())).mappings().one_or_none()
-                if row is None:
+                rows = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.name_key.in_((
+                        CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY,
+                    ))
+                ).with_for_update())).mappings().all()
+                if not rows:
                     return AgentMailboxResult(status="denied", reason="mailbox_not_found")
+                if len(rows) > 1:
+                    return AgentMailboxResult(
+                        status="recovery_required", reason="state_unavailable"
+                    )
+                row = rows[0]
                 if (
                     row["principal_key"] == principal_key
                     and row["session_key"] == session_key
+                    and row["name_key"] == CODEX_COORDINATOR_KEY
                 ):
                     return AgentMailboxResult(status="ok", mailbox=self._view(row))
                 prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
                     agent_mailboxes.c.principal_key == principal_key,
                     agent_mailboxes.c.session_key == session_key,
-                    agent_mailboxes.c.name_key != "root",
+                    agent_mailboxes.c.name_key != row["name_key"],
                 ).with_for_update())).scalar_one_or_none()
                 if prior is not None:
                     return AgentMailboxResult(
                         status="conflict", reason="session_already_registered"
                     )
                 moved = (await connection.execute(update(agent_mailboxes).where(
-                    agent_mailboxes.c.name_key == "root",
+                    agent_mailboxes.c.name_key == row["name_key"],
                     agent_mailboxes.c.generation == row["generation"],
                 ).values(
+                    name_key=CODEX_COORDINATOR_KEY,
+                    display_name=CODEX_COORDINATOR_NAME,
                     principal_key=principal_key,
                     session_key=session_key,
                     generation=row["generation"] + 1,
