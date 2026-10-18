@@ -199,7 +199,8 @@ def primary_mutation_reason(
     if git_dir == common and (coordinator_primary is None
             or root == os.path.realpath(coordinator_primary)):
         return (f"[primary-checkout] git {subcommand} is denied in {root}; "
-                "use a linked writer worktree.")
+                "use `git -C <linked-writer> ...` so the inspected command names "
+                "the linked writer explicitly (the hook cwd is the session cwd).")
     return None
 
 
