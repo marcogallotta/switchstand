@@ -939,7 +939,8 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     for command in (
         "git status --short", "git config --get user.name", "git remote -v", "git notes",
         "git tag", "git tag --list", "git tag -l", "git fetch",
-        "git submodule status", "git add --dry-run .", "git clean -nd",
+        "git submodule status", "git submodule init", "git submodule sync",
+        "git submodule absorbgitdirs", "git add --dry-run .", "git clean -nd",
         "git commit --dry-run", "git apply --check patch.diff", "git rm -n tracked.txt",
         "git branch -r --contains HEAD", "git branch -a --merged HEAD",
         "git branch topic", "git branch -r -d origin/topic",
