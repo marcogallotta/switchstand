@@ -274,6 +274,11 @@ For GitHub-native stacks, authoring and focused layer review may proceed while l
 
 For a substantive candidate, review the exact governing behavior and exact immutable candidate/head. Review depth follows semantic risk, blast radius and practical rollback, not cosmetic size.
 
+Every fresh review starts without prior overall verdicts, scores, or author narrative unless an
+exact prior finding is the focused target. It still reviews the exact current immutable candidate;
+unchanged attributable evidence may remain valid, but a changed candidate never inherits a claim
+of fresh exact-candidate review.
+
 Ask in order:
 A. **Should this solution exist?** Correct problem and owner? Root fix? Smaller reuse/delete/reframe route?
 A1. **Right scale first.** Is this the right thing and scale to build before internal completeness is polished? Does the candidate take the smallest safe useful vertical stage, or justify an independently stable non-speculative foundation plus its immediate route to representative end-to-end proof?
