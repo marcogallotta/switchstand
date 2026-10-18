@@ -683,6 +683,12 @@ def build_server(
 def server_from_env() -> MCPServer:
     if os.getenv("SWITCHSTAND_MANAGED") != "1":
         return MCPServer("Switchstand (unbound)")
+    profile = os.getenv("SWITCHSTAND_MANAGED_PROFILE", "full")
+    if profile == "launch-bound":
+        from .launch_bound_profile import build_from_env
+        return build_from_env()
+    if profile != "full":
+        raise ValueError(f"unknown managed MCP profile: {profile}")
     service = controller_from_env()
     engine = cast(PostgresState, service.state).engine
     grants = GrantState(engine)

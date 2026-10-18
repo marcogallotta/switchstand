@@ -10,20 +10,17 @@ from .activation_contract_loader import load_activation_contracts_from_environme
 from .chatgpt import ChatGPTService
 from .grant_state import GrantState
 from .managed_identity import managed_principal
-from .mcp import build_context_server, controller_from_env, protect_provider_logs
+from .mcp import build_context_server, controller_from_env
 from .priority_claim_service import PriorityClaimService
 from .priority_claims import PriorityClaimRepository
 from .priority_context import PriorityContextProjection
 from .product_currentness import STATEFUL_PRODUCT_WORK_ID, evaluate_stateful_currentness
 from .product_currentness_stateful import LiveStatefulEvidenceReader, StatefulServerSnapshot
-from .provision import require_current_schema
 from .state import PostgresState
 from .task_runs import TaskRunState
 
 
-def main() -> None:
-    protect_provider_logs()
-    require_current_schema()
+def build_from_env():
     service = controller_from_env()
     active = service.authority.active_work_id
     engine = cast(PostgresState, service.state).engine
@@ -99,7 +96,7 @@ def main() -> None:
         env = os.environ
         grant = UUID(env["SWITCHSTAND_GRANT_ID"]), int(env["SWITCHSTAND_GRANT_VERSION"])
         activation = ActivationContinuity(engine, contracts), technical, proof, grant
-    build_context_server(
+    return build_context_server(
         service, active, service.authority.reference_work_ids,
         priority_claims=priority_claims,
         priority_context=priority_context,
@@ -107,8 +104,4 @@ def main() -> None:
         principal=principal,
         activation=activation,
         issue_reporter=issue_reporter,
-    ).run()
-
-
-if __name__ == "__main__":
-    main()
+    )
