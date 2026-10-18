@@ -200,6 +200,26 @@ def primary_mutation_reason(
     return None
 
 
+def proven_primary_source_mutation(subcommand: str, args: list[str]) -> bool:
+    """Return true only for command forms known to change source or its index."""
+    if "--help" in args or "-h" in args or "--dry-run" in args:
+        return False
+    if subcommand in {"add", "clean", "rm", "stage"} and any(
+        token.startswith("-") and not token.startswith("--") and "n" in token[1:]
+        for token in args
+    ):
+        return False
+    if subcommand == "apply" and "--check" in args:
+        return False
+    if subcommand == "submodule":
+        action = next((arg for arg in args if not arg.startswith("-")), "status")
+        return action in {
+            "absorbgitdirs", "add", "deinit", "init", "set-branch", "set-url",
+            "sync", "update",
+        }
+    return subcommand in PRIMARY_SOURCE_MUTATIONS
+
+
 def severe(tokens: list[str], cwd: str) -> str | None:
     if not tokens:
         return None
@@ -324,7 +344,7 @@ def classify(
                         or branch_write or worktree_write or config_write or remote_write
                         or notes_write or reflog_write)
             if coordinator_primary is not None:
-                mutation = subcommand in PRIMARY_SOURCE_MUTATIONS or (
+                mutation = proven_primary_source_mutation(subcommand, args) or (
                     subcommand == "stash" and not stash_read
                 )
             if mutation:
