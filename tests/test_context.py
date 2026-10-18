@@ -440,6 +440,7 @@ def test_context_server_exposes_only_bound_read_context():
     assert set(server._tool_manager._tools) == {
         "work_get", "work_history", "capability_preflight_get"}
     schema = server._tool_manager.get_tool("work_get").parameters
+    assert schema["title"] == "_work_getArguments"
     assert set(schema["properties"]) == {"api_version"}
     assert "work_id" not in schema["properties"]
     history = server._tool_manager.get_tool("work_history")
@@ -447,8 +448,12 @@ def test_context_server_exposes_only_bound_read_context():
         "api_version", "observed_revision", "cursor", "limit",
     }
     assert "work_id" not in history.parameters["properties"]
+    assert history.parameters["title"] == "_work_historyArguments"
+    assert "minimum" not in history.parameters["properties"]["limit"]
+    assert "maximum" not in history.parameters["properties"]["limit"]
     assert "Exceptional bounded investigation/recovery" in history.description
     assert "never normal startup" in history.description
+    assert "Pagination is revision-checked" in history.description
     for name in ("work_get", "work_history"):
         annotations = server._tool_manager.get_tool(name).annotations
         assert annotations is not None
