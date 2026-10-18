@@ -2,9 +2,13 @@
 """Run the isolated V1-A pre-production E2E qualification."""
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
+import re
 import subprocess
+import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,8 +17,14 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from switchstand.secure_file import create_new_private_bytes, read_private_bytes  # noqa: E402
+
 WORK_ID = "946b593d-1f2b-5442-96f8-cf1a12482351"
 FAULTS = ("missing-tool", "codex-absent", "duplicate-append")
+SHA = re.compile(r"[0-9a-f]{40}")
+RECEIPT_SCHEMA = 1
 
 
 def now():
@@ -76,8 +86,8 @@ def scenario(label, test, fault, python, scratch):
     )
     tests, skipped, failures = counts(report)
     teardown = "Disposable PostgreSQL teardown: ok" in run.stdout
-    if tests == 0 or (label == "S2" and (
-        tests != 1 or skipped or not marker.exists()
+    if tests == 0 or skipped or (label == "S2" and (
+        tests != 1 or not marker.exists()
     )):
         status = "NOT_RUN"
     else:
@@ -85,29 +95,106 @@ def scenario(label, test, fault, python, scratch):
     return status, tests - skipped, skipped, teardown
 
 
-def publish(result):
+def release_baseline(value, candidate):
+    if not SHA.fullmatch(value):
+        raise ValueError("release baseline must be an exact lowercase 40-character Git SHA")
+    resolved = git("rev-parse", f"{value}^{{commit}}")
+    if resolved != value:
+        raise ValueError("release baseline did not resolve to the exact supplied commit")
+    if value == candidate:
+        raise ValueError("release baseline must precede the candidate")
+    ancestor = subprocess.run(
+        ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", value, candidate],
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise ValueError("release baseline is not an ancestor of the candidate")
+    return value
+
+
+def require_clean_candidate(candidate):
+    if git("rev-parse", "HEAD") != candidate:
+        raise ValueError("candidate HEAD changed during qualification")
+    if git("status", "--porcelain=v1", "--untracked-files=all"):
+        raise ValueError("candidate worktree is not clean")
+
+
+def migration_status(baseline, candidate):
+    changed = git("diff", "--name-only", baseline, candidate, "--",
+                  "migrations", "alembic.ini").splitlines()
+    return "HOLD" if changed else "NOT_APPLICABLE"
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+
+
+def receipt_key(path):
+    if not path.is_absolute():
+        raise ValueError("receipt key path must be absolute")
+    key = read_private_bytes(path, max_bytes=32)
+    if len(key) != 32:
+        raise ValueError("receipt key must contain exactly 32 bytes")
+    return key
+
+
+def verify_receipt(path, key, expected=None):
+    if not path.is_absolute():
+        raise ValueError("receipt path must be absolute")
+    raw = read_private_bytes(path, max_bytes=64 * 1024)
+    receipt = json.loads(raw)
+    if not isinstance(receipt, dict) or receipt.get("receipt_schema") != RECEIPT_SCHEMA:
+        raise ValueError("receipt schema is invalid")
+    seal = receipt.pop("seal", None)
+    if not isinstance(seal, str):
+        raise ValueError("receipt seal is missing")
+    calculated = hmac.new(key, canonical(receipt), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(seal, calculated):
+        raise ValueError("receipt seal is invalid")
+    if expected is not None and receipt != expected:
+        raise ValueError("receipt readback does not match the completed run")
+    return receipt, hashlib.sha256(raw).hexdigest()
+
+
+def accepted(result):
+    return (all(result[key] == "PASS" for key in ("S1", "S2", "S3"))
+            and result["M"] in {"PASS", "NOT_APPLICABLE"}
+            and result["teardown_ok"])
+
+
+def publish(result, key):
     directory = Path.home() / ".local/state/switchstand/e2e-runs"
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{result['run_id']}.json"
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as stream:
-        json.dump(result, stream, sort_keys=True, indent=2)
-        stream.write("\n")
-    print(path)
+    seal = hmac.new(key, canonical(result), hashlib.sha256).hexdigest()
+    receipt = {**result, "seal": seal}
+    create_new_private_bytes(path, canonical(receipt))
+    verified, digest = verify_receipt(path, key, result)
+    print(f"{path} sha256={digest}")
+    return verified, digest
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fault", choices=FAULTS, help="test-only negative control")
+    parser.add_argument("--release-baseline", required=True,
+                        help="exact approved release SHA preceding the candidate")
+    parser.add_argument("--receipt-key", required=True, type=Path,
+                        help="absolute path to an existing private 32-byte HMAC key")
     args = parser.parse_args()
     started, run_id = now(), str(uuid4())
     candidate = git("rev-parse", "HEAD")
-    changed = git("diff", "--name-only", f"origin/main...{candidate}", "--",
-                  "migrations", "alembic.ini").splitlines()
-    migration = "HOLD" if changed else "NOT_APPLICABLE"
+    try:
+        baseline = release_baseline(args.release_baseline, candidate)
+        key = receipt_key(args.receipt_key)
+        require_clean_candidate(candidate)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
+    migration = migration_status(baseline, candidate)
     result = {
         "run_id": run_id, "work_id": WORK_ID, "candidate_sha": candidate,
-        "suite_version": "v1-a.1", "started_at": started, "ended_at": None,
+        "release_baseline_sha": baseline, "receipt_schema": RECEIPT_SCHEMA,
+        "suite_version": "v1-a.2", "started_at": started, "ended_at": None,
         "S1": "NOT_RUN", "S2": "NOT_RUN", "S3": "NOT_RUN", "M": migration,
         "executed": 0, "skipped": 0, "teardown_ok": False, "failure_reason": None,
     }
@@ -142,10 +229,12 @@ def main():
             if not all(result[key] == "PASS" for key in ("S1", "S2", "S3")):
                 result["failure_reason"] = "one or more required scenarios did not pass"
     result["ended_at"] = now()
-    green = (all(result[key] == "PASS" for key in ("S1", "S2", "S3"))
-             and result["M"] in {"PASS", "NOT_APPLICABLE"} and result["teardown_ok"])
-    publish(result)
-    return 0 if green else 1
+    try:
+        require_clean_candidate(candidate)
+    except ValueError as error:
+        parser.error(str(error))
+    verified, _ = publish(result, key)
+    return 0 if accepted(verified) else 1
 
 
 if __name__ == "__main__":
