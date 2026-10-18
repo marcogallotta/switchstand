@@ -677,7 +677,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | --- | --- | --- |
 | Add or change an ordinary MCP tool | `chatgpt_mcp.py::build_ordinary_tools` | `chatgpt.py`, closed contracts, HTTP-edge inventory tests, and repository MCP allowlisting/configuration |
 | Change HTTP authentication, bind, or session wiring | `chatgpt_edge.py` | edge process/auth tests and deployment configuration; do not duplicate tool semantics here |
-| Change production edge replacement sequencing | `edge_deploy.py` | deploy transaction tests and `chatgpt-mcp-edge.md`; keep landing inert and activation separate |
+| Change production edge replacement sequencing | `edge_deploy.py` | deploy transaction tests and `chatgpt-mcp-edge.md`; the generated launcher binds product-currentness runtime/selected SHAs to the deployed candidate; keep landing inert and activation separate |
 | Change shared private byte-file durability mechanics | `secure_file.py` | edge maintenance and rehearsal callers; keep schemas, state machines, path policy, and domain errors local |
 | Change first combined-to-split activation sequencing | `stable_auth_deployment.py` | stable-auth deployment/migration/host tests and `chatgpt-mcp-edge.md`; preserve the public gate and never rewind possibly-written OAuth state |
 | Change inert Wakeful event persistence | `wakeful.py` | `wakeful.md`; keep probe and agent adapters outside the neutral contract |

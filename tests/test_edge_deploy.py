@@ -12,9 +12,14 @@ SHA = "a" * 40
 
 def launcher(runtime: Path) -> str:
     return f'''#!/usr/bin/python
+import os
 from pathlib import Path
 RUNTIME = Path("{runtime}")
 settings = {{"SWITCHSTAND_OUTCOME_STATE_ACTIONS": "1"}}
+
+def run():
+    oauth = {{}}
+    os.environ.update(oauth)
 '''
 
 
@@ -26,9 +31,22 @@ def deployer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> subject.Deploye
 
 def test_candidate_preserves_exact_production_config() -> None:
     current = launcher(Path("/old/runtime"))
-    _, rendered = subject.candidate_launcher(current, Path("/new/runtime"))
+    _, rendered = subject.candidate_launcher(current, Path("/new/runtime"), SHA)
     assert '"SWITCHSTAND_OUTCOME_STATE_ACTIONS": "1"' in rendered
-    assert rendered.replace("'/new/runtime'", '"/old/runtime"') == current
+    assert "SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA" in rendered
+    assert f'"SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA": "{SHA}"' in rendered
+    assert f'"SWITCHSTAND_PRODUCT_CURRENTNESS_SELECTED_RUNTIME_SHA": "{SHA}"' in rendered
+    assert '"SWITCHSTAND_PRODUCT_CURRENTNESS_RUN_ID": "edge-deploy-aaaaaaaaaaaa"' in rendered
+
+
+def test_candidate_replaces_prior_deployed_currentness_identity() -> None:
+    current = launcher(Path("/old/runtime"))
+    _, first = subject.candidate_launcher(current, Path("/first/runtime"), "b" * 40)
+    _, second = subject.candidate_launcher(first, Path("/second/runtime"), SHA)
+    assert second.count(subject.CURRENTNESS_START) == 1
+    assert second.count(subject.CURRENTNESS_END) == 1
+    assert "b" * 40 not in second
+    assert f'"SWITCHSTAND_PRODUCT_CURRENTNESS_RUNTIME_SHA": "{SHA}"' in second
 
 
 def test_authenticated_smoke_makes_one_logged_in_tool_call(
@@ -41,10 +59,14 @@ def test_authenticated_smoke_makes_one_logged_in_tool_call(
     env.write_text(f"SWITCHSTAND_R0_TOKEN_FILE={token}\nSWITCHSTAND_R0_WORK_ID={'b' * 36}\n")
     env.chmod(0o600)
     client = Mock()
+    client.client = Mock()
     client.call.return_value = {"status": "ok"}
     monkeypatch.setattr(subject, "ENV_FILE", env)
     monkeypatch.setattr(subject, "MCP", Mock(return_value=client))
-    subject.authenticated_smoke()
+    runtime = Mock()
+    monkeypatch.setattr(subject, "_runtime", runtime)
+    subject.authenticated_smoke(SHA)
+    runtime.assert_called_once_with(client.client, subject.LOCAL_URL, SHA)
     client.call.assert_called_once()
     assert client.call.call_args.args[1]["name"] == "work_get"
 
