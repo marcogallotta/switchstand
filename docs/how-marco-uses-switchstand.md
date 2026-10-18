@@ -214,6 +214,8 @@ Keep one semantic owner for each real concern. Preserve the same task GID and Wo
 
 ## Work, messages, and feedback
 
+Tracker Issues V1-A owns Feedback V1's shared reporting function and its code/tests; agents use it rather than adding another reporting path. The always-loaded draw, mandatory-report, and reply-mark behavior lives in [AGENTS.md](../AGENTS.md).
+
 Durable message tools and state are the current agent-to-agent surface. Ordinary interactive agents address registered names through `agent_message_*`; managed task-bound runtimes retain WorkId-addressed `message_*`. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
 
 Ordinary current intent, progress, findings, verdicts, and results belong in

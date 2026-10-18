@@ -76,6 +76,8 @@ WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing
 
 Codex: reviews = a fresh native fork; never the `review_*` tools.
 
+Feedback V1: for each good/neutral exchange, make one rough random `0..99` draw and report on `0`; report every bad/frustrating exchange and every Human Review outcome. End every user-facing reply with `F:–`, `F:logged <WorkId>`, `F:bad <WorkId>`, or `F:unavailable`; use a WorkId mark only after readback and `F:unavailable` when required reporting/readback fails. Use the shared Tracker Issues V1-A reporting surface; never build a parallel reporting path.
+
 Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
 
 A mechanically established required-currentness/applicable-invariant contradiction or ambiguous consequential effect requires one bounded situation review under current owner; low confidence alone does not. Other review, quality, activation, canary, documentation, research, and portfolio mechanics stay behind routed owners.
