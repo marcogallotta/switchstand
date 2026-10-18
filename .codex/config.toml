@@ -6,6 +6,22 @@ hooks = true # Off-switch: set hooks = false.
 multi_agent = true
 apps = false
 
+[[hooks.UserPromptSubmit]]
+
+[[hooks.UserPromptSubmit.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/scripts/codex-feedback-trigger-hook"'
+timeout = 1
+additionalContextLimit = 700
+
+[[hooks.SessionStart]]
+matcher = "^compact$"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/scripts/codex-feedback-trigger-hook"'
+timeout = 1
+additionalContextLimit = 700
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
 extends = ":workspace"
