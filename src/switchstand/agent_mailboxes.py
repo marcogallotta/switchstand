@@ -231,7 +231,10 @@ class AgentMailboxState:
         except (SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    async def takeover(self, name: str, principal_key: str, replacement_session: str) -> AgentMailboxResult:
+    async def takeover(
+        self, name: str, principal_key: str, replacement_session: str, *,
+        allow_principal_change: bool = False,
+    ) -> AgentMailboxResult:
         try:
             key, session_key = agent_name_key(name), chat_session_key(replacement_session)
             async with self.engine.begin() as connection:
@@ -240,9 +243,9 @@ class AgentMailboxState:
                 ).with_for_update())).mappings().one_or_none()
                 if row is None:
                     return AgentMailboxResult(status="denied", reason="mailbox_not_found")
-                if row["principal_key"] != principal_key:
+                if row["principal_key"] != principal_key and not allow_principal_change:
                     return AgentMailboxResult(status="denied", reason="principal_mismatch")
-                if row["session_key"] == session_key:
+                if row["principal_key"] == principal_key and row["session_key"] == session_key:
                     return AgentMailboxResult(status="ok", mailbox=self._view(row))
                 prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
                     agent_mailboxes.c.principal_key == principal_key,
@@ -255,7 +258,8 @@ class AgentMailboxState:
                     agent_mailboxes.c.name_key == key,
                     agent_mailboxes.c.generation == row["generation"],
                 ).values(
-                    session_key=session_key, generation=row["generation"] + 1,
+                    principal_key=principal_key, session_key=session_key,
+                    generation=row["generation"] + 1,
                 ).returning(*agent_mailboxes.c))).mappings().one_or_none()
                 if moved is None:
                     return AgentMailboxResult(status="recovery_required", reason="state_unavailable")

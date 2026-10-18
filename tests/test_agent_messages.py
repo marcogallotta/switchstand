@@ -263,6 +263,61 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     assert stale.next_action is None
 
 
+async def test_marco_authorized_named_takeover_crosses_principal_and_keeps_mail(
+    agent_messaging,
+):
+    tools, actor, session, owner, other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Tests")).status == "ok"
+    assert service.messages is not None
+    before = (await AgentMailboxState(service.messages.engine).by_name("Tests")).mailbox
+    assert before is not None
+    session[0] = "sender-chat"
+    assert (await tools["agent_register"]("1", "Sender")).status == "ok"
+    sent = await tools["agent_message_send"](
+        "1", "Tests", uuid4(), {"request": "kept"},
+    )
+    assert sent.status == "ok" and sent.message is not None
+
+    actor[0], session[0] = other, "replacement-chat"
+    configured = root_tools(service, session)
+    moved = await configured["agent_takeover"](
+        "1", "Tests", "Marco says: take over Tests using france.",
+    )
+
+    assert (moved.status, moved.name) == ("ok", "Tests")
+    current = (await AgentMailboxState(service.messages.engine).by_name("Tests")).mailbox
+    assert current is not None
+    assert current.endpoint_id == before.endpoint_id
+    assert current.generation == before.generation + 1
+    pending = await configured["agent_message_pending"]("1")
+    assert [item.delivery_id for item in pending.messages] == [sent.message.delivery_id]
+
+    actor[0], session[0] = owner, "chat-a"
+    fenced = await configured["agent_message_pending"]("1")
+    assert (fenced.status, fenced.reason) == ("denied", "agent_not_registered")
+
+
+async def test_named_cross_principal_takeover_rejects_missing_marco_authorization(
+    agent_messaging,
+):
+    tools, actor, session, _owner, other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Tests")).status == "ok"
+    actor[0], session[0] = other, "replacement-chat"
+    configured = root_tools(service, session)
+
+    missing_message = await configured["agent_takeover"]("1", "Tests")
+    wrong_passcode = await configured["agent_takeover"](
+        "1", "Tests", "Marco says: take over Tests using spain.",
+    )
+
+    assert (missing_message.status, missing_message.reason) == (
+        "denied", "principal_mismatch",
+    )
+    assert (wrong_passcode.status, wrong_passcode.reason) == (
+        "denied", "principal_mismatch",
+    )
+
+
 async def test_coordinator_takeover_canonicalizes_root_and_keeps_mail(
     agent_messaging,
 ):
