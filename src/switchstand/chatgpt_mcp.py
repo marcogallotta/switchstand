@@ -302,13 +302,36 @@ def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     )
 
 
+def _takeover_message_confirms(
+    message: str | None, name: str, *, coordinator: bool,
+) -> bool:
+    normalized = "" if message is None else " ".join(message.casefold().split())
+    directives = tuple(re.finditer(r"\b(?:take\s+over|takeover)\b", normalized))
+    if len(directives) != 1 or re.search(
+        r"\b(?:no|not|never|dont|didnt|wasnt|werent|isnt|arent|havent|hasnt|hadnt|"
+        r"shouldnt|mustnt|cant|couldnt|wouldnt|wont)\b|\b\w+n['’]t\b",
+        normalized,
+    ):
+        return False
+    prefix = normalized[:directives[0].start()].strip()
+    if prefix not in {"", "please", "marco says:", "marco says: please"}:
+        return False
+    if coordinator:
+        target = r"(?:codex\s+coordinator|coordinator|/root)"
+    else:
+        target = re.escape(" ".join(name.strip().casefold().split())).replace(r"\ ", r"\s+")
+    return re.match(
+        rf"(?:take\s+over|takeover)\s+(?:as\s+)?{target}(?=$|[.!])",
+        normalized[directives[0].start():],
+    ) is not None
+
+
 def build_ordinary_tools(
     service: ChatGPTService,
     audit: Callable[[str, str | None, str], None] | None = None,
     agent_identity: Callable[[], str] | None = None,
     correlate_work: Callable[[UUID | None], None] | None = None,
     review_bundle_enabled: bool = False,
-    root_takeover_passcode: str | None = None,
 ) -> tuple[tuple[str, Callable[..., Any]], ...]:
     """Build the canonical ordinary tool callables shared by all transports."""
 
@@ -1154,9 +1177,9 @@ def build_ordinary_tools(
         "Call agent_register for this exact session using its intended durable agent name, "
         "then retry. Do not infer Codex Coordinator from an internal role label. When "
         "Marco's current message asks this session to take over Coordinator, pass that "
-        "full message to "
-        "agent_takeover; on failure ask Marco for the passcode. For other cross-principal "
-        "names, use agent_transfer_request and host approval."
+        "full message to agent_takeover. For any other cross-principal takeover, call "
+        "agent_takeover first; if confirmation is required, ask Marco and retry with his "
+        "full confirmation message."
     )
 
     def agent_transition_failure(
@@ -1267,7 +1290,7 @@ def build_ordinary_tools(
         name: Annotated[str, Field(min_length=1, max_length=80)],
         message: Annotated[str | None, Field(max_length=4096)] = None,
     ) -> AgentRegistrationResult:
-        """Take over an agent; pass Marco's full message for a cross-principal takeover."""
+        """Take over an agent; cross-principal moves require Marco's confirmation message."""
         del api_version
         try:
             principal = await service.principal()
@@ -1280,38 +1303,22 @@ def build_ordinary_tools(
             }
         except ValueError:
             coordinator_request = False
-        coordinator_message = "" if message is None else message.casefold()
-        configured_passcode = (
-            "" if root_takeover_passcode is None else root_takeover_passcode.strip().casefold()
+        marco_confirmed = _takeover_message_confirms(
+            message, name, coordinator=coordinator_request,
         )
-        coordinator_authorized = (
-            coordinator_request
-            and bool(configured_passcode)
-            and (
-                re.search(
-                    r"\btake\s*over\s+(?:as\s+)?(?:codex\s+)?coordinator\b",
-                    coordinator_message,
-                )
-                is not None
-                or (
-                    "takeover" in coordinator_message
-                    and "/root" in coordinator_message
-                )
+
+        def confirmation_required() -> AgentRegistrationResult:
+            return AgentRegistrationResult(
+                status="denied",
+                reason="takeover_confirmation_required",
+                next_action=(
+                    f"Takeover was not performed. Ask Marco whether you were actually told to "
+                    f"take over {name!r}. If he confirms, retry agent_takeover with the same "
+                    "name and his full confirmation message in `message`."
+                ),
             )
-            and configured_passcode in coordinator_message
-        )
-        named_takeover_authorized = (
-            not coordinator_request
-            and bool(configured_passcode)
-            and configured_passcode in coordinator_message
-            and re.search(r"\btake\s*over\b", coordinator_message) is not None
-            and " ".join(name.strip().casefold().split()) in coordinator_message
-        )
-        if coordinator_request and not coordinator_authorized:
-            result = AgentRegistrationResult(
-                status="denied", reason="ask_marco_for_passcode"
-            )
-        elif principal is None:
+
+        if principal is None:
             result = AgentRegistrationResult(status="denied", reason="no_current_grant")
         elif not chat_session:
             result = AgentRegistrationResult(
@@ -1321,8 +1328,11 @@ def build_ordinary_tools(
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             if coordinator_request:
-                stored = await mailboxes.takeover_coordinator(principal.key, chat_session)
-            elif named_takeover_authorized:
+                stored = await mailboxes.takeover_coordinator(
+                    principal.key, chat_session,
+                    allow_principal_change=marco_confirmed,
+                )
+            elif marco_confirmed:
                 stored = await mailboxes.takeover(
                     name, principal.key, chat_session, allow_principal_change=True,
                 )
@@ -1342,7 +1352,7 @@ def build_ordinary_tools(
                 else:
                     # A takeover is replay-safe for this exact authorized replacement
                     # binding. Retry unchanged, then require authoritative readback.
-                    if named_takeover_authorized:
+                    if marco_confirmed:
                         stored = await mailboxes.takeover(
                             name, principal.key, chat_session, allow_principal_change=True,
                         )
@@ -1354,15 +1364,14 @@ def build_ordinary_tools(
                             stored = AgentMailboxResult(
                                 status="recovery_required", reason="state_unavailable"
                             )
-            result = (
-                AgentRegistrationResult(status="ok", name=stored.mailbox.name)
-                if stored.status == "ok" and stored.mailbox is not None
-                else AgentRegistrationResult(status=stored.status, reason=stored.reason)
-            )
-        if coordinator_request and result.status != "ok":
-            result = AgentRegistrationResult(
-                status="denied", reason="ask_marco_for_passcode"
-            )
+            if stored.status == "denied" and stored.reason == "principal_mismatch":
+                result = confirmation_required()
+            else:
+                result = (
+                    AgentRegistrationResult(status="ok", name=stored.mailbox.name)
+                    if stored.status == "ok" and stored.mailbox is not None
+                    else AgentRegistrationResult(status=stored.status, reason=stored.reason)
+                )
         audited("agent_takeover", name, result.status)
         return result
 

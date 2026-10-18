@@ -570,7 +570,6 @@ def _create_resource_app(
     ordinary_tools = build_ordinary_tools(
         service, _audit, agent_identity=_runtime_identity, correlate_work=annotate_target,
         review_bundle_enabled=True,
-        root_takeover_passcode=os.getenv("SWITCHSTAND_ROOT_TAKEOVER_PASSCODE"),
     )
     state = service.state
     store = timing_persistence(state.engine) if isinstance(state, PostgresState) else None

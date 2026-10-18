@@ -452,11 +452,13 @@ messaging, and required continuation:
   unreferenced legacy residue. Registration is read-or-create for that authenticated session, except
   that the canonical `codex-coordinator` name key and temporary `root` alias are reserved: an
   unbound session cannot create either through `agent_register`. A resume returns the session's
-  existing mailbox rather than renaming or taking it over. Rebinding `Codex Coordinator` uses `agent_takeover`
-  with Marco's full current message and the server-configured
-  `SWITCHSTAND_ROOT_TAKEOVER_PASSCODE`. This protected path verifies the required message words
-  and passcode without auditing them, then renames a legacy `root` row in place, preserves the
-  endpoint and deliveries, replaces the principal/session binding, and increments its generation.
+  existing mailbox rather than renaming or taking it over. Every cross-principal `agent_takeover`,
+  including `Codex Coordinator`, stops with `takeover_confirmation_required` unless the request
+  carries Marco's full current message naming the target and directing the takeover. The denial
+  says that no takeover occurred and tells the agent to ask Marco and retry with his confirmation;
+  no passcode is configured or accepted. A confirmed Coordinator takeover renames a legacy `root`
+  row in place, preserves the endpoint and deliveries, replaces the principal/session binding, and
+  increments its generation.
   `/root` resolves only as an inbound alias and successful readback uses `Codex Coordinator`.
   Other names retain the existing
   same-principal behavior. For older cross-principal recovery, the destination authenticated session

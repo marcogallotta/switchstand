@@ -27,14 +27,15 @@ class AgentRegistrationResult(ClosedModel):
     status: Literal["ok", "conflict", "denied", "stale", "recovery_required"]
     name: str | None = None
     reason: str | None = None
+    next_action: str | None = None
 
     @model_validator(mode="after")
     def exact_shape(self):
         if self.status == "ok":
-            if self.name is None or self.reason is not None:
+            if self.name is None or self.reason is not None or self.next_action is not None:
                 raise ValueError("successful registration requires only name")
         elif self.name is not None or self.reason is None:
-            raise ValueError("failed registration requires only reason")
+            raise ValueError("failed registration requires a reason and no name")
         return self
 
 

@@ -284,7 +284,8 @@ class AgentMailboxState:
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
     async def takeover_coordinator(
-        self, principal_key: str, replacement_session: str,
+        self, principal_key: str, replacement_session: str, *,
+        allow_principal_change: bool = False,
     ) -> AgentMailboxResult:
         """Move the Coordinator to an authorized caller and canonicalize its name."""
         try:
@@ -302,6 +303,8 @@ class AgentMailboxState:
                         status="recovery_required", reason="state_unavailable"
                     )
                 row = rows[0]
+                if row["principal_key"] != principal_key and not allow_principal_change:
+                    return AgentMailboxResult(status="denied", reason="principal_mismatch")
                 if (
                     row["principal_key"] == principal_key
                     and row["session_key"] == session_key
