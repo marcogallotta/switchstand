@@ -482,6 +482,49 @@ async def test_atomic_create_replays_and_persists_parent_without_provider(
         )
 
 
+async def test_navigation_parent_starts_exact_child_root(subject: Subject) -> None:
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(
+        current, work_type="Context", lifecycle_state=None, canonical_root=None,
+        owner_key=None, wait_kind=None, unblock_condition=None, next_due=None,
+        next_action_class=None, next_action_ref=None,
+    ))
+
+    applied = await subject.service.create(create(subject))
+
+    assert applied.status == "ok" and applied.effect == "applied"
+    stored = await subject.runtime.get(applied.work_id)  # type: ignore[arg-type]
+    assert stored.item is not None
+    assert stored.item.routing.canonical_root == str(applied.work_id)
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(work_parents.c.parent_work_id)) == subject.work_id
+
+
+async def test_rootless_non_navigation_parent_and_legacy_minimal_create_fail_closed(
+    subject: Subject,
+) -> None:
+    current = await subject.runtime.works.get(subject.work_id)
+    assert current is not None
+    await subject.runtime.works.replace(replace(current, canonical_root=None))
+    ordinary = await subject.service.create(create(subject))
+
+    context = await subject.runtime.works.get(subject.work_id)
+    assert context is not None
+    await subject.runtime.works.replace(replace(context, work_type="Context"))
+    explicit = await subject.service.create(create(
+        subject, canonical_root=str(uuid4()),
+    ))
+    minimal = await subject.service.create(ProtectedCreate(
+        api_version="1", operation_id=uuid4(), grant_version=1,
+        title="Legacy minimal", parent_work_id=subject.work_id,
+    ))
+
+    assert ordinary.reason == "parent_root_not_exact"
+    assert explicit.reason == "parent_root_not_exact"
+    assert minimal.reason == "invalid_resultant_state"
+
+
 async def test_create_classifies_invalid_resultant_state_and_accepts_coherent_current(
     subject: Subject,
 ) -> None:

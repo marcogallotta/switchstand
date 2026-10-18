@@ -13,10 +13,13 @@ the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation o
 identify current routes or candidate WorkIds, but it cannot assign work, select focus, transfer
 ownership, or grant an effect. When Marco directly assigns new substantive work but supplies no
 WorkId, resolve and read `START HERE` as its provider-neutral parent. If the parent exposes an exact
-`canonical_root`, create a minimally titled child with `work_type="Task"`,
+`canonical_root`, the child inherits it; because `START HERE` is an imported navigation-only
+`Context` without one, each child starts a new exact canonical root while retaining `START HERE`
+only as its placement parent. In either case create a minimally titled child with `work_type="Task"`,
 `lifecycle_state="CURRENT"`, `owner_key="SELF"`, `wait_kind=unblock_condition=next_due="NONE"`,
-`next_action_class="OWNER_CAN_DO"`, and an assignment-derived exact `next_action_ref`; otherwise
-use only the legacy create's required arguments. Use one stable OperationId. Inspect the complete
+`next_action_class="OWNER_CAN_DO"`, and an assignment-derived exact `next_action_ref`; omit
+`canonical_root` and let the server resolve it from that exact parent. Do not use the legacy
+minimal create form. Use one stable OperationId. Inspect the complete
 create outcome and require exact created-ID readback. For a
 possible-send ambiguity, replay only the identical OperationId and arguments as directed; never
 mint a second create intent. This grounding step derives authority only from Marco's assignment; the route supplies
