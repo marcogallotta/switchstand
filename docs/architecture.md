@@ -603,7 +603,11 @@ preflight. This is a transitional trusted-host bridge, not a provider API for ag
 
 Ordinary Codex uses the official npm-installed CLI directly. Repository configuration and
 instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
-global `codex` command.
+global `codex` command. A stateless repository hook re-injects the existing Feedback V1 obligation
+on every user prompt and immediately after compaction. It performs no classification, reporting,
+network call, transcript scan, or persistence; the agent still uses the canonical Tracker Issues
+V1-A tools and their readback. Its one-second local timeout preserves prompt acknowledgement as the
+first response, and failures are visible and nonblocking.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
