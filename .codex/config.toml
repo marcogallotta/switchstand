@@ -6,6 +6,13 @@ hooks = true # Off-switch: set hooks = false.
 multi_agent = true
 apps = false
 
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/scripts/codex-stop-mailbox"'
+timeout = 5
+
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
 extends = ":workspace"
