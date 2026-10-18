@@ -604,8 +604,8 @@ def build_ordinary_tools(
     ) -> GuardOutcome:
         """Create canonical work under one admitted provider-neutral parent or project.
 
-        A legacy Context parent without an exact root supplies placement only; each
-        substantive child starts a new exact canonical tree.
+        The sanctioned rootless START HERE Context supplies placement only for the
+        documented direct-assignment Task shape, which starts a new exact canonical tree.
         """
         correlate(parent_work_id)
         grant_version, admission = await current_grant_version()
