@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'CURRENT PRIORITIES (read before acting):'; cat \"$HOME/.local/state/switchstand/independent-audit-claude-20261008/PRIORITIES.md\" 2>/dev/null || echo 'PRIORITIES.md MISSING: tell Marco'"
+            "command": "\"$SWITCHSTAND_PRIMARY\"/scripts/claude-sync-checklist; echo 'CURRENT PRIORITIES (read before acting):'; cat \"$HOME/.local/state/switchstand/independent-audit-claude-20261008/PRIORITIES.md\" 2>/dev/null || echo 'PRIORITIES.md MISSING: tell Marco'"
           }
         ]
       }
