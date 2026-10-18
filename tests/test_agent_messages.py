@@ -22,6 +22,7 @@ from switchstand.agent_messages import (
     AgentPendingMessage,
 )
 from switchstand.chatgpt import ChatGPTService
+from switchstand.chatgpt_edge import _codex_stop_mailbox_page
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import ClosedModel
 from switchstand.durable_capture import DurableCaptureGuidance
@@ -844,6 +845,32 @@ async def test_pending_default_page_is_ten_with_keyset_continuation(agent_messag
     assert len(first.messages) == 10 and first.has_more and first.next_cursor is not None
     second = await tools["agent_message_pending"]("1", first.next_cursor)
     assert len(second.messages) == 1 and not second.has_more
+
+
+async def test_codex_stop_page_uses_current_session_binding_without_receiving(agent_messaging):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    session[0] = "chat-a"
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "codex:thread-1"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"](
+        "1", "Beta", uuid4(), {"request": "act"}
+    )
+    assert sent.message is not None
+
+    page = await _codex_stop_mailbox_page(service, "thread-1", None)
+    assert page == {
+        "status": "ok",
+        "delivery_ids": [str(sent.message.delivery_id)],
+        "has_more": False,
+        "next_cursor": None,
+    }
+    session[0] = "codex:thread-2"
+    assert (await tools["agent_takeover"]("1", "Beta")).status == "ok"
+    assert await _codex_stop_mailbox_page(service, "thread-1", None) == {
+        "status": "denied", "reason": "agent_not_registered",
+    }
 
 
 async def test_acknowledge_batch_is_per_delivery_and_preserves_open_reply(agent_messaging):

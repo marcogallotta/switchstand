@@ -231,6 +231,22 @@ class AgentMailboxState:
         except (SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
+    async def for_session(self, chat_session: str) -> AgentMailboxResult:
+        """Resolve a local runtime session without accepting a caller-selected name."""
+        try:
+            session_key = chat_session_key(chat_session)
+            async with self.engine.connect() as connection:
+                rows = (await connection.execute(select(agent_mailboxes).where(
+                    agent_mailboxes.c.session_key == session_key,
+                ).limit(2))).mappings().all()
+            if not rows:
+                return AgentMailboxResult(status="denied", reason="agent_not_registered")
+            if len(rows) != 1:
+                return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+            return AgentMailboxResult(status="ok", mailbox=self._view(rows[0]))
+        except (SQLAlchemyError, TypeError, ValueError):
+            return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
     async def takeover(
         self, name: str, principal_key: str, replacement_session: str, *,
         allow_principal_change: bool = False,
