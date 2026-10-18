@@ -962,6 +962,42 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
                         coordinator_writer=writer) == {}
 
 
+def test_hook_entrypoint_denies_malformed_shell_without_traceback(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "tool_input": {"command": 'git status --short "unterminated'},
+        "cwd": str(primary),
+    }
+
+    result = subprocess.run(
+        [str(Path(__file__).parents[1] / "scripts/codex-hook"),
+         "--coordinator-primary", str(primary)],
+        input=json.dumps(payload), text=True, capture_output=True, check=True,
+        env=dict(os.environ),
+    )
+
+    assert result.stderr == ""
+    decision = json.loads(result.stdout)["hookSpecificOutput"]
+    assert decision["hookEventName"] == "PreToolUse"
+    assert decision["permissionDecision"] == "deny"
+    assert "[shell-parse] malformed shell command is denied" in decision[
+        "permissionDecisionReason"
+    ]
+
+
+def test_unscoped_hook_denies_malformed_shell_and_allows_balanced_read(tmp_path):
+    environment = dict(os.environ)
+
+    denied = hook(tmp_path, "echo 'unterminated", environment)
+    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert hook(tmp_path, "echo 'balanced'", environment) == {}
+
+
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):
     primary = tmp_path / "primary"
     writer = tmp_path / "writer"
