@@ -90,7 +90,9 @@ async def test_review_tools_are_default_off_and_closed(monkeypatch):
         assert set(schema["properties"]) == {"api_version", "review_id"}
 
 
-async def test_review_poll_and_recovery_derive_current_mailbox(monkeypatch):
+async def test_review_poll_and_recovery_derive_mailbox_and_distinct_received_guidance(
+    monkeypatch,
+):
     subject = service()
     bound = mailbox()
     lookup = Mailboxes(AgentMailboxResult(status="ok", mailbox=bound))
@@ -107,8 +109,19 @@ async def test_review_poll_and_recovery_derive_current_mailbox(monkeypatch):
         agent_identity=lambda: "chat-session",
     ))
 
-    assert await tools["review_get"]("1", review_id) == expected
-    assert await tools["review_recover"]("1", review_id) == expected
+    polled = await tools["review_get"]("1", review_id)
+    recovered = await tools["review_recover"]("1", review_id)
+
+    assert polled == expected
+    assert "bounded active polling" in polled.next_action
+    assert "review_get for this exact review_id" in polled.next_action
+    assert (recovered.status, recovered.review_id, recovered.delivery_id) == (
+        expected.status, expected.review_id, expected.delivery_id,
+    )
+    assert "Resume this exact recovered review" in recovered.next_action
+    assert "review_submit with its evidence-based verdict" in recovered.next_action
+    assert "do not call requester-only review_get" in recovered.next_action
+    assert recovered.next_action != polled.next_action
     subject.reviews.get.assert_awaited_once_with(review_id, bound)
     subject.reviews.recover.assert_awaited_once_with(review_id, bound)
     assert [record[0] for record in audits] == ["review_get", "review_recover"]
