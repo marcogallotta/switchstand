@@ -65,12 +65,16 @@ def test_migrations_are_compared_with_exact_release_baseline(tmp_path):
     assert namespace["migration_status"](baseline, candidate) == "HOLD"
 
 
-def test_release_baseline_must_strictly_precede_candidate():
+def test_release_baseline_must_strictly_precede_candidate(tmp_path):
     namespace = subject()
-    candidate = subprocess.run(
-        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, text=True,
-        capture_output=True,
-    ).stdout.strip()
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "test@example.com")
+    git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "README").write_text("candidate\n")
+    git(tmp_path, "add", "README")
+    git(tmp_path, "commit", "-qm", "candidate")
+    candidate = git(tmp_path, "rev-parse", "HEAD")
+    namespace["release_baseline"].__globals__["ROOT"] = tmp_path
 
     with pytest.raises(ValueError, match="must precede"):
         namespace["release_baseline"](candidate, candidate)
