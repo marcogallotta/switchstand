@@ -28,6 +28,14 @@ These are conservative starting points, not permanent limits. Change this file, 
 when a measured trial justifies one different value. There is deliberately no configuration
 framework or validator. If the file is missing or unreadable, return `WAIT`.
 
+The Coordinator owns evidence-based trial tuning under Marco's standing direction: change one
+setting at a time, record the decision and outcome below, read back the file, and restore the
+last known-good value on a warning. This does not require a fresh approval for each measured
+adjustment. `max_memory_jobs` counts only live background `ss-codex-*.scope` jobs detected by
+this script; it is not the native-agent slot count and must not be used as an idle-capacity or
+ready-work signal. Native slots remain separately reported by the host. Do not add automatic
+idle dispatch until a trustworthy ready-work signal is available.
+
 The effective `agents.slice` values reported by systemd are the containment truth. They are not
 duplicated here, and changing them is a separately authorized activation action.
 
