@@ -383,15 +383,17 @@ def test_root_delegation_detail_lives_in_tracker_owner():
     assert "When Marco says `STOP`, pause new dispatch" in tracker
 
 
-def test_material_design_review_and_root_agents_admission_live_in_code_quality():
+def test_material_design_review_and_global_instruction_admission_live_in_code_quality():
     agents = read("AGENTS.md")
     quality = normalized("docs/code-quality.md")
     router = section(agents, "### Route only the current function")
 
     assert "docs/code-quality.md" in markdown_links(router)
-    assert "Root `AGENTS.md` is a bootstrap/router, not a process manual" in quality
-    assert "essentially every fresh agent needs it before role/function selection" in quality
+    assert "Root `AGENTS.md` and ChatGPT Project Settings are stable bootstrap/routers" in quality
+    assert "essentially every consumer of that global surface needs it" in quality
     assert "invariant, first-minute trigger, or routing pointer rather than procedure" in quality
+    assert "If existing routing already reaches that owner, make no global change" in quality
+    assert "Feature work never edits Project Settings opportunistically" in quality
     assert "Do not use a total byte/line cap as the semantic gate" in quality
     assert "Material design review before Human Review" in quality
     assert "one fresh context-free reviewer before Human Review" in quality
