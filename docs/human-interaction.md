@@ -82,4 +82,8 @@ For progress reporting, use a percentage only when there is a stable milestone d
 
 Major completion/activation notices are stricter: keep them visible and repeat them at a frequency proportionate to importance until the human explicitly acknowledges them. Silence, deferral, transfer, unrelated progress, or ordinary clearing of an attention condition does not acknowledge a major completion/activation notice.
 
+Acknowledging a notice does not clear an unfinished activation or human-action watch. Keep that
+watch visible at meaningful active checkpoints and re-entry until the action completes or Marco
+explicitly defers it.
+
 Wakeful may own timers and deduplicated delivery for these rules, but it owns neither status truth nor authority, and this contract creates no parallel work-management store.

@@ -78,6 +78,12 @@ review, not an automatic full restart or another reviewer. Cheap research and un
 continue; hold only a commitment that consumes an unresolved material choice or lacks authority.
 Review supplies evidence, never implementation, landing, activation or provider-effect authority.
 
+For an otherwise authorized scoped repository delivery, specifications and reviews constrain and
+evidence the work; the absence of a redundant per-specification merge sentence is not itself a
+hold. Required exact-candidate review, exact-head/composition qualification, and all applicable
+effect boundaries still control. After those gates, only a current explicit `HOLD` or `DENIED`
+stops an otherwise authorized landing path.
+
 ### Mandatory scope blocks
 
 Before Human Review, every material Design Specification records the intended repository
