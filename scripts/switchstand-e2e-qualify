@@ -101,6 +101,8 @@ def release_baseline(value, candidate):
     resolved = git("rev-parse", f"{value}^{{commit}}")
     if resolved != value:
         raise ValueError("release baseline did not resolve to the exact supplied commit")
+    if value == candidate:
+        raise ValueError("release baseline must precede the candidate")
     ancestor = subprocess.run(
         ["git", "-C", str(ROOT), "merge-base", "--is-ancestor", value, candidate],
         check=False,
@@ -108,6 +110,13 @@ def release_baseline(value, candidate):
     if ancestor.returncode != 0:
         raise ValueError("release baseline is not an ancestor of the candidate")
     return value
+
+
+def require_clean_candidate(candidate):
+    if git("rev-parse", "HEAD") != candidate:
+        raise ValueError("candidate HEAD changed during qualification")
+    if git("status", "--porcelain=v1", "--untracked-files=all"):
+        raise ValueError("candidate worktree is not clean")
 
 
 def migration_status(baseline, candidate):
@@ -178,6 +187,7 @@ def main():
     try:
         baseline = release_baseline(args.release_baseline, candidate)
         key = receipt_key(args.receipt_key)
+        require_clean_candidate(candidate)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     migration = migration_status(baseline, candidate)
@@ -219,6 +229,10 @@ def main():
             if not all(result[key] == "PASS" for key in ("S1", "S2", "S3")):
                 result["failure_reason"] = "one or more required scenarios did not pass"
     result["ended_at"] = now()
+    try:
+        require_clean_candidate(candidate)
+    except ValueError as error:
+        parser.error(str(error))
     verified, _ = publish(result, key)
     return 0 if accepted(verified) else 1
 

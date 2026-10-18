@@ -65,6 +65,35 @@ def test_migrations_are_compared_with_exact_release_baseline(tmp_path):
     assert namespace["migration_status"](baseline, candidate) == "HOLD"
 
 
+def test_release_baseline_must_strictly_precede_candidate():
+    namespace = subject()
+    candidate = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True, text=True,
+        capture_output=True,
+    ).stdout.strip()
+
+    with pytest.raises(ValueError, match="must precede"):
+        namespace["release_baseline"](candidate, candidate)
+
+
+def test_dirty_execution_tree_cannot_represent_candidate(tmp_path):
+    namespace = subject()
+    git(tmp_path, "init", "-q")
+    git(tmp_path, "config", "user.email", "test@example.com")
+    git(tmp_path, "config", "user.name", "Test")
+    tracked = tmp_path / "qualified.py"
+    tracked.write_text("EXPECTED = True\n")
+    git(tmp_path, "add", "qualified.py")
+    git(tmp_path, "commit", "-qm", "candidate")
+    candidate = git(tmp_path, "rev-parse", "HEAD")
+    namespace["require_clean_candidate"].__globals__["ROOT"] = tmp_path
+    namespace["require_clean_candidate"](candidate)
+
+    tracked.write_text("EXPECTED = False\n")
+    with pytest.raises(ValueError, match="not clean"):
+        namespace["require_clean_candidate"](candidate)
+
+
 def result():
     return {
         "run_id": "7b4ff19b-4332-4a04-8d47-188cc1d5e213",
