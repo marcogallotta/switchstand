@@ -15,12 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .agent_mailboxes import (
-    CODEX_COORDINATOR_NAME,
-    AgentMailbox,
-    AgentMailboxState,
-    agent_mailboxes,
-)
+from .agent_mailboxes import AgentMailbox, AgentMailboxState, agent_mailboxes
 from .canonical_relations import work_parents
 from .canonical_work import (
     CanonicalWorkRepository,
@@ -44,7 +39,7 @@ from .state import work_handles
 
 REVIEW_NAMESPACE = UUID("d966cd4f-9994-4f6f-99cc-6ccca873542d")
 REVIEW_PROTOCOL = "switchstand.review.v1"
-COORDINATOR_MAILBOX = CODEX_COORDINATOR_NAME
+COORDINATOR_MAILBOX = "Coordinator"
 ReviewKind = Literal["CODE", "DESIGN", "IMPLEMENTATION", "PROCESS", "OPERATIONS", "EVIDENCE"]
 ReviewMode = Literal["FULL", "FOCUSED"]
 ReviewVerdict = Literal["PASS", "FINDINGS", "BLOCKED"]

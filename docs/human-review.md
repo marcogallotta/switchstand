@@ -30,6 +30,8 @@ A useful Human Review states:
 
 - what changes in ordinary use;
 - what is genuinely new or changed;
+- for an identity or mailbox rename, every changed recipient, authority boundary, and routed
+  behavior in before/after terms;
 - material consequence, risk, limit, scale, size, cost, or support burden;
 - meaningful cut, deferral, or alternative;
 - the recommendation and decisive reason;
