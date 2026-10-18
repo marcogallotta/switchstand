@@ -39,8 +39,8 @@ def test_loads_policy_and_routes_every_kind_to_coordinator(tmp_path: Path) -> No
     assert loaded.policy.version == "policy-v1"
     assert loaded.guidelines.version == "guidelines-v1"
     assert loaded.guidelines.digest == "a" * 64
-    assert loaded.policy.reviewer_name("CODE") == "Codex Coordinator"
-    assert loaded.policy.reviewer_name("DESIGN") == "Codex Coordinator"
+    assert loaded.policy.reviewer_name("CODE") == "Coordinator"
+    assert loaded.policy.reviewer_name("DESIGN") == "Coordinator"
 
 
 def test_legacy_reviewer_mapping_is_optional(tmp_path: Path) -> None:
@@ -49,7 +49,7 @@ def test_legacy_reviewer_mapping_is_optional(tmp_path: Path) -> None:
     del value["reviewer_by_kind"]
     write(path, value)
 
-    assert load_review_config(path).policy.reviewer_name("CODE") == "Codex Coordinator"
+    assert load_review_config(path).policy.reviewer_name("CODE") == "Coordinator"
 
 
 def test_environment_path_is_literal_absolute_and_default_off(

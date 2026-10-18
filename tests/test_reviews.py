@@ -5,16 +5,11 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, insert, text, update
+from sqlalchemy import event, insert, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
-from switchstand.agent_mailboxes import (
-    CODEX_COORDINATOR_KEY,
-    CODEX_COORDINATOR_NAME,
-    AgentMailboxState,
-    agent_mailboxes,
-)
+from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -237,16 +232,7 @@ async def occurrence_runtime(database_prerequisite) -> AsyncGenerator[
 async def register_coordinator(
     mailboxes: AgentMailboxState, principal: str, session: str,
 ):
-    created = await mailboxes.register_agent("Fixture Coordinator", principal, session)
-    assert created.mailbox is not None
-    async with mailboxes.engine.begin() as connection:
-        await connection.execute(update(agent_mailboxes).where(
-            agent_mailboxes.c.endpoint_id == created.mailbox.endpoint_id,
-        ).values(
-            name_key=CODEX_COORDINATOR_KEY,
-            display_name=CODEX_COORDINATOR_NAME,
-        ))
-    return await mailboxes.by_name(CODEX_COORDINATOR_NAME)
+    return await mailboxes.register_agent("Coordinator", principal, session)
 
 
 async def test_occurrence_store_accepts_only_authenticated_direct_request(occurrence_runtime):
@@ -517,7 +503,7 @@ async def test_sent_request_replay_survives_reviewer_principal_transfer(occurren
     sent = await service.request(request, requester)
     assert sent.status == "SENT" and sent.delivery_id is not None
     transfer = await mailboxes.request_transfer(
-        CODEX_COORDINATOR_NAME, "principal-a", "chat-reviewer-shared",
+        "Coordinator", "principal-a", "chat-reviewer-shared",
     )
     assert transfer.status == "pending" and transfer.request_id is not None
     approved = await mailboxes.approve_transfer(transfer.request_id)
@@ -651,8 +637,8 @@ async def test_concurrent_review_recover_converges_on_one_generation_transition(
         agent_binding=reviewer,
     )
     assert received.status == "ok"
-    replacement = (await mailboxes.takeover_coordinator(
-        "principal-b", "chat-b-replacement",
+    replacement = (await mailboxes.takeover(
+        "Coordinator", "principal-b", "chat-b-replacement",
     )).mailbox
     assert replacement is not None and replacement.generation == 2
     services, engines, applications = _independent_services(
@@ -727,8 +713,8 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         agent_binding=reviewer,
     )
     assert received.status == "ok"
-    reviewer = (await mailboxes.takeover_coordinator(
-        "principal-b", "chat-b-replacement",
+    reviewer = (await mailboxes.takeover(
+        "Coordinator", "principal-b", "chat-b-replacement",
     )).mailbox
     assert reviewer is not None and reviewer.generation == 2
     async with engine.begin() as connection:
@@ -1016,8 +1002,8 @@ async def test_recovery_rejects_concluded_historical_delivery(occurrence_runtime
         review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
     assert submitted.status == "SUBMITTED"
-    replacement = (await mailboxes.takeover_coordinator(
-        "principal-b", "chat-b-replacement",
+    replacement = (await mailboxes.takeover(
+        "Coordinator", "principal-b", "chat-b-replacement",
     )).mailbox
     assert replacement is not None and replacement.generation == 2
     denied = await service.recover(sent.review_id, replacement)

@@ -355,6 +355,8 @@ messaging, and required continuation:
   append-only. Legacy V1 exact-revision rows remain readable but cannot authorize cross-revision
   baseline conformance.
   `reviews.py` owns durable review requests and outcomes.
+  Typed reviews route to the `Coordinator` mailbox. That reviewer endpoint is distinct from the
+  `Codex Coordinator` control mailbox and does not follow its `/root` rename or takeover lifecycle.
   Codex: reviews = a fresh native fork; never the `review_*` tools.
   Its default-off non-Codex path is
   `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;

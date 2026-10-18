@@ -182,15 +182,8 @@ async def pending_review(
         "Requester", "principal-requester", "chat-requester",
     )).mailbox
     reviewer = (await mailboxes.register_agent(
-        "Fixture Coordinator", "principal-reviewer", "chat-reviewer",
+        "Coordinator", "principal-reviewer", "chat-reviewer",
     )).mailbox
-    assert reviewer is not None
-    async with subject.engine.begin() as connection:
-        await connection.execute(text(
-            "UPDATE agent_mailboxes SET name_key = 'codex-coordinator', "
-            "display_name = 'Codex Coordinator' WHERE endpoint_id = :endpoint_id"
-        ), {"endpoint_id": reviewer.endpoint_id})
-    reviewer = (await mailboxes.by_name("Codex Coordinator")).mailbox
     assert requester is not None and reviewer is not None
     policy = ReviewPolicy(version="policy-v1")
     occurrences = ReviewOccurrenceState(subject.runtime.works, mailboxes, policy)
