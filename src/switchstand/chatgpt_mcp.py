@@ -302,6 +302,27 @@ def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     )
 
 
+def _takeover_message_confirms(
+    message: str | None, name: str, *, coordinator: bool,
+) -> bool:
+    normalized = "" if message is None else " ".join(message.casefold().split())
+    directives = tuple(re.finditer(r"\b(?:take\s+over|takeover)\b", normalized))
+    if len(directives) != 1 or re.search(
+        r"\b(?:no|not|never|dont|didnt|wasnt|werent|isnt|arent|havent|hasnt|hadnt|"
+        r"shouldnt|mustnt|cant|couldnt|wouldnt|wont)\b|\b\w+n['’]t\b",
+        normalized,
+    ):
+        return False
+    if coordinator:
+        target = r"(?:codex\s+coordinator|coordinator|/root)"
+    else:
+        target = re.escape(" ".join(name.strip().casefold().split())).replace(r"\ ", r"\s+")
+    return re.match(
+        rf"(?:take\s+over|takeover)\s+(?:as\s+)?{target}(?=$|[.!;:])",
+        normalized[directives[0].start():],
+    ) is not None
+
+
 def build_ordinary_tools(
     service: ChatGPTService,
     audit: Callable[[str, str | None, str], None] | None = None,
@@ -1279,17 +1300,9 @@ def build_ordinary_tools(
             }
         except ValueError:
             coordinator_request = False
-        takeover_message = "" if message is None else " ".join(message.casefold().split())
-        visible_name = " ".join(name.strip().casefold().split())
-        takeover_directive = re.search(r"\btake\s*over\b|\btakeover\b", takeover_message)
-        if coordinator_request:
-            target_confirmed = (
-                re.search(r"\b(?:codex\s+)?coordinator\b", takeover_message) is not None
-                or "/root" in takeover_message
-            )
-        else:
-            target_confirmed = visible_name in takeover_message
-        marco_confirmed = bool(takeover_directive and target_confirmed)
+        marco_confirmed = _takeover_message_confirms(
+            message, name, coordinator=coordinator_request,
+        )
 
         def confirmation_required() -> AgentRegistrationResult:
             return AgentRegistrationResult(
@@ -1312,15 +1325,10 @@ def build_ordinary_tools(
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
             if coordinator_request:
-                current = await mailboxes.by_name(name)
-                if current.status != "ok" or current.mailbox is None:
-                    stored = current
-                elif current.mailbox.principal_key != principal.key and not marco_confirmed:
-                    result = confirmation_required()
-                    audited("agent_takeover", name, result.status)
-                    return result
-                else:
-                    stored = await mailboxes.takeover_coordinator(principal.key, chat_session)
+                stored = await mailboxes.takeover_coordinator(
+                    principal.key, chat_session,
+                    allow_principal_change=marco_confirmed,
+                )
             elif marco_confirmed:
                 stored = await mailboxes.takeover(
                     name, principal.key, chat_session, allow_principal_change=True,

@@ -348,6 +348,33 @@ async def test_named_cross_principal_takeover_rejects_missing_marco_authorizatio
     )
 
 
+@pytest.mark.parametrize("message", [
+    "Take over Alpha, not Tests",
+    "Take over Testsuite",
+    "Do not take over Tests",
+    "No takeover Tests",
+    "Should you take over Tests?",
+    "Take over Alpha and take over Tests",
+    "Take over Tests and Alpha",
+    "Take over Tests, Alpha",
+])
+async def test_named_cross_principal_takeover_requires_one_exact_affirmative_directive(
+    agent_messaging, message,
+):
+    tools, actor, session, _owner, other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Tests")).status == "ok"
+    actor[0], session[0] = other, "replacement-chat"
+
+    result = await root_tools(service, session)["agent_takeover"](
+        "1", "Tests", message,
+    )
+
+    assert (result.status, result.reason) == (
+        "denied", "takeover_confirmation_required",
+    )
+    assert result.next_action is not None
+
+
 @pytest.mark.parametrize("takeover_message", [
     "Please takeover coordinator.",
     "Take over as coordinator.",
@@ -423,6 +450,64 @@ async def test_cross_principal_coordinator_takeover_requires_confirmation(agent_
     assert "Ask Marco" in result.next_action
 
 
+async def test_same_principal_coordinator_takeover_needs_no_confirmation(agent_messaging):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    await bind_root(tools, service)
+    session[0] = "replacement-chat"
+
+    result = await root_tools(service, session)["agent_takeover"](
+        "1", CODEX_COORDINATOR_NAME,
+    )
+
+    assert (result.status, result.name) == ("ok", CODEX_COORDINATOR_NAME)
+
+
+async def test_coordinator_takeover_rechecks_principal_after_forced_interleaving(
+    agent_messaging, monkeypatch,
+):
+    tools, _actor, session, owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    session[0] = "replacement-chat"
+    original = AgentMailboxState.takeover_coordinator
+    interleaved = False
+
+    async def owner_changes_before_locked_takeover(
+        self, principal_key, replacement_session, *, allow_principal_change=False,
+    ):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            moved = await original(
+                self, other.key, "interloper-chat", allow_principal_change=True,
+            )
+            assert moved.status == "ok"
+        return await original(
+            self, principal_key, replacement_session,
+            allow_principal_change=allow_principal_change,
+        )
+
+    monkeypatch.setattr(
+        AgentMailboxState, "takeover_coordinator", owner_changes_before_locked_takeover,
+    )
+    result = await root_tools(service, session)["agent_takeover"](
+        "1", CODEX_COORDINATOR_NAME,
+    )
+
+    assert interleaved
+    assert (result.status, result.reason) == (
+        "denied", "takeover_confirmation_required",
+    )
+    assert service.messages is not None
+    current = await AgentMailboxState(service.messages.engine).for_actor(
+        other.key, "interloper-chat",
+    )
+    assert current.status == "ok" and current.mailbox is not None
+    assert current.mailbox.name_key == CODEX_COORDINATOR_KEY
+    assert (await AgentMailboxState(service.messages.engine).for_actor(
+        owner.key, "replacement-chat",
+    )).reason == "agent_not_registered"
+
+
 @pytest.mark.parametrize(
     "message",
     ["move /root", "takeover root"],
@@ -482,12 +567,19 @@ async def test_root_takeover_ambiguous_result_does_not_overwrite_newer_owner(
     original = AgentMailboxState.takeover_coordinator
     calls = 0
 
-    async def ambiguous_then_newer(self, principal_key, replacement_session):
+    async def ambiguous_then_newer(
+        self, principal_key, replacement_session, *, allow_principal_change=False,
+    ):
         nonlocal calls
         calls += 1
-        stored = await original(self, principal_key, replacement_session)
+        stored = await original(
+            self, principal_key, replacement_session,
+            allow_principal_change=allow_principal_change,
+        )
         assert stored.status == "ok"
-        newer = await original(self, owner.key, "newer-chat")
+        newer = await original(
+            self, owner.key, "newer-chat", allow_principal_change=True,
+        )
         assert newer.status == "ok"
         return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
