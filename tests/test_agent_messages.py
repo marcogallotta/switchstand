@@ -9,7 +9,13 @@ from sqlalchemy import insert, select, text, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState, agent_mailboxes
+from switchstand.agent_mailboxes import (
+    CODEX_COORDINATOR_KEY,
+    CODEX_COORDINATOR_NAME,
+    AgentMailboxResult,
+    AgentMailboxState,
+    agent_mailboxes,
+)
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import ClosedModel
@@ -211,7 +217,7 @@ async def test_unregistered_send_and_pending_direct_actor_to_register(agent_mess
         assert result.next_action is not None
         assert "agent_register" in result.next_action
         assert "intended durable agent name" in result.next_action
-        assert "Do not infer /root" in result.next_action
+        assert "Do not infer Codex Coordinator" in result.next_action
 
     session[0] = "recipient-chat"
     missing = await tools["agent_message_send"](
@@ -257,11 +263,14 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     assert stale.next_action is None
 
 
-async def test_root_takeover_accepts_required_words_and_passcode_and_keeps_mail(
+async def test_coordinator_takeover_canonicalizes_root_and_keeps_mail(
     agent_messaging,
 ):
     tools, actor, session, _owner, other, service = agent_messaging
     await bind_root(tools, service)
+    assert service.messages is not None
+    before = await AgentMailboxState(service.messages.engine).by_name("/root")
+    assert before.mailbox is not None
     session[0] = "sender-chat"
     assert (await tools["agent_register"]("1", "Sender")).status == "ok"
     sent = await tools["agent_message_send"](
@@ -272,12 +281,40 @@ async def test_root_takeover_accepts_required_words_and_passcode_and_keeps_mail(
     actor[0], session[0] = other, "replacement-chat"
     configured = root_tools(service, session)
     moved = await configured["agent_takeover"](
-        "1", "/root", "Please TAKEOVER /root; passcode is FRANCE."
+        "1", CODEX_COORDINATOR_NAME, "Please takeover coordinator with FRANCE."
     )
 
-    assert (moved.status, moved.name) == ("ok", "/root")
+    assert (moved.status, moved.name) == ("ok", CODEX_COORDINATOR_NAME)
     pending = await configured["agent_message_pending"]("1")
     assert [item.delivery_id for item in pending.messages] == [sent.message.delivery_id]
+
+    canonical = await AgentMailboxState(service.messages.engine).by_name(
+        CODEX_COORDINATOR_NAME
+    )
+    legacy_alias = await AgentMailboxState(service.messages.engine).by_name("/root")
+    assert canonical == legacy_alias
+    assert canonical.mailbox is not None
+    assert canonical.mailbox.endpoint_id == before.mailbox.endpoint_id
+    assert canonical.mailbox.generation == before.mailbox.generation + 1
+    assert canonical.mailbox.name_key == CODEX_COORDINATOR_KEY
+
+
+async def test_legacy_root_sender_routes_to_canonical_coordinator(agent_messaging):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await bind_root(tools, service)
+    actor[0], session[0] = other, "replacement-chat"
+    configured = root_tools(service, session)
+    assert (await configured["agent_takeover"](
+        "1", "/root", "takeover /root with france"
+    )).name == CODEX_COORDINATOR_NAME
+
+    session[0] = "sender-chat"
+    assert (await configured["agent_register"]("1", "Sender")).status == "ok"
+    sent = await configured["agent_message_send"](
+        "1", "/root", uuid4(), {"request": "legacy route"}
+    )
+    assert sent.status == "ok" and sent.message is not None
+    assert sent.message.recipient_name == CODEX_COORDINATOR_NAME
 
 
 async def test_root_takeover_rejects_wrong_passcode(agent_messaging):
@@ -286,7 +323,7 @@ async def test_root_takeover_rejects_wrong_passcode(agent_messaging):
     actor[0], session[0] = other, "replacement-chat"
 
     result = await root_tools(service, session)["agent_takeover"](
-        "1", "/root", "takeover /root; passcode is spain"
+        "1", CODEX_COORDINATOR_NAME, "takeover coordinator; passcode is spain"
     )
 
     assert (result.status, result.reason) == ("denied", "ask_marco_for_passcode")
@@ -350,7 +387,7 @@ async def test_root_takeover_ambiguous_result_does_not_overwrite_newer_owner(
     await bind_root(tools, service)
     actor[0], session[0] = other, "replacement-chat"
     configured = root_tools(service, session)
-    original = AgentMailboxState.takeover_root
+    original = AgentMailboxState.takeover_coordinator
     calls = 0
 
     async def ambiguous_then_newer(self, principal_key, replacement_session):
@@ -362,7 +399,7 @@ async def test_root_takeover_ambiguous_result_does_not_overwrite_newer_owner(
         assert newer.status == "ok"
         return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
 
-    monkeypatch.setattr(AgentMailboxState, "takeover_root", ambiguous_then_newer)
+    monkeypatch.setattr(AgentMailboxState, "takeover_coordinator", ambiguous_then_newer)
 
     result = await configured["agent_takeover"](
         "1", "/root", "takeover /root with france"
@@ -375,7 +412,7 @@ async def test_root_takeover_ambiguous_result_does_not_overwrite_newer_owner(
         owner.key, "newer-chat"
     )
     assert observed.status == "ok" and observed.mailbox is not None
-    assert observed.mailbox.name_key == "root"
+    assert observed.mailbox.name_key == CODEX_COORDINATOR_KEY
 
 
 async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(

@@ -68,6 +68,12 @@ def test_substantive_create_requires_complete_action_or_wait(
     validate_create_state(parented=True, work_type="Task", **values)
 
 
+def test_codex_coordinator_is_a_derived_owner() -> None:
+    validate_create_state(
+        parented=True, work_type="Task", **state(owner_key="Codex Coordinator")
+    )
+
+
 def test_ownerless_create_is_only_evidence_or_fixed_triage_report() -> None:
     values = state(
         owner_key="NONE", next_action_class="NONE", next_action_ref="NONE",
