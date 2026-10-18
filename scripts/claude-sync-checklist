@@ -4,9 +4,11 @@
 The unified pass does these steps in order:
 1. list every open PRIORITIES.md/JOBS.md item with its age;
 2. flag an item older than four hours when no matching Codex job is live;
-3. flag stale PRIORITIES.md, duplicate JOBS.md rows, dead declared jobs, and
+3. count heavy and total live jobs, flag missing class markers and counts over
+   four heavy or six total;
+4. flag stale PRIORITIES.md, duplicate JOBS.md rows, dead declared jobs, and
    live jobs missing from JOBS.md;
-4. atomically persist one SYNC-ALERT.md for SessionStart and Stop hooks.
+5. atomically persist one SYNC-ALERT.md for SessionStart and Stop hooks.
 The five-minute --mailbox-due pass persists an alert for bound Claude to read
 and acknowledge because systemd has no mailbox session.
 """
@@ -26,6 +28,8 @@ from zoneinfo import ZoneInfo
 
 STALE_ITEM_SECONDS = 4 * 60 * 60
 STALE_PRIORITIES_SECONDS = 20 * 60
+MAX_HEAVY_JOBS = 4
+MAX_TOTAL_JOBS = 6
 TERMINAL = {"DONE", "STOPPED", "FAILED", "SUPERSEDED"}
 OPEN_REMAINDERS = ("not deployed", "not activated", "not checked", "unverified")
 WAITING_MARCO = re.compile(r"\bWAITING[- ]MARCO\b", re.IGNORECASE)
@@ -53,14 +57,19 @@ def normalized(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
 
 
-def live_name(unit: str) -> str | None:
-    match = re.fullmatch(r"ss-codex-(.+?)(?:-\d{6})?\.scope", unit.strip())
-    return normalized(match.group(1)) if match else None
+def live_job(unit: str) -> tuple[str, str, str | None] | None:
+    value = unit.strip()
+    match = re.fullmatch(
+        r"ss-codex-(?:(heavy|light)-)?(.+?)(?:-\d{6})?\.scope", value
+    )
+    return (value, normalized(match.group(2)), match.group(1)) if match else None
 
 
-def read_live_units(supplied: list[str] | None) -> tuple[set[str], str | None]:
+def read_live_units(
+    supplied: list[str] | None,
+) -> tuple[list[tuple[str, str, str | None]], str | None]:
     if supplied is not None:
-        return {name for unit in supplied if (name := live_name(unit))}, None
+        return [job for unit in supplied if (job := live_job(unit))], None
     result = subprocess.run(
         [
             "systemctl",
@@ -78,9 +87,9 @@ def read_live_units(supplied: list[str] | None) -> tuple[set[str], str | None]:
     )
     if result.returncode:
         detail = result.stderr.strip() or f"systemctl exited {result.returncode}"
-        return set(), detail
+        return [], detail
     units = [line.split()[0] for line in result.stdout.splitlines() if line.split()]
-    return {name for unit in units if (name := live_name(unit))}, None
+    return [job for unit in units if (job := live_job(unit))], None
 
 
 def parse_job_rows(path: Path) -> list[dict[str, str | int]]:
@@ -169,7 +178,8 @@ def waiting_key(name: str, waiting: dict[str, tuple[str, bool]]) -> str:
 
 def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
     module = load_plan(args.plan_script)
-    live, live_error = read_live_units(args.live_unit)
+    live_jobs, live_error = read_live_units(args.live_unit)
+    live = {name for _, name, _ in live_jobs}
     blockers: list[str] = []
     info: list[str] = []
     item_lines: list[str] = []
@@ -183,6 +193,22 @@ def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
         )
     if live_error:
         blockers.append(f"LIVE_JOBS_UNKNOWN: {live_error}")
+    else:
+        unclassified = [unit for unit, _, job_class in live_jobs if job_class is None]
+        heavy_jobs = sum(job_class == "heavy" for _, _, job_class in live_jobs)
+        total_jobs = len(live_jobs)
+        for unit in unclassified:
+            blockers.append(
+                f"JOB_CLASS_UNKNOWN: {unit} must identify heavy or light after ss-codex-"
+            )
+        if heavy_jobs > MAX_HEAVY_JOBS:
+            blockers.append(
+                f"HEAVY_CAPACITY_EXCEEDED: {heavy_jobs} running; max {MAX_HEAVY_JOBS}"
+            )
+        if total_jobs > MAX_TOTAL_JOBS:
+            blockers.append(
+                f"TOTAL_CAPACITY_EXCEEDED: {total_jobs} running; max {MAX_TOTAL_JOBS}"
+            )
 
     priority_items = module.priorities_items(args.priorities, now)
     pickup_names = pickup_item_names(args.priorities)
@@ -257,7 +283,20 @@ def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
     report.extend(f"- {finding}" for finding in [*blockers, *info])
     if not blockers and not info:
         report.append("- none")
-    report.extend(["", "## Every open item", *(item_lines or ["- none"])])
+    report.extend(
+        [
+            "",
+            "## Capacity",
+            (
+                "- UNKNOWN"
+                if live_error
+                else f"- heavy {heavy_jobs}/{MAX_HEAVY_JOBS} | total {total_jobs}/{MAX_TOTAL_JOBS}"
+            ),
+            "",
+            "## Every open item",
+            *(item_lines or ["- none"]),
+        ]
+    )
     text = "\n".join(report) + "\n"
     alert = [f"# SYNC ALERT — {now:%Y-%m-%d %H:%M %Z}"]
     if blockers:

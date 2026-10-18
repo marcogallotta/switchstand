@@ -59,9 +59,9 @@ references
 | unfinished | t | wt | DONE 10-17 | not deployed |
 """,
         "--live-unit",
-        "ss-codex-live-123456.scope",
+        "ss-codex-heavy-live-123456.scope",
         "--live-unit",
-        "ss-codex-orphan-123456.scope",
+        "ss-codex-light-orphan-123456.scope",
     )
     alert = (state / "SYNC-ALERT.md").read_text()
     assert result.returncode == 0 and "## Every open item" in result.stdout
@@ -144,3 +144,49 @@ def test_waiting_marco_without_pick_up_blocks(tmp_path: Path) -> None:
     assert alert.count("WAITING_MARCO:") == 1
     assert "WAITING_MARCO_NO_PICK_UP:" in alert
     assert '"decision": "block"' in reminder(tmp_path / "home", alert).stdout
+
+
+def test_capacity_counts_classified_units_and_flags_only_excess(tmp_path: Path) -> None:
+    priorities = "# PRIORITIES\n## DONE\nclosed\n## FILES\nreferences\n"
+    jobs = "Stages: RUNNING -> DONE\n"
+    units = [
+        *(f"ss-codex-heavy-h{number}-123456.scope" for number in range(1, 6)),
+        *(f"ss-codex-light-l{number}-123456.scope" for number in range(1, 3)),
+    ]
+    result, state = run(
+        tmp_path,
+        priorities,
+        jobs,
+        *(argument for unit in units for argument in ("--live-unit", unit)),
+    )
+    alert = (state / "SYNC-ALERT.md").read_text()
+    assert "- heavy 5/4 | total 7/6" in result.stdout
+    assert "HEAVY_CAPACITY_EXCEEDED: 5 running; max 4" in alert
+    assert "TOTAL_CAPACITY_EXCEEDED: 7 running; max 6" in alert
+
+    result, state = run(
+        tmp_path,
+        priorities,
+        jobs,
+        *(argument for unit in units[:4] + units[5:] for argument in ("--live-unit", unit)),
+    )
+    assert "- heavy 4/4 | total 6/6" in result.stdout
+    alert = (state / "SYNC-ALERT.md").read_text()
+    assert "HEAVY_CAPACITY_EXCEEDED" not in alert
+    assert "TOTAL_CAPACITY_EXCEEDED" not in alert
+
+
+def test_unclassified_live_unit_is_a_blocking_identity_error(tmp_path: Path) -> None:
+    priorities = "# PRIORITIES\n## DONE\nclosed\n## FILES\nreferences\n"
+    result, state = run(
+        tmp_path,
+        priorities,
+        "Stages: RUNNING -> DONE\n",
+        "--live-unit",
+        "ss-codex-mailbox-123456.scope",
+    )
+    assert "- heavy 0/4 | total 1/6" in result.stdout
+    assert (
+        "JOB_CLASS_UNKNOWN: ss-codex-mailbox-123456.scope must identify heavy or light"
+        in (state / "SYNC-ALERT.md").read_text()
+    )
