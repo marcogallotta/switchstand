@@ -113,6 +113,20 @@ async def test_takeover_is_same_owner_atomic_and_fences_old_chat(endpoints):
     assert replay.status == "ok" and replay.mailbox == current
 
 
+async def test_authorized_takeover_rebinds_principal_and_fences_old_chat(endpoints):
+    created = await endpoints.register_agent("Lifecycle", "old-owner", "old-chat")
+
+    taken = await endpoints.takeover(
+        "Lifecycle", "new-owner", "new-chat", allow_principal_change=True,
+    )
+
+    assert taken.status == "ok" and taken.mailbox is not None
+    assert taken.mailbox.endpoint_id == created.mailbox.endpoint_id
+    assert taken.mailbox.generation == created.mailbox.generation + 1
+    assert (await endpoints.for_actor("old-owner", "old-chat")).reason == "agent_not_registered"
+    assert (await endpoints.for_actor("new-owner", "new-chat")).mailbox == taken.mailbox
+
+
 async def test_cross_principal_transfer_requires_exact_host_approval(endpoints):
     created = await endpoints.register_agent("Coordinator", "old-owner", "old-chat")
     requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")

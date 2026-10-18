@@ -1254,7 +1254,7 @@ def build_ordinary_tools(
         name: Annotated[str, Field(min_length=1, max_length=80)],
         message: Annotated[str | None, Field(max_length=4096)] = None,
     ) -> AgentRegistrationResult:
-        """Take over an agent. For Coordinator, pass Marco's full current takeover message."""
+        """Take over an agent; pass Marco's full message for a cross-principal takeover."""
         del api_version
         try:
             principal = await service.principal()
@@ -1284,6 +1284,13 @@ def build_ordinary_tools(
             )
             and configured_passcode in coordinator_message
         )
+        named_takeover_authorized = (
+            not coordinator_request
+            and bool(configured_passcode)
+            and configured_passcode in coordinator_message
+            and re.search(r"\btake\s*over\b", coordinator_message) is not None
+            and " ".join(name.strip().casefold().split()) in coordinator_message
+        )
         if coordinator_request and not coordinator_authorized:
             result = AgentRegistrationResult(
                 status="denied", reason="ask_marco_for_passcode"
@@ -1297,11 +1304,14 @@ def build_ordinary_tools(
         elif mailboxes is None:
             result = AgentRegistrationResult(status="recovery_required", reason="state_unavailable")
         else:
-            stored = (
-                await mailboxes.takeover_coordinator(principal.key, chat_session)
-                if coordinator_request
-                else await mailboxes.takeover(name, principal.key, chat_session)
-            )
+            if coordinator_request:
+                stored = await mailboxes.takeover_coordinator(principal.key, chat_session)
+            elif named_takeover_authorized:
+                stored = await mailboxes.takeover(
+                    name, principal.key, chat_session, allow_principal_change=True,
+                )
+            else:
+                stored = await mailboxes.takeover(name, principal.key, chat_session)
             if stored.status == "recovery_required" and stored.reason == "state_unavailable":
                 if coordinator_request:
                     # A newer authorized Coordinator takeover may have committed after the
@@ -1314,9 +1324,14 @@ def build_ordinary_tools(
                     ):
                         stored = observed
                 else:
-                    # Same-principal takeover is replay-safe for this exact replacement
-                    # session. Retry unchanged, then require authoritative readback.
-                    stored = await mailboxes.takeover(name, principal.key, chat_session)
+                    # A takeover is replay-safe for this exact authorized replacement
+                    # binding. Retry unchanged, then require authoritative readback.
+                    if named_takeover_authorized:
+                        stored = await mailboxes.takeover(
+                            name, principal.key, chat_session, allow_principal_change=True,
+                        )
+                    else:
+                        stored = await mailboxes.takeover(name, principal.key, chat_session)
                     if stored.status == "ok" and stored.mailbox is not None:
                         observed = await mailboxes.for_actor(principal.key, chat_session)
                         if observed.status != "ok" or observed.mailbox != stored.mailbox:
