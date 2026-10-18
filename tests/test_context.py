@@ -968,7 +968,10 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     ):
         denied = hook(primary, command, environment, coordinator_primary=primary)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-        assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+        reason = denied["hookSpecificOutput"]["permissionDecisionReason"]
+        assert "primary-checkout" in reason
+        assert "git -C <linked-writer>" in reason
+        assert "hook cwd is the session cwd" in reason
 
     unknown = tmp_path / "not-a-repository"
     unknown.mkdir()
