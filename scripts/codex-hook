@@ -19,6 +19,11 @@ MUTATIONS = {
     "reset", "restore", "revert", "rm", "stage", "submodule", "switch", "tag",
     "unstage", "update-index", "update-ref",
 }
+PRIMARY_SOURCE_MUTATIONS = {
+    "add", "am", "apply", "checkout", "cherry-pick", "clean", "commit", "merge",
+    "mv", "pull", "rebase", "reset", "restore", "revert", "rm", "stage",
+    "submodule", "switch", "unstage", "update-index",
+}
 SHELLS = {"bash", "dash", "sh", "zsh"}
 
 
@@ -64,6 +69,9 @@ def git_parts(tokens: list[str], cwd: str) -> tuple[list[str], str, list[str], s
             if value.startswith("alias.") and "=" in value:
                 name, expansion = value.split("=", 1)
                 aliases[name.removeprefix("alias.")] = expansion
+            pos += 2
+        elif token in {"--git-dir", "--work-tree"} and pos + 1 < len(tokens):
+            prefix += [token, tokens[pos + 1]]
             pos += 2
         elif token.startswith("-"):
             prefix.append(token)
@@ -175,12 +183,43 @@ def checkout_identity(prefix: list[str], cwd: str) -> tuple[str, str, str] | Non
     return os.path.realpath(lines[0]), os.path.realpath(lines[1]), os.path.realpath(lines[2])
 
 
-def primary_checkout(prefix: list[str], cwd: str) -> str | None:
+def primary_mutation_reason(
+    prefix: list[str], cwd: str, subcommand: str, coordinator_primary: str | None,
+    advisories: list[str],
+) -> str | None:
     identity = checkout_identity(prefix, cwd)
     if identity is None:
+        if coordinator_primary is not None:
+            advisories.append(
+                f"[primary-checkout] Git guard could not establish the target for {cwd}; "
+                "continuing without blocking."
+            )
         return None
     root, git_dir, common = identity
-    return root if git_dir == common else None
+    if git_dir == common and (coordinator_primary is None
+            or root == os.path.realpath(coordinator_primary)):
+        return (f"[primary-checkout] git {subcommand} is denied in {root}; "
+                "use a linked writer worktree.")
+    return None
+
+
+def proven_primary_source_mutation(subcommand: str, args: list[str]) -> bool:
+    """Return true only for command forms known to change source or its index."""
+    if "--help" in args or "-h" in args or "--dry-run" in args:
+        return False
+    if subcommand in {"add", "clean", "rm", "stage"} and any(
+        token.startswith("-") and not token.startswith("--") and "n" in token[1:]
+        for token in args
+    ):
+        return False
+    if subcommand == "apply" and "--check" in args:
+        return False
+    if subcommand == "submodule":
+        action = next((arg for arg in args if not arg.startswith("-")), "status")
+        return action in {
+            "add", "deinit", "set-branch", "set-url", "update",
+        }
+    return subcommand in PRIMARY_SOURCE_MUTATIONS
 
 
 def severe(tokens: list[str], cwd: str) -> str | None:
@@ -224,13 +263,15 @@ def classify(
     cwd: str,
     coordinator_primary: str | None = None,
     coordinator_writer: str | None = None,
+    advisories: list[str] | None = None,
 ) -> str | None:
+    advisories = advisories if advisories is not None else []
     current = cwd
     for tokens in segments(command):
         unwrapped, wrapped_cwd = unwrap_env(tokens, current)
         if unwrapped != tokens or wrapped_cwd != current:
             if reason := classify(shlex.join(unwrapped), wrapped_cwd,
-                                  coordinator_primary, coordinator_writer):
+                                  coordinator_primary, coordinator_writer, advisories):
                 return reason
             continue
         if tokens and Path(tokens[0]).name in SHELLS:
@@ -239,13 +280,15 @@ def classify(
             if positions:
                 nested = classify(
                     tokens[positions[0] + 1], current, coordinator_primary,
-                    coordinator_writer,
+                    coordinator_writer, advisories,
                 )
                 if nested:
                     return nested
         alias = inline_alias(tokens)
         if alias:
-            nested = classify(alias, current, coordinator_primary, coordinator_writer)
+            nested = classify(
+                alias, current, coordinator_primary, coordinator_writer, advisories
+            )
             if nested:
                 return nested
         if coordinator_primary is None:
@@ -253,11 +296,10 @@ def classify(
             if danger:
                 return f"[destructive-command] {danger} is forbidden."
         if tokens and Path(tokens[0]).name == "git-commit":
-            identity = checkout_identity([], current)
-            root = identity[0] if identity else None
-            if root and (coordinator_primary is None or root == coordinator_primary):
-                return (f"[primary-checkout] git git-commit is denied in {root}; "
-                        "use a linked writer worktree.")
+            if reason := primary_mutation_reason(
+                [], current, "git-commit", coordinator_primary, advisories
+            ):
+                return reason
         git = git_parts(tokens, current)
         if git:
             prefix, subcommand, args, command_cwd = git
@@ -300,16 +342,24 @@ def classify(
             reflog_write = subcommand == "reflog" and args[:1] in (
                 ["delete"], ["drop"], ["expire"], ["write"],
             )
-            if ((subcommand in MUTATIONS and not tag_read and not stash_read)
-                    or branch_write or worktree_write or config_write or remote_write
-                    or notes_write or reflog_write):
-                root = primary_checkout(prefix, command_cwd)
-                if root and (coordinator_primary is None
-                        or os.path.realpath(root) == coordinator_primary):
-                    return (f"[primary-checkout] git {subcommand} is denied in {root}; "
-                            "use a linked writer worktree.")
-        if tokens[:1] == ["cd"] and len(tokens) == 2:
-            current = os.path.realpath(os.path.join(current, tokens[1]))
+            mutation = ((subcommand in MUTATIONS and not tag_read and not stash_read)
+                        or branch_write or worktree_write or config_write or remote_write
+                        or notes_write or reflog_write)
+            if coordinator_primary is not None:
+                mutation = proven_primary_source_mutation(subcommand, args) or (
+                    subcommand == "stash" and not stash_read
+                )
+            if mutation:
+                if reason := primary_mutation_reason(
+                    prefix, command_cwd, subcommand, coordinator_primary, advisories
+                ):
+                    return reason
+        if tokens[:1] == ["cd"]:
+            cd_args = tokens[1:]
+            if cd_args[:1] == ["--"]:
+                cd_args = cd_args[1:]
+            if len(cd_args) == 1:
+                current = os.path.realpath(os.path.join(current, cd_args[0]))
     return None
 
 
@@ -498,8 +548,8 @@ def main() -> int:
         return run()
     except Exception as error:
         if len(sys.argv) in {3, 5, 7} and sys.argv[1] == "--coordinator-primary":
-            print(json.dumps(deny(f"[primary-checkout] guard failed closed: {error}",
-                                  "PreToolUse")))
+            print(json.dumps({"systemMessage":
+                              f"Switchstand primary Git guard failed open: {error}"}))
             return 0
         raise
 
@@ -567,13 +617,16 @@ def run() -> int:
         if len(parts) >= 3 and parts[1] == "memory":
             print(json.dumps(deny(f"[memory-write] blocked: auto-memory is not allowed ({target}).", event)))
             return 0
+    advisories: list[str] = []
     if tool in EDIT_TOOLS and coordinator_primary is not None:
         reason = classify_edit(tool_input, cwd, coordinator_primary, coordinator_writer)
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
         try:
-            reason = classify(command, cwd, coordinator_primary, coordinator_writer)
+            reason = classify(
+                command, cwd, coordinator_primary, coordinator_writer, advisories
+            )
         except ValueError as error:
             reason = f"[shell-parse] malformed shell command is denied: {error}"
     elif tool == "apply_patch" and coordinator_primary is not None:
@@ -582,6 +635,8 @@ def run() -> int:
         return 0
     if reason:
         print(json.dumps(deny(reason, event)))
+    elif advisories:
+        print(json.dumps({"systemMessage": advisories[0]}))
     return 0
 
 

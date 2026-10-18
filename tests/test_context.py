@@ -120,6 +120,20 @@ def hook(
     return json.loads(result.stdout) if result.stdout else {}
 
 
+def test_project_guard_activates_only_for_bash() -> None:
+    config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
+    hooks = config["hooks"]["PreToolUse"]
+    assert len(hooks) == 1
+    assert hooks[0]["matcher"] == "^Bash$"
+    command_hooks = hooks[0]["hooks"]
+    assert len(command_hooks) == 1
+    assert command_hooks[0]["type"] == "command"
+    assert command_hooks[0]["command"].endswith(
+        'scripts/codex-hook" --coordinator-primary '
+        '"$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"'
+    )
+
+
 def test_delegated_worker_is_read_only_across_hostile_shell_and_edit_forms(
     tmp_path: Path,
 ) -> None:
@@ -914,20 +928,25 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
     git(primary, "commit", "-m", "base")
     writer = tmp_path / "writer"
     git(primary, "worktree", "add", "-b", "writer", str(writer))
-    environment = dict(os.environ)
+    environment = os.environ | {"XDG_STATE_HOME": str(tmp_path / "state")}
 
     upstream = "git branch --set-upstream-to=origin/writer"
     assert hook(primary, upstream, environment, coordinator_primary=primary,
                 tool_workdir=writer) == {}
-    denied = hook(primary, upstream, environment, coordinator_primary=primary,
-                  tool_workdir=primary)
-    assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert hook(primary, upstream, environment, coordinator_primary=primary,
+                tool_workdir=primary) == {}
 
     for command in (
         "git status --short", "git config --get user.name", "git remote -v", "git notes",
         "git tag", "git tag --list", "git tag -l", "git fetch",
+        "git submodule status", "git submodule init", "git submodule sync",
+        "git submodule absorbgitdirs", "git add --dry-run .", "git clean -nd",
+        "git commit --dry-run", "git apply --check patch.diff", "git rm -n tracked.txt",
         "git branch -r --contains HEAD", "git branch -a --merged HEAD",
+        "git branch topic", "git branch -r -d origin/topic",
+        "git config user.name Changed", "git remote set-url origin nowhere",
+        "git config --unset user.name", "git maintenance run",
+        "git notes add -m note HEAD", "git tag release", "git push",
         f"git worktree add --detach {tmp_path / 'next'}",
         f"git -C {writer} reset --hard HEAD", "rm -rf build", "git push --force scratch",
     ):
@@ -935,15 +954,21 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
 
     for command in (
         "git add tracked.txt", "git reset --hard HEAD", "git clean -fd",
-        "git branch topic", "git branch -r -d origin/topic", "git branch -r --del origin/topic",
-        "git branch -a -M main",
-        "git config user.name Changed", "git remote set-url origin nowhere",
-        "git config --unset user.name", "git maintenance run", "git notes add -m note HEAD",
-        "git tag release", "git tag -a release -m release",
+        "git checkout -- tracked.txt", "git stash push",
+        f"git --git-dir {primary / '.git'} --work-tree {primary} add tracked.txt",
     ):
         denied = hook(primary, command, environment, coordinator_primary=primary)
         assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
         assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+    unknown = tmp_path / "not-a-repository"
+    unknown.mkdir()
+    (unknown / ".git").write_text("identity unavailable\n")
+    advisory = hook(primary, "git add tracked.txt", environment,
+                    coordinator_primary=primary, tool_workdir=unknown)
+    assert "hookSpecificOutput" not in advisory
+    assert "could not establish the target" in advisory["systemMessage"]
+
     foreign = tmp_path / "foreign"
     git(primary, "worktree", "add", "-b", "foreign", str(foreign))
     assert hook(writer, "git add tracked.txt", environment, coordinator_primary=primary, coordinator_writer=writer) == {}
@@ -951,6 +976,7 @@ def test_coordinator_hook_blocks_only_primary_git_mutations(tmp_path):
         (primary, f"env -C{foreign} git commit -m foreign"),
         (primary, f"env -vS'-C{foreign}' git commit -m foreign"),
         (primary, f"env -S '--chdir={foreign}' git commit -m foreign"),
+        (primary, f"cd -- {foreign} && git add tracked.txt"),
     ):
         assert hook(repo, command, environment, coordinator_primary=primary,
                     coordinator_writer=writer) == {}
@@ -1080,7 +1106,8 @@ def test_coordinator_hook_denies_claude_edit_tools_in_primary_except_friction(tm
         [str(Path(__file__).parents[1] / "scripts/codex-hook"),
          "--coordinator-primary", str(primary)],
         input="not json", text=True, capture_output=True, check=True, env=environment)
-    assert "guard failed closed" in broken.stdout
+    assert "guard failed open" in broken.stdout
+    assert "permissionDecision" not in broken.stdout
 
 
 def test_hook_denies_edit_tools_writing_claude_auto_memory(tmp_path):
