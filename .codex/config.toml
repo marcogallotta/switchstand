@@ -14,6 +14,13 @@ type = "command"
 command = '"$(git rev-parse --show-toplevel)/scripts/codex-hook" --coordinator-primary "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"'
 timeout = 10
 
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = '"$(git rev-parse --show-toplevel)/scripts/codex-stop-mailbox"'
+timeout = 5
+
 [permissions.switchstand-development]
 description = "Bounded local development for the active Switchstand work."
 extends = ":workspace"

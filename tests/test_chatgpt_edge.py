@@ -15,6 +15,7 @@ from starlette.testclient import TestClient
 from switchstand import chatgpt_edge
 from switchstand.activation_continuity import ActivationContract, TransitionIntent
 from switchstand.chatgpt_edge import (
+    CODEX_STOP_MAILBOX_PATH,
     REQUIRED_SCOPE,
     MCPAuthConfig,
     ReviewEdgeConfig,
@@ -179,6 +180,22 @@ def test_http_boundary_challenges_and_publishes_resource_and_pkce():
         authorization = client.get("/.well-known/oauth-authorization-server").json()
         assert authorization["issuer"] == ISSUER
         assert authorization["code_challenge_methods_supported"] == ["S256"]
+
+
+def test_codex_stop_mailbox_adapter_is_read_only_and_malformed_input_is_closed():
+    app = create_app(service(), CONFIG, client_storage=MemoryStore())
+    with TestClient(app) as client:
+        malformed = client.post(CODEX_STOP_MAILBOX_PATH, json={})
+        unavailable = client.post(CODEX_STOP_MAILBOX_PATH, json={"session_id": "thread"})
+
+    assert malformed.status_code == 400
+    assert malformed.json() == {
+        "status": "recovery_required", "reason": "malformed_request",
+    }
+    assert unavailable.status_code == 200
+    assert unavailable.json() == {
+        "status": "recovery_required", "reason": "state_unavailable",
+    }
 
 
 def test_certification_runtime_readback_is_explicit_and_exact():
