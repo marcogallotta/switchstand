@@ -214,8 +214,7 @@ def proven_primary_source_mutation(subcommand: str, args: list[str]) -> bool:
     if subcommand == "submodule":
         action = next((arg for arg in args if not arg.startswith("-")), "status")
         return action in {
-            "absorbgitdirs", "add", "deinit", "init", "set-branch", "set-url",
-            "sync", "update",
+            "add", "deinit", "set-branch", "set-url", "update",
         }
     return subcommand in PRIMARY_SOURCE_MUTATIONS
 
