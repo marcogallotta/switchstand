@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from fastmcp import FastMCP
@@ -46,7 +46,7 @@ from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
 from .implementation_requests import ImplementationRequestState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
-from .messages import MessageState
+from .messages import MessagePendingRequest, MessageState
 from .oauth_continuity import (
     FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
     SwitchstandGitHubProvider,
@@ -84,6 +84,7 @@ from .work_hygiene import WorkHygieneState
 
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
+CODEX_STOP_MAILBOX_PATH = "/internal/codex-stop-mailbox"
 GRACEFUL_SHUTDOWN_SECONDS = 30
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 STATEFUL_MIGRATION_REVISION = "0026_agent_message_ack"
@@ -302,6 +303,35 @@ def _runtime_identity() -> str:
         request_context.meta or {},
         client_id=None if token is None else token.client_id,
     )
+
+
+async def _codex_stop_mailbox_page(
+    service: ChatGPTService, session_id: str, cursor: UUID | None,
+) -> dict[str, object]:
+    """Read one current mailbox page for a local stock-Codex Stop hook."""
+    if service.messages is None:
+        return {"status": "recovery_required", "reason": "state_unavailable"}
+    binding_result = await AgentMailboxState(service.messages.engine).for_session(
+        f"codex:{session_id}"
+    )
+    if binding_result.status != "ok" or binding_result.mailbox is None:
+        return {"status": binding_result.status, "reason": binding_result.reason}
+    binding = binding_result.mailbox
+    result = await service.messages.pending_admitted(
+        binding.endpoint_id,
+        MessagePendingRequest(
+            api_version="1", grant_version=binding.generation, cursor=cursor, limit=10,
+        ),
+        agent_binding=binding,
+    )
+    if result.status != "ok":
+        return {"status": result.status, "reason": result.reason}
+    return {
+        "status": "ok",
+        "delivery_ids": [str(message.delivery_id) for message in result.messages],
+        "has_more": result.has_more,
+        "next_cursor": None if result.next_cursor is None else str(result.next_cursor),
+    }
 
 
 async def _activation_runtime(
@@ -550,6 +580,32 @@ def _create_resource_app(
     ))
     for name, tool in ordinary_tools:
         server.tool(tool, annotations=ordinary_tool_annotations(name))
+
+    @server.custom_route(CODEX_STOP_MAILBOX_PATH, methods=["POST"], include_in_schema=False)
+    async def _codex_stop_mailbox(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+    ) -> JSONResponse:
+        """Local-only read adapter; the public host does not route this path."""
+        try:
+            raw_payload: object = await request.json()
+            if not isinstance(raw_payload, dict):
+                raise TypeError("invalid request object")
+            payload = cast(dict[str, object], raw_payload)
+            if set(payload) - {"session_id", "cursor"}:
+                raise ValueError("invalid request object")
+            session_id = payload.get("session_id")
+            cursor_value = payload.get("cursor")
+            if not isinstance(session_id, str) or not session_id:
+                raise ValueError("invalid session_id")
+            if cursor_value is not None and not isinstance(cursor_value, str):
+                raise ValueError("invalid cursor")
+            cursor = None if cursor_value is None else UUID(cursor_value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return JSONResponse(
+                {"status": "recovery_required", "reason": "malformed_request"},
+                status_code=400,
+            )
+        return JSONResponse(await _codex_stop_mailbox_page(service, session_id, cursor))
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime
 
