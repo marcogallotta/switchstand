@@ -433,6 +433,7 @@ def test_managed_history_is_exceptional_across_current_docs():
 
     assert "do not enumerate `work_history`" in development
     assert "explicit bounded investigation or recovery" in development
+    assert "page bound `work_history`" not in development
     assert "History and exact-event reads are exceptional" in source_history
     assert "not for normal grounding" in source_history
     assert "routine polling" in source_history

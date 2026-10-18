@@ -158,7 +158,10 @@ def test_managed_command_omits_priority_tools_without_explicit_opt_in(tmp_path: 
         value for value in command
         if value.startswith("mcp_servers.switchstand.enabled_tools=")
     )
+    assert '"work_history"' in enabled
     assert "priority_claim_get" not in enabled
+    assert "reconcile current history with" not in command[-1]
+    assert "Follow next_cursor until null" not in command[-1]
     assert not any(
         "SWITCHSTAND_PRIORITY_CLAIMS" in value for value in command
     )

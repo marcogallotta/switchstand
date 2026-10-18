@@ -567,6 +567,8 @@ def test_parser_and_command_preserve_one_exact_initial_assignment(assignment):
     assert "managed Worker context contract" in command[-1]
     assert "Do not enumerate work_history during normal startup" in command[-1]
     assert "explicit bounded investigation or recovery" in command[-1]
+    assert "reconcile current history with" not in command[-1]
+    assert "Follow next_cursor until null" not in command[-1]
     assert "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS) in command
     enabled = next(
         value for value in command
