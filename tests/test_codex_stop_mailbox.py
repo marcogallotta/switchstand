@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import threading
+import tomllib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -70,6 +71,19 @@ def stop(*, active: bool = False) -> dict[str, object]:
         "session_id": "session-1",
         "stop_hook_active": active,
     }
+
+
+def test_repository_config_keeps_mailbox_and_continuity_stop_hooks() -> None:
+    config = tomllib.loads((ROOT / ".codex/config.toml").read_text())
+    handlers = config["hooks"]["Stop"][0]["hooks"]
+
+    assert [handler["type"] for handler in handlers] == ["command", "command"]
+    assert handlers[0]["command"].endswith('/scripts/codex-stop-mailbox"')
+    assert handlers[0]["timeout"] == 5
+    assert "/scripts/codex-continuity-hook\" --mode PILOT --lifetime STANDING" in (
+        handlers[1]["command"]
+    )
+    assert handlers[1]["timeout"] == 3
 
 
 def test_empty_mailbox_allows_stop_and_active_escape_skips_read() -> None:
