@@ -82,9 +82,7 @@ def test_stop_continuation_names_every_marker_accepted_for_the_lifetime(
 
 @pytest.mark.parametrize("marker", ["REAL_BLOCKER", "HANDOFF", "USER_STOP"])
 def test_common_deliberate_yields_are_allowed(tmp_path: Path, marker: str) -> None:
-    output, events = invoke(
-        tmp_path, stop(f"Visible reason.\n<!-- SWITCHSTAND_YIELD:{marker} -->")
-    )
+    output, events = invoke(tmp_path, stop(f"<!-- SWITCHSTAND_YIELD:{marker} -->"))
 
     assert output == {}
     assert events[0]["blocked"] == 0
@@ -92,7 +90,7 @@ def test_common_deliberate_yields_are_allowed(tmp_path: Path, marker: str) -> No
 
 
 def test_assignment_complete_depends_on_run_lifetime(tmp_path: Path) -> None:
-    message = "Done.\n<!-- SWITCHSTAND_YIELD:ASSIGNMENT_COMPLETE -->"
+    message = "<!-- SWITCHSTAND_YIELD:ASSIGNMENT_COMPLETE -->"
 
     assignment, _ = invoke(tmp_path, stop(message))
     standing, events = invoke(tmp_path, stop(message), lifetime="STANDING")
@@ -107,6 +105,7 @@ def test_assignment_complete_depends_on_run_lifetime(tmp_path: Path) -> None:
     "Quoted `<!-- SWITCHSTAND_YIELD:HANDOFF -->` marker.",
     "<!-- SWITCHSTAND_YIELD:WAITING -->",
     "<!-- SWITCHSTAND_YIELD:HANDOFF -->\nmore text",
+    "Visible reason.\n<!-- SWITCHSTAND_YIELD:HANDOFF -->",
     "Example <!-- SWITCHSTAND_YIELD:HANDOFF -->\n<!-- SWITCHSTAND_YIELD:HANDOFF -->",
 ])
 def test_only_one_exact_terminal_marker_is_accepted(tmp_path: Path, message: str) -> None:

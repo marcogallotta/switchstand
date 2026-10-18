@@ -19,14 +19,14 @@ MARKERS = frozenset(MARKER_NAMES)
 MARKER_PATTERN = "|".join(MARKER_NAMES)
 MARKER = re.compile(rf"<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->")
 TERMINAL_MARKER = re.compile(
-    rf"(?:^|\n)<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->\s*\Z"
+    rf"\A\s*<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->\s*\Z"
 )
 CONTINUATION = (
     "This top-level Codex assignment is still active. Do not end merely because you replied, "
     "reported status, finished one item, received feedback, or hit a partial blocker. Continue "
     "the next owned executable action. If the run is genuinely finished, blocked, stopped, or "
-    "handed off, reissue the final reply with exactly one permitted terminal hidden yield marker "
-    "as the final line: {markers}."
+    "handed off, reissue a dedicated final reply containing exactly one permitted hidden yield "
+    "marker and no other text: {markers}."
 )
 PROMPT_CONTEXT = (
     "This user message arrived while the top-level assignment is active. Treat it as an "
