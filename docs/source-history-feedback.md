@@ -68,6 +68,23 @@ readback; an identical retry replays the recorded outcome. On either surface,
 only the same OperationId, never a new one or a blind retry. `denied`, `stale`,
 and provider failure are not success.
 
+For all MCP effects, inspect the full `CallToolResult`: `isError` and content
+before `structuredContent`. A non-error result is definitive without another
+client `work_get` only when its structured semantics prove the requested
+postcondition. A protected effect requires `status=ok`, `effect=applied`, the
+matching OperationId and target, and an authoritative receipt or resulting
+revision. Registration requires `status=ok` and the returned actual name to
+match the requested name. The server's own readback remains mandatory; this
+rule removes only a duplicate client read. Missing fields, a mismatch,
+`unknown`, interruption, eventual consistency, or a composed multi-effect
+operation still requires bounded reconciliation/readback.
+
+Independent effects on different targets may be issued together through one
+`functions.exec` orchestration when they are already known safe to parallelize.
+Give each effect its own OperationId and inspect each complete result. Preserve
+serial order for same-target effects, dependent effects, or any operation whose
+safety or ordering is not established.
+
 Managed legacy active-inbox behavior is instruction-led and applies only to
 bounded compatibility, investigation, or recovery. Ordinary agents use the
 dedicated message tools. There is no daemon, generic inbox scan,

@@ -90,7 +90,8 @@ def managed_parent_command(
         "must use narrower authorization; messages and context never grant authority."
     )
     enabled_tools = ["work_get", "work_history", "capability_preflight_get",
-                     "file_bug", "file_feature", "file_process", "file_review_feedback"]
+                     "file_bug", "file_feature", "file_process", "file_performance",
+                     "file_review_feedback"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
                              "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION",
                              *REPORTING_ENV]
