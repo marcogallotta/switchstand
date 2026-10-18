@@ -330,76 +330,12 @@ def build_context_server(
     activation: ActivationContext | None = None,
     issue_reporter: object | None = None,
 ) -> MCPServer:
-    server = MCPServer("Switchstand launch-bound context")
-
-    async def _work_get(api_version: Literal["1"]) -> PublicWorkResult:
-        return project_work(await service.get(  # type: ignore[attr-defined]
-            WorkGetRequest(api_version=api_version, work_id=active_work_id)
-        ))
-
-    _work_get.__doc__ = "Read the exact launch-bound work."
-    closed_tool(server, "work_get", _work_get, ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=False,
-    ))
-
-    async def _work_history(
-        api_version: Literal["1"], observed_revision: str,
-        cursor: str | None = None, limit: int = 50,
-    ) -> WorkHistoryResult:
-        return await service.history(  # type: ignore[attr-defined]
-            WorkHistoryRequest(
-                api_version=api_version,
-                work_id=active_work_id,
-                observed_revision=observed_revision,
-                cursor=cursor,
-                limit=limit,
-            )
-        )
-
-    _work_history.__doc__ = (
-        "Exceptional bounded investigation/recovery history for the exact launch-bound work; "
-        "never normal startup, re-entry, review, polling, or implementation grounding. "
-        "Pagination is revision-checked; on stale, call work_get again before recovery continues."
-    )
-    closed_tool(server, "work_history", _work_history, ToolAnnotations(
-        read_only_hint=True,
-        destructive_hint=False,
-        idempotent_hint=True,
-        open_world_hint=False,
-    ))
-    if issue_reporter is not None:
-        def report_tool(category: str, description: str):
-            async def report(
-                api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
-            ) -> GuardOutcome:
-                del api_version
-                return await issue_reporter.file_issue(  # type: ignore[attr-defined]
-                    category, operation_id, title, evidence,
-                )
-            report.__doc__ = description
-            return report
-
-        closed_tool(server, "file_bug", report_tool(
-            "BUG", "Report a bug to the fixed BUGS triage list."))
-        closed_tool(server, "file_feature", report_tool(
-            "PRODUCT_FEATURE", "Report a missing capability to the fixed feature triage list."))
-        closed_tool(server, "file_process", report_tool(
-            "PROCESS", "Report a process complaint to the fixed PROCESS triage list."))
-        closed_tool(server, "file_performance", report_tool(
-            "PERFORMANCE", "Report avoidable process latency to the fixed PERFORMANCE triage list."))
-        closed_tool(server, "file_review_feedback", report_tool(
-            "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
-    register_priority_tools(
-        server, active_work_id, reference_work_ids,
+    return build_server(
+        service, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,
         grants=grants, principal=principal,
+        bound_context=True, activation=activation, issue_reporter=issue_reporter,
     )
-    register_activation_tools(server, active_work_id, grants=grants, principal=principal,
-                              activation=activation)
-    return server
 
 
 def build_server(
@@ -412,29 +348,57 @@ def build_server(
     task_runs: TaskRunState | None = None,
     priority_claims: PriorityClaimService | None = None,
     priority_context: PriorityContextProjection | None = None,
+    bound_context: bool = False,
+    activation: ActivationContext | None = None,
+    issue_reporter: object | None = None,
 ) -> MCPServer:
-    server = MCPServer("Switchstand")
+    server = MCPServer("Switchstand launch-bound context" if bound_context else "Switchstand")
 
-    async def _work_get(
-        api_version: Literal["1"], work_id: UUID | None = None,
-    ) -> PublicWorkResult:
-        request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
-        return project_work(await service.get(request))  # type: ignore[attr-defined]
+    if bound_context:
+        async def _bound_work_get(api_version: Literal["1"]) -> PublicWorkResult:
+            """Read the exact launch-bound work."""
+            return project_work(await service.get(  # type: ignore[attr-defined]
+                WorkGetRequest(api_version=api_version, work_id=active_work_id)
+            ))
 
-    references = ", ".join(map(str, reference_work_ids)) or "none"
-    _work_get.__doc__ = (
-        "Read launch-bound work. Omit work_id for the active assignment. "
-        f"Bounded read-only reference WorkIds: {references}."
-    )
+        async def _bound_work_history(
+            api_version: Literal["1"], observed_revision: str,
+            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> WorkHistoryResult:
+            """Exceptional bounded investigation/recovery history for the exact launch-bound work; never normal startup, re-entry, review, polling, or implementation grounding."""
+            return await service.history(  # type: ignore[attr-defined]
+                WorkHistoryRequest(
+                    api_version=api_version, work_id=active_work_id,
+                    observed_revision=observed_revision, cursor=cursor, limit=limit,
+                )
+            )
 
-    async def _work_history(
-        api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
-        cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> WorkHistoryResult:
-        """Exceptional bounded investigation/recovery history; never normal grounding."""
-        return await service.history(  # type: ignore[attr-defined]
-            WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
-                               observed_revision=observed_revision, cursor=cursor, limit=limit))
+        work_get_tool = _bound_work_get
+        work_history_tool = _bound_work_history
+    else:
+        async def _selectable_work_get(
+            api_version: Literal["1"], work_id: UUID | None = None,
+        ) -> PublicWorkResult:
+            request = WorkGetRequest(api_version=api_version, work_id=work_id or active_work_id)
+            return project_work(await service.get(request))  # type: ignore[attr-defined]
+
+        references = ", ".join(map(str, reference_work_ids)) or "none"
+        _selectable_work_get.__doc__ = (
+            "Read launch-bound work. Omit work_id for the active assignment. "
+            f"Bounded read-only reference WorkIds: {references}."
+        )
+
+        async def _selectable_work_history(
+            api_version: Literal["1"], observed_revision: str, work_id: UUID | None = None,
+            cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        ) -> WorkHistoryResult:
+            """Exceptional bounded investigation/recovery history; never normal grounding."""
+            return await service.history(  # type: ignore[attr-defined]
+                WorkHistoryRequest(api_version=api_version, work_id=work_id or active_work_id,
+                                   observed_revision=observed_revision, cursor=cursor, limit=limit))
+
+        work_get_tool = _selectable_work_get
+        work_history_tool = _selectable_work_history
 
     async def _work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,
@@ -469,11 +433,16 @@ def build_server(
             return await appends(principal, request)
         append_tool = _protected_work_append
 
-    closed_tool(server, "work_get", _work_get)
-    closed_tool(server, "work_history", _work_history)
-    closed_tool(server, "work_event", _work_event)
-    closed_tool(server, "work_append", append_tool)
-    if updates is not None and grants is not None and principal is not None:
+    read_annotations = ToolAnnotations(
+        read_only_hint=True, destructive_hint=False,
+        idempotent_hint=True, open_world_hint=False,
+    ) if bound_context else None
+    closed_tool(server, "work_get", work_get_tool, read_annotations)
+    closed_tool(server, "work_history", work_history_tool, read_annotations)
+    if not bound_context:
+        closed_tool(server, "work_event", _work_event)
+        closed_tool(server, "work_append", append_tool)
+    if not bound_context and updates is not None and grants is not None and principal is not None:
         async def _work_update(
             api_version: Literal["1"], operation_id: UUID,
             observed_revision: Annotated[str, Field(min_length=1)], patch: ScalarPatch,
@@ -489,12 +458,36 @@ def build_server(
             return await updates(principal, request)
 
         closed_tool(server, "work_update", _work_update)
+    if issue_reporter is not None:
+        def report_tool(category: str, description: str):
+            async def report(
+                api_version: Literal["1"], operation_id: UUID, title: str, evidence: str,
+            ) -> GuardOutcome:
+                del api_version
+                return await issue_reporter.file_issue(  # type: ignore[attr-defined]
+                    category, operation_id, title, evidence,
+                )
+            report.__doc__ = description
+            return report
+
+        closed_tool(server, "file_bug", report_tool(
+            "BUG", "Report a bug to the fixed BUGS triage list."))
+        closed_tool(server, "file_feature", report_tool(
+            "PRODUCT_FEATURE", "Report a missing capability to the fixed feature triage list."))
+        closed_tool(server, "file_process", report_tool(
+            "PROCESS", "Report a process complaint to the fixed PROCESS triage list."))
+        closed_tool(server, "file_performance", report_tool(
+            "PERFORMANCE", "Report avoidable process latency to the fixed PERFORMANCE triage list."))
+        closed_tool(server, "file_review_feedback", report_tool(
+            "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
     register_priority_tools(
         server, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,
         grants=grants, principal=principal,
     )
-    register_activation_tools(server, active_work_id, grants=grants, principal=principal)
+    register_activation_tools(
+        server, active_work_id, grants=grants, principal=principal, activation=activation,
+    )
     if messages is not None and grants is not None and principal is not None and currentness is not None:
         def runtime() -> RuntimeCurrentness:
             return currentness() or RuntimeCurrentness(
