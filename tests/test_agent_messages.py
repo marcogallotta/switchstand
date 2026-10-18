@@ -16,6 +16,11 @@ from switchstand.agent_mailboxes import (
     AgentMailboxState,
     agent_mailboxes,
 )
+from switchstand.agent_messages import (
+    AgentMessagePendingResult,
+    AgentMessageSubmitResult,
+    AgentPendingMessage,
+)
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import ClosedModel
@@ -51,6 +56,25 @@ class StrictPreDeploySubmitResult(ClosedModel):
     message: StrictPreDeployPendingItem | None
     reason: str | None
     next_action: str | None
+
+
+def test_api_v1_mailbox_outputs_remain_compatible_with_strict_predeploy_clients():
+    current_item_schema = AgentPendingMessage.model_json_schema()
+    prior_item_schema = StrictPreDeployPendingItem.model_json_schema()
+    assert current_item_schema["additionalProperties"] is False
+    assert current_item_schema["properties"] == prior_item_schema["properties"]
+
+    message = AgentPendingMessage(
+        delivery_id=uuid4(), message_id=uuid4(), sender_name="Alpha",
+        recipient_name="Beta", kind="request", payload={"request": "review"},
+        state="RECEIVED",
+    )
+    StrictPreDeployPendingResult.model_validate(AgentMessagePendingResult(
+        status="ok", messages=(message,),
+    ).model_dump(mode="json"))
+    StrictPreDeploySubmitResult.model_validate(AgentMessageSubmitResult(
+        status="ok", message=message,
+    ).model_dump(mode="json"))
 
 
 @pytest.fixture

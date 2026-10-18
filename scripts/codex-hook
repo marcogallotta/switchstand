@@ -572,7 +572,10 @@ def run() -> int:
     elif not isinstance(command, str):
         return 0
     elif tool == "Bash":
-        reason = classify(command, cwd, coordinator_primary, coordinator_writer)
+        try:
+            reason = classify(command, cwd, coordinator_primary, coordinator_writer)
+        except ValueError as error:
+            reason = f"[shell-parse] malformed shell command is denied: {error}"
     elif tool == "apply_patch" and coordinator_primary is not None:
         reason = classify_patch(command, cwd, coordinator_primary, coordinator_writer)
     else:

@@ -13,6 +13,7 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from .agent_mailboxes import CODEX_COORDINATOR_NAME
 from .canonical_relations import (
     CanonicalRelationsRepository,
     WorkRelations,
@@ -68,6 +69,8 @@ CONFIRM_CANCELS_REVIEW_MESSAGE = (
     "This item is waiting for review {review_id}. This edit will cancel that review. "
     "If you meant it, repeat the same call with confirm_cancels_review=true."
 )
+
+_START_HERE_PROVIDER_WORK_ID = "1218327002478382"
 
 
 async def pending_review_id(
@@ -138,6 +141,21 @@ def _validate_semantic_write(work: CurrentWork, fields: set[str] | frozenset[str
 
 def _exact_root(value: str | None) -> UUID | None:
     return None if value in {None, "NONE", "UNKNOWN"} else UUID(value)
+
+
+def _start_here_child_shape(request: ProtectedCreate) -> bool:
+    """Match the post-MCP form of the documented direct-assignment create."""
+    owner = request.owner_key
+    return (
+        request.canonical_root is None
+        and request.work_type == "Task"
+        and request.lifecycle_state == "CURRENT"
+        and (owner == CODEX_COORDINATOR_NAME or owner.startswith("agent:"))
+        and (request.wait_kind, request.unblock_condition, request.next_due)
+        == ("NONE", "NONE", "NONE")
+        and request.next_action_class == "OWNER_CAN_DO"
+        and request.next_action_ref not in {"NONE", "UNKNOWN"}
+    )
 
 
 def _context(work: CurrentWork, relations: WorkRelations) -> WorkContext:
@@ -459,16 +477,40 @@ class CanonicalWorkRuntime:
                             try:
                                 inherited_root = _exact_root(inherited)
                             except ValueError:
-                                inherited_root = None
-                            if inherited_root is None:
                                 return CreateGateway.guard(
                                     request, "denied", "parent_root_not_exact"
                                 )
-                            if root is not None and root != inherited:
+                            if inherited_root is not None and inherited != str(inherited_root):
+                                return CreateGateway.guard(
+                                    request, "denied", "parent_root_not_exact"
+                                )
+                            if inherited_root is None:
+                                start_here = await connection.scalar(select(
+                                    work_handles.c.id
+                                ).where(
+                                    work_handles.c.id == parent,
+                                    work_handles.c.provider == "asana",
+                                    work_handles.c.provider_work_id
+                                    == _START_HERE_PROVIDER_WORK_ID,
+                                ))
+                                if (
+                                    inherited is not None
+                                    or current.work_type != "Context"
+                                    or start_here != parent
+                                    or not _start_here_child_shape(request)
+                                ):
+                                    return CreateGateway.guard(
+                                        request, "denied", "parent_root_not_exact"
+                                    )
+                                # The sanctioned imported START HERE route is placement-only;
+                                # its direct-assignment child starts an exact canonical tree.
+                                root = str(work_id)
+                            elif root is not None and root != inherited:
                                 return CreateGateway.guard(
                                     request, "denied", "child_root_conflicts_with_parent"
                                 )
-                            root = inherited
+                            else:
+                                root = inherited
                         else:
                             if grant.scope != "workspace" and required_operation != "file_issue":
                                 return CreateGateway.guard(
@@ -516,7 +558,7 @@ class CanonicalWorkRuntime:
                             )
                         root_id = _exact_root(root)
                         if (root_id is not None
-                                and not (parent is None and root_id == work_id)
+                                and root_id != work_id
                                 and await self.works.get_locked(connection, root_id) is None):
                             return CreateGateway.guard(
                                 request, "denied", "canonical_root_not_bound"

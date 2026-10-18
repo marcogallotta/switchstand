@@ -501,7 +501,11 @@ transition. A new session or caller must not silently continue a RECEIVED delive
 ## Protected effects and UNKNOWN
 
 The canonical runtime and `effects.py::CanonicalAppendGateway` own ordinary PostgreSQL work
-mutations. The following legacy gateways remain only for managed/source compatibility and the
+mutations. A parented create normally inherits its parent's exact canonical root. The exact
+imported `START HERE` `1218327002478382` rootless `Context` is a navigation-only placement
+boundary for the documented direct-assignment `Task` shape: each such child remains parented
+there but starts its own exact canonical root. Other parents and child shapes fail closed.
+The following legacy gateways remain only for managed/source compatibility and the
 frozen-cutover disposition of provider-era effects; they are not ordinary PostgreSQL write owners:
 
 - `effects.py::AppendGateway` owns append intent, send, and exact story/task readback;
