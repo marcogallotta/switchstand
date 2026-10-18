@@ -343,7 +343,9 @@ messaging, and required continuation:
   superseded baseline. The consequence digest is its baseline identity; approvals remain
   append-only. Legacy V1 exact-revision rows remain readable but cannot authorize cross-revision
   baseline conformance.
-  `reviews.py` owns durable review requests and outcomes. Its default-off ordinary path is
+  `reviews.py` owns durable review requests and outcomes.
+  Codex: reviews = a fresh native fork; never the `review_*` tools.
+  Its default-off non-Codex path is
   `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
   `review_recover` can rebind only an exact received delivery after a same-principal mailbox
   takeover, and `review_submit` remains the sole verdict mutation. Requester and reviewer

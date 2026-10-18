@@ -74,6 +74,8 @@ assignment or an explicit current grant for the exact WorkId.
 
 WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
 
+Codex: reviews = a fresh native fork; never the `review_*` tools.
+
 Before a consequential choice hardens, follow [Human Input](docs/human-input.md). Every material implementation gets final live [Human Review](docs/human-review.md) before dispatch; approval covers only its exact package. If its handoff names an effect and current authority separately authorizes that effect, continue; otherwise report the unavailable handoff. Do not add a return-to-Marco stop solely because Human Review approved.
 
 A mechanically established required-currentness/applicable-invariant contradiction or ambiguous consequential effect requires one bounded situation review under current owner; low confidence alone does not. Other review, quality, activation, canary, documentation, research, and portfolio mechanics stay behind routed owners.
