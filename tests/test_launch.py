@@ -133,6 +133,7 @@ def test_exact_revision_preflight_rejects_ambiguous_identity(tmp_path, requested
 def test_switchstand_tools_have_narrow_approval_free_policy():
     config = tomllib.loads((Path(__file__).parents[1] / ".codex/config.toml").read_text())
     assert config["approval_policy"] == "never"
+    assert config["features"]["apps"] is False
     assert config["permissions"][PROFILE]["network"]["enabled"] is True
     servers = config["mcp_servers"]
 
@@ -153,13 +154,13 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
         "task_control_get", "task_control_checkpoint", "work_hygiene_check",
     }
     review_tools = {"review_request", "review_get", "review_recover", "review_submit"}
-    expected_ordinary = (ordinary | review_tools) - activation_gated
-    assert review_tools <= set(switchstand["enabled_tools"])
+    expected_ordinary = ordinary - activation_gated - review_tools
+    assert review_tools.isdisjoint(switchstand["enabled_tools"])
     assert set(switchstand["enabled_tools"]) == expected_ordinary
     assert "tools" not in switchstand
     assert servers["switchstand_oauth_proof"]["enabled"] is False
     certification = servers["switchstand_certification"]
-    assert review_tools <= set(certification["enabled_tools"])
+    assert review_tools.isdisjoint(certification["enabled_tools"])
     assert set(certification["enabled_tools"]) == expected_ordinary
 
     managed = {
