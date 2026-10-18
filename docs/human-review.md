@@ -41,19 +41,11 @@ Judge whether this is the right thing and scale to build before rewarding intern
 
 Do not dump the specification, review chronology, IDs, or implementation detail unless they change the decision.
 
-Assume the human may read only this opening, in this order:
+Before asking Marco, establish whether a genuinely new material human-owned decision remains. A roadmap or outcome agreement is not authorization for a new material solution. If an exact already-approved solution is unchanged, continue within existing effect authority rather than asking again. A completed or deployed change is reported as status, not a fresh approval request.
 
-```text
-WHAT YOU ASKED — <intended or approved outcome in the human's framing>
-WHAT THIS DOES — <actual ordinary-use change>
-WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU — <exclusions, cuts, burden, limits, or consequences>
-SIZE — <decision-useful implementation/support size or operating burden, with uncertainty>
-```
+For a real decision, use a natural, compact explanation in Marco's own context: what he asked for, what materially differs, the recommendation and its decisive reason against the strongest simpler alternative, relevant consequence or cut, and what his response would authorize. Do not replace reasoning with technical labels, a compulsory four-line opening, blanket multi-item permissions, or repeated "Go?" prompts. Do not exaggerate normal V1 staging as a crisis. Include material facts without making Marco read a specification.
 
-Add `RECOMMENDATION` and `DECISION` only when needed. No decision-changing fact may appear only
-after the opening. When Human Review is required, the author includes this actual proposed opening
-in the existing design/implementation/deviation review; findings that change its decision surface
-receive focused rereview, not a new review-of-review stage.
+When a material decision needs Human Review, include the actual proposed explanation in the existing independent design or implementation review; substantive corrections receive focused rereview, not a separate format-review stage.
 
 ## Do not
 
