@@ -4,7 +4,19 @@ Human Input is how the human shapes consequential work while choices are still c
 
 ## Core rule
 
-Do enough bounded research first to understand the real problem, plausible routes, important unknowns, and relevant current product reality.
+Before hardening a materially new capability or a remedy that materially expands the work,
+make a bounded check of current capabilities, relevant existing/in-flight work and its owners,
+and Marco's current decisions, corrections and rejected alternatives. Use current source
+references rather than treating a supplied summary as fresh. Distinguish working capability,
+approved design and UNKNOWN; overlap alone does not prove the requested benefit is delivered.
+
+Use those facts in the existing task/plan to identify the useful gap and compare a smaller
+benefit-preserving route before developing the mechanism. A manual substitute that loses the
+agreed benefit or shifts work to Marco is not automatically simpler. Do enough bounded research
+to understand the real problem, plausible routes and important unknowns; do not turn this into
+a broad inventory, new artifact or routine human question. The first existing material-design
+review starts on the provisional route under [code quality](code-quality.md), while useful
+early Human Input and unaffected work continue.
 
 Raise Human Input before the next material commitment would harden a choice about product outcome, architecture, scope, scale, cost or support burden, material risk, workflow, or a mechanism that materially governs agent behavior, the human's workflow, or durable operating policy — when human judgment could materially change that choice.
 

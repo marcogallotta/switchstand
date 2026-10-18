@@ -58,13 +58,25 @@ package database, or parallel review ceremony. At approval freeze:
 
 ### Material design review before Human Review
 
-A material Design Specification, scope packet, or equivalent design owned by the current author
-receives one fresh context-free reviewer before Human Review. The reviewer gets the exact design,
-current work identity, and only the current owner documents needed to judge it; do not seed the
-author's overall verdict as review truth. Review challenges V1 scope, owner placement, the
-strongest smaller route, evidence shape, and any material human choice. The author fixes or
-answers material findings before Human Review. This review supplies evidence only: it grants no
-implementation, landing, deployment, activation, or provider-effect authority.
+Start the first existing material-design review when there is a concrete provisional route,
+before substantial detailed-design investment. Material work receives one fresh context-free
+reviewer before Human Review. Use the same review occurrence through specification; this is not
+an additional clearance or a reason to
+delay useful early Human Input. Routine realization inside settled direction is unaffected.
+
+First give the reviewer current work identity, original/current human direction, binding
+constraints and authority, and the relevant current owner/source references. Before seeing the
+author's preferred design, rationale or prior overall verdict, the reviewer independently
+checks current capability, ownership/overlap, the useful remaining gap and the smallest credible
+benefit-preserving route. Keep this investigation bounded to the proposed material work.
+
+Then compare the exact author proposal/design against that independent assessment. Challenge
+necessity and V1 scope before technical completeness, including owner placement, the strongest
+smaller route, evidence shape and any material human choice. The author fixes or answers material
+findings before final Human Review. Later material deltas receive focused checking in that same
+review, not an automatic full restart or another reviewer. Cheap research and unaffected work
+continue; hold only a commitment that consumes an unresolved material choice or lacks authority.
+Review supplies evidence, never implementation, landing, activation or provider-effect authority.
 
 ### Mandatory scope blocks
 
