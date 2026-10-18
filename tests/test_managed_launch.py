@@ -12,6 +12,7 @@ from switchstand.agent_executor import ManagedExecutor
 from switchstand.managed_launch import (
     ACTIVATION_ENV,
     MANAGED_ROOT_BUDGET,
+    REPORTING_ENV,
     ManagedParentLauncher,
     PreparedLaunchStore,
     managed_parent_command,
@@ -80,6 +81,7 @@ def prepared(tmp_path: Path) -> tuple[Broker, Path]:
         codex_executable=executable,
         assignment="implement the exact task",
         priority_claims=True,
+        reporting_environment={name: str(WORK_ID) for name in REPORTING_ENV},
     )
     return broker, manifest
 
@@ -249,6 +251,8 @@ def test_managed_executor_uses_aggregate_budget_and_exact_paths(
     assert f"ACTIVE_WORK_ID={WORK_ID}" in start
     assert f"SWITCHSTAND_GRANT_ID={GRANT_ID}" in start
     assert "SWITCHSTAND_PRIORITY_CLAIMS=1" in start
+    for name in REPORTING_ENV:
+        assert f"{name}={WORK_ID}" in start
     separator = start.index("--")
     assert start[separator + 1 : separator + 4] == [
         "/usr/bin/env",

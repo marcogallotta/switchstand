@@ -497,6 +497,9 @@ def run(active: str, assignment: str, target_repo: Path | None = None, *,
         activation_environment=(
             {name: env[name] for name in managed_launch.ACTIVATION_ENV}
             if activation_continuity else None),
+        reporting_environment={
+            name: env[name] for name in managed_launch.REPORTING_ENV if name in env
+        },
     )
     if receipt.get("state") != "completed":
         raise RuntimeError(f"managed executor state={receipt.get('state', 'unknown')}")

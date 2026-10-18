@@ -525,6 +525,10 @@ class ManagedExecutor:
         ]
         if manifest.priority_claims:
             environment.append("SWITCHSTAND_PRIORITY_CLAIMS=1")
+        environment.extend(
+            f"{name}={value}"
+            for name, value in sorted(manifest.reporting_environment.items())
+        )
         return [*arguments, "--", *environment, *manifest.command]
 
 

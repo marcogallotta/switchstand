@@ -655,6 +655,7 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(subject: 
     subject.service.issue_projects["BUG"] = project_id
     subject.grant = subject.grant.model_copy(update={
         "version": 2,
+        "scope": "launch",
         "operations": subject.grant.operations | {"file_issue"},
         "report_qualification": "test:issue-report",
     })

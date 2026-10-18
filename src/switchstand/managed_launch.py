@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt, StrictStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from .agent_broker import CLASSES, ID, Broker, Budget, ChildBudget, LeaseRequest, Pressure
 from .managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
@@ -52,6 +52,7 @@ class PreparedLaunch(BaseModel):
     codex_home: StrictStr
     codex_executable: StrictStr
     priority_claims: StrictBool = False
+    reporting_environment: dict[StrictStr, StrictStr] = Field(default_factory=dict)
     command: tuple[StrictStr, ...]
 
     @field_validator("launch_id", "lease_id", "reservation_id", "attempt_id", "unit")
@@ -161,6 +162,7 @@ class PreparedLaunchStore:
         assignment: str,
         priority_claims: bool = False,
         activation_environment: dict[str, str] | None = None,
+        reporting_environment: dict[str, str] | None = None,
     ) -> Path:
         lease = self.broker.lease(lease_id)
         if lease.get("reservation_id") != reservation_id or lease["state"] != "reserved":
@@ -171,6 +173,11 @@ class PreparedLaunchStore:
         executable = codex_executable.resolve(strict=True)
         if not executable.is_file() or not os.access(executable, os.X_OK):
             raise ValueError("Codex executable must be an executable regular file")
+        reporting = reporting_environment or {}
+        if not set(reporting) <= set(REPORTING_ENV):
+            raise ValueError("reporting environment contains an unknown key")
+        for value in reporting.values():
+            UUID(value)
         launch_id = uuid4().hex
         attempt_id = uuid4().hex
         unit = f"switchstand-managed-{launch_id[:20]}.service"
@@ -189,6 +196,7 @@ class PreparedLaunchStore:
             codex_home=str(resolved_home),
             codex_executable=str(executable),
             priority_claims=priority_claims,
+            reporting_environment=reporting,
             command=managed_parent_command(
                 executable, resolved_control, resolved_writer, assignment,
                 priority_claims=priority_claims,
@@ -355,6 +363,7 @@ class ManagedParentLauncher:
         assignment: str,
         priority_claims: bool = False,
         activation_environment: dict[str, str] | None = None,
+        reporting_environment: dict[str, str] | None = None,
         pressure: Pressure | None = None,
     ) -> dict[str, Any]:
         try:
@@ -394,6 +403,7 @@ class ManagedParentLauncher:
                 assignment=assignment,
                 priority_claims=priority_claims,
                 activation_environment=activation_environment,
+                reporting_environment=reporting_environment,
             )
         except Exception:
             store.reconcile_unlaunched(

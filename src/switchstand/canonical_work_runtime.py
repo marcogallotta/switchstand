@@ -470,7 +470,7 @@ class CanonicalWorkRuntime:
                                 )
                             root = inherited
                         else:
-                            if grant.scope != "workspace":
+                            if grant.scope != "workspace" and required_operation != "file_issue":
                                 return CreateGateway.guard(
                                     request, "denied", "workspace_create_required"
                                 )
