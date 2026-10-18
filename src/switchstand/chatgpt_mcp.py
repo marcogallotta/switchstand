@@ -52,6 +52,7 @@ from .human_trajectory import HumanTrajectoryData, SourceKind
 from .implementation_requests import ImplementationRequestResult
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, project_work
 from .messages import (
+    AGENT_MESSAGE_PAYLOAD_LIMIT,
     DispositionEvidence,
     MessageDispositionRequest,
     MessagePendingRequest,
@@ -62,6 +63,7 @@ from .messages import (
     MessageSubmitResult,
     MessageTransitionResult,
     RuntimeCurrentness,
+    canonical_payload_chars,
     disposition_digest,
 )
 from .outcome_state import ActionSummary, OutcomeItem
@@ -1142,6 +1144,17 @@ def build_ordinary_tools(
             status="ok", message=view, next_action=next_action,
         )
 
+    def payload_too_large(payload: JsonValue) -> AgentMessageSubmitResult | None:
+        if canonical_payload_chars(payload) <= AGENT_MESSAGE_PAYLOAD_LIMIT:
+            return None
+        return AgentMessageSubmitResult(
+            status="denied", reason="payload_too_large",
+            next_action=(
+                "Keep this mailbox notification within 800 canonical JSON characters; "
+                "put detail on the exact tracker WorkId and send only the bounded pointer."
+            ),
+        )
+
     async def agent_register(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
@@ -1328,6 +1341,9 @@ def build_ordinary_tools(
         )
         if replay is not None:
             return await agent_submit_view(replay, request=True)
+        oversized = payload_too_large(payload)
+        if oversized is not None:
+            return oversized
         route = MessageRoute(
             recipient_work_id=recipient.mailbox.endpoint_id,
             recipient_grant_version=recipient.mailbox.generation,
@@ -1347,7 +1363,7 @@ def build_ordinary_tools(
 
     async def agent_message_pending(
         api_version: Literal["1"], cursor: UUID | None = None,
-        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        limit: Annotated[int, Field(ge=1, le=10)] = 10,
     ) -> AgentMessagePendingResult:
         """List this registered agent's durable pending deliveries without WorkId addressing."""
         context = await agent_context()
@@ -1446,6 +1462,9 @@ def build_ordinary_tools(
         )
         if replay is not None:
             return await agent_submit_view(replay)
+        oversized = payload_too_large(payload)
+        if oversized is not None:
+            return oversized
         reply = await service.messages.reply_context(delivery_id)
         if reply is None:
             return AgentMessageSubmitResult(status="conflict", reason="reply_delivery_not_found")
