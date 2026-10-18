@@ -28,6 +28,7 @@ STALE_ITEM_SECONDS = 4 * 60 * 60
 STALE_PRIORITIES_SECONDS = 20 * 60
 TERMINAL = {"DONE", "STOPPED", "FAILED", "SUPERSEDED"}
 OPEN_REMAINDERS = ("not deployed", "not activated", "not checked", "unverified")
+WAITING_MARCO = re.compile(r"\bWAITING[- ]MARCO\b", re.IGNORECASE)
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -142,34 +143,65 @@ def matches_live(name: str, live: set[str]) -> bool:
     )
 
 
+def pickup_item_names(path: Path) -> set[str]:
+    names: set[str] = set()
+    in_pickup = False
+    for line in path.read_text().splitlines():
+        if line.startswith("## "):
+            in_pickup = line[3:].strip().upper().startswith("PICK UP HERE")
+        elif line.strip() and (in_pickup or "PICK UP HERE" in line.upper()):
+            item = re.sub(r"^\s*(?:[-*]|[A-Z]?\d+\.)\s*", "", line).strip()
+            names.add(normalized(item.split(":", 1)[0]))
+    return names
+
+
+def waiting_key(name: str, waiting: dict[str, tuple[str, bool]]) -> str:
+    key = normalized(name)
+    return next(
+        (
+            existing
+            for existing in waiting
+            if key == existing or key.startswith(f"{existing}-") or existing.startswith(f"{key}-")
+        ),
+        key,
+    )
+
+
 def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
     module = load_plan(args.plan_script)
     live, live_error = read_live_units(args.live_unit)
-    findings: list[str] = []
+    blockers: list[str] = []
+    info: list[str] = []
     item_lines: list[str] = []
     unknown_ages = 0
+    waiting: dict[str, tuple[str, bool]] = {}
 
     priority_age = int(now.timestamp() - args.priorities.stat().st_mtime)
     if priority_age > STALE_PRIORITIES_SECONDS:
-        findings.append(
+        blockers.append(
             f"PRIORITIES_STALE: {module.duration(now, datetime.fromtimestamp(args.priorities.stat().st_mtime, tz=now.tzinfo))[0]} old"
         )
     if live_error:
-        findings.append(f"LIVE_JOBS_UNKNOWN: {live_error}")
+        blockers.append(f"LIVE_JOBS_UNKNOWN: {live_error}")
 
     priority_items = module.priorities_items(args.priorities, now)
+    pickup_names = pickup_item_names(args.priorities)
     for item in priority_items:
         if closed(item.state, "-"):
             continue
         age, seconds = age_of(module, item.state, now)
         running = None if live_error else matches_live(item.name, live)
         flags: list[str] = []
-        if seconds is None:
+        is_waiting = bool(WAITING_MARCO.search(item.state))
+        if is_waiting:
+            key = waiting_key(item.name, waiting)
+            waiting[key] = (f"{item.item_id} {item.name} [{age}]", matches_live(item.name, pickup_names))
+        elif seconds is None:
             unknown_ages += 1
         elif seconds > STALE_ITEM_SECONDS and running is False:
             flags.append("STALE_NO_JOB")
         if flags:
-            findings.append(f"{','.join(flags)}: {item.item_id} {item.name} [{age}]")
+            blockers.append(f"{','.join(flags)}: {item.item_id} {item.name} [{age}]")
         item_lines.append(
             f"- {item.item_id} | age {age} | job {'UNKNOWN' if running is None else ('LIVE' if running else 'NONE')} | {item.state}"
         )
@@ -181,7 +213,7 @@ def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
         latest[str(row["key"])] = row
     for key, count in sorted(counts.items()):
         if count > 1:
-            findings.append(f"JOBS_DRIFT: {key} has {count} rows; latest row wins")
+            blockers.append(f"JOBS_DRIFT: {key} has {count} rows; latest row wins")
     for key, row in latest.items():
         stage = str(row["stage"])
         next_step = str(row["next"])
@@ -190,14 +222,20 @@ def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
         age, seconds = age_of(module, f"{stage} {next_step}", now)
         running = None if live_error else matches_live(str(row["name"]), live)
         flags: list[str] = []
-        if seconds is None:
+        is_waiting = bool(WAITING_MARCO.search(stage))
+        if is_waiting:
+            wait_key = waiting_key(str(row["name"]), waiting)
+            prior = waiting.get(wait_key)
+            covered = matches_live(str(row["name"]), pickup_names) or bool(prior and prior[1])
+            waiting[wait_key] = (f"job:{key} [{age}] {stage}", covered)
+        elif seconds is None:
             unknown_ages += 1
         elif seconds > STALE_ITEM_SECONDS and running is False:
             flags.append("STALE_NO_JOB")
         if stage_word(stage) == "RUNNING" and running is False:
             flags.append("DEAD_JOB")
         if flags:
-            findings.append(f"{','.join(flags)}: job:{key} [{age}] {stage}")
+            blockers.append(f"{','.join(flags)}: job:{key} [{age}] {stage}")
         item_lines.append(
             f"- job:{key} | age {age} | job {'UNKNOWN' if running is None else ('LIVE' if running else 'NONE')} | {stage} — {next_step}"
         )
@@ -207,18 +245,26 @@ def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
         }
         for name in sorted(live):
             if not any(matches_live(key, {name}) for key in declared_running):
-                findings.append(f"UNTRACKED_JOB: {name} is live without a RUNNING JOBS.md row")
+                blockers.append(f"UNTRACKED_JOB: {name} is live without a RUNNING JOBS.md row")
+    for detail, covered in waiting.values():
+        info.append(f"WAITING_MARCO: {detail}")
+        if not covered:
+            blockers.append(f"WAITING_MARCO_NO_PICK_UP: {detail}")
     if unknown_ages:
-        findings.append(f"AGE_UNKNOWN: {unknown_ages} open items; add a status timestamp")
+        info.append(f"AGE_UNKNOWN: {unknown_ages} open items; add a status timestamp")
 
     report = [f"# SYNC CHECK — {now:%Y-%m-%d %H:%M %Z}", "", "## Flags"]
-    report.extend(f"- {finding}" for finding in findings)
-    if not findings:
+    report.extend(f"- {finding}" for finding in [*blockers, *info])
+    if not blockers and not info:
         report.append("- none")
     report.extend(["", "## Every open item", *(item_lines or ["- none"])])
     text = "\n".join(report) + "\n"
-    alert = [f"# SYNC ALERT — {now:%Y-%m-%d %H:%M %Z}", "", *report[3 : 3 + len(findings)]]
-    return text, "\n".join(alert) + "\n" if findings else ""
+    alert = [f"# SYNC ALERT — {now:%Y-%m-%d %H:%M %Z}"]
+    if blockers:
+        alert.extend(["", "## Blocking", *(f"- {finding}" for finding in blockers)])
+    if info:
+        alert.extend(["", "## Info", *(f"- {finding}" for finding in info)])
+    return text, "\n".join(alert) + "\n" if blockers or info else ""
 
 
 def render_alert(state_dir: Path) -> None:
@@ -289,7 +335,8 @@ def main() -> int:
                 atomic_write(args.state_dir / ".sync-scan-alert", alert)
             except (OSError, RuntimeError, ValueError) as exc:
                 atomic_write(
-                    args.state_dir / ".sync-scan-alert", f"# SYNC ALERT\n\n- SCAN_UNKNOWN: {exc}\n"
+                    args.state_dir / ".sync-scan-alert",
+                    f"# SYNC ALERT\n\n## Blocking\n- SCAN_UNKNOWN: {exc}\n",
                 )
         render_alert(args.state_dir)
         if not args.mailbox_due and not args.ack_mailbox:

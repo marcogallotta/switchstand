@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "scripts/claude-sync-checklist"
+REMINDER = ROOT / "scripts/claude-sync-reminder"
 
 
 def run(tmp_path: Path, priorities: str, jobs: str, *extra: str):
@@ -75,6 +76,7 @@ references
     ):
         assert expected in alert
     assert "job:repeated" not in alert
+    assert '"decision": "block"' in reminder(tmp_path / "home", alert).stdout
 
 
 def test_clean_scan_and_mailbox_due_ack_share_one_alert(tmp_path: Path) -> None:
@@ -84,10 +86,61 @@ def test_clean_scan_and_mailbox_due_ack_share_one_alert(tmp_path: Path) -> None:
     assert result.returncode == 0 and "- none" in result.stdout
     assert not (state / "SYNC-ALERT.md").exists()
     run(tmp_path, priorities, jobs, "--mailbox-due")
-    assert "MAILBOX CHECK DUE" in (state / "SYNC-ALERT.md").read_text()
+    alert = (state / "SYNC-ALERT.md").read_text()
+    assert "MAILBOX CHECK DUE" in alert
+    assert '"decision": "block"' in reminder(tmp_path / "home", alert).stdout
     shown = run(tmp_path, priorities, jobs, "--live-unit", "none")[0].stdout
     assert shown.startswith("# MAILBOX CHECK DUE")
     run(tmp_path, priorities, jobs, "--ack-mailbox")
     assert not (state / "SYNC-ALERT.md").exists()
     result = run(tmp_path, priorities + "## SURPRISE\nwork\n", jobs, "--live-unit", "none")[0]
     assert "SCAN_UNKNOWN: unclassified PRIORITIES.md section: SURPRISE" in result.stdout
+
+
+def reminder(tmp_path: Path, alert: str) -> subprocess.CompletedProcess[str]:
+    state = tmp_path / ".local/state/switchstand/independent-audit-claude-20261008"
+    state.mkdir(parents=True)
+    (state / "SYNC-ALERT.md").write_text(alert)
+    env = {**os.environ, "HOME": str(tmp_path), "SWITCHSTAND_SYNC_REMINDER": "1"}
+    return subprocess.run(
+        [sys.executable, str(REMINDER)],
+        input="{}",
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
+def test_waiting_marco_and_unknown_age_are_info_only_with_pick_up(tmp_path: Path) -> None:
+    priorities = """# PRIORITIES
+## PICK UP HERE
+- E2E: WAITING-MARCO; continue when Marco returns
+## QUEUE
+- mystery: no timestamp
+## DONE
+closed
+## FILES
+references
+"""
+    jobs = """Stages: RUNNING -> DONE
+| E2E testing | thread | WAITING-MARCO 10-16 | Marco designs live |
+"""
+    _, state = run(tmp_path, priorities, jobs, "--live-unit", "none")
+    alert = (state / "SYNC-ALERT.md").read_text()
+    assert alert.count("WAITING_MARCO:") == 1
+    assert "AGE_UNKNOWN:" in alert
+    assert "## Blocking" not in alert
+    assert reminder(tmp_path / "home", alert).stdout == ""
+
+
+def test_waiting_marco_without_pick_up_blocks(tmp_path: Path) -> None:
+    priorities = "# PRIORITIES\n## PICK UP HERE\n- E2E: resume later\n## DONE\nclosed\n"
+    jobs = """Stages: RUNNING -> DONE
+| Review instruction bugs | thread | WAITING-MARCO 10-17 | Marco pastes replies |
+"""
+    _, state = run(tmp_path, priorities, jobs, "--live-unit", "none")
+    alert = (state / "SYNC-ALERT.md").read_text()
+    assert alert.count("WAITING_MARCO:") == 1
+    assert "WAITING_MARCO_NO_PICK_UP:" in alert
+    assert '"decision": "block"' in reminder(tmp_path / "home", alert).stdout
