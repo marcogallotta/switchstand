@@ -614,6 +614,12 @@ on every user prompt and immediately after compaction. It performs no classifica
 network call, transcript scan, or persistence; the agent still uses the canonical Tracker Issues
 V1-A tools and their readback. Its one-second local timeout preserves prompt acknowledgement as the
 first response, and failures are visible and nonblocking.
+The synchronous mailbox `Stop` hook calls the loopback-only
+`/internal/codex-stop-mailbox` route on the existing edge. That route resolves only the current
+`codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs
+without receiving or changing them. The hook follows continuation cursors, with
+`stop_hook_active` as the mandatory continued-stop escape; missing, replaced, malformed, timed-out,
+or unavailable state fails open visibly. The public host does not route this path.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
