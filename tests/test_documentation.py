@@ -210,12 +210,16 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "intended operating scale" in human_input
     assert "deliberate V1 deferrals" in human_review
     assert "Never present default-off or inert readiness as ordinary-use product completion" in human_review
-    assert "WHAT YOU ASKED" in human_review
-    assert "WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU" in human_review
+    assert "Before asking Marco, establish whether a genuinely new material human-owned decision remains" in human_review
+    assert "A roadmap or outcome agreement is not authorization for a new material solution" in human_review
+    assert "A completed or deployed change is reported as status" in human_review
+    assert "a compulsory four-line opening" in human_review
+    assert "WHAT YOU ASKED —" not in human_review
     assert "CONFORMS_TO_APPROVED_BASELINE" in human_review
     assert "does not become a portfolio hold" in human_review
-    assert "Do not add a return-to-Marco stop solely because Human Review approved" in agents
-    assert "separately authorizes that effect" in agents
+    assert "does not require repeat review solely because implementation or landing is ready" in agents
+    assert "current authority separately authorizes it" in agents
+    assert "Report completed work as status, not another permission request" in agents
     assert "Approved-baseline conformance" in quality
 
 
@@ -241,7 +245,8 @@ def test_human_and_incident_triggers_remain_always_loaded():
     incident = section(agents, "### Live incidents")
 
     assert markdown_links(triggers) >= {"docs/human-input.md", "docs/human-review.md"}
-    assert "Every material implementation gets final live" in triggers
+    assert "Before a new material solution hardens" in triggers
+    assert "an unchanged already-approved solution does not require repeat review" in triggers
     assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
     assert markdown_links(incident) >= {
         "docs/operations-live-incident.md",
@@ -393,8 +398,8 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
     assert "Prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
     assert "do not delay mitigation for repository synchronization" in incident
-    assert "Before a consequential choice hardens, follow [Human Input]" in triggers
-    assert "Every material implementation gets final live [Human Review]" in triggers
+    assert "Before a new material solution hardens, follow [Human Input]" in triggers
+    assert "and [Human Review](docs/human-review.md) for any still-open human-owned choice" in triggers
     assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
     assert "agent resource admission" in agents
     assert "Shared canonical `main` is read-only" in agents
