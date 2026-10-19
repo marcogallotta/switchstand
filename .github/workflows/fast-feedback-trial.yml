@@ -10,14 +10,6 @@ jobs:
     name: Advisory representative checks (full Quality still required)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: switchstand_test}
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres" --health-interval 1s
-          --health-timeout 5s --health-retries 50
     env:
       PYTHONPATH: src
       SWITCHSTAND_REQUIRE_TEST_DATABASE: "1"
@@ -26,6 +18,14 @@ jobs:
       # A new branch has no before commit; bind that trial to the accepted baseline.
       TRIAL_BASE: ${{ github.event.before != '0000000000000000000000000000000000000000' && github.event.before || '7ca98f58fb4d016a0292ee557fdc3e1cb4cd0be3' }}
     steps:
+      - name: Pull PostgreSQL while preparing checks
+        run: |
+          (
+            date -u +%FT%T.%NZ
+            if docker pull postgres:18-alpine; then touch "$RUNNER_TEMP/postgres-pull.ok"; fi
+            date -u +%FT%T.%NZ
+            touch "$RUNNER_TEMP/postgres-pull.done"
+          ) > "$RUNNER_TEMP/postgres-pull.log" 2>&1 &
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
@@ -46,16 +46,33 @@ jobs:
           cache-suffix: ci-fast-feedback-20261020-v1
       - name: Prepare the exact locked dependencies
         run: uv sync --locked --all-groups --no-install-project
+      - name: Start the same PostgreSQL and require TCP readiness
+        run: |
+          timeout 60s bash -c 'until test -f "$RUNNER_TEMP/postgres-pull.done"; do sleep 0.25; done'
+          test -f "$RUNNER_TEMP/postgres-pull.ok"
+          docker run --pull=never --detach --name fast-feedback-postgres \
+            -p 5432:5432 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=switchstand_test postgres:18-alpine
+          timeout 30s bash -c 'until docker exec fast-feedback-postgres pg_isready -h 127.0.0.1 -U postgres -d switchstand_test; do sleep 0.25; done'
+          docker image inspect postgres:18-alpine --format '{{json .RepoDigests}}'
+          docker exec fast-feedback-postgres psql -U postgres -d switchstand_test -Atc 'SELECT version()'
       - name: Plan and run representative checks
         env:
           TRIAL_CACHE_HIT: ${{ steps.uv.outputs.cache-hit }}
           TRIAL_CACHE_KEY: ${{ steps.uv.outputs.cache-key }}
           TRIAL_PYTHON_CACHE_HIT: ${{ steps.uv.outputs.python-cache-hit }}
         run: .venv/bin/python .github/scripts/fast_feedback_trial.py
+      - name: Retain PostgreSQL diagnostics and remove the owned container
+        if: always()
+        run: |
+          cat "$RUNNER_TEMP/postgres-pull.log"
+          docker logs fast-feedback-postgres > "$RUNNER_TEMP/postgres-server.log" 2>&1 || true
+          docker rm --force fast-feedback-postgres
       - name: Retain advisory plan and results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: advisory-trial-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/fast-feedback-trial
+          path: |
+            ${{ runner.temp }}/fast-feedback-trial
+            ${{ runner.temp }}/postgres-*.log
           if-no-files-found: warn
