@@ -1,7 +1,6 @@
 name: Quality
 run-name: Quality / ${{ github.event_name == 'pull_request' && 'composition' || github.event_name == 'schedule' && 'scheduled exact-head' || 'exact-head' }}
 on:
-  workflow_dispatch:
   push:
   pull_request:
   schedule:
