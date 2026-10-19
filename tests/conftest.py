@@ -1,7 +1,8 @@
 import os
+from collections.abc import Generator
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.exc import ArgumentError
 
 from switchstand.canonical_relations import (
@@ -14,6 +15,7 @@ from switchstand.canonical_work import canonical_metadata, canonical_work, legac
 from switchstand.database import validate_test_database_url
 from switchstand.human_reviews import human_review_consequences
 from switchstand.priority_claims import priority_claims
+from switchstand.state import metadata as state_metadata
 from switchstand.task_control import task_control_checkpoints
 from switchstand.task_runs import task_run_requests
 from switchstand.work_events import work_events
@@ -50,18 +52,63 @@ def database_prerequisite() -> None:
     if url:
         engine = create_engine(url)
         try:
-            # Tests which rebuild an older schema with Alembic must not inherit
-            # tables owned by the current head from a preceding metadata-based
-            # fixture.  Keep the migration strict; isolate the disposable test
-            # database at the fixture boundary instead.
+            _drop_database_prerequisite_tables(engine)
+        finally:
+            engine.dispose()
+
+
+def _drop_database_prerequisite_tables(engine: Engine) -> None:
+    # Tests which rebuild an older schema with Alembic must not inherit
+    # tables owned by the current head from a preceding metadata-based
+    # fixture.  Keep the migration strict; isolate the disposable test
+    # database at the fixture boundary instead.
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "DROP TABLE IF EXISTS activation_obligation_revisions, "
+            "task_control_checkpoints, "
+            "task_run_results, task_run_executions, "
+            "task_run_requests, failure_resolutions, failure_records, "
+            "work_migration_receipts CASCADE"
+        )
+    canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
+
+
+@pytest.fixture(scope="module")
+def state_database_schema() -> Generator[str]:
+    """Reuse DDL only for tests which reset all real data before each case."""
+    url = os.getenv("TEST_DATABASE_URL")
+    if os.getenv("SWITCHSTAND_REQUIRE_TEST_DATABASE") == "1" and not url:
+        pytest.fail("selected database test requires TEST_DATABASE_URL", pytrace=False)
+    if not url:
+        pytest.skip("TEST_DATABASE_URL is required")
+    engine = create_engine(url)
+    try:
+        _drop_database_prerequisite_tables(engine)
+        with engine.begin() as connection:
+            state_metadata.drop_all(connection)
+            connection.exec_driver_sql("DROP TABLE IF EXISTS alembic_version, mcp_operation_timings")
+            state_metadata.create_all(connection)
+        yield url
+    finally:
+        try:
+            _drop_database_prerequisite_tables(engine)
             with engine.begin() as connection:
+                state_metadata.drop_all(connection)
                 connection.exec_driver_sql(
-                    "DROP TABLE IF EXISTS activation_obligation_revisions, "
-                    "task_control_checkpoints, "
-                    "task_run_results, task_run_executions, "
-                    "task_run_requests, failure_resolutions, failure_records, "
-                    "work_migration_receipts CASCADE"
+                    "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings"
                 )
-            canonical_metadata.drop_all(engine, tables=CANONICAL_TABLES, checkfirst=True)
+        finally:
+            engine.dispose()
+
+
+@pytest.fixture(scope="module")
+def canonical_database_schema(state_database_schema: str) -> Generator[str]:
+    engine = create_engine(state_database_schema)
+    try:
+        canonical_metadata.create_all(engine)
+        yield state_database_schema
+    finally:
+        try:
+            canonical_metadata.drop_all(engine)
         finally:
             engine.dispose()

@@ -1,5 +1,4 @@
 import asyncio
-import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -197,19 +196,17 @@ def _v2_consequence(subject_id: UUID, revision: str) -> HumanReviewConsequence:
 
 
 @pytest.fixture
-async def occurrence_runtime(database_prerequisite) -> AsyncGenerator[
+async def occurrence_runtime(canonical_database_schema: str) -> AsyncGenerator[
     tuple[ReviewOccurrenceState, MessageState, AgentMailboxState, UUID, AsyncEngine]
 ]:
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
-    engine = create_async_engine(url)
+    engine = create_async_engine(canonical_database_schema)
     async with engine.begin() as connection:
-        await connection.run_sync(switchstand.state.metadata.create_all)
-        await connection.run_sync(canonical_metadata.create_all)
-        await connection.execute(text(
-            "TRUNCATE TABLE work_handles, agent_mailboxes, messages RESTART IDENTITY CASCADE"
-        ))
+        tables = ", ".join(
+            connection.dialect.identifier_preparer.format_table(table)
+            for schema in (switchstand.state.metadata, canonical_metadata)
+            for table in schema.tables.values()
+        )
+        await connection.exec_driver_sql(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE")
     subject_id = uuid4()
     async with engine.begin() as connection:
         await connection.execute(insert(work_handles).values(
@@ -224,11 +221,6 @@ async def occurrence_runtime(database_prerequisite) -> AsyncGenerator[
     yield ReviewOccurrenceState(works, mailboxes, policy), MessageState(
         engine, GrantState(engine)
     ), mailboxes, subject_id, engine
-    async with engine.begin() as connection:
-        await connection.execute(text(
-            "TRUNCATE TABLE work_handles, agent_mailboxes, messages RESTART IDENTITY CASCADE"
-        ))
-        await connection.run_sync(canonical_metadata.drop_all)
     await engine.dispose()
 
 
