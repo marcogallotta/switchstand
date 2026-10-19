@@ -101,9 +101,14 @@ def feedback_report_tool(
         fork_runtime_seconds: float | None = None,
         critical_path_wait_seconds: float | None = None,
     ) -> FeedbackOutcome:
-        arguments = locals()
-        del arguments["api_version"]
-        result = cast(FeedbackOutcome, await reporter.file_issue(category, **arguments))  # type: ignore[attr-defined]
+        result = cast(FeedbackOutcome, await reporter.file_issue(  # type: ignore[attr-defined]
+            category, operation_id=operation_id, mode=mode, title=title, evidence=evidence,
+            source_work_id=source_work_id, observed_source_revision=observed_source_revision,
+            classification=classification, target_work_id=target_work_id,
+            observed_target_revision=observed_target_revision, code_status=code_status,
+            fork_runtime_seconds=fork_runtime_seconds,
+            critical_path_wait_seconds=critical_path_wait_seconds,
+        ))
         if audit is not None:
             audit(result.status)
         return result

@@ -27,6 +27,7 @@ from switchstand.mcp import (
     build_context_server,
     build_server,
     controller_from_env,
+    feedback_report_tool,
     project_work,
     protect_provider_logs,
     server_from_env,
@@ -637,6 +638,35 @@ async def test_managed_read_denial_precedes_provider_and_failure_projection(monk
                 assert_public(result.model_dump(mode="json"))
                 assert "raw-provider-error" not in str(result)
                 assert result.structured_content["status"] == status
+
+
+
+@pytest.mark.parametrize("category", [
+    "BUG", "PRODUCT_FEATURE", "PROCESS", "PERFORMANCE", "HUMAN_REVIEW_FEEDBACK",
+])
+@pytest.mark.parametrize("mode", ["FILE", "CLASSIFY"])
+@pytest.mark.parametrize("with_audit", [False, True])
+async def test_feedback_adapter_calls_real_service_without_closure_arguments(
+    category, mode, with_audit,
+):
+    from switchstand.chatgpt import ChatGPTService
+
+    # No configured destination: exercise the real service signature and denial
+    # without creating work. Both ordinary (audited) and managed adapters share it.
+    service = object.__new__(ChatGPTService)
+    service.issue_projects = {}
+    audited = []
+    report = feedback_report_tool(
+        service, category, "file_report", "File feedback.",
+        audit=audited.append if with_audit else None,
+    )
+    operation_id = uuid4()
+    result = await report(api_version="1", operation_id=operation_id, mode=mode,
+                          title="Regression", evidence="Exact adapter boundary")
+    assert result.status == "denied"
+    assert result.reason == "reporting_list_unavailable"
+    assert result.operation_id == operation_id
+    assert audited == (["denied"] if with_audit else [])
 
 
 if __name__ == "__main__":
