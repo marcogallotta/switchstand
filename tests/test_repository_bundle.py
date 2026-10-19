@@ -292,6 +292,7 @@ def test_workflow_bundle_job_uses_reviewed_default_branch_boundary():
     quality = Path(".github/workflows/quality.yml").read_text()
     workflow = Path(".github/workflows/repository-bundle.yml").read_text()
     assert "repository-bundle:" not in quality
+    assert "workflow_dispatch:" in quality
     assert "workflow_run:" in workflow
     assert "workflows: [Quality]" in workflow
     assert "workflow_dispatch:" in workflow
