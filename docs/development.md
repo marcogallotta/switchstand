@@ -349,3 +349,10 @@ a 90-day workflow artifact but does not fetch prior artifacts, classify failure/
 live lineage, or submit attention. The summarizer and warning-request projector are an inert library
 foundation until that delivery dependency exists. They do not block retries or change qualification
 or merge authority.
+
+The Quality execution image trials Buildx's GitHub Actions layer cache, with bounded imports/exports
+and nonblocking export errors. It builds the checked-out source and loads that image locally;
+Ruff, Pyright, pytest and the separate Docker lifecycle job still execute for the current subject.
+The cache follows [GitHub's branch access restrictions](https://docs.docker.com/build/cache/backends/gha/#scope).
+Compare cold and hit build durations, including builder setup and image load, before claiming a
+net saving; this trial can be removed independently of the planner/metrics fixes.

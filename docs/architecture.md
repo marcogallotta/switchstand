@@ -608,6 +608,8 @@ other values use the full suite. Adaptive broad truth remains shadow-only and pr
 Quality always binds its exact subject and computes its validated plan under Python 3.14; it
 fetches broad history only when the promoted rule can still apply. Skipped health/adaptive
 observations remain `UNKNOWN` and never reduce full-suite or Docker lifecycle requirements.
+The execution image trials a GitHub Actions layer cache while rebuilding the checked-out source;
+cache hits supply build inputs only, and never qualification evidence.
 `full_suite_due.py` owns its pure tri-state evaluator: known baseline absence or non-ancestry is
 `FULL_SUITE_DUE`, while unavailable or contradictory observations are `UNKNOWN`. It neither
 dispatches CI nor reduces the existing cadence/backstop, and it grants no merge authority.
