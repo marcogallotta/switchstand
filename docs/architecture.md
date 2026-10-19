@@ -360,6 +360,14 @@ messaging, and required continuation:
   Codex: reviews = a fresh native fork; never the `review_*` tools.
   Its default-off non-Codex path is
   `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
+  pending responses explicitly direct sleep 20 seconds before every exact-ID poll.
+  Requesters record the authorized post-PASS step in the subject's existing
+  `review_next_action` before submission. Terminal `review_get` responses use that
+  revision-checked instruction for PASS, name findings for disposition/focused resubmission,
+  or direct evidence-based blocker recovery. Missing continuation or blocker evidence
+  requires agent-owned record reconciliation, never an invented coordinator wake-up.
+  Verdicts alone do not end the turn or grant effect authority; Human Review or an
+  evidenced human-action blocker can end it, with real host limits preserved separately.
   `review_recover` can rebind only an exact received delivery after a same-principal mailbox
   takeover, and `review_submit` remains the sole verdict mutation. Requester and reviewer
   identities come from the current authenticated agent mailbox and are never public arguments.

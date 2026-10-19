@@ -114,7 +114,7 @@ async def test_review_poll_and_recovery_derive_mailbox_and_distinct_received_gui
 
     assert polled == expected
     assert "bounded active polling" in polled.next_action
-    assert "review_get for this exact review_id" in polled.next_action
+    assert f"review_get(review_id='{review_id}')" in polled.next_action
     assert (recovered.status, recovered.review_id, recovered.delivery_id) == (
         expected.status, expected.review_id, expected.delivery_id,
     )

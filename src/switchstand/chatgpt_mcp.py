@@ -862,6 +862,9 @@ def build_ordinary_tools(
     ) -> ReviewResult:
         """Request one review as this registered caller at an exact subject revision.
 
+        Record the concrete authorized post-PASS step in the subject's review_next_action
+        before requesting review. Sleep 20 seconds before each review_get, including
+        the first; on a verdict perform the returned next_action in this turn.
         Review verdicts go through review_submit; agent_message_* is not review submission.
         """
         del api_version

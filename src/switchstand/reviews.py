@@ -283,13 +283,13 @@ class ReviewResult(ClosedModel):
         if not self.next_action:
             value = {
                 "FINDINGS": "Evaluate and disposition each exact finding against evidence. For accepted defects only, make the smallest authorized clearing change, then call review_request(mode=FOCUSED, prior_review_id=<this review_id>, finding_ids=<accepted finding_ids>, observed_revision=<new revision>); do not silently accept a reviewer remedy or scope expansion.",
-                "PASS": "PASS is evidence, not scope or effect authority. Continue other runnable owned work first; if the assigned next step is Human Review, conduct the live docs/human-review.md decision conversation now rather than reporting READY or no action needed.",
+                "PASS": "PASS is evidence, not scope or effect authority. Read the subject work with work_get, recover its concrete post-review step from the current authorized plan, record review_next_action, and perform that step now. Do not end the turn merely because review passed.",
                 "BLOCKED": "Resolve the stated blocker or replan; do not start another broad review automatically.",
                 "SUBMITTED": "Reviewer verdict submitted. Do not call requester-only review_get. Resume other currently assigned inbound review work, or close this review-only assignment only when its terminal condition is truly met.",
                 "WAITING_REVIEWER": "No eligible reviewer is available, so no reviewer delivery exists; this is distinct from REQUEST_UNPICKED. Preserve this exact review_id and bounded watch, continue other owned work with limited rechecks, and report a genuine actor/capability blocker if a reviewer cannot be activated; do not create a duplicate request.",
             }.get(self.status)
             if value is None:
-                value = ("While this chat can run, use supported bounded active polling: Bash sleep 20, then review_get for this exact review_id, repeatedly. An empty read is nonterminal. At a real host/session limit, preserve the exact review_id and state for continuation; do not use an hourly Scheduled task as a substitute." if self.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"} else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly.")
+                value = (f"No verdict yet. Do not end the turn. While this chat can run, use supported bounded active polling: Bash sleep 20, then review_get(review_id='{self.review_id}'), repeatedly. Sleep before the first poll after review_request too. Every pending response requires another sleep and poll until PASS, FINDINGS, or BLOCKED, then perform the returned next_action. An empty read is nonterminal. At a real host/session limit, preserve the exact review_id and state for continuation; do not use an hourly Scheduled task as a substitute." if self.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"} else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly.")
             object.__setattr__(self, "next_action", value)
         if self.durable_capture is None:
             refs = (
@@ -890,6 +890,47 @@ class ReviewService:
         self.occurrences.policy = value
 
     @staticmethod
+    def _terminal_next_action(subject: CurrentWork, outcome: ReviewOutcome) -> str:
+        stop_rule = (
+            " Continue in this turn; stop only to present Human Review or an evidenced "
+            "blocker requiring human action. A real host/session limit requires preserving "
+            "the review identity and state. Never assume a coordinator is asleep."
+        )
+        if outcome.verdict == "PASS":
+            continuation = (subject.review_next_action or "").strip()
+            action = (
+                f"Perform the recorded post-review step now: {continuation}"
+                if continuation else
+                f"Call work_get(work_id='{subject.work_id}'). Recover the concrete "
+                "post-review step from its current authorized plan/notes, record it in "
+                "review_next_action using work_update with the current observed revision, "
+                "and perform it now. Missing routing is agent-owned reconciliation, "
+                "not by itself a reason to ask Marco. Do not invent a next step."
+            )
+            return action + " PASS grants no new scope or effect authority." + stop_rule
+        if outcome.verdict == "FINDINGS":
+            ids = ", ".join(finding.finding_id for finding in outcome.findings)
+            return (
+                f"Evaluate and disposition findings [{ids}] against their evidence now. "
+                "For accepted defects only, apply the smallest authorized clearing fixes, "
+                f"then call review_request(mode=FOCUSED, prior_review_id='{outcome.review_id}', "
+                "finding_ids=<accepted finding_ids>, observed_revision=<new revision>). "
+                "Sleep 20 seconds, then poll that review until its verdict; disposition "
+                "contested findings through the existing review procedure. Do not silently "
+                "accept a reviewer remedy or scope expansion."
+            ) + stop_rule
+        refs = ", ".join(outcome.evidence_refs) or "none supplied"
+        return (
+            f"Inspect the blocker evidence refs [{refs}] and call "
+            f"work_get(work_id='{subject.work_id}'). Establish the actual blocker, "
+            "the actor who can clear it, and the clearing action. Perform authorized "
+            "agent-owned recovery now; only present a human blocker when the evidence "
+            "establishes the specific human action needed. If evidence is missing, "
+            "reconcile the exact review records before claiming a blocker. "
+            "Do not start another broad review automatically."
+        ) + stop_rule
+
+    @staticmethod
     def _assessment_matches(
         check: BaselineCheck | None, request: ReviewSubmit,
     ) -> bool:
@@ -1308,6 +1349,7 @@ class ReviewService:
                     evidence_refs=outcome.evidence_refs,
                     baseline_assessment=outcome.baseline_assessment,
                     verdict_digest=outcome.verdict_digest,
+                    next_action=self._terminal_next_action(subject, outcome),
                 )
             delivery = request_record.delivery
             if delivery.state == "AVAILABLE" and delivery.receiving_generation is None:
