@@ -56,10 +56,12 @@ def test_real_cli_planner_identity_and_unknown_environment(tmp_path: Path):
     plan = {'planner_revision': 'v1', 'base': 'base', 'head': 'head', 'mode': 'SELECTED',
             'selected_tests': ['tests/a.py'], 'fallback_reasons': []}
     planner.write_text(json.dumps(plan))
-    result = subprocess.run([sys.executable, ROOT / 'src/switchstand/test_metrics.py',
+    result = subprocess.run([sys.executable, '-m', 'switchstand.test_metrics',
                              '--identity', identity, '--planner', planner, '--execution-kind', 'selected',
                              '--junit', tmp_path / 'missing', '--output', output],
-                            env=os.environ | {'GITHUB_STEP_SUMMARY': str(summary)}, check=False)
+                            env=os.environ | {'GITHUB_STEP_SUMMARY': str(summary),
+                                              'PYTHONPATH': str(ROOT / 'src')},
+                            cwd=tmp_path, check=False)
     assert result.returncode == 0
     data = json.loads(output.read_text())
     assert data['planner'] == {k: plan[k] for k in ('planner_revision', 'base', 'head', 'mode')}
@@ -249,6 +251,8 @@ def test_workflow_preserves_authority_and_attempts():
     assert 'shift 1 &&' in authoritative
     assert 'needs.plan.outputs.selected_tests' in authoritative
     assert '--planner ' in execution and "'planner_revision': plan.planner_revision" in execution
+    assert "python-version: '3.14'" in execution.split('  quality_execution:')[0]
+    assert 'PYTHONPATH=src python3 -m switchstand.test_metrics' in execution
     assert '--method GET' in execution
     assert 'selector_health_clear(' in execution
     assert 'broad_backstop_required(event_kind, ref_name, default_branch)' in execution
