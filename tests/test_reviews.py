@@ -108,6 +108,8 @@ def test_review_result_guidance_distinguishes_unavailable_reviewer_from_active_p
         for required in (
             "While this chat can run", "bounded active polling", "Bash sleep 20",
             "review_get for this exact review_id", "empty read is nonterminal",
+            "No verdict yet", "Do not end the turn", "until a terminal verdict",
+            "Every pending response requires another sleep and poll",
             "real host/session limit", "preserve the exact review_id and state",
             "do not use an hourly Scheduled task",
         ):
@@ -699,7 +701,14 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         subject_work_id=subject_id, observed_revision=revision, review_kind="CODE",
     ), requester)
     assert sent.review_id is not None and sent.delivery_id is not None
-    assert (await service.get(sent.review_id, requester)).status == "REQUEST_UNPICKED"
+    for _ in range(3):
+        pending = await service.get(sent.review_id, requester)
+        assert pending.status == "REQUEST_UNPICKED"
+        assert pending.review_id == sent.review_id
+        assert pending.verdict is None
+        assert "No verdict yet" in pending.next_action
+        assert "Bash sleep 20" in pending.next_action
+        assert "Every pending response requires another sleep and poll" in pending.next_action
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
