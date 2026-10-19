@@ -659,9 +659,8 @@ originating turn in a bounded transcript window, including its start, ordered di
 assignment attestation immediately followed by an exact current action from the edge.
 Every remaining clause must fit its conservative auxiliary grammar for reply ordering,
 continuation checking and bounded tool authority; unknown clauses, conversation, STOP,
-quotations, conditions and revocations release without forcing work. The continuity handler
-requires this helper beside it when installed; mailbox retains its dedicated-marker behavior.
-Source provenance alone never grants
+quotations, conditions and revocations release without forcing work. The helper is shared by
+both handlers and must accompany them when installed. Source provenance alone never grants
 action authority. A no-production or external-service restriction accepts only an explicit local
 file read/write/readback action.
 That action additionally requires the announced test context and input/output paths resolved

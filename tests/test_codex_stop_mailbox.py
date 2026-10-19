@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from codex_stop_fixture import native_source
 
 ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "scripts/codex-stop-mailbox"
@@ -34,7 +35,12 @@ class MailboxServer:
             def do_POST(self) -> None:
                 length = int(self.headers["Content-Length"])
                 owner.requests.append(json.loads(self.rfile.read(length)))
-                body = json.dumps(owner.responses.pop(0)).encode()
+                if owner.requests[-1].get("check_obligations"):
+                    response = {"status": "ok", "currentness": "CURRENT",
+                                "actions": ["work: handle pending mailbox deliveries"]}
+                else:
+                    response = owner.responses.pop(0)
+                body = json.dumps(response).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -62,6 +68,12 @@ class MailboxServer:
 
 
 def invoke(payload: object, endpoint: str, *, raw: str | None = None) -> dict[str, Any]:
+    if isinstance(payload, dict) and "transcript_path" not in payload:
+        payload = payload | {"transcript_path": native_source(
+            Path(os.environ["HOME"]) / "native.jsonl", payload.get("session_id", ""),
+            payload.get("turn_id", ""),
+            "Your assignment remains active: handle pending mailbox deliveries",
+        )}
     result = subprocess.run(
         [HOOK],
         input=json.dumps(payload) if raw is None else raw,
@@ -77,6 +89,7 @@ def stop(*, active: bool = False) -> dict[str, object]:
     return {
         "hook_event_name": "Stop",
         "session_id": "session-1",
+        "turn_id": "turn-1",
         "last_assistant_message": "<!-- SWITCHSTAND_YIELD:HANDOFF -->",
         "stop_hook_active": active,
     }
@@ -118,7 +131,7 @@ def test_pending_mail_scans_every_page_and_requests_one_continuation() -> None:
     assert result["decision"] == "block"
     assert "2 pending" in result["reason"]
     assert first in result["reason"] and second in result["reason"]
-    assert server.requests[-1]["cursor"] == first
+    assert server.requests[1]["cursor"] == first
 
 
 @pytest.mark.parametrize("response", [
@@ -161,7 +174,7 @@ def test_worker_mailbox_retains_legacy_pending_continuation(tmp_path: Path) -> N
         assert invoke(stop(), server.endpoint)["decision"] == "block"
 
 
-def test_markerless_conversation_with_pending_delivery_has_unknown_intent() -> None:
+def test_markerless_reply_with_reaffirmed_work_handles_pending_delivery_once() -> None:
     delivery = str(uuid4())
     with MailboxServer([{
         "status": "ok", "coordinator": True, "delivery_ids": [delivery],
@@ -170,10 +183,9 @@ def test_markerless_conversation_with_pending_delivery_has_unknown_intent() -> N
         payload = stop() | {"last_assistant_message": "Checkpoint only"}
         first = invoke(payload, server.endpoint)
         second = invoke(payload | {"stop_hook_active": True}, server.endpoint)
-    assert first["continue"] is True
-    assert "UNKNOWN yield intent" in first["systemMessage"]
+    assert first["decision"] == "block"
     assert second == {}
-    assert len(server.requests) == 1
+    assert len(server.requests) == 2
 
 
 def test_canonical_without_opt_in_retains_pending_conversation_continuation(tmp_path: Path) -> None:
