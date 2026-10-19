@@ -1,0 +1,61 @@
+name: Advisory fast feedback trial
+run-name: Advisory representative trial / ${{ github.sha }}
+on:
+  push:
+    branches: [ci/fast-feedback-trial-20261020]
+permissions:
+  contents: read
+jobs:
+  advisory:
+    name: Advisory representative checks (full Quality still required)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env: {POSTGRES_PASSWORD: postgres, POSTGRES_DB: switchstand_test}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PYTHONPATH: src
+      SWITCHSTAND_REQUIRE_TEST_DATABASE: "1"
+      TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
+      TRIAL_SUBJECT: ${{ github.sha }}
+      # A new branch has no before commit; bind that trial to the accepted baseline.
+      TRIAL_BASE: ${{ github.event.before != '0000000000000000000000000000000000000000' && github.event.before || '7ca98f58fb4d016a0292ee557fdc3e1cb4cd0be3' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Fetch the exact planner base
+        run: git fetch --no-tags --depth=1 origin "$TRIAL_BASE"
+      - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        id: uv
+        with:
+          version: "0.12.10"
+          python-version: "3.14"
+          enable-cache: true
+          cache-python: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+          cache-suffix: ci-fast-feedback-20261020-v1
+      - name: Prepare the exact locked dependencies
+        run: uv sync --locked --all-groups --no-install-project
+      - name: Plan and run representative checks
+        env:
+          TRIAL_CACHE_HIT: ${{ steps.uv.outputs.cache-hit }}
+          TRIAL_CACHE_KEY: ${{ steps.uv.outputs.cache-key }}
+          TRIAL_PYTHON_CACHE_HIT: ${{ steps.uv.outputs.python-cache-hit }}
+        run: .venv/bin/python .github/scripts/fast_feedback_trial.py
+      - name: Retain advisory plan and results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: advisory-trial-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fast-feedback-trial
+          if-no-files-found: warn
