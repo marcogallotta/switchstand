@@ -13,6 +13,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from codex_stop_intent import affirmed_action
+
 MODES = {"OFF", "PILOT"}
 LIFETIMES = {"ASSIGNMENT", "STANDING"}
 MARKER_NAMES = ("ASSIGNMENT_COMPLETE", "REAL_BLOCKER", "HANDOFF", "USER_STOP")
@@ -118,7 +120,7 @@ def main() -> None:
     try:
         raw = json.load(sys.stdin)
         if not isinstance(raw, dict):
-            raise ValueError("hook payload is not an object")
+            raise TypeError("hook payload is not an object")
         payload = raw
         if arguments.mode not in MODES or arguments.lifetime not in LIFETIMES:
             raise ValueError("generated continuity mode or lifetime is invalid")
@@ -146,7 +148,7 @@ def main() -> None:
         marker = terminal.group(1) if terminal and len(matches) == 1 else None
         active = payload.get("stop_hook_active")
         if not isinstance(active, bool):
-            raise ValueError("missing stop_hook_active")
+            raise TypeError("missing stop_hook_active")
         action = None
         reason = None
         session_id = payload.get("session_id")
@@ -166,12 +168,7 @@ def main() -> None:
                 actions = evidence.get("actions")
                 if not isinstance(actions, list) or not all(isinstance(a, str) and a for a in actions):
                     raise ValueError("malformed Coordinator actions")
-                if marker is None:
-                    raise ValueError(
-                        "UNKNOWN yield intent: Stop has no conversation/completion signal; "
-                        "preserve outstanding obligations; do not claim completion"
-                    )
-                action = actions[0] if actions else None
+                action = affirmed_action(payload, actions) if actions else None
         _append(arguments.telemetry, _event(
             payload,
             event="stop",

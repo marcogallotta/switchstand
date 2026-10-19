@@ -653,12 +653,18 @@ Outside the local session opt-in, continuity retains the previous marker policy 
 Tracker dependency, including active Stops, subagents and completion-marker telemetry. Mailbox
 checks retain their previous pending-delivery behavior outside the target. Registration or a
 canonical Coordinator binding alone never enables the bounded correction.
-For the opted-in target, current executable owner actions and due review/message watches may
-reject a dedicated completion, blocker or handoff marker once. The stock Stop payload has no
-conversation/completion intent bit: markerless targeted replies release visibly as UNKNOWN
-intent, preserving outstanding obligations. This cannot certify or reject arbitrary prose
-completion claims. Ordinary targeted conversation therefore does not force continuation even
-when runnable work or pending delivery exists. Both handlers release explicit USER_STOP; an
+For the opted-in target, `scripts/codex_stop_intent.py` validates the native session and exact
+originating turn in a bounded transcript window, including its start, ordered distinct
+`user.text` messages and complete retained source. A correction requires an explicit active
+assignment attestation immediately followed by an exact current action from the edge.
+Every remaining clause must fit its conservative auxiliary grammar for reply ordering,
+continuation checking and bounded tool authority; unknown clauses, conversation, STOP,
+quotations, conditions and revocations release without forcing work. The helper is shared by
+both handlers and must accompany them when installed. Source provenance alone never grants
+action authority. Markerless replies can therefore receive the exact authorized action, while
+unrecognized intent remains UNKNOWN and preserves outstanding obligations. This cannot certify
+or reject arbitrary prose completion claims. Ordinary targeted conversation does not force
+continuation even when runnable work or pending delivery exists. Both handlers release explicit USER_STOP; an
 active target Stop releases even when the edge is unavailable, bounding correction to one per
 originating turn. Neither hook mutates obligations or certifies recipient pickup. This is not a
 scheduler or an autonomous wake mechanism.
