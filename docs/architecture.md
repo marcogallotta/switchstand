@@ -566,21 +566,23 @@ change, and causal tests for both layers.
 
 `repository_bundle.py` resolves the ordinary `repository_bundle_get` transport. The rolling GitHub
 release is only a cache: it contains a bundle, manifest, and checksum published by
-`.github/workflows/repository-bundle.yml` after the Quality workflow. Resolution independently reads
-the repository's current branch refs and scopes currentness to the requested grounding claim: the
-published and authoritative `main` refs must agree when no SHA is requested, while a requested SHA
-must be the value of the same branch ref in both maps. Unrelated branch movement does not invalidate
-that proof. The manifest digest, release asset digest, and checksum must still agree. An unproved
+`.github/workflows/repository-bundle.yml` after Quality or an authorized exact-branch manual dispatch.
+Each artifact contains exactly one branch with complete original history: `main` by default, or one
+explicit branch. The publisher never fetches or bundles all branches; non-main asset names hash the
+branch name. Resolution reads only that exact authoritative ref and requires a single matching
+manifest ref, rejecting legacy all-head manifests. Any requested SHA must equal the selected head.
+The manifest digest, release asset digest, and checksum must still agree. An unproved
 grounding claim or cache transition returns `refresh_pending`; provider failure returns
 `unavailable`. Those release and ref API reads use only the dedicated
 server-side `SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN`; missing configuration fails before network
 access. The bearer is attached only to validated exact `https://api.github.com` bundle endpoints,
-authenticated redirects and foreign pagination origins are rejected, and release asset downloads
+authenticated redirects are rejected, and release asset downloads
 remain unauthenticated.
 
-The bundle can transport branch objects and allow an exact requested SHA to be checked out, but the
-release tag and manifest do not become source authority. GitHub branch refs remain authoritative,
-and consumers must verify the advertised SHA-256 before materializing the bundle.
+Pending responses name the selected branch and authorized-agent dispatch route; a read request does
+not start publication. Release metadata is not source authority or downloaded bytes: consumers must
+verify SHA-256, clone the bundle and inspect the requested Git history. Actual ChatGPT download and
+materialization require client evidence; server tests do not establish that acceptance.
 
 `repository_candidate.py` owns the ordinary read-only GitHub candidate qualification. It binds the
 current public pull-request base and head to the merge-ref commit's ordered parents, then evaluates

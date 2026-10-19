@@ -5,7 +5,7 @@ import json
 import os
 import re
 from typing import Any, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -74,9 +74,25 @@ def asset_names(branch: str) -> tuple[str, str, str]:
     return f"{stem}.bundle", f"{stem}.manifest.json", f"{stem}.bundle.sha256"
 
 
+def _is_bundle_api_url(url: str, *, release: bool = False, branch: str = "main") -> bool:
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc != "api.github.com" or parsed.fragment:
+        return False
+    if release:
+        return parsed.path == urlsplit(RELEASE_API).path and not parsed.query
+    return parsed.path == urlsplit(REFS_API + quote(branch, safe="/")).path and not parsed.query
+
+
 async def _api_get(
-    http: httpx.AsyncClient, url: str, token: str,
+    http: httpx.AsyncClient,
+    url: str,
+    token: str,
+    *,
+    release: bool = False,
+    branch: str = "main",
 ) -> httpx.Response:
+    if not _is_bundle_api_url(url, release=release, branch=branch):
+        raise ValueError("foreign GitHub API URL")
     return await http.get(url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=False)
 
 
@@ -106,7 +122,7 @@ async def resolve_repository_bundle(
         },
     )
     try:
-        release_response = await _api_get(http, RELEASE_API, token)
+        release_response = await _api_get(http, RELEASE_API, token, release=True)
         if release_response.status_code == 404:
             return _pending(required_sha, "cache_missing", branch)
         release_response.raise_for_status()
@@ -129,7 +145,7 @@ async def resolve_repository_bundle(
         checksum = checksum_response.text.strip().split()[0]
 
         # Exact ref lookup: no enumeration or all-branch fallback.
-        ref_response = await _api_get(http, REFS_API + quote(branch, safe="/"), token)
+        ref_response = await _api_get(http, REFS_API + quote(branch, safe="/"), token, branch=branch)
         if ref_response.status_code == 404:
             return _pending(required_sha, "branch_missing", branch)
         ref_response.raise_for_status()
