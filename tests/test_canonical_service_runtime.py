@@ -1113,7 +1113,7 @@ async def test_resource_app_preserves_canonical_runtime(
     assert seen[0].canonical_work_active
 
 
-@pytest.mark.parametrize("case", ["runnable", "review_due", "message_due", "future", "blocker", "unknown", "unpicked", "picked_up", "completed"])
+@pytest.mark.parametrize("case", ["runnable", "review_due", "message_due", "future", "blocker", "unknown", "unpicked", "picked_up", "completed", "inactive"])
 async def test_stop_obligations_reads_real_canonical_assignments(subject: Subject, case: str):
     import httpx
     from sqlalchemy import update as sql_update
@@ -1159,9 +1159,11 @@ async def test_stop_obligations_reads_real_canonical_assignments(subject: Subjec
         "next_due", "next_action_class", "next_action_ref",
     )})
     stored = await subject.runtime.works.replace(work)
+    if case == "inactive":
+        subject.service.canonical_work_active = False
     result = await _codex_stop_obligations(subject.service, "acceptance-session")
     assert result["status"] == (
-        "unknown" if case in {"unknown", "picked_up", "completed"} else "ok"
+        "unknown" if case in {"unknown", "picked_up", "completed", "inactive"} else "ok"
     )
     assert bool(result.get("actions")) == (case in {"runnable", "review_due", "message_due"})
     assert await subject.runtime.works.get(subject.work_id) == stored

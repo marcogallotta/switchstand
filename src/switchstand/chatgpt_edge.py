@@ -340,7 +340,7 @@ async def _codex_stop_mailbox_page(
 
 async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> dict[str, object]:
     """Project existing Coordinator assignments; never receive, complete or reassign work."""
-    if service.messages is None or service.canonical_work is None:
+    if service.messages is None or service.canonical_work is None or not service.canonical_work_active:
         return {"status": "unknown", "reason": "state_unavailable"}
     mailboxes = AgentMailboxState(service.messages.engine)
     bound = await mailboxes.for_session(f"codex:{session_id}")
