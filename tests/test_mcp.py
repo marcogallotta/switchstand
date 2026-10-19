@@ -74,6 +74,7 @@ def test_managed_feedback_tools_share_classification_schema():
     server = build_server(FakeService(), ID, issue_reporter=object())
     for tool in (server._tool_manager.get_tool(name) for name in (
         "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+        "file_fork_management",
     )):
         assert tool.parameters["properties"]["mode"]["default"] == "FILE"
         assert "classification" in tool.parameters["properties"]
@@ -233,10 +234,12 @@ def test_launch_bound_profile_constructs_priority_adapters_only_when_enabled(mon
         "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
         "SWITCHSTAND_PROCESS_PROJECT_ID", "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
         "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+        "SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID",
     ):
         monkeypatch.delenv(variable, raising=False)
     monkeypatch.setenv("SWITCHSTAND_PROCESS_PROJECT_ID", str(ID))
     monkeypatch.setenv("SWITCHSTAND_PERFORMANCE_PROJECT_ID", str(PERFORMANCE_ID))
+    monkeypatch.setenv("SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID", str(REFERENCE_ID))
     if enabled:
         monkeypatch.setenv("SWITCHSTAND_PRIORITY_CLAIMS", "1")
     else:
@@ -250,6 +253,7 @@ def test_launch_bound_profile_constructs_priority_adapters_only_when_enabled(mon
     assert captured["references"] == (REFERENCE_ID,)
     assert captured["issue_reporter"].issue_projects == {
         "PROCESS": ID, "PERFORMANCE": PERFORMANCE_ID,
+        "FORK_MANAGEMENT": REFERENCE_ID,
     }
     if enabled:
         assert captured["principal"] == managed_principal(ID)
@@ -561,7 +565,7 @@ async def test_real_stdio_handshake_exposes_exact_surface():
         } | {
             "work_update",
             "file_bug", "file_feature", "file_process", "file_performance",
-            "file_review_feedback",
+            "file_review_feedback", "file_fork_management",
             "priority_claim_get", "priority_claim_record", "priority_context_get",
             "message_pending", "message_receive", "message_recover",
             "message_result_send", "message_disposition",
@@ -643,6 +647,7 @@ async def test_managed_read_denial_precedes_provider_and_failure_projection(monk
 
 @pytest.mark.parametrize("category", [
     "BUG", "PRODUCT_FEATURE", "PROCESS", "PERFORMANCE", "HUMAN_REVIEW_FEEDBACK",
+    "FORK_MANAGEMENT",
 ])
 @pytest.mark.parametrize("mode", ["FILE", "CLASSIFY"])
 @pytest.mark.parametrize("with_audit", [False, True])

@@ -59,6 +59,22 @@ Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Wor
 
 #### Native fork operating boundary
 
+ALL execution belongs in context-free native forks, including record/document reads and
+Tracker, mailbox and feedback operations. The parent talks with Marco and actively supervises
+concise checkpoints/results under the [Root tracking contract](coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence).
+Workers execute their bounded assignments directly. Required resource admission belongs to
+dispatch mechanics (only GO/WAIT reaches the parent); it must precede the exact action and
+does not require launching another fork to admit its own launch. Missing evidence means WAIT.
+Do not claim a repository instruction overrides a higher-priority mandatory main-agent
+operation, disables host compaction, or supplies an unavailable native capability.
+
+The initial Fork Management trial logs all assignments/checks/outcomes through the existing
+fixed `file_fork_management` feedback adapter. Its category is `FORK_MANAGEMENT`; ordinary
+edge and managed profiles read `SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
+canonical project destination. Provisioning/configuring that destination and activating a
+runtime are separate effects. Missing configuration truthfully denies reporting; source
+landing does not establish collection. The later ticker is not part of this implementation.
+
 The live native mechanics are bounded forks and messages while the parent Codex process is active,
 plus the V1 writer binding described above: before implementation, Root binds the exact Worker,
 WorkId, base, and non-overlapping repository-relative surface to a dedicated linked writer; the

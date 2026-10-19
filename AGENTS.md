@@ -74,7 +74,16 @@ assignment or an explicit current grant for the exact WorkId.
 
 WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
 
-Codex: reviews = a fresh native fork; never the `review_*` tools.
+Codex: ALL work executes in context-free native forks. The parent only talks with Marco
+and dispatches, actively supervises, and receives concise fork results. Document/WorkId
+reads, Tracker/mailbox/feedback operations, investigation, design, implementation, testing,
+review, and integration belong in forks; requirements elsewhere to read or act are fulfilled
+there. Workers execute their bounded assignments directly; recursive forks are not required.
+Dispatch includes existing required resource admission, returning only GO/WAIT. Follow
+[active supervision and the all-event Fork Management trial](docs/coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence)
+for periodic checks, intervention, and timestamped assignment/check/outcome feedback. Reviews
+use fresh independent native forks; never the `review_*` tools. Keep parent context and
+Marco's screen small.
 
 Feedback V1: for each good/neutral exchange, make one rough random `0..99` draw and report on `0`; report every bad/frustrating exchange and every Human Review outcome. Report avoidable process latency through `file_performance` when Marco says a process is slow, the agent repeats same-purpose reads/checks, performs an unnecessary audit/polish, or serializes work already known safe to parallelize; legitimate long work alone is not a failure. End every user-facing reply with `F:–`, `F:logged <WorkId>`, `F:bad <WorkId>`, or `F:unavailable`; use a WorkId mark only after definitive readback. Before reporting `F:unavailable`, inspect `ALL_TOOLS` for the applicable `mcp__switchstand__file_*` Tracker feedback function and invoke it through `functions.exec`; report `F:unavailable` only when no applicable function exists or its required result cannot be confirmed. Use the shared Tracker Issues V1-A reporting surface; never build a parallel reporting path.
 
@@ -96,7 +105,7 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overa
 
 ### Route only the current function
 
-- **Root:** Root Coordinator only; load and follow [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md) before coordinating. Use the human-interaction contract for every status or plan update, promptly disposition completed agents under the tracking contract, and default memory-heavy work to context-free native forks unless a specific task reason requires inherited context. Do not preload implementation/review detail.
+- **Root:** Root Coordinator only. Have forks apply [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md), returning concise supervision and communication requirements. Follow the ALL-work fork rule above; do not load detailed work or logs into the parent.
 - **Delegated Coordinator:** every other head follows exact lane/parent obligations + lane-required procedures; it does not inherit Root tracking or portfolio authority merely by being a head or Coordinator.
 - **Research/design Worker:** exact work + current bound research/design package; use [research sources](docs/research-sources.md) when researching and [code quality](docs/code-quality.md) for material design review before Human Review.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.

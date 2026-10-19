@@ -514,6 +514,9 @@ def build_server(
             "PERFORMANCE", "Report avoidable process latency to the fixed PERFORMANCE triage list."))
         closed_tool(server, "file_review_feedback", report_tool(
             "HUMAN_REVIEW_FEEDBACK", "Record feedback in the fixed Human Review triage list."))
+        closed_tool(server, "file_fork_management", report_tool(
+            "FORK_MANAGEMENT", "Record every fork assignment, supervision check and outcome "
+            "in the fixed Fork Management feedback list."))
     register_priority_tools(
         server, active_work_id, reference_work_ids,
         priority_claims=priority_claims, priority_context=priority_context,

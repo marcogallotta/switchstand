@@ -282,8 +282,12 @@ class ChatGPTService:
         if outcome.status != "ok" or outcome.work_id is None:
             return FeedbackOutcome(**outcome.model_dump())
         try:
+            candidate_types = (
+                frozenset({"FORK_MANAGEMENT"}) if category == "FORK_MANAGEMENT"
+                else frozenset(self.issue_projects) - {"FORK_MANAGEMENT"}
+            )
             candidates = await self.canonical_work.feedback_candidates(
-                title, outcome.work_id, frozenset(self.issue_projects),
+                title, outcome.work_id, candidate_types,
             )
             return FeedbackOutcome(**outcome.model_dump(), suggestion_status="OK",
                                    candidates=candidates)

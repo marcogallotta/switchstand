@@ -169,6 +169,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
         "message_receive", "message_recover", "message_result_send", "message_disposition",
         "capability_preflight_get",
         "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+        "file_fork_management",
     }
     switchstand_managed = servers["switchstand_managed"]
     assert switchstand_managed["required"] is False

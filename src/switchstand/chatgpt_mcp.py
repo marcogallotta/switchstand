@@ -259,6 +259,7 @@ ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_message_disposition",
     "task_control_checkpoint",
     "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+    "file_fork_management",
 })
 
 ORDINARY_NON_IDEMPOTENT_TOOLS: frozenset[str] = frozenset()
@@ -707,6 +708,7 @@ def build_ordinary_tools(
     file_process = fixed_feedback("PROCESS", "file_process")
     file_performance = fixed_feedback("PERFORMANCE", "file_performance")
     file_review_feedback = fixed_feedback("HUMAN_REVIEW_FEEDBACK", "file_review_feedback")
+    file_fork_management = fixed_feedback("FORK_MANAGEMENT", "file_fork_management")
 
     async def task_control_get(
         api_version: Literal["1"], work_id: UUID,
@@ -1684,6 +1686,7 @@ def build_ordinary_tools(
         ("file_process", file_process),
         ("file_performance", file_performance),
         ("file_review_feedback", file_review_feedback),
+        ("file_fork_management", file_fork_management),
         ("task_control_get", task_control_get),
         ("work_hygiene_check", work_hygiene_check),
         ("task_control_checkpoint", task_control_checkpoint),

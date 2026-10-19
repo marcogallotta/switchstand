@@ -31,7 +31,7 @@ SWITCHSTAND_PRODUCT_CURRENTNESS_TOOL_NAMES SWITCHSTAND_PRODUCT_CURRENTNESS_QUALI
 SWITCHSTAND_PRODUCT_CURRENTNESS_QUALIFICATION_KEY""".split()  # noqa: SIM905
 REPORTING_ENV = """SWITCHSTAND_BUGS_PROJECT_ID SWITCHSTAND_FEATURES_PROJECT_ID
 SWITCHSTAND_PROCESS_PROJECT_ID SWITCHSTAND_PERFORMANCE_PROJECT_ID
-SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID""".split()  # noqa: SIM905
+SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID""".split()  # noqa: SIM905
 
 
 class PreparedLaunch(BaseModel):
@@ -92,7 +92,7 @@ def managed_parent_command(
     )
     enabled_tools = ["work_get", "work_history", "capability_preflight_get",
                      "file_bug", "file_feature", "file_process", "file_performance",
-                     "file_review_feedback"]
+                     "file_review_feedback", "file_fork_management"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
                              "SWITCHSTAND_GRANT_ID", "SWITCHSTAND_GRANT_VERSION",
                              *REPORTING_ENV]

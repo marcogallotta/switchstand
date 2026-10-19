@@ -35,6 +35,7 @@ def build_from_env():
         "PROCESS": "SWITCHSTAND_PROCESS_PROJECT_ID",
         "PERFORMANCE": "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
         "HUMAN_REVIEW_FEEDBACK": "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+        "FORK_MANAGEMENT": "SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID",
     }.items():
         if value := os.getenv(variable):
             issue_projects[category] = UUID(value)

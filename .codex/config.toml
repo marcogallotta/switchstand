@@ -70,7 +70,7 @@ default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
                  "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
-                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
                  "agent_message_recover", "agent_message_result_send", "agent_message_acknowledge",
@@ -90,7 +90,7 @@ default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
                  "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
-                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
                  "agent_message_send", "agent_message_pending", "agent_message_receive",
                  "agent_message_recover", "agent_message_result_send", "agent_message_acknowledge",
@@ -103,10 +103,10 @@ env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS
             "SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_DIR",
             "SWITCHSTAND_RUN_ID", "SWITCHSTAND_BUGS_PROJECT_ID",
             "SWITCHSTAND_FEATURES_PROJECT_ID", "SWITCHSTAND_PROCESS_PROJECT_ID",
-            "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID"]
+            "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID", "SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID"]
 required = false
 enabled_tools = ["work_get", "work_history", "work_event", "work_append", "work_update",
-                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
+                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management",
                  "priority_claim_get", "priority_claim_record", "priority_context_get",
                  "message_pending", "message_receive", "message_recover", "message_result_send", "message_disposition", "capability_preflight_get"]
 default_tools_approval_mode = "approve"

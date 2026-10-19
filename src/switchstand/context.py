@@ -412,12 +412,14 @@ def codex_command(
               'intent. Work only in this private task clone. This is ordinary development; the '
               'exact CONTROL hook remains active.')
     enabled_tools = ["work_get", "work_history", "file_bug", "file_feature",
-                     "file_process", "file_performance", "file_review_feedback"]
+                     "file_process", "file_performance", "file_review_feedback",
+                     "file_fork_management"]
     forwarded_environment = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID",
                              "SWITCHSTAND_BUGS_PROJECT_ID", "SWITCHSTAND_FEATURES_PROJECT_ID",
                              "SWITCHSTAND_PROCESS_PROJECT_ID",
                              "SWITCHSTAND_PERFORMANCE_PROJECT_ID",
-                             "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID"]
+                             "SWITCHSTAND_HUMAN_REVIEW_PROJECT_ID",
+                             "SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID"]
     if priority_claims:
         enabled_tools.extend((
             "priority_claim_get", "priority_claim_record", "priority_context_get",
