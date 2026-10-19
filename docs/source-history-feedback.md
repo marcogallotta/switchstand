@@ -98,6 +98,12 @@ access/execution blocker. Empty reads and arbitrary check counts are nonterminal
 exact watch for re-entry if the session ends. A Scheduled task or condition watch is a different
 future-running product and never substitutes for this live obligation unless Marco explicitly asks.
 
+Persist each nonterminal watch on its exact owner with target and generation, responsible agent,
+purpose, evidence or cursor, message state, next check, and terminal condition. Each receive/ack
+obligation has one owner. Before handoff, final, stop, material focus change, replacement, or forced
+yield, reread exact pending surfaces, disposition available results and findings, and preserve the
+remainder. Saving state supports recovery; it does not make unfinished work complete.
+
 Typed `FINDINGS` at review, message, and handoff boundaries require an attributable
 `ACCEPT`, `CHALLENGE`, `NARROW`, or `NEEDS_EVIDENCE` disposition. Accepted findings
 must link an existing exact WorkId, record an authorized self-owned create, or preserve

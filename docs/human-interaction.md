@@ -14,6 +14,12 @@ is established and report it; route optional broader work separately.
 
 Human Review follows [Human Review](human-review.md): make the real human-owned choice clear before implementation, use a natural short explanation rather than fixed headings, and do not ask again for an unchanged approved choice. Authorized progress and completion receive truthful status, not a new approval request. The formats below are for ordinary status and attention, not a substitute for a Human Review conversation.
 
+Put the result, material delta, or exact action first; keep provenance behind it unless needed.
+For a handoff, name the resolved recipient and truthful action state. Route it directly when
+authorized and capable; otherwise name the stable recipient and provide one complete ready-to-copy
+fenced block. Never use a task ID as a recipient or receipt, and never use destination-unclear
+"dispatch", "run", "send", or "review" wording.
+
 ## Never use Marco as a command relay
 
 Assume Marco will run any command an agent asks him to run without independently checking whether
@@ -81,5 +87,13 @@ Raise human attention immediately, outside the normal status cadence. Keep unres
 For progress reporting, use a percentage only when there is a stable milestone denominator and relevant calibration evidence; otherwise report known milestones and uncertainty.
 
 Major completion/activation notices are stricter: keep them visible and repeat them at a frequency proportionate to importance until the human explicitly acknowledges them. Silence, deferral, transfer, unrelated progress, or ordinary clearing of an attention condition does not acknowledge a major completion/activation notice.
+
+After landing, report the behavior separately as `LIVE`, `INERT`, `DEFAULT-OFF`, or `UNAVAILABLE`,
+and name any remaining activation, adoption, readback, or proof obligation. Landing evidence never
+silently becomes live-reliance evidence.
+
+Acknowledging a notice does not clear an unfinished activation or human-action watch. Keep that
+watch visible at meaningful active checkpoints and re-entry until the action completes or Marco
+explicitly defers it.
 
 Wakeful may own timers and deduplicated delivery for these rules, but it owns neither status truth nor authority, and this contract creates no parallel work-management store.

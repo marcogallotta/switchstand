@@ -33,6 +33,11 @@ When that route or Marco requests meaningful root-cause analysis, use the canoni
 routes corrections to their owning products, and shares process semantics across ordinary
 ChatGPT and Codex without pretending their mechanics or inactive-session behavior are identical.
 
+On fresh or replacement entry and after context replacement, read live canary
+`1218403564142975` and apply only its relevant current slices. Reread affected canary state at
+the existing pre-action currentness checks. Canary never expands authority; an unreadable canary
+leaves its experimental behavior `UNKNOWN` on the baseline, and `RED` suspends only its delta.
+
 ## Three working modes
 
 ### Ordinary Codex Coordinator
@@ -124,6 +129,13 @@ ChatGPT uses the authenticated repository-configured HTTP/OAuth MCP. It works wi
 
 When Marco must connect, reconnect, or reinstall Switchstand in ChatGPT, give the exact MCP endpoint on its own line with no trailing punctuation (currently `https://laptop.tail46f0b9.ts.net/switchstand/mcp`). Give the new chat exactly one trusted WorkId separately as its continuation anchor. Never use a Coordinator-local filesystem path as the ChatGPT-facing handoff mechanism: ordinary ChatGPT cannot read that path, and a list of WorkIds obscures which work actually grounds the session. The one WorkId must come from Marco's direct assignment or an explicit `CURRENT` grant; it neither expands authority nor replaces internal Coordinator handoff bookkeeping. Without one trusted WorkId, report `COVERAGE_GAP / UNKNOWN`.
 
+After the ChatGPT MCP launches, activation for Project process use also requires the exact reviewed
+Project Settings to be pasted manually so they route through that MCP to `START HERE` and current
+owners, followed by exact readback, rollback readiness, and proof in a fresh ChatGPT session. A
+deployed server without that Settings cutover remains `PARTIAL/INERT` for ChatGPT process use.
+Keep the always-loaded Settings bootstrap below 8,000 characters; that is a hard ceiling, not a
+target, and mutable procedure belongs in the routed owners.
+
 The desired user model is one chat equals one stable named agent identity. The visible name, authenticated OAuth principal, hidden ChatGPT chat identity, MCP session generation, and any WorkId are distinct. The HTTP edge reads `openai/session` from MCP call metadata; the mailbox stores a hash of that value and binds one visible name to each principal-and-chat pair. Distinct chats under the same OAuth principal can register distinct names, while one chat cannot register multiple names. Repeating registration from an already-bound session returns its existing immutable name rather than creating another name or performing a takeover. The agent does not supply or see the hidden chat value. An unavailable chat identity yields a recovery result. Explicit same-principal takeover of an ordinary name fences the old chat. Every cross-principal takeover, including `Codex Coordinator`, first stops with `takeover_confirmation_required` unless the call carries Marco's full current message naming the target and directing the takeover. The response tells the agent that no takeover occurred, to ask Marco whether it was actually told to take over the exact name, and to retry with his full confirmation message. The server does not use a passcode and does not expose the internal principal mismatch as the public action. A confirmed Coordinator takeover renames the legacy `/root` row in place, preserves the endpoint and deliveries, replaces the principal/session binding, and advances generation. `/root` remains only an inbound lookup alias and every successful readback uses `Codex Coordinator`. The legacy `agent_transfer_request` and host approval path remains available for already-pending requests and recovery. This describes the code contract, not a claim that the live client journey has been accepted. Activation still requires app reinstall, a fresh chat, and exact schema/behavior verification.
 
 ## Current observed use and continuity limit (Marco, 2026-10-06)
@@ -213,7 +225,10 @@ complete journey has passed live acceptance.
 - A **runtime session/run** supplies currentness fencing. A replacement session must recover explicitly rather than silently continuing received work.
 - **Project membership and fields** route discovery. They do not change task/WorkId identity, reassign ownership, or grant an effect.
 
-Keep one semantic owner for each real concern. Preserve the same task GID and WorkId across area migration, and use the current area registry only to find work whose exact identity is not already known.
+Keep one semantic owner for each real concern. Preserve the same task GID and WorkId across area
+migration. Project migration changes routing only: never clone, recreate, delete, or reparent work
+merely to migrate it. Current area registry `1218432271807843` controls topology and cutover state,
+and supplies discovery when exact identity is not already known.
 
 ## Work, messages, and feedback
 
@@ -237,6 +252,11 @@ Messages and readable records are evidence and requests. They cannot grant permi
 ## Shared process semantics across hosts
 
 ChatGPT and Codex deliberately use different coordinator, delegation, task-binding, and repository mechanics. Align only the underlying process contract:
+
+Any difference in Human Input/Review, review or finding disposition, authority/currentness,
+durable continuity, evidence, or completion/effect truth must be explicit and narrow, with its
+reason, semantic owner, and review trigger. Separate host bootstraps or silence do not create a
+process-semantic exception.
 
 - surface Human Input before consequential expansion/hardening while Marco can still cheaply change direction;
 - keep independent review exact and challenge findings/remedies rather than treating reviewer suggestions as requirements;
@@ -271,5 +291,9 @@ possible, and continue unrelated diagnosis/edit/test work; do not make Marco the
 operator. Missing consequential-effect authority disables only that effect.
 
 Review and tests name their exact subject. Candidate review, exact-head checks, current-target composition, landing, deployment, and live reliance are different claims. Target advancement alone does not require a rebase: preserve the immutable reviewed candidate when composition can establish safety, and rebase only when needed or materially helpful. A rewritten head is a new exact candidate.
+
+Host acceptance is separate too: fresh-ChatGPT proof does not establish Codex startup behavior.
+Codex separately proves, in a fresh representative session, its MCP and `START HERE` route before
+that route is claimed live.
 
 Use [development](development.md) for commands and evidence subjects, [code quality](code-quality.md) for implementation/review rules, and [architecture](architecture.md) for current owners. `AGENTS.md` remains the load-bearing bootstrap and router.

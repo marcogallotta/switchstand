@@ -78,6 +78,12 @@ review, not an automatic full restart or another reviewer. Cheap research and un
 continue; hold only a commitment that consumes an unresolved material choice or lacks authority.
 Review supplies evidence, never implementation, landing, activation or provider-effect authority.
 
+For an otherwise authorized scoped repository delivery, specifications and reviews constrain and
+evidence the work; the absence of a redundant per-specification merge sentence is not itself a
+hold. Required exact-candidate review, exact-head/composition qualification, and all applicable
+effect boundaries still control. After those gates, only a current explicit `HOLD` or `DENIED`
+stops an otherwise authorized landing path.
+
 ### Mandatory scope blocks
 
 Before Human Review, every material Design Specification records the intended repository
@@ -267,6 +273,11 @@ For GitHub-native stacks, authoring and focused layer review may proceed while l
 ## Code Review
 
 For a substantive candidate, review the exact governing behavior and exact immutable candidate/head. Review depth follows semantic risk, blast radius and practical rollback, not cosmetic size.
+
+Every substantive exact candidate receives a fresh independent review before landing. That review
+starts without prior overall verdicts, scores, or author narrative unless an exact prior finding is
+the focused target. Unchanged attributable evidence may remain valid, but a changed candidate never
+inherits the fresh exact-candidate review gate.
 
 Ask in order:
 A. **Should this solution exist?** Correct problem and owner? Root fix? Smaller reuse/delete/reframe route?

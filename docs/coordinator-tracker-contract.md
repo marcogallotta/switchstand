@@ -59,6 +59,14 @@ A Root challenge names the exact work/revision, applicable clause, evidence, con
 
 On `FINAL`, validate the evidence against the exact WorkId and terminal condition, absorb every remaining obligation into the current picture, and advance the next safe gate. A failed child does not stop healthy siblings; current Marco direction remains foreground.
 
+Temporary children default under their parent and off-project. One off-project checkpoint per
+active owner may preserve takeover state, but never authority or a backlog. Before handoff,
+replacement, final, stop, material focus change, or a forced yield, absorb durable child results,
+retire temporary work, and persist every known material open item and nonterminal
+review/message/watch on its exact owner with its next action and terminal or unblock condition.
+Replacement reacquires only those recorded obligations; saving state is recovery, not permission
+to stop.
+
 ## Recover incomplete coverage without adopting history
 
 Historical recovery is exceptional and begins only when Root cannot prove complete
