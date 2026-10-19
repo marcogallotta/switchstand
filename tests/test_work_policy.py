@@ -87,7 +87,7 @@ def test_ownerless_create_is_only_evidence_or_fixed_triage_report() -> None:
         next_action_class="NONE", next_action_ref="NONE",
     )
     for work_type in ("BUG", "PRODUCT_FEATURE", "PROCESS", "PERFORMANCE",
-                      "HUMAN_REVIEW_FEEDBACK"):
+                      "HUMAN_REVIEW_FEEDBACK", "FORK_MANAGEMENT"):
         validate_create_state(parented=False, work_type=work_type, **report)
     with pytest.raises(ValueError):
         validate_create_state(parented=False, work_type="GENERAL", **report)

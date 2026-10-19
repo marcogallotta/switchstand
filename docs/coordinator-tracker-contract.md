@@ -4,8 +4,8 @@ This is a temporary behavioral contract for failures happening now. Tracking is 
 
 Root owns only its assigned portfolio. A Coordinator working within a delegated lane reports that lane upward; a worker owns only its task. Role never expands authority.
 
-Root reads the exact work before delegating. Delegate substantial research, design,
-implementation, testing, and eligible review to bounded safe forks; give each Worker one
+Have a fork read the exact work before delegating and return the bounded assignment.
+All execution belongs in context-free native forks; give each Worker one
 bounded task, use safe available slots without filler, and serialize heavy shared writers or
 other constrained resources. Root owns tracking, steering, result absorption, integration, and
 the next gate rather than duplicating the child's execution. Worker questions and material
@@ -30,7 +30,8 @@ For every known active lane keep:
 - relevant candidate/worktree identity;
 - last material progress/currentness needed to distinguish moving work from stalled work.
 
-Agent reports are evidence, not completion. Reread the exact WorkId before accepting a material transition.
+Agent reports are evidence, not completion. Have a fork reread the exact WorkId and return
+concise evidence before accepting a material transition.
 
 Missing or unsupported state is `UNKNOWN`. Use `INVALID` only when mechanically proven invalid.
 
@@ -51,13 +52,80 @@ For each live native child, keep one compact view in the existing derived coordi
 - pending challenge or rebuttal;
 - terminal condition.
 
-Inspect that view on a native `MESSAGE` or `FINAL`, a missed task-specific checkpoint, material Marco direction, and before status, handoff, compaction, or final claims. If no other coordination is ready, use native wait. This is not a scheduler, cadence, store, state machine, or claim that an inactive session will wake.
+Supervision means actively following work while it is underway. At dispatch, require concise
+progress at meaningful checkpoints and an expected next checkpoint. Periodically check that
+agents are on task while work is pending; use supported native status/activity signals,
+bounded waits, and checkpoint messages often enough to catch drift before the result. Inspect
+the compact view on a native `MESSAGE` or `FINAL`, a missed checkpoint, material Marco
+direction, and before status, handoff, compaction, or final claims. If no other coordination
+is ready, keep a bounded pending watch rather than wait indefinitely for a final report.
+
+At each check, assess scope creep, direction, necessity, progress, stalls, code quality,
+testing evidence, and blockers. Ask for concise evidence when unclear; challenge unsupported
+claims and unnecessary work. Stop or redirect work that has gone wrong within existing
+authority, and follow corrections through. Use independent forks to inspect or test results
+where appropriate; the parent does not load large logs or re-execute the work. Follow every
+remaining obligation through verified completion, explicit stop, or attributable handoff.
+Use a cadence proportionate to the task while the host can run. Native status and messages
+do not prove continuous access to child tool traces. This is no scheduler, inactive-session
+wake, or implemented ticker; the eventual 'check in with your agents' ticker is separate.
 
 A missed checkpoint starts bounded inquiry; call it a stall only when the child missed a task-specific observable and shows no attributable progress after that inquiry. Silence, elapsed time, or a verified external wait is not enough.
 
 A Root challenge names the exact work/revision, applicable clause, evidence, concrete harm, smaller path, cheapest falsifier, and affected branch. The child may answer `ACCEPT_FIX`, `COUNTEREVIDENCE`, `NEEDS_EVIDENCE`, or `MATERIAL_HUMAN_CHOICE`. Evaluate the answer and withdraw or narrow a disproved challenge; disagreement alone is not disobedience. Send an established material human choice directly to Marco while safe unaffected work continues.
 
 On `FINAL`, validate the evidence against the exact WorkId and terminal condition, absorb every remaining obligation into the current picture, and advance the next safe gate. A failed child does not stop healthy siblings; current Marco direction remains foreground.
+
+### Fork Management feedback trial
+
+Initially record ALL forks and everything they are assigned: dispatch, resume, assignment
+changes, every actual supervision check, and terminal outcomes. Include checks that catch
+nothing and inconclusive checks; do not sample. A Worker or logging fork files each event
+through `file_fork_management` in the existing feedback system, not as routine chat updates
+or a second local store. The parent supervises concise receipts and any pending coverage gap.
+
+Use compact JSON in the existing `evidence` string, with UTC event/observation timestamp,
+parent and fork identity, assigned WorkId, assignment text/change, event kind, what was
+checked and its evidence, result, intervention (or none), and elapsed check/reporting seconds.
+For example, a no-finding check records:
+
+```json
+{"event_at_utc":"2026-10-19T20:00:00Z","event":"check","parent_agent":"parent","fork_agent":"worker","work_id":"<assigned UUID>","assignment":"Fix the assigned regression","checked":"scope, progress, code quality, tests","evidence":"Worker checkpoint: focused fix; test run pending","result":"nothing_caught","intervention":"none","elapsed_seconds":4}
+```
+
+Distinguish `caught`, `nothing_caught`, and `unknown`; lifecycle events state their actual
+outcome. Timestamp each actual observation, not an invented earlier dispatch time. Preserve
+the bounded assignment given to the Worker, excluding secrets, unrelated system prompts and
+raw private logs under existing data policy; state any necessary omission. This is an evidence
+convention, not server-side validation or automatic collection. Record all supervising heads'
+forks; a Worker need not create another fork merely to report its own assignment.
+
+One existing-format canonical report per event keeps this trial within current protected
+reporting. Reuse the exact OperationId and arguments for the same event/reconciliation, never
+for a later check. Do not assume managed callers can update an earlier report: that requires
+separate write admission. Retain a failed event in its existing assigned work as pending and
+surface the coverage gap; do not claim a verified record without its receipt.
+
+The dedicated `FORK_MANAGEMENT` work type and configured category project isolate these data
+from BUG/PROCESS/HUMAN_REVIEW_FEEDBACK reports. Use existing
+`work_search(work_type="FORK_MANAGEMENT")` to inspect the trial; use the existing specific
+category filters for other feedback. Reports retain `priority=UNSET`, owner `NONE`, and
+`WAITING/TRIAGE` under existing feedback rules. A routine no-finding check is trial evidence,
+not a human complaint, HUMAN priority claim, or request for Marco's attention. Do not promote
+it merely because it was recorded. Unfiltered searches still contain these records. FILE
+related-candidate suggestions keep Fork Management within its own category and exclude it
+from other feedback suggestions; existing non-Fork-Management cross-category suggestions
+remain unchanged. This keeps routine trial events out of BUG/PROCESS suggestion lists
+without removing any retained data or hiding their unfiltered search volume.
+
+Count findings, nothing-caught/unknown checks, interventions, events and elapsed overhead
+from the retained evidence when assessing value/noise. For example, ten forks with dispatch,
+five checks and outcome each create 70 reports/calls. Preserve that initial full coverage so
+Marco can judge whether the checks pay for their volume; do not build analytics or silently
+reduce logging. A missing bucket/configuration is `reporting_list_unavailable`, not success.
+Repository code/tests do not prove live bucket configuration, collection, agent adherence,
+delegated parent-mailbox capability, or host wake. Mailbox processing requires verified
+capability for the intended session; never assume a fork has its parent's mailbox identity.
 
 ## Recover incomplete coverage without adopting history
 

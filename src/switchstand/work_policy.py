@@ -84,6 +84,7 @@ def validate_create_state(
 
     report = not parented and work_type in {
         "BUG", "PRODUCT_FEATURE", "PROCESS", "PERFORMANCE", "HUMAN_REVIEW_FEEDBACK",
+        "FORK_MANAGEMENT",
     } and owner_key == "NONE"
     if report:
         if (

@@ -763,7 +763,7 @@ async def test_workspace_create_uses_existing_project_alias(subject: Subject) ->
         assert set(memberships) == {(project_id, applied.work_id)}
 
 
-@pytest.mark.parametrize("category", ["BUG", "PERFORMANCE"])
+@pytest.mark.parametrize("category", ["BUG", "PERFORMANCE", "FORK_MANAGEMENT"])
 async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
     subject: Subject, category: str,
 ) -> None:
@@ -797,11 +797,50 @@ async def test_issue_report_is_ownerless_atomic_and_exactly_replayable(
     assert stored.item.routing.work_type == category
     assert stored.item.routing.owner_key == "NONE"
     assert stored.item.routing.lifecycle_state == "WAITING"
+    assert stored.item.routing.priority == "UNSET"
+    filtered = await subject.runtime.search(WorkSearchRequest(
+        api_version="1", work_type=category,
+    ))
+    assert filtered.status == "ok"
+    assert [item.id for item in filtered.items] == [applied.work_id]
     async with subject.engine.connect() as connection:
         membership = await connection.scalar(select(project_memberships.c.project_id).where(
             project_memberships.c.work_id == applied.work_id
         ))
     assert membership == project_id
+
+
+async def test_fork_trial_suggestions_are_isolated_without_hiding_data(subject: Subject) -> None:
+    for category in ("FORK_MANAGEMENT", "BUG", "PROCESS"):
+        project_id = uuid4()
+        async with subject.engine.begin() as connection:
+            await connection.execute(projects.insert().values(project_id=project_id, name=category))
+        subject.service.issue_projects[category] = project_id
+    subject.grant = subject.grant.model_copy(update={
+        "version": 2, "scope": "launch",
+        "operations": subject.grant.operations | {"file_issue"},
+        "report_qualification": "test:issue-report",
+    })
+    await subject.grants.issue(subject.grant, 1)
+    evidence = '{"event_at_utc":"2026-10-19T20:00:00Z","event":"check","result":"nothing_caught"}'
+    trial = await subject.service.file_issue("FORK_MANAGEMENT", uuid4(), "Supervision checkpoint", evidence)
+    bug = await subject.service.file_issue("BUG", uuid4(), "Supervision checkpoint", "A real defect")
+    process = await subject.service.file_issue("PROCESS", uuid4(), "Supervision checkpoint", "A complaint")
+    next_check = await subject.service.file_issue("FORK_MANAGEMENT", uuid4(), "Supervision checkpoint", evidence)
+
+    assert all(report.effect == "applied" and report.suggestion_status == "OK"
+               for report in (trial, bug, process, next_check))
+    assert not bug.candidates
+    assert [item.id for item in process.candidates] == [bug.work_id]
+    assert [item.id for item in next_check.candidates] == [trial.work_id]
+    stored = await subject.runtime.get(trial.work_id)  # type: ignore[arg-type]
+    assert stored.item is not None and stored.item.notes == evidence
+    filtered = await subject.runtime.search(WorkSearchRequest(api_version="1", work_type="FORK_MANAGEMENT"))
+    assert {item.id for item in filtered.items} == {trial.work_id, next_check.work_id}
+    unfiltered = await subject.runtime.search(WorkSearchRequest(api_version="1"))
+    assert {trial.work_id, bug.work_id, process.work_id, next_check.work_id} <= {
+        item.id for item in unfiltered.items
+    }
 
 
 @pytest.mark.parametrize(("classification", "closed"), [

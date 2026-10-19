@@ -469,7 +469,7 @@ def test_context_server_exposes_all_fixed_feedback_tools_when_configured():
     server = build_context_server(FakeService(), ACTIVE, issue_reporter=object())
     assert {
         "file_bug", "file_feature", "file_process", "file_performance",
-        "file_review_feedback",
+        "file_review_feedback", "file_fork_management",
     }.issubset(server._tool_manager._tools)
 
 
