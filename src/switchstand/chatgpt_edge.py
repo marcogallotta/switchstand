@@ -36,10 +36,10 @@ from .activation_continuity import (
 )
 from .activation_continuity_store import ActivationContinuity
 from .activation_contract_loader import load_activation_contracts_from_environment
-from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailboxState
+from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox, AgentMailboxState
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
-from .canonical_work import CanonicalWorkRepository
+from .canonical_work import CanonicalWorkRepository, CurrentWork
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
@@ -338,19 +338,25 @@ async def _codex_stop_mailbox_page(
     }
 
 
-def _codex_stop_head(session_id: str, binding: object) -> dict[str, str] | None:
+def _codex_stop_head(session_id: str, binding: AgentMailbox) -> dict[str, str] | None:
     """Read one explicit host opt-in; registration alone never opts a head in."""
     path = Path.home() / ".config/switchstand/codex-stop-head.json"
     try:
-        value = json.loads(path.read_text())
-        if not isinstance(value, dict) or value.get("session_id") != session_id:
+        raw: Any = json.loads(path.read_text())
+        if not isinstance(raw, dict):
             return None
-        if value.get("mailbox_name") != getattr(binding, "name", None) or \
+        value = cast(dict[str, Any], raw)
+        if value.get("session_id") != session_id:
+            return None
+        if value.get("mailbox_name") != binding.name or \
                 type(value.get("generation")) is not int or \
-                value["generation"] != getattr(binding, "generation", None):
+                value["generation"] != binding.generation:
             return None
         assignments = value.get("assignments")
-        if not isinstance(assignments, dict) or not assignments or len(assignments) > 10:
+        if not isinstance(assignments, dict):
+            return None
+        assignments = cast(dict[str, Any], assignments)
+        if not assignments or len(assignments) > 10:
             return None
         for work_id, owner in assignments.items():
             UUID(work_id)
@@ -380,11 +386,12 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
     if not ordinary and (grant is None or not grant.current()):
         return {"status": "unknown", "reason": "missing_authority"}
     works = service.canonical_work.works
+    items: list[CurrentWork]
     if scoped is None:
         page = await works.search(owner_key=CODEX_COORDINATOR_NAME, completed=False, limit=100)
         if page.next_cursor is not None:
             return {"status": "unknown", "reason": "incomplete_assignment_page"}
-        items = page.items
+        items = list(page.items)
     else:
         items = []
         for work_id, owner in scoped.items():
