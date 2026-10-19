@@ -6,7 +6,9 @@ from pathlib import Path
 
 def native_source(path: Path, session: str, turn: str, *messages: str) -> str:
     records = [
-        {"type": "session_meta", "payload": {"id": session}},
+        {"type": "session_meta", "payload": {
+            "id": session, "cwd": str(path.parent), "runtime_workspace_roots": [str(path.parent)],
+        }},
         {"type": "event_msg", "payload": {"type": "task_started", "turn_id": turn}},
     ]
     for index, text in enumerate(messages):

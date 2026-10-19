@@ -30,8 +30,8 @@ AUXILIARY = re.compile(
     r"no production work or external services are authorized)\.?", re.IGNORECASE,
 )
 LOCAL_FILE_ACTION = re.compile(
-    r"Read (?:/[^\s;]+|[\w.-]+) and write its exact contents to "
-    r"(?:/[^\s;]+|[\w.-]+); read it back\."
+    r"Read (?P<input>/[^\s;]+|[\w.-]+) and write its exact contents to "
+    r"(?P<output>/[^\s;]+|[\w.-]+); read it back\."
 )
 CONTINUATION_CHECK = re.compile(
     r"(?:testing|checking|trying) (?:if|whether) (?:(?:the|this|new) )?"
@@ -67,6 +67,8 @@ def _native_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
                 or not isinstance(record.get("type"), str):
             raise TypeError("UNKNOWN originating user turn: malformed source record")
         records.append(record)
+    if not records or records[0]["type"] != "session_meta":
+        records.insert(0, header)
     return records
 
 
@@ -161,6 +163,28 @@ def _interrupted_check(records: list[dict[str, Any]], turn_id: str) -> bool:
     return bool(CONTINUATION_CHECK.fullmatch(_user_text(previous, previous_id)))
 
 
+def _isolated_file_action(
+    payload: dict[str, Any], records: list[dict[str, Any]], instruction: str, clauses: list[str],
+) -> bool:
+    match = LOCAL_FILE_ACTION.fullmatch(instruction)
+    if not match or not any(clause.lower().startswith("this is ") and AUXILIARY.fullmatch(clause)
+                            for clause in clauses):
+        return False
+    source = records[0]["payload"]
+    cwd = source.get("cwd")
+    if not isinstance(cwd, str) or payload.get("cwd") != cwd \
+            or source.get("runtime_workspace_roots") != [cwd] or not Path(cwd).is_absolute():
+        return False
+    try:
+        root = Path(cwd).resolve()
+        if root == Path("/tmp") or not root.is_relative_to("/tmp"):
+            return False
+        return all((root / match[name]).resolve().is_relative_to(root)
+                   for name in ("input", "output"))
+    except (OSError, RuntimeError):
+        return False
+
+
 def affirmed_action(payload: dict[str, Any], actions: list[str]) -> str | None:
     records = _native_records(payload)
     starts = [index for index, record in enumerate(records) if record["type"] == "event_msg"
@@ -186,7 +210,7 @@ def affirmed_action(payload: dict[str, Any], actions: list[str]) -> str | None:
             remainder = text[:match.start()] + text[match.end() + len(instruction):]
             clauses = re.split(r"(?<=[.!])\s+|\n+", remainder.strip())
             if any(clause.lower().startswith("no production work") for clause in clauses) \
-                    and not LOCAL_FILE_ACTION.fullmatch(instruction):
+                    and not _isolated_file_action(payload, records, instruction, clauses):
                 continue
             if all(not clause or AUXILIARY.fullmatch(clause) for clause in clauses):
                 return action

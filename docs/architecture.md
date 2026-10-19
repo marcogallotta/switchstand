@@ -667,6 +667,10 @@ immediately preceding complete native interrupted turn, within ten seconds, with
 correction, call or completion; STOP, pause, questions and unknown user sources break eligibility.
 This uses transcript evidence and adds no wake mechanism or persistent state. A no-production or
 external-service restriction accepts only an explicit local file read/write/readback action.
+That action additionally requires the announced test context and input/output paths resolved
+inside the exact native session workspace, whose root is under `/tmp`; missing workspace evidence,
+cwd disagreement, and symlink or parent escapes remain UNKNOWN. This proves only the bounded
+disposable-file scope, not a general production-safety property of local writes.
 Markerless replies can therefore receive the exact authorized action, while
 unrecognized intent remains UNKNOWN and preserves outstanding obligations. This cannot certify
 or reject arbitrary prose completion claims. Ordinary targeted conversation does not force

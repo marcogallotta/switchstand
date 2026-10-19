@@ -13,7 +13,8 @@ ACTIVE = "Your directly authorized assignment remains active: " + ACTION.partiti
 
 
 def source(tmp_path: Path, *messages: str) -> dict[str, str]:
-    return {"session_id": "session", "turn_id": "turn", "transcript_path": native_source(
+    return {"session_id": "session", "turn_id": "turn", "cwd": str(tmp_path),
+            "transcript_path": native_source(
         tmp_path / "native.jsonl", "session", "turn", *messages,
     )}
 
@@ -107,9 +108,38 @@ def test_restricted_authority_cannot_be_overruled_by_an_exact_current_action(
     tmp_path: Path, instruction: str,
 ) -> None:
     action = "work: " + instruction
-    text = ("Your assignment remains active: " + instruction
+    text = ("This is an isolated continuation check, not a cancellation or pause of the assignment. "
+            + "Your assignment remains active: " + instruction
             + " No production work or external services are authorized.")
     assert HELPER["affirmed_action"](source(tmp_path, text), [action]) is None
+
+
+@pytest.mark.parametrize("damage", ["live_hook", "symlink", "parent", "cwd", "roots", "purpose"])
+def test_no_production_restriction_requires_isolated_native_file_scope(
+    tmp_path: Path, damage: str,
+) -> None:
+    destination = tmp_path / "receipt.output"
+    if damage == "live_hook":
+        destination = Path("/home/marco/switchstand/scripts/codex-continuity-hook")
+    elif damage == "parent":
+        destination = tmp_path / "../outside.output"
+    elif damage == "symlink":
+        destination.symlink_to("/home/marco/switchstand/scripts/codex-continuity-hook")
+    instruction = f"Read {tmp_path}/receipt.input and write its exact contents to {destination}; read it back."
+    prompt = ("This is an isolated continuation check, not a cancellation or pause of the assignment. "
+              + "Your assignment remains active: " + instruction
+              + " No production work or external services are authorized.")
+    if damage == "purpose":
+        prompt = prompt.split(". ", 1)[1]
+    payload = source(tmp_path, prompt)
+    if damage == "cwd":
+        payload["cwd"] = "/home/marco/switchstand"
+    elif damage == "roots":
+        path = Path(payload["transcript_path"])
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        rows[0]["payload"].pop("runtime_workspace_roots")
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    assert HELPER["affirmed_action"](payload, ["work: " + instruction]) is None
 
 
 @pytest.mark.parametrize("metadata", [None, [], "source", 4])
