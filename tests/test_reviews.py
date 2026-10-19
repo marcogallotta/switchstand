@@ -83,8 +83,8 @@ def test_review_result_guidance_preserves_role_and_authority_boundaries():
         verdict="PASS", verdict_digest="b" * 64,
     )
     for required in (
-        "evidence, not scope or effect authority", "runnable owned work",
-        "live docs/human-review.md decision conversation",
+        "evidence, not scope or effect authority", "work_get",
+        "record review_next_action", "perform that step now",
     ):
         assert required in passed.next_action
 
@@ -106,11 +106,11 @@ def test_review_result_guidance_distinguishes_unavailable_reviewer_from_active_p
             status=status, review_id=review_id, delivery_id=delivery_id,
         )
         for required in (
-            "while this chat can run", "bounded active polling", "Bash sleep 20",
-            "review_get for this exact review_id", "empty read is nonterminal",
-            "No verdict yet", "Do not end the turn", "until a terminal verdict",
-            "Continue other runnable assigned work", "Sleep before the first poll",
-            "every pending response requires continued work or another sleep and poll",
+            "While this chat can run", "bounded active polling", "Bash sleep 20",
+            f"review_get(review_id='{review_id}')", "empty read is nonterminal",
+            "No verdict yet", "Do not end the turn", "until PASS, FINDINGS, or BLOCKED",
+            "Sleep before the first poll", "perform the returned next_action",
+            "Every pending response requires another sleep and poll",
             "real host/session limit", "preserve the exact review_id and state",
             "do not use an hourly Scheduled task",
         ):
@@ -325,8 +325,21 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
     assert (stale.status, stale.reason) == ("STALE", "subject_revision_changed")
 
 
-async def test_same_principal_distinct_endpoints_complete_review(occurrence_runtime):
-    occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
+@pytest.mark.parametrize("verdict, continuation", [
+    ("PASS", "Present Human Review for this change now."),
+    ("PASS", "Implement the approved change now."),
+    ("PASS", None),
+    ("FINDINGS", None),
+    ("BLOCKED", None),
+])
+async def test_same_principal_distinct_endpoints_complete_review(
+    occurrence_runtime, verdict, continuation,
+):
+    occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET review_next_action = :action WHERE work_id = :id"
+        ), {"action": continuation, "id": subject_id})
     requester = (await mailboxes.register_agent(
         "Requester", "principal-shared", "chat-requester",
     )).mailbox
@@ -365,11 +378,43 @@ async def test_same_principal_distinct_endpoints_complete_review(occurrence_runt
         agent_binding=reviewer,
     )
     assert received.status == "ok"
+    finding = ReviewFinding(
+        finding_id="F-clear", defect="Missing boundary proof", evidence="No result",
+        consequence="Cannot establish claim", affected_claim="qualification",
+        minimum_clearing_condition="Supply proof",
+    )
     submitted = await service.submit(ReviewSubmit(
-        review_id=sent.review_id, verdict="PASS", context_provenance="UNSEEDED",
+        review_id=sent.review_id, verdict=verdict, context_provenance="UNSEEDED",
+        findings=(finding,) if verdict == "FINDINGS" else (),
+        evidence_refs=("work:actual-blocker-evidence",) if verdict == "BLOCKED" else (),
     ), reviewer)
     assert submitted.status == "SUBMITTED"
-    assert (await service.get(sent.review_id, requester)).status == "PASS"
+    result = await service.get(sent.review_id, requester)
+    assert result.status == verdict
+    assert "Continue in this turn" in result.next_action
+    assert "stop only to present Human Review or an evidenced blocker" in result.next_action
+    if verdict == "PASS":
+        if continuation:
+            assert f"Perform the recorded post-review step now: {continuation}" in result.next_action
+        else:
+            assert f"work_get(work_id='{subject_id}')" in result.next_action
+            assert "record it in review_next_action" in result.next_action
+            assert "not by itself a reason to ask Marco" in result.next_action
+    elif verdict == "FINDINGS":
+        assert finding.finding_id in result.next_action
+        assert f"prior_review_id='{sent.review_id}'" in result.next_action
+        assert "apply the smallest authorized clearing fixes" in result.next_action
+    else:
+        assert "work:actual-blocker-evidence" in result.next_action
+        assert "the actor who can clear it" in result.next_action
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE canonical_work SET review_next_action = 'Superseded action', "
+            "row_version = row_version + 1 WHERE work_id = :id"
+        ), {"id": subject_id})
+    stale = await service.get(sent.review_id, requester)
+    assert stale.status == "STALE"
+    assert "Superseded action" not in stale.next_action
 
 
 async def test_same_endpoint_reviewer_denial_leaves_no_review_state(occurrence_runtime):
@@ -709,7 +754,7 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         assert pending.verdict is None
         assert "No verdict yet" in pending.next_action
         assert "Bash sleep 20" in pending.next_action
-        assert "every pending response requires continued work or another sleep and poll" in pending.next_action
+        assert "Every pending response requires another sleep and poll" in pending.next_action
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
