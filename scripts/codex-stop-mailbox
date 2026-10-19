@@ -10,6 +10,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -38,7 +39,7 @@ def _page(endpoint: str, session_id: str, cursor: str | None, timeout: float) ->
         return json.load(response)
 
 
-def _pending(endpoint: str, session_id: str) -> list[str]:
+def _pending(endpoint: str, session_id: str) -> tuple[list[str], bool]:
     deadline = time.monotonic() + TIMEOUT_SECONDS
     cursor = None
     seen_cursors: set[str] = set()
@@ -57,8 +58,6 @@ def _pending(endpoint: str, session_id: str) -> list[str]:
         coordinator = page.get("coordinator")
         if not isinstance(coordinator, bool):
             raise ValueError("missing Coordinator binding evidence")
-        if not coordinator:
-            return []
         ids = page.get("delivery_ids")
         has_more = page.get("has_more")
         next_cursor = page.get("next_cursor")
@@ -75,7 +74,7 @@ def _pending(endpoint: str, session_id: str) -> list[str]:
         if not has_more:
             if next_cursor is not None:
                 raise ValueError("terminal mailbox page has a cursor")
-            return delivery_ids
+            return delivery_ids, coordinator
         if not ids or next_cursor is None or next_cursor in seen_cursors:
             raise ValueError("mailbox pagination did not advance")
         seen_cursors.add(next_cursor)
@@ -106,7 +105,23 @@ def main() -> None:
         if not isinstance(session_id, str) or not session_id:
             raise ValueError("missing Stop hook identity")
         endpoint = os.getenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", DEFAULT_ENDPOINT)
-        delivery_ids = _pending(endpoint, session_id)
+        delivery_ids, coordinator = _pending(endpoint, session_id)
+        try:
+            value = json.loads((Path.home() / ".config/switchstand/codex-stop-head.json").read_text())
+            targeted = isinstance(value, dict) and value.get("session_id") == session_id
+        except (OSError, ValueError, TypeError):
+            targeted = False
+        if (coordinator or targeted) and not (
+            isinstance(message, str) and re.fullmatch(
+                r"\s*<!-- SWITCHSTAND_YIELD:(HANDOFF|REAL_BLOCKER|ASSIGNMENT_COMPLETE) -->\s*",
+                message,
+            )
+        ):
+            _fail_open(
+                "UNKNOWN yield intent: Stop has no conversation/completion signal; "
+                "preserve outstanding deliveries; do not claim completion"
+            )
+            return
         if not delivery_ids:
             _emit({})
             return

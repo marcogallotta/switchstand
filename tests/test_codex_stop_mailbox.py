@@ -140,19 +140,19 @@ def test_conversation_without_pending_delivery_and_stop_release(message: str) ->
         "status": "ok", "coordinator": True, "delivery_ids": [],
         "has_more": False, "next_cursor": None,
     }]) as server:
-        assert invoke(stop() | {"last_assistant_message": message}, server.endpoint) == {}
+        assert invoke(stop() | {"last_assistant_message": message}, server.endpoint).get("decision") != "block"
         assert len(server.requests) == (0 if "USER_STOP" in message else 1)
 
 
-def test_worker_mailbox_never_forces_continuation() -> None:
+def test_worker_mailbox_retains_legacy_pending_continuation() -> None:
     with MailboxServer([{
         "status": "ok", "coordinator": False, "delivery_ids": [str(uuid4())],
         "has_more": False, "next_cursor": None,
     }]) as server:
-        assert invoke(stop(), server.endpoint) == {}
+        assert invoke(stop(), server.endpoint)["decision"] == "block"
 
 
-def test_markerless_progress_still_checks_pending_delivery_once() -> None:
+def test_markerless_conversation_with_pending_delivery_has_unknown_intent() -> None:
     delivery = str(uuid4())
     with MailboxServer([{
         "status": "ok", "coordinator": True, "delivery_ids": [delivery],
@@ -161,7 +161,7 @@ def test_markerless_progress_still_checks_pending_delivery_once() -> None:
         payload = stop() | {"last_assistant_message": "Checkpoint only"}
         first = invoke(payload, server.endpoint)
         second = invoke(payload | {"stop_hook_active": True}, server.endpoint)
-    assert first["decision"] == "block"
-    assert delivery in first["reason"]
+    assert first["continue"] is True
+    assert "UNKNOWN yield intent" in first["systemMessage"]
     assert second == {}
     assert len(server.requests) == 1

@@ -22,6 +22,13 @@ MARKER = re.compile(rf"<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->")
 TERMINAL_MARKER = re.compile(
     rf"\A\s*<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->\s*\Z"
 )
+CONTINUATION = (
+    "This top-level Codex assignment is still active. Do not end merely because you replied, "
+    "reported status, finished one item, received feedback, or hit a partial blocker. Continue "
+    "the next owned executable action. If the run is genuinely finished, blocked, stopped, or "
+    "handed off, reissue a dedicated final reply containing exactly one permitted hidden yield "
+    "marker and no other text: {markers}."
+)
 PROMPT_CONTEXT = (
     "This user message arrived while the top-level assignment is active. Treat it as an "
     "interrupt or steer, not a replacement unless it explicitly stops, pauses, cancels, "
@@ -68,7 +75,17 @@ def _subagent(payload: dict[str, Any]) -> bool:
     return any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path"))
 
 
-def _next_action(session_id: str) -> str | None:
+def _local_target(session_id: str) -> bool:
+    # This scopes UNKNOWN release only. The edge still validates generation,
+    # mailbox, assignments and authority before any corrective action is returned.
+    try:
+        value = json.loads((Path.home() / ".config/switchstand/codex-stop-head.json").read_text())
+        return isinstance(value, dict) and value.get("session_id") == session_id
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _evidence(session_id: str) -> dict[str, Any]:
     endpoint = os.getenv(
         "SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:8790/internal/codex-stop-mailbox",
     )
@@ -80,15 +97,19 @@ def _next_action(session_id: str) -> str | None:
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(request, timeout=2) as response:
         evidence = json.load(response)
-    if not isinstance(evidence, dict) or evidence.get("status") != "ok" \
-            or evidence.get("currentness") != "CURRENT":
-        raise ValueError(
-            "UNKNOWN Coordinator evidence; preserve outstanding obligations; do not claim completion"
-        )
-    actions = evidence.get("actions")
-    if not isinstance(actions, list) or not all(isinstance(a, str) and a for a in actions):
-        raise ValueError("malformed Coordinator actions")
-    return actions[0] if actions else None
+    if not isinstance(evidence, dict):
+        raise TypeError("malformed Coordinator evidence")
+    return evidence
+
+
+def _legacy_reason(marker: str | None, lifetime: str) -> str | None:
+    if marker in MARKERS and not (marker == "ASSIGNMENT_COMPLETE" and lifetime == "STANDING"):
+        return None
+    markers = ", ".join(
+        f"`<!-- SWITCHSTAND_YIELD:{value} -->`" for value in MARKER_NAMES
+        if lifetime == "ASSIGNMENT" or value != "ASSIGNMENT_COMPLETE"
+    )
+    return CONTINUATION.format(markers=markers)
 
 
 def main() -> None:
@@ -127,23 +148,60 @@ def main() -> None:
         if not isinstance(active, bool):
             raise ValueError("missing stop_hook_active")
         action = None
-        if not active and not _subagent(payload) and marker != "USER_STOP":
+        reason = None
+        targeted = False
+        if _subagent(payload):
+            reason = _legacy_reason(marker, arguments.lifetime)
+        elif marker != "USER_STOP":
             session_id = payload.get("session_id")
             if not isinstance(session_id, str) or not session_id:
                 raise ValueError("missing Stop session identity")
-            action = _next_action(session_id)
+            targeted = _local_target(session_id)
+            try:
+                evidence = {} if active and targeted else _evidence(session_id)
+            except (OSError, TypeError, ValueError) as error:
+                if targeted:
+                    raise ValueError(
+                        "UNKNOWN Coordinator evidence; preserve outstanding obligations; "
+                        "do not claim completion"
+                    ) from error
+                evidence = {}
+            targeted = targeted or evidence.get("coordinator") is True or (
+                evidence.get("status") == "ok" and evidence.get("currentness") == "CURRENT"
+            )
+            if not targeted:
+                # A global script replacement must not disable the previous
+                # continuity policy or make it depend on Tracker availability.
+                reason = _legacy_reason(marker, arguments.lifetime)
+            elif not active:
+                if evidence.get("status") != "ok" or evidence.get("currentness") != "CURRENT":
+                    raise ValueError(
+                        "UNKNOWN Coordinator evidence; preserve outstanding obligations; "
+                        "do not claim completion"
+                    )
+                actions = evidence.get("actions")
+                if not isinstance(actions, list) or not all(isinstance(a, str) and a for a in actions):
+                    raise ValueError("malformed Coordinator actions")
+                if marker is None:
+                    raise ValueError(
+                        "UNKNOWN yield intent: Stop has no conversation/completion signal; "
+                        "preserve outstanding obligations; do not claim completion"
+                    )
+                action = actions[0] if actions else None
         _append(arguments.telemetry, _event(
             payload,
             event="stop",
             stop_attempt=2 if active else 1,
-            blocked=1 if action else 0,
+            blocked=1 if action or reason else 0,
             attempted_yield_marker=marker,
             # Existing consumers treat ASSIGNMENT_COMPLETE as certified completion.
             # This hook only rejects proven runnable work; release proves no completion.
-            yield_marker=None if marker == "ASSIGNMENT_COMPLETE" else marker,
+            yield_marker=None if targeted and marker == "ASSIGNMENT_COMPLETE" else marker,
             hook_error=None,
         ))
-        if action is None:
+        if reason is not None:
+            print(json.dumps({"decision": "block", "reason": reason}))
+        elif action is None:
             print("{}")
         else:
             print(json.dumps({"decision": "block", "reason": (

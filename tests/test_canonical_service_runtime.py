@@ -1204,6 +1204,7 @@ async def test_stop_obligations_reads_real_canonical_assignments(subject: Subjec
     assert result["status"] == (
         "unknown" if case in {"unknown", "picked_up", "completed", "inactive"} else "ok"
     )
+    assert result["coordinator"] is True
     assert bool(result.get("actions")) == (case in {"runnable", "review_due", "message_due"})
     assert await subject.runtime.works.get(subject.work_id) == stored
     assert (await _codex_stop_obligations(subject.service, "other-session"))["status"] == "unknown"

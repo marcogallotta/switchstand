@@ -647,11 +647,22 @@ binding and existing canonical assignments owned by it. A private host opt-in at
 `~/.config/switchstand/codex-stop-head.json` may additionally name one exact session,
 registered mailbox name/generation, and explicit WorkId-to-owner assignments for a directly
 assigned coordinating head. Missing/malformed configuration, changed binding, or changed owners
-release as UNKNOWN; configuration and binding are rechecked before returning actions. Removing
-that file disables only the opt-in. Registration alone never enables it. Current executable owner actions and due
-review/message watches may reject a Stop once, including a markerless progress reply; missing authority, stale or contradictory evidence
-releases without certifying completion. With no runnable obligation or pending delivery, conversation passes. Both Stop handlers pass explicit
-USER_STOP and honor `stop_hook_active` before any network check. They never mutate obligations or
+release as UNKNOWN for the exact locally named session; configuration and binding are rechecked
+before returning actions. Outside that exact target, the continuity hook retains the previous
+marker policy even when the edge is unavailable. Registration alone never enables the opt-in.
+A current Coordinator binding also selects the bounded check independently of whether its
+assignment projection is CURRENT or UNKNOWN. Current executable
+owner actions and due review/message watches may reject a dedicated completion, blocker or
+handoff marker once; missing authority, stale or contradictory evidence releases without
+certifying completion. The stock Stop payload has no conversation/completion intent bit:
+markerless targeted replies release visibly as UNKNOWN intent, preserving outstanding
+obligations. This cannot certify or reject markerless completion claims. Ordinary conversation
+therefore does not force continuation even when runnable work or pending delivery exists. Both Stop handlers pass explicit
+USER_STOP. The continuity hook releases an active exact local target before I/O; otherwise
+it uses the same bounded binding lookup to distinguish an active Coordinator from legacy
+continuity outside that scope. If the entire edge is unavailable, a canonical Coordinator
+without the local opt-in cannot be distinguished from an unrelated session and retains legacy
+continuity. The mailbox handler retains its existing global active-stop escape. They never mutate obligations or
 certify recipient pickup, and the second Stop releases even if work remains. Completion, blocker
 and handoff markers do not bypass the work check; ordinary prose is not a machine
 completion certificate. This is not a scheduler or an autonomous wake mechanism.

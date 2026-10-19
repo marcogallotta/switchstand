@@ -10,6 +10,14 @@ ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "scripts/codex-continuity-hook"
 
 
+@pytest.fixture(autouse=True)
+def opted_in_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = tmp_path / ".config/switchstand/codex-stop-head.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"session_id": "session"}))
+
+
 def invoke(
     tmp_path: Path,
     payload: object,
@@ -85,8 +93,11 @@ def test_conversation_without_runnable_work_and_explicit_stop_release(
         output, events = invoke(tmp_path, stop(message, active=active))
         server.shutdown()
         thread.join()
-    assert output == {}
-    assert events[0]["blocked"] == 0
+    assert output.get("decision") != "block"
+    if not active and "USER_STOP" not in message:
+        assert "UNKNOWN yield intent" in output["systemMessage"]
+    else:
+        assert events[0]["blocked"] == 0
 
 
 @pytest.mark.parametrize("evidence", ["runnable", "complete", "stale", "missing", "contradictory"])
@@ -133,7 +144,10 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
         second, events = invoke(tmp_path, stop(message, active=True))
         server.shutdown()
         thread.join()
-    if evidence == "runnable":
+    if marker in {"checkpoint", "prose_handoff"}:
+        assert first["continue"] is True
+        assert "UNKNOWN" in first["systemMessage"]
+    elif evidence == "runnable":
         assert first["decision"] == "block"
         assert action in first["reason"]
         assert "preserve" in first["reason"]
@@ -186,3 +200,77 @@ def test_explicit_stop_skips_even_a_runnable_tracker(tmp_path: Path, monkeypatch
     output, events = invoke(tmp_path, stop("<!-- SWITCHSTAND_YIELD:USER_STOP -->"))
     assert output == {}
     assert events[0]["hook_error"] is None
+
+
+@pytest.mark.parametrize("message,lifetime,blocked", [
+    ("Checkpoint only", "ASSIGNMENT", True),
+    ("Quoted `<!-- SWITCHSTAND_YIELD:HANDOFF -->` marker.", "ASSIGNMENT", True),
+    ("<!-- SWITCHSTAND_YIELD:HANDOFF -->", "STANDING", False),
+    ("<!-- SWITCHSTAND_YIELD:ASSIGNMENT_COMPLETE -->", "STANDING", True),
+    ("<!-- SWITCHSTAND_YIELD:ASSIGNMENT_COMPLETE -->", "ASSIGNMENT", False),
+])
+def test_off_target_legacy_continuity_survives_tracker_outage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str, lifetime: str, blocked: bool,
+) -> None:
+    (tmp_path / ".config/switchstand/codex-stop-head.json").unlink()
+    monkeypatch.setenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:1")
+    output, events = invoke(tmp_path, stop(message), lifetime=lifetime)
+    assert (output.get("decision") == "block") is blocked
+    assert bool(events[-1]["blocked"]) is blocked
+    if "ASSIGNMENT_COMPLETE" in message:
+        assert events[-1]["yield_marker"] == "ASSIGNMENT_COMPLETE"
+
+
+def test_other_session_does_not_inherit_local_target_unknown_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:1")
+    output, _ = invoke(tmp_path, stop("Checkpoint only") | {"session_id": "other-session"})
+    assert output["decision"] == "block"
+
+
+@pytest.mark.parametrize("coordinator", [True, False])
+@pytest.mark.parametrize("active", [False, True])
+def test_canonical_binding_keeps_unknown_assignment_fail_open_without_local_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coordinator: bool, active: bool,
+) -> None:
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    (tmp_path / ".config/switchstand/codex-stop-head.json").unlink()
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({
+                "status": "unknown", "coordinator": coordinator,
+                "reason": "assignment_coverage_unknown",
+            }).encode())
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        monkeypatch.setenv(
+            "SWITCHSTAND_CODEX_STOP_ENDPOINT", f"http://127.0.0.1:{server.server_port}",
+        )
+        output, events = invoke(tmp_path, stop("Hello", active=active))
+        server.shutdown()
+        thread.join()
+    if not coordinator:
+        assert output["decision"] == "block"
+    elif active:
+        assert output == {}
+    else:
+        assert output["continue"] is True
+        assert "UNKNOWN" in output["systemMessage"]
+        assert events[-1]["event"] == "hook_error"
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_off_target_subagent_keeps_legacy_continuity(tmp_path: Path, active: bool) -> None:
+    output, _ = invoke(tmp_path, stop("Checkpoint only", active=active) | {"agent_id": "child"})
+    assert output["decision"] == "block"
