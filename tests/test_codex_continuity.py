@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from codex_stop_fixture import native_source
 
 ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "scripts/codex-continuity-hook"
@@ -25,6 +26,12 @@ def invoke(
     lifetime: str = "ASSIGNMENT",
     raw: str | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
+    if isinstance(payload, dict) and payload.get("hook_event_name") == "Stop":
+        payload = payload | {"transcript_path": native_source(
+            tmp_path / "native.jsonl", payload.get("session_id", ""),
+            payload.get("turn_id", ""),
+            "Your assignment remains active: poll the pending independent review",
+        )}
     telemetry = tmp_path / "private/telemetry.jsonl"
     result = subprocess.run(
         [HOOK, "--mode", "PILOT", "--lifetime", lifetime, "--telemetry", telemetry],
@@ -94,10 +101,8 @@ def test_conversation_without_runnable_work_and_explicit_stop_release(
         server.shutdown()
         thread.join()
     assert output.get("decision") != "block"
-    if not active and "USER_STOP" not in message:
-        assert "UNKNOWN yield intent" in output["systemMessage"]
-    else:
-        assert events[0]["blocked"] == 0
+    assert output == {}
+    assert events[0]["blocked"] == 0
 
 
 @pytest.mark.parametrize("evidence", ["runnable", "complete", "stale", "missing", "contradictory"])
@@ -151,10 +156,7 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
             assert new_turn["decision"] == "block"
         server.shutdown()
         thread.join()
-    if marker in {"checkpoint", "prose_handoff"}:
-        assert first["continue"] is True
-        assert "UNKNOWN" in first["systemMessage"]
-    elif evidence == "runnable":
+    if evidence == "runnable":
         assert first["decision"] == "block"
         assert action in first["reason"]
         assert "preserve" in first["reason"]
