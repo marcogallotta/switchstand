@@ -19,10 +19,18 @@ def source(tmp_path: Path, *messages: str) -> dict[str, str]:
     )}
 
 
-def test_plain_checkpoint_prompt_preserves_exact_action_without_marker(tmp_path: Path) -> None:
+@pytest.mark.parametrize("output_format", [
+    "CHECKPOINT A and no hidden marker",
+    "<!-- SWITCHSTAND_YIELD:HANDOFF --> and no other text",
+    "<!-- SWITCHSTAND_YIELD:REAL_BLOCKER --> and no other text",
+    "<!-- SWITCHSTAND_YIELD:ASSIGNMENT_COMPLETE --> and no other text",
+])
+def test_checkpoint_format_does_not_discard_current_action(
+    tmp_path: Path, output_format: str,
+) -> None:
     prompt = (
         "This is a benign continuation test, not a cancellation or pause of the assignment. "
-        + ACTIVE + " First end only this reply with exactly CHECKPOINT A and no hidden marker. "
+        + ACTIVE + f" First end only this reply with exactly {output_format}. "
         "This first reply must precede the remaining work. On automatic continuation, perform "
         "the authorized receipt task and verify it. You may use the normal available file tools. "
         "No production work or external services are authorized."
@@ -30,6 +38,25 @@ def test_plain_checkpoint_prompt_preserves_exact_action_without_marker(tmp_path:
     assert HELPER["affirmed_action"](source(tmp_path, prompt), [ACTION]) == ACTION
     assert HELPER["affirmed_action"](source(tmp_path, ACTIVE), [ACTION]) == ACTION
     assert HELPER["affirmed_action"](source(tmp_path, ACTIVE), [ACTION + " then publish"]) is None
+
+
+@pytest.mark.parametrize("suffix", [
+    "STOP the assignment.", "Wait for my review.", "Do not use tools.",
+])
+def test_dedicated_output_format_never_hides_control(tmp_path: Path, suffix: str) -> None:
+    prompt = ACTIVE + (
+        " First end only this reply with exactly <!-- SWITCHSTAND_YIELD:HANDOFF --> "
+        "and no other text. "
+    ) + suffix
+    assert HELPER["affirmed_action"](source(tmp_path, prompt), [ACTION]) is None
+
+
+@pytest.mark.parametrize("output", [
+    "<!-- SWITCHSTAND_YIELD:OTHER -->", "<!-- STOP -->", "HANDOFF when I return",
+])
+def test_unknown_output_controls_remain_unknown(tmp_path: Path, output: str) -> None:
+    prompt = ACTIVE + f" First end only this reply with exactly {output} and no other text."
+    assert HELPER["affirmed_action"](source(tmp_path, prompt), [ACTION]) is None
 
 
 @pytest.mark.parametrize("suffix", [
