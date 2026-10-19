@@ -536,6 +536,18 @@ may reply from ACK and atomically stores the result plus exact-evidence disposit
 converges both records. Recipient pending reads show only AVAILABLE/RECEIVED deliveries, while
 open request watches and proposed-owner references include ACKNOWLEDGED until disposition.
 
+Ordinary HTTP tool results append one attention text block after SDK error conversion, preserving
+the original content, metadata, structured receipt and error state. `MessageState.attention_admitted`
+reads full AVAILABLE/RECEIVED counts and oldest creation time in one generation-fenced snapshot;
+it validates existing returned-review envelopes and directs `review_get`, without interpreting a
+verdict. The footer shows two largest public sender groups plus remaining deliveries. Exactly one
+hour permits processing when free; older attention directs processing now or recording a competing
+obligation and recheck on existing assigned work. This is instructional, without an access lock or
+server verification of reasons. Identity/state failures remain distinct; a failed or timed-out
+250ms hint lookup yields UNKNOWN without replacing or retrying the primary tool result. The sole
+FastMCP `_mcp_server` handle accesses public SDK middleware; a changed SDK seam requires replan.
+No inactive wake or actual client acceptance is implied by repository landing.
+
 Message receipt is fenced twice. The mailbox generation fences trusted principal takeover;
 `RuntimeCurrentness` fences replacement MCP sessions or managed runs. Recovery is an explicit
 transition. A new session or caller must not silently continue a RECEIVED delivery.

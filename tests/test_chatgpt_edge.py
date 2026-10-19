@@ -41,6 +41,71 @@ GITHUB_ID = "192548"
 CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
 
 
+async def test_attention_http_preserves_results_and_primary_effect_on_hint_failure(monkeypatch):
+    import asyncio
+
+    from mcp.types import CallToolResult, TextContent, ToolAnnotations
+
+    async def verified(_self, token):
+        return AccessToken(token=token, client_id="chatgpt-client", scopes=[REQUIRED_SCOPE],
+                           subject=GITHUB_ID, claims={"iss": ISSUER}, resource=RESOURCE,
+                           expires_at=int(time.time()) + 60)
+
+    monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verified)
+    monkeypatch.setattr(chatgpt_edge, "ordinary_tool_annotations", lambda _name: ToolAnnotations())
+    effects, identities, results = [], [], {}
+    async def success() -> CallToolResult:
+        effects.append("one effect")
+        return CallToolResult(content=[TextContent(type="text", text="receipt")],
+                              structured_content={"receipt": "definitive"},
+                              meta={"receipt_meta": "retained"})
+    async def returned_error() -> CallToolResult:
+        return CallToolResult(content=[TextContent(type="text", text="failure")], is_error=True)
+    async def raw_error() -> str:
+        raise RuntimeError("raw error")
+    async def validation(number: int) -> int:
+        return number
+    monkeypatch.setattr(chatgpt_edge, "build_ordinary_tools", lambda *_args, **_kwargs: (
+        ("success", success), ("returned_error", returned_error),
+        ("raw_error", raw_error), ("validation", validation),
+    ))
+    original_hint, original_middleware = chatgpt_edge._notification_footer, chatgpt_edge._notification_middleware
+    async def unchanged(ctx, call_next):
+        return await call_next(ctx)
+    for mode in ("baseline", "normal", "timeout", "failure"):
+        async def hint(selected, meta, mode=mode):
+            principal = await selected.principal()
+            identities.append((principal.subject, meta["openai/session"]))
+            if mode == "timeout":
+                await asyncio.sleep(1)
+            if mode == "failure":
+                raise RuntimeError("hint unavailable")
+            return await original_hint(selected, meta)
+        monkeypatch.setattr(chatgpt_edge, "_notification_footer", hint)
+        monkeypatch.setattr(chatgpt_edge, "_notification_middleware",
+                            (lambda _service: unchanged) if mode == "baseline" else original_middleware)
+        app = create_app(service(), CONFIG, client_storage=MemoryStore())
+        def client_factory(app=app, **kwargs):
+            return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=ISSUER, **kwargs)
+        transport = StreamableHttpTransport(f"{ISSUER}mcp", auth="fixed-bearer",
+                                           httpx_client_factory=client_factory)
+        cases = (("success", {}), ("returned_error", {}), ("raw_error", {}),
+                 ("validation", {"number": "bad"}), ("missing", {}))
+        async with app.router.lifespan_context(app), Client(transport) as client:
+            for name, arguments in cases:
+                result = await client.call_tool_mcp(name, arguments, meta={"openai/session": "tab-a"})
+                wire = result.model_dump(mode="json", by_alias=True)
+                if mode == "baseline":
+                    results[name] = wire
+                else:
+                    expected = "Messages: UNAVAILABLE" if mode == "normal" else "Messages: UNKNOWN"
+                    footer = wire["content"].pop()
+                    assert footer["type"] == "text" and footer["text"] == expected
+                    assert wire == results[name]
+    assert effects == ["one effect"] * 4
+    assert identities == [(GITHUB_ID, "tab-a")] * 15
+
+
 def test_runtime_identity_uses_stable_claude_oauth_principal_namespace(monkeypatch):
     request_context = SimpleNamespace(
         meta=None,

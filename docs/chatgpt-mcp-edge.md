@@ -23,6 +23,16 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 Canonical work reads expose nullable server admission time. Existing and source-imported rows may
 truthfully remain `null`; landing this schema change does not activate or prove the live client path.
 
+Each ordinary HTTP tool result includes a compact mailbox attention footer: full current-mailbox
+sender counts, oldest message age, and an actionable returned-review ID when available. It does
+not consume messages or grant assignments. More than ten deliveries requires paging
+`agent_message_pending` while `has_more`; omit cursor for every fresh poll. Free agents process
+their inbox; strictly older than one hour means process now or record the competing obligation
+and next recheck on existing assigned work. No reason enforcement or inactive wake is implemented.
+UNKNOWN, unavailable identity/state, unregistered and stale bindings are distinct from zero.
+Hints have a 250ms lookup deadline; even on hint failure the original receipt/error survives.
+Actual ChatGPT/Codex rendering and agent handling require separate runtime acceptance.
+
 The priority-claim and bounded priority-context tools remain default-off unless the resource edge
 starts with `SWITCHSTAND_PRIORITY_CLAIMS=1`. Enabling that flag constructs both projections over
 the canonical PostgreSQL repositories. Ordinary authenticated ChatGPT exposes server-derived
