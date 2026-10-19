@@ -631,7 +631,15 @@ The synchronous mailbox `Stop` hook calls the loopback-only
 `codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs
 without receiving or changing them. The hook follows continuation cursors, with
 `stop_hook_active` as the mandatory continued-stop escape; missing, replaced, malformed, timed-out,
-or unavailable state fails open visibly. The public host does not route this path.
+or unavailable state fails open visibly. The public host does not route this path. The optional read-only
+`check_obligations` projection on that same route resolves only the current `Codex Coordinator`
+binding and existing canonical assignments owned by it. Current executable owner actions and due
+review/message watches may reject a Stop once, including a markerless progress reply; missing authority, stale or contradictory evidence
+releases without certifying completion. With no runnable obligation or pending delivery, conversation passes. Both Stop handlers pass explicit
+USER_STOP and honor `stop_hook_active` before any network check. They never mutate obligations or
+certify recipient pickup, and the second Stop releases even if work remains. Completion, blocker
+and handoff markers do not bypass the work check; ordinary prose is not a machine
+completion certificate. This is not a scheduler or an autonomous wake mechanism.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
