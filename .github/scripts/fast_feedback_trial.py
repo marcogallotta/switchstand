@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
@@ -71,18 +72,22 @@ def main() -> int:
             *REPRESENTATIVE_TESTS,
         ],
     }
-    checks = {}
-    status = 0
-    for name, command in commands.items():
+    def run_check(name: str):
         print(f"==> Advisory {name}", flush=True)
         started = time.monotonic()
-        result = subprocess.run(command, check=False)
-        checks[name] = {
+        result = subprocess.run(commands[name], check=False)
+        return {
             "result": "PASS" if result.returncode == 0 else "FAIL",
             "exit_code": result.returncode,
             "seconds": round(time.monotonic() - started, 3),
         }
-        status = status or result.returncode
+
+    checks = {"ruff": run_check("ruff")}
+    # These checks are independent. Join both even when one reports failure.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = {name: executor.submit(run_check, name) for name in ("pyright", "pytest")}
+        checks.update((name, future.result()) for name, future in pending.items())
+    status = next((check["exit_code"] for check in checks.values() if check["exit_code"]), 0)
     report["checks"] = checks
     rendered = json.dumps(report, indent=2, sort_keys=True)
     (destination / "results.json").write_text(rendered + "\n")
