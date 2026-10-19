@@ -32,7 +32,8 @@ required-result persistence; and repository bundle transport. Provider-era effec
 provider readback through the exact pre-cutover deployment while its provider is still configured.
 Fixed reporting tools route bugs, missing features, process complaints, avoidable performance
 latency, and Human Review feedback to separate server-selected canonical projects. They share one
-private create path and a narrow `file_issue` grant operation; callers cannot select projects or
+private create path with explicit public-argument forwarding (audit callbacks stay local)
+and a narrow `file_issue` grant operation; callers cannot select projects or
 gain generic create authority; each tool also returns bounded lexical suggestions and atomically records an explicit NEW/AMEND/DUPLICATE/SUB-ITEM/RELATED classification.
 Separately authorized frozen-cutover operator action archives or deletes the adjudicated rows before
 the DB-native application is deployed. Managed task-bound runtimes separately retain the
