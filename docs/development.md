@@ -80,8 +80,9 @@ only that subject and boundary:
   composed result, an uncommitted worktree, or live activation.
 - **Pull request composition:** the candidate combined with the current base. The
   Quality workflow records the candidate, base, and synthetic composition SHAs and
-  verifies the composition's ordered parents. This proves the tested integration of
-  those exact revisions; it is separate from exact-head evidence and can become stale
+  checks out the event's immutable SHA and verifies the composition's ordered parents.
+  A regenerated PR merge reference cannot silently change the checkout. This proves
+  the tested integration of those exact revisions; it is separate from exact-head evidence and can become stale
   when the base changes.
 - **Integration or hermetic boundary:** a test that exercises real cooperating
   components inside a controlled boundary, such as real subprocesses, sockets, and a

@@ -255,8 +255,8 @@ def test_workflow_preserves_authority_and_attempts():
     assert "github.event_name == 'schedule' && 'scheduled exact-head'" in text
     assert "github.event_name == 'schedule' && 'Scheduled exact-head Quality'" in terminal
     assert "github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle'" in lifecycle
-    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in execution
-    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in lifecycle
+    assert execution.count('ref: ${{ github.sha }}') == 2
+    assert 'ref: ${{ github.sha }}' in lifecycle
     assert execution.count('if: always()') == execution.count('continue-on-error: true') == 2
     authoritative = execution.split(
         '      - name: Authoritative proportional or full-fallback Quality'
