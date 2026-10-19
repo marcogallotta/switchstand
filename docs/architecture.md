@@ -642,30 +642,26 @@ The synchronous mailbox `Stop` hook calls the loopback-only
 without receiving or changing them. The hook follows continuation cursors, with
 `stop_hook_active` as the mandatory continued-stop escape; missing, replaced, malformed, timed-out,
 or unavailable state fails open visibly. The public host does not route this path. The optional read-only
-`check_obligations` projection on that same route resolves only the current `Codex Coordinator`
-binding and existing canonical assignments owned by it. A private host opt-in at
-`~/.config/switchstand/codex-stop-head.json` may additionally name one exact session,
-registered mailbox name/generation, and explicit WorkId-to-owner assignments for a directly
-assigned coordinating head. Missing/malformed configuration, changed binding, or changed owners
-release as UNKNOWN for the exact locally named session; configuration and binding are rechecked
-before returning actions. Outside that exact target, the continuity hook retains the previous
-marker policy even when the edge is unavailable. Registration alone never enables the opt-in.
-A current Coordinator binding also selects the bounded check independently of whether its
-assignment projection is CURRENT or UNKNOWN. Current executable
-owner actions and due review/message watches may reject a dedicated completion, blocker or
-handoff marker once; missing authority, stale or contradictory evidence releases without
-certifying completion. The stock Stop payload has no conversation/completion intent bit:
-markerless targeted replies release visibly as UNKNOWN intent, preserving outstanding
-obligations. This cannot certify or reject markerless completion claims. Ordinary conversation
-therefore does not force continuation even when runnable work or pending delivery exists. Both Stop handlers pass explicit
-USER_STOP. The continuity hook releases an active exact local target before I/O; otherwise
-it uses the same bounded binding lookup to distinguish an active Coordinator from legacy
-continuity outside that scope. If the entire edge is unavailable, a canonical Coordinator
-without the local opt-in cannot be distinguished from an unrelated session and retains legacy
-continuity. The mailbox handler retains its existing global active-stop escape. They never mutate obligations or
-certify recipient pickup, and the second Stop releases even if work remains. Completion, blocker
-and handoff markers do not bypass the work check; ordinary prose is not a machine
-completion certificate. This is not a scheduler or an autonomous wake mechanism.
+`check_obligations` projection on that same route resolves current canonical assignments.
+The bounded Stop correction requires the existing private host opt-in at
+`~/.config/switchstand/codex-stop-head.json`, naming one exact session, registered mailbox
+name/generation, and explicit WorkId-to-owner assignments for a directly assigned coordinating
+head. The local session match scopes release only; the edge still validates binding, generation,
+assignments, currentness and authority before returning an exact corrective action. Missing or
+changed evidence for that named session releases as UNKNOWN without certifying completion.
+Outside the local session opt-in, continuity retains the previous marker policy without any
+Tracker dependency, including active Stops, subagents and completion-marker telemetry. Mailbox
+checks retain their previous pending-delivery behavior outside the target. Registration or a
+canonical Coordinator binding alone never enables the bounded correction.
+For the opted-in target, current executable owner actions and due review/message watches may
+reject a dedicated completion, blocker or handoff marker once. The stock Stop payload has no
+conversation/completion intent bit: markerless targeted replies release visibly as UNKNOWN
+intent, preserving outstanding obligations. This cannot certify or reject arbitrary prose
+completion claims. Ordinary targeted conversation therefore does not force continuation even
+when runnable work or pending delivery exists. Both handlers release explicit USER_STOP; an
+active target Stop releases even when the edge is unavailable, bounding correction to one per
+originating turn. Neither hook mutates obligations or certifies recipient pickup. This is not a
+scheduler or an autonomous wake mechanism.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,

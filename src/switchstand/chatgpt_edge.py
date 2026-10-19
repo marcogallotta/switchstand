@@ -369,37 +369,35 @@ def _codex_stop_head(session_id: str, binding: AgentMailbox) -> dict[str, str] |
 
 async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> dict[str, object]:
     """Project existing Coordinator assignments; never receive, complete or reassign work."""
-    if service.messages is None:
+    if service.messages is None or service.canonical_work is None or not service.canonical_work_active:
         return {"status": "unknown", "reason": "state_unavailable"}
     mailboxes = AgentMailboxState(service.messages.engine)
     bound = await mailboxes.for_session(f"codex:{session_id}")
     binding = bound.mailbox
     if bound.status != "ok" or binding is None:
-        return {"status": "unknown", "reason": "not_current_coordinator", "coordinator": False}
+        return {"status": "unknown", "reason": "not_current_coordinator"}
     scoped = None if binding.name == CODEX_COORDINATOR_NAME else _codex_stop_head(session_id, binding)
     if binding.name != CODEX_COORDINATOR_NAME and scoped is None:
-        return {"status": "unknown", "reason": "not_current_coordinator", "coordinator": False}
-    if service.canonical_work is None or not service.canonical_work_active:
-        return {"status": "unknown", "reason": "state_unavailable", "coordinator": True}
+        return {"status": "unknown", "reason": "not_current_coordinator"}
     # Ordinary admission is request-local generic capability, not task authority.
     # The loopback read uses the existing current assignment and session binding.
     ordinary = isinstance(service.admission_grants, WorkspaceAdmissionState)
     grant = None if ordinary else await service.admission_grants.current(binding.principal_key)
     if not ordinary and (grant is None or not grant.current()):
-        return {"coordinator": True, "status": "unknown", "reason": "missing_authority"}
+        return {"status": "unknown", "reason": "missing_authority"}
     works = service.canonical_work.works
     items: list[CurrentWork]
     if scoped is None:
         page = await works.search(owner_key=CODEX_COORDINATOR_NAME, completed=False, limit=100)
         if page.next_cursor is not None:
-            return {"coordinator": True, "status": "unknown", "reason": "incomplete_assignment_page"}
+            return {"status": "unknown", "reason": "incomplete_assignment_page"}
         items = list(page.items)
     else:
         items = []
         for work_id, owner in scoped.items():
             work = await works.get(UUID(work_id))
             if work is None or work.owner_key != owner:
-                return {"coordinator": True, "status": "unknown", "reason": "scoped_assignment_changed"}
+                return {"status": "unknown", "reason": "scoped_assignment_changed"}
             if not work.completed:
                 items.append(work)
     actions: list[str] = []
@@ -411,7 +409,7 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
             unknown = True
             continue
         if await works.get(work.work_id) != work:
-            return {"coordinator": True, "status": "unknown", "reason": "stale_assignment"}
+            return {"status": "unknown", "reason": "stale_assignment"}
         try:
             validate_resultant_state(**{
                 field: getattr(work, field) for field in (
@@ -441,15 +439,15 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
         elif work.next_action_class == "UNKNOWN":
             unknown = True
     if await mailboxes.for_session(f"codex:{session_id}") != bound:
-        return {"coordinator": True, "status": "unknown", "reason": "coordinator_replaced"}
+        return {"status": "unknown", "reason": "coordinator_replaced"}
     if not ordinary and await service.admission_grants.current(binding.principal_key) != grant:
-        return {"coordinator": True, "status": "unknown", "reason": "authority_changed"}
+        return {"status": "unknown", "reason": "authority_changed"}
     if scoped is not None and _codex_stop_head(session_id, binding) != scoped:
-        return {"coordinator": True, "status": "unknown", "reason": "head_opt_in_changed"}
+        return {"status": "unknown", "reason": "head_opt_in_changed"}
     if not actions and (unknown or not items):
-        return {"coordinator": True, "status": "unknown", "reason": "assignment_coverage_unknown"}
+        return {"status": "unknown", "reason": "assignment_coverage_unknown"}
     return {
-        "status": "ok", "coordinator": True, "currentness": "CURRENT", "actions": actions,
+        "status": "ok", "currentness": "CURRENT", "actions": actions,
         "unknown_obligations": unknown,
     }
 

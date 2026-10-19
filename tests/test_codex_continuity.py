@@ -141,7 +141,14 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
             "prose_handoff": "I am handing off. <!-- SWITCHSTAND_YIELD:HANDOFF -->",
         }.get(marker, f"<!-- SWITCHSTAND_YIELD:{marker} -->")
         first, _ = invoke(tmp_path, stop(message))
+        monkeypatch.setenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:1")
         second, events = invoke(tmp_path, stop(message, active=True))
+        if marker == "HANDOFF" and evidence == "runnable":
+            monkeypatch.setenv(
+                "SWITCHSTAND_CODEX_STOP_ENDPOINT", f"http://127.0.0.1:{server.server_port}",
+            )
+            new_turn, _ = invoke(tmp_path, stop(message) | {"turn_id": "new-turn"})
+            assert new_turn["decision"] == "block"
         server.shutdown()
         thread.join()
     if marker in {"checkpoint", "prose_handoff"}:
@@ -161,7 +168,8 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
     if marker == "ASSIGNMENT_COMPLETE":
         assert events[-1]["attempted_yield_marker"] == marker
         assert all(event.get("yield_marker") != marker for event in events)
-    assert requests == [{"session_id": "session", "check_obligations": True}]
+    expected_reads = 2 if marker == "HANDOFF" and evidence == "runnable" else 1
+    assert requests == [{"session_id": "session", "check_obligations": True}] * expected_reads
 
 
 def test_unavailable_tracker_releases_without_completion_claim(
@@ -229,24 +237,22 @@ def test_other_session_does_not_inherit_local_target_unknown_release(
     assert output["decision"] == "block"
 
 
-@pytest.mark.parametrize("coordinator", [True, False])
-@pytest.mark.parametrize("active", [False, True])
-def test_canonical_binding_keeps_unknown_assignment_fail_open_without_local_opt_in(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coordinator: bool, active: bool,
+def test_canonical_binding_alone_never_opts_session_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
 
     (tmp_path / ".config/switchstand/codex-stop-head.json").unlink()
+    requests = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
+            requests.append(self.path)
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(json.dumps({
-                "status": "unknown", "coordinator": coordinator,
-                "reason": "assignment_coverage_unknown",
-            }).encode())
+            self.wfile.write(b'{"status":"ok","coordinator":true,"currentness":"CURRENT",'
+                             b'"actions":["canonical work: continue"]}')
 
         def log_message(self, *_args: object) -> None:
             pass
@@ -257,17 +263,14 @@ def test_canonical_binding_keeps_unknown_assignment_fail_open_without_local_opt_
         monkeypatch.setenv(
             "SWITCHSTAND_CODEX_STOP_ENDPOINT", f"http://127.0.0.1:{server.server_port}",
         )
-        output, events = invoke(tmp_path, stop("Hello", active=active))
+        first, _ = invoke(tmp_path, stop("Hello"))
+        monkeypatch.setenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:1")
+        second, events = invoke(tmp_path, stop("Hello", active=True))
         server.shutdown()
         thread.join()
-    if not coordinator:
-        assert output["decision"] == "block"
-    elif active:
-        assert output == {}
-    else:
-        assert output["continue"] is True
-        assert "UNKNOWN" in output["systemMessage"]
-        assert events[-1]["event"] == "hook_error"
+    assert first["decision"] == second["decision"] == "block"
+    assert events[-1]["blocked"] == 1
+    assert not requests
 
 
 @pytest.mark.parametrize("active", [False, True])

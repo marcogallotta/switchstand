@@ -16,6 +16,14 @@ ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "scripts/codex-stop-mailbox"
 
 
+@pytest.fixture(autouse=True)
+def opted_in_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = tmp_path / ".config/switchstand/codex-stop-head.json"
+    config.parent.mkdir(parents=True)
+    config.write_text(json.dumps({"session_id": "session-1"}))
+
+
 class MailboxServer:
     def __init__(self, responses: list[dict[str, Any]]):
         self.responses = responses
@@ -144,7 +152,8 @@ def test_conversation_without_pending_delivery_and_stop_release(message: str) ->
         assert len(server.requests) == (0 if "USER_STOP" in message else 1)
 
 
-def test_worker_mailbox_retains_legacy_pending_continuation() -> None:
+def test_worker_mailbox_retains_legacy_pending_continuation(tmp_path: Path) -> None:
+    (tmp_path / ".config/switchstand/codex-stop-head.json").unlink()
     with MailboxServer([{
         "status": "ok", "coordinator": False, "delivery_ids": [str(uuid4())],
         "has_more": False, "next_cursor": None,
@@ -165,3 +174,12 @@ def test_markerless_conversation_with_pending_delivery_has_unknown_intent() -> N
     assert "UNKNOWN yield intent" in first["systemMessage"]
     assert second == {}
     assert len(server.requests) == 1
+
+
+def test_canonical_without_opt_in_retains_pending_conversation_continuation(tmp_path: Path) -> None:
+    (tmp_path / ".config/switchstand/codex-stop-head.json").unlink()
+    with MailboxServer([{
+        "status": "ok", "coordinator": True, "delivery_ids": [str(uuid4())],
+        "has_more": False, "next_cursor": None,
+    }]) as server:
+        assert invoke(stop() | {"last_assistant_message": "Hello"}, server.endpoint)["decision"] == "block"

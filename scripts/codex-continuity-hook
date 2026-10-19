@@ -149,31 +149,15 @@ def main() -> None:
             raise ValueError("missing stop_hook_active")
         action = None
         reason = None
-        targeted = False
-        if _subagent(payload):
-            reason = _legacy_reason(marker, arguments.lifetime)
-        elif marker != "USER_STOP":
-            session_id = payload.get("session_id")
-            if not isinstance(session_id, str) or not session_id:
-                raise ValueError("missing Stop session identity")
-            targeted = _local_target(session_id)
-            try:
-                evidence = {} if active and targeted else _evidence(session_id)
-            except (OSError, TypeError, ValueError) as error:
-                if targeted:
-                    raise ValueError(
-                        "UNKNOWN Coordinator evidence; preserve outstanding obligations; "
-                        "do not claim completion"
-                    ) from error
-                evidence = {}
-            targeted = targeted or evidence.get("coordinator") is True or (
-                evidence.get("status") == "ok" and evidence.get("currentness") == "CURRENT"
-            )
+        session_id = payload.get("session_id")
+        targeted = isinstance(session_id, str) and _local_target(session_id) and not _subagent(payload)
+        if marker != "USER_STOP":
             if not targeted:
                 # A global script replacement must not disable the previous
                 # continuity policy or make it depend on Tracker availability.
                 reason = _legacy_reason(marker, arguments.lifetime)
             elif not active:
+                evidence = _evidence(session_id)
                 if evidence.get("status") != "ok" or evidence.get("currentness") != "CURRENT":
                     raise ValueError(
                         "UNKNOWN Coordinator evidence; preserve outstanding obligations; "
