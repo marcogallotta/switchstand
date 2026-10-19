@@ -63,6 +63,146 @@ def test_provenance_is_not_semantic_authority(tmp_path: Path, text: str) -> None
     assert HELPER["affirmed_action"](source(tmp_path, text), [ACTION]) is None
 
 
+@pytest.mark.parametrize("damage", [
+    "later_turn", "duplicate_start", "foreign_user", "missing_user_turn", "aborted",
+])
+def test_old_or_unattributable_user_turn_cannot_force_current_work(
+    tmp_path: Path, damage: str,
+) -> None:
+    payload = source(tmp_path, ACTIVE)
+    path = Path(payload["transcript_path"])
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    if damage in {"later_turn", "duplicate_start"}:
+        rows.append({"type": "event_msg", "payload": {
+            "type": "task_started", "turn_id": "later-stop" if damage == "later_turn" else "turn",
+        }})
+    elif damage == "aborted":
+        rows.append({"type": "event_msg", "payload": {
+            "type": "turn_aborted", "turn_id": "turn",
+        }})
+    else:
+        extra = json.loads(json.dumps(rows[-1]))
+        extra["payload"]["id"] = "foreign"
+        metadata = extra["payload"]["internal_chat_message_metadata_passthrough"]
+        if damage == "foreign_user":
+            metadata["turn_id"] = "other"
+        else:
+            metadata.pop("turn_id")
+        rows.append(extra)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    try:
+        result = HELPER["affirmed_action"](payload, [ACTION])
+    except ValueError as error:
+        assert "UNKNOWN" in str(error)
+    else:
+        assert result is None
+
+
+@pytest.mark.parametrize("instruction", [
+    "Publish the release to production using the external service.",
+    "Post the receipt to Slack.",
+    "Send the email.",
+])
+def test_restricted_authority_cannot_be_overruled_by_an_exact_current_action(
+    tmp_path: Path, instruction: str,
+) -> None:
+    action = "work: " + instruction
+    text = ("Your assignment remains active: " + instruction
+            + " No production work or external services are authorized.")
+    assert HELPER["affirmed_action"](source(tmp_path, text), [action]) is None
+
+
+@pytest.mark.parametrize("metadata", [None, [], "source", 4])
+def test_malformed_outer_metadata_is_caught_unknown(tmp_path: Path, metadata: object) -> None:
+    payload = source(tmp_path, ACTIVE)
+    path = Path(payload["transcript_path"])
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    rows[-1]["metadata"] = metadata
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    with pytest.raises(TypeError, match="UNKNOWN"):
+        HELPER["affirmed_action"](payload, [ACTION])
+
+
+def interrupted_source(tmp_path: Path, *messages: str) -> dict[str, str]:
+    payload = source(tmp_path, *messages)
+    path = Path(payload["transcript_path"])
+    previous = [json.loads(line) for line in path.read_text().splitlines()]
+    current = source(tmp_path, ".")
+    following = [json.loads(line) for line in path.read_text().splitlines()][1:]
+    for record in following:
+        item = record["payload"]
+        if item.get("type") == "task_started":
+            item["turn_id"] = "dot"
+            item["started_at"] = 101
+        elif item.get("role") == "user":
+            item["internal_chat_message_metadata_passthrough"]["turn_id"] = "dot"
+    previous.append({"type": "event_msg", "payload": {
+        "type": "turn_aborted", "turn_id": "turn", "reason": "interrupted", "completed_at": 100,
+    }})
+    path.write_text("".join(json.dumps(row) + "\n" for row in previous + following))
+    return current | {"turn_id": "dot"}
+
+
+def test_announced_end_turn_and_immediate_interrupted_dot_keep_assignment(tmp_path: Path) -> None:
+    announcement = "testing if new continuatio works."
+    assert HELPER["affirmed_action"](source(tmp_path, announcement, "end your turn"), [ACTION]) \
+        == ACTION
+    assert HELPER["affirmed_action"](
+        interrupted_source(tmp_path, announcement, "end your turn"), [ACTION],
+    ) == ACTION
+
+
+@pytest.mark.parametrize("damage", [
+    "stop", "pause", "question", "late", "negative_time", "missing_time", "correction",
+    "unknown_user", "call", "completed", "wrong_abort", "unannounced", "intervening_turn",
+])
+def test_interrupted_context_never_overrides_controls_or_ambiguous_effects(
+    tmp_path: Path, damage: str,
+) -> None:
+    messages = ["checking whether the continuation is working.", "end this reply"]
+    if damage in {"stop", "pause", "question"}:
+        messages.append({"stop": "STOP", "pause": "pause the task",
+                         "question": "What happens next?"}[damage])
+    elif damage == "unannounced":
+        messages = ["end your turn"]
+    payload = interrupted_source(tmp_path, *messages)
+    path = Path(payload["transcript_path"])
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    abort = next(row["payload"] for row in rows if row["payload"].get("type") == "turn_aborted")
+    if damage == "late":
+        abort["completed_at"] = 1
+    elif damage == "negative_time":
+        abort["completed_at"] = 102
+    elif damage == "missing_time":
+        abort.pop("completed_at")
+    elif damage == "wrong_abort":
+        abort["turn_id"] = "other"
+    elif damage in {"correction", "call", "completed", "unknown_user", "intervening_turn"}:
+        extra = {
+            "correction": {"type": "event_msg", "payload": {
+                "type": "item_completed", "turn_id": "turn", "item": {"type": "HookPrompt"},
+            }},
+            "call": {"type": "response_item", "payload": {"type": "custom_tool_call"}},
+            "completed": {"type": "event_msg", "payload": {"type": "task_complete"}},
+            "unknown_user": {"type": "response_item", "payload": {
+                "role": "user", "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "turn", "content_item_kinds": ["unknown"],
+                },
+            }},
+            "intervening_turn": {"type": "event_msg", "payload": {
+                "type": "task_started", "turn_id": "other",
+            }},
+        }[damage]
+        rows.insert(-2, extra)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    try:
+        result = HELPER["affirmed_action"](payload, [ACTION])
+    except ValueError as error:
+        assert "UNKNOWN" in str(error)
+    else:
+        assert result is None
+
+
 @pytest.mark.parametrize("damage", ["session", "turn", "duplicate", "partial", "mixed", "start"])
 def test_incomplete_or_misattributed_source_releases_unknown(tmp_path: Path, damage: str) -> None:
     payload = source(tmp_path, ACTIVE)

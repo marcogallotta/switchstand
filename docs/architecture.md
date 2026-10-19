@@ -661,7 +661,13 @@ Every remaining clause must fit its conservative auxiliary grammar for reply ord
 continuation checking and bounded tool authority; unknown clauses, conversation, STOP,
 quotations, conditions and revocations release without forcing work. The helper is shared by
 both handlers and must accompany them when installed. Source provenance alone never grants
-action authority. Markerless replies can therefore receive the exact authorized action, while
+action authority. A whole announced continuation check followed by a turn-ending-only instruction
+also permits the exact current action. A sole neutral dot may carry that context only from the
+immediately preceding complete native interrupted turn, within ten seconds, with no prior
+correction, call or completion; STOP, pause, questions and unknown user sources break eligibility.
+This uses transcript evidence and adds no wake mechanism or persistent state. A no-production or
+external-service restriction accepts only an explicit local file read/write/readback action.
+Markerless replies can therefore receive the exact authorized action, while
 unrecognized intent remains UNKNOWN and preserves outstanding obligations. This cannot certify
 or reject arbitrary prose completion claims. Ordinary targeted conversation does not force
 continuation even when runnable work or pending delivery exists. Both handlers release explicit USER_STOP; an
