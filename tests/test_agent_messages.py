@@ -1022,6 +1022,7 @@ async def test_codex_stop_page_uses_current_session_binding_without_receiving(ag
     page = await _codex_stop_mailbox_page(service, "thread-1", None)
     assert page == {
         "status": "ok",
+        "coordinator": False,
         "delivery_ids": [str(sent.message.delivery_id)],
         "has_more": False,
         "next_cursor": None,
