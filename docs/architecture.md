@@ -634,7 +634,12 @@ without receiving or changing them. The hook follows continuation cursors, with
 `stop_hook_active` as the mandatory continued-stop escape; missing, replaced, malformed, timed-out,
 or unavailable state fails open visibly. The public host does not route this path. The optional read-only
 `check_obligations` projection on that same route resolves only the current `Codex Coordinator`
-binding and existing canonical assignments owned by it. Current executable owner actions and due
+binding and existing canonical assignments owned by it. A private host opt-in at
+`~/.config/switchstand/codex-stop-head.json` may additionally name one exact session,
+registered mailbox name/generation, and explicit WorkId-to-owner assignments for a directly
+assigned coordinating head. Missing/malformed configuration, changed binding, or changed owners
+release as UNKNOWN; configuration and binding are rechecked before returning actions. Removing
+that file disables only the opt-in. Registration alone never enables it. Current executable owner actions and due
 review/message watches may reject a Stop once, including a markerless progress reply; missing authority, stale or contradictory evidence
 releases without certifying completion. With no runnable obligation or pending delivery, conversation passes. Both Stop handlers pass explicit
 USER_STOP and honor `stop_hook_active` before any network check. They never mutate obligations or

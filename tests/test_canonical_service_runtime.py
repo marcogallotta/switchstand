@@ -1182,3 +1182,52 @@ async def test_stop_obligations_reads_real_canonical_assignments(subject: Subjec
         })
     assert response.status_code == 200
     assert response.json() == result
+
+
+@pytest.mark.parametrize("case", ["current", "unlisted", "session", "generation", "owner", "removed", "malformed", "changed_during_read"])
+async def test_stop_head_opt_in_is_exact_and_rechecked(
+    subject: Subject, tmp_path, monkeypatch: pytest.MonkeyPatch, case: str,
+):
+    import json
+    from pathlib import Path
+
+    binding = await AgentMailboxState(subject.engine).register_agent(
+        "Assigned head", subject.principal.key, "codex:head-session",
+    )
+    assert binding.status == "ok"
+    subject.service.messages = MessageState(subject.engine, subject.grants)
+    config = tmp_path / ".config/switchstand/codex-stop-head.json"
+    config.parent.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    value = {
+        "session_id": "head-session", "mailbox_name": "Assigned head", "generation": 1,
+        "assignments": {str(subject.work_id): "agent:root"},
+    }
+    if case == "unlisted":
+        value["assignments"] = {str(uuid4()): "agent:root"}
+    if case == "session":
+        value["session_id"] = "other-session"
+    if case == "generation":
+        value["generation"] = 2
+    if case == "owner":
+        value["assignments"] = {str(subject.work_id): "agent:other"}
+    config.write_text("{" if case == "malformed" else json.dumps(value))
+    if case == "removed":
+        config.unlink()
+    if case == "changed_during_read":
+        original = subject.runtime.works.get
+
+        async def get_and_revoke(work_id):
+            result = await original(work_id)
+            config.unlink(missing_ok=True)
+            return result
+
+        monkeypatch.setattr(subject.runtime.works, "get", get_and_revoke)
+    result = await chatgpt_edge._codex_stop_obligations(subject.service, "head-session")
+    assert result["status"] == ("ok" if case == "current" else "unknown")
+    assert bool(result.get("actions")) == (case == "current")
+    if case == "current":
+        assert result["actions"] == [f"{subject.work_id}: implement"]
+        assert (await chatgpt_edge._codex_stop_obligations(
+            subject.service, "other-session",
+        ))["status"] == "unknown"
