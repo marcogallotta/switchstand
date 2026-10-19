@@ -309,7 +309,7 @@ Canonical cumulative handwritten Python LOC is counted with
 Official Codex installation and updates are owned by npm. The repository does not install,
 repair, wrap, or redirect the global `codex` command.
 
-Quality emits non-authoritative test timing in `test-metrics-<run_id>-<run_attempt>-quality`
+Quality emits non-authoritative test timing in `test-metrics-<run_id>-<run_attempt>-quality-shard-<index>`
 artifacts retained for 90 days, plus a bounded slow-test job summary. The original
 Quality exit status remains authoritative even when collection/upload fails. JUnit and
 JSON preserve failed/partial attempts separately from reruns. JSON binds exact subject,
@@ -336,6 +336,12 @@ generation's demotion; correction changes the reviewed workflow generation. Dock
 evidence is omitted only for the exact promoted class. One stable
 terminal Quality check runs under `always()` and fails unless planning, Quality execution, and the
 mode-required Docker result are all valid; internal mode never changes its required check name.
+Full fallback runs four independent GitHub runners, each with its own PostgreSQL service.
+`scripts/pytest-shard` partitions pytest's actual collection by SHA-256 of the whole module path
+modulo four. Each shard retains full collected and assigned node IDs plus module membership;
+its `full-shard` timing record covers only that partition. Ruff/Pyright run once on shard zero.
+The promoted selected-module path runs once on shard zero. Matrix fail-fast is disabled, and
+terminal success requires the entire matrix to succeed; failures, cancellations and skips fail closed.
 Planner identity,
 mode, selected membership, JUnit, and timings are retained with the authoritative result. There is
 no telemetry service or second test scheduler.

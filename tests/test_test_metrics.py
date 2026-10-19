@@ -247,8 +247,15 @@ def test_workflow_preserves_authority_and_attempts():
     assert '-v "$PWD:/workspace:ro"' in authoritative
     assert '-v "$RUNNER_TEMP/test-metrics:/metrics"' in authoritative
     assert '--junitxml=/metrics/junit.xml' in authoritative
-    assert authoritative.split('--junitxml=/metrics/junit.xml', 1)[0].rstrip().endswith('\\')
-    assert 'shift 1 &&' in authoritative
+    assert 'mode="$1"; shift 1' in authoritative
+    assert 'scripts/pytest-shard' in authoritative
+    assert 'fail-fast: false' in execution
+    assert 'shard: ${{ fromJSON(needs.plan.outputs.shards) }}' in execution
+    assert "'[0]' if decision.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' else '[0,1,2,3]'" in execution
+    assert 'if test "$SHARD_INDEX" = 0; then' in authoritative
+    assert 'execution_kind=full-shard' in execution
+    assert '"-shard-" + e["SHARD_INDEX"]' in execution
+    assert '-quality-shard-${{ matrix.shard }}' in execution
     assert 'needs.plan.outputs.selected_tests' in authoritative
     assert '--planner ' in execution and "'planner_revision': plan.planner_revision" in execution
     assert "python-version: '3.14'" in execution.split('  quality_execution:')[0]
@@ -302,3 +309,24 @@ def test_workflow_preserves_authority_and_attempts():
     assert all(token in execution for token in identity)
     assert all(token in lifecycle for token in identity)
     assert 'SWITCHSTAND_REAL_DOCKER=1' in lifecycle
+
+
+def test_partial_shard_metrics_preserve_membership_and_do_not_claim_full_suite(tmp_path: Path):
+    identity = tmp_path / "identity.json"
+    membership = tmp_path / "shard.json"
+    output = tmp_path / "metrics.json"
+    summary = tmp_path / "summary"
+    identity.write_text(json.dumps({"environment": {}, "github": {"job": "quality-shard-2"}}))
+    shard = {"index": 2, "count": 4, "modules": ["tests/test_a.py"],
+             "collected_nodeids": ["tests/test_a.py::test_a", "tests/test_b.py::test_b"],
+             "assigned_nodeids": ["tests/test_a.py::test_a"]}
+    membership.write_text(json.dumps(shard))
+    subprocess.run([sys.executable, "-m", "switchstand.test_metrics", "--identity", identity,
+                    "--execution-kind", "full-shard", "--shard-membership", membership,
+                    "--junit", tmp_path / "missing", "--output", output], check=True,
+                   env=os.environ | {"GITHUB_STEP_SUMMARY": str(summary)})
+    record = json.loads(output.read_text())
+    assert record["execution_kind"] == "full-shard" and record["shard"] == shard
+    assert record["github"]["job"] == "quality-shard-2"
+    assert record["metrics_status"] == "METRICS_UNAVAILABLE"
+    assert "Partial full-suite shard" in summary.read_text()
