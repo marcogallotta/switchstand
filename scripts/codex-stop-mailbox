@@ -10,8 +10,11 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 from uuid import UUID
+
+from codex_stop_intent import affirmed_action
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8790/internal/codex-stop-mailbox"
 TIMEOUT_SECONDS = 2.0
@@ -54,11 +57,6 @@ def _pending(endpoint: str, session_id: str) -> list[str]:
             status = page.get("status", "missing_status")
             reason = page.get("reason", "missing_reason")
             raise ValueError(f"mailbox unavailable ({status}: {reason})")
-        coordinator = page.get("coordinator")
-        if not isinstance(coordinator, bool):
-            raise ValueError("missing Coordinator binding evidence")
-        if not coordinator:
-            return []
         ids = page.get("delivery_ids")
         has_more = page.get("has_more")
         next_cursor = page.get("next_cursor")
@@ -93,9 +91,7 @@ def main() -> None:
         if active:
             _emit({})
             return
-        if any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path")):
-            _emit({})
-            return
+        subagent = any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path"))
         message = payload.get("last_assistant_message")
         if isinstance(message, str) and re.fullmatch(
             r"\s*<!-- SWITCHSTAND_YIELD:USER_STOP -->\s*", message,
@@ -107,9 +103,32 @@ def main() -> None:
             raise ValueError("missing Stop hook identity")
         endpoint = os.getenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", DEFAULT_ENDPOINT)
         delivery_ids = _pending(endpoint, session_id)
+        try:
+            value = json.loads((Path.home() / ".config/switchstand/codex-stop-head.json").read_text())
+            targeted = not subagent and isinstance(value, dict) and value.get("session_id") == session_id
+        except (OSError, ValueError, TypeError):
+            targeted = False
         if not delivery_ids:
             _emit({})
             return
+        if targeted:
+            request = urllib.request.Request(
+                endpoint, data=json.dumps({
+                    "session_id": session_id, "check_obligations": True,
+                }).encode(), headers={"Content-Type": "application/json"}, method="POST",
+            )
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
+                evidence = json.load(response)
+            if not isinstance(evidence, dict) or evidence.get("status") != "ok" \
+                    or evidence.get("currentness") != "CURRENT":
+                raise ValueError("UNKNOWN current assignment; preserve pending deliveries")
+            actions = evidence.get("actions")
+            if not isinstance(actions, list) or not all(isinstance(a, str) and a for a in actions):
+                raise ValueError("malformed Coordinator actions")
+            if not affirmed_action(payload, actions):
+                _emit({})
+                return
         joined = ", ".join(delivery_ids)
         _emit({
             "decision": "block",
