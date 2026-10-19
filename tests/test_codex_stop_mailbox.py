@@ -183,3 +183,20 @@ def test_canonical_without_opt_in_retains_pending_conversation_continuation(tmp_
         "has_more": False, "next_cursor": None,
     }]) as server:
         assert invoke(stop() | {"last_assistant_message": "Hello"}, server.endpoint)["decision"] == "block"
+
+
+@pytest.mark.parametrize("local_parent_session", [False, True])
+def test_subagent_retains_legacy_pending_delivery_even_for_local_parent_session(
+    tmp_path: Path, local_parent_session: bool,
+) -> None:
+    if not local_parent_session:
+        (tmp_path / ".config/switchstand/codex-stop-head.json").unlink()
+    delivery = str(uuid4())
+    with MailboxServer([{
+        "status": "ok", "coordinator": True, "delivery_ids": [delivery],
+        "has_more": False, "next_cursor": None,
+    }]) as server:
+        result = invoke(stop() | {"agent_id": "child"}, server.endpoint)
+        assert len(server.requests) == 1
+    assert result["decision"] == "block"
+    assert delivery in result["reason"]

@@ -89,9 +89,7 @@ def main() -> None:
         if active:
             _emit({})
             return
-        if any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path")):
-            _emit({})
-            return
+        subagent = any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path"))
         message = payload.get("last_assistant_message")
         if isinstance(message, str) and re.fullmatch(
             r"\s*<!-- SWITCHSTAND_YIELD:USER_STOP -->\s*", message,
@@ -105,7 +103,7 @@ def main() -> None:
         delivery_ids = _pending(endpoint, session_id)
         try:
             value = json.loads((Path.home() / ".config/switchstand/codex-stop-head.json").read_text())
-            targeted = isinstance(value, dict) and value.get("session_id") == session_id
+            targeted = not subagent and isinstance(value, dict) and value.get("session_id") == session_id
         except (OSError, ValueError, TypeError):
             targeted = False
         if targeted and not (
