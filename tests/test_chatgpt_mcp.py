@@ -75,6 +75,26 @@ def test_review_bundle_tool_is_default_off():
     ))
 
 
+@pytest.mark.parametrize("branch", ["main", "review/exact-candidate"])
+async def test_repository_bundle_tool_selects_one_branch_and_preserves_digest(monkeypatch, branch):
+    digest = "f" * 64
+    resolution = RepositoryBundleResolution(
+        status="current", branch=branch, bundle_url="https://example.invalid/bundle",
+        bundle_sha256=digest, refs={f"refs/heads/{branch}": "a" * 40},
+    )
+    resolve = AsyncMock(return_value=resolution)
+    monkeypatch.setattr(chatgpt_mcp.repository_bundle, "resolve_repository_bundle", resolve)
+    tool = dict(build_ordinary_tools(service()))["repository_bundle_get"]
+    result = await tool("1") if branch == "main" else await tool("1", "a" * 40, branch)
+    resolve.assert_awaited_once_with(None if branch == "main" else "a" * 40, branch=branch)
+    assert result.structured_content["branch"] == branch
+    assert result.structured_content["ref_count"] == 1
+    assert result.structured_content["bundle_sha256"] == digest
+    link = next(item for item in result.content if item.type == "resource_link")
+    assert link.name == chatgpt_mcp.repository_bundle.asset_names(branch)[0]
+    assert str(link.uri) == "https://example.invalid/bundle"
+
+
 async def test_review_bundle_rejects_unknown_gates_and_candidate_race(monkeypatch):
     review_id, subject_id, endpoint_id = uuid4(), uuid4(), uuid4()
     mailbox = AgentMailbox(name="Reviewer", name_key="reviewer", endpoint_id=endpoint_id,
@@ -131,6 +151,7 @@ async def test_review_bundle_rejects_unknown_gates_and_candidate_race(monkeypatc
     assert result.structured_content["status"] == "STALE" and len(result.content) == 1
     result = await tool("1", review_id)
     assert result.structured_content["status"] == "STALE" and len(result.content) == 1
+    resolve.assert_awaited_once_with("a" * 40, branch="main")
 
 
 def test_priority_claim_tools_are_default_off_and_human_only():

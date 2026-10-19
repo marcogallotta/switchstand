@@ -369,19 +369,28 @@ def build_ordinary_tools(
     async def repository_bundle_get(
         api_version: Literal["1"],
         required_sha: Annotated[str | None, Field(pattern=r"^[0-9a-f]{40}$")] = None,
+        branch: Annotated[str, Field(
+            description="One exact branch name; defaults to main. Never all branches.",
+        )] = "main",
     ) -> CallToolResult:
         """Use this when substantive Switchstand repository content is needed and no verified local checkout is available.
 
-        Returns the verified current public repository bundle as an MCP resource link. Do not use
+        Returns one branch with its original Git history, defaulting to main, as an MCP resource link.
+        Request a single exact branch explicitly when needed; all-branch bundles are never allowed.
+        Do not use
         when a verified local checkout is already available. On ``refresh_pending``, retry boundedly
         rather than reconstructing the repository through repeated remote file/tree reads. Pass
         ``required_sha`` only as the exact local checkout target; it never selects another bundle.
+        The link is not downloaded bytes. Use an available binary download tool, verify SHA-256,
+        then clone the bundle with Git and read the guide from that checkout. Report unavailable
+        client download or Git capability explicitly; never claim materialization from metadata.
         """
         del api_version
-        result = await repository_bundle.resolve_repository_bundle(required_sha)
+        result = await repository_bundle.resolve_repository_bundle(required_sha, branch=branch)
         structured = {
             "status": result.status,
             "repository": result.repository,
+            "branch": result.branch,
             "snapshot_digest": result.snapshot_digest,
             "bundle_sha256": result.bundle_sha256,
             "bundle_url": result.bundle_url,
@@ -409,7 +418,7 @@ def build_ordinary_tools(
                 ),
                 ResourceLink(
                     type="resource_link",
-                    name=repository_bundle.BUNDLE_NAME,
+                    name=repository_bundle.asset_names(branch)[0],
                     uri=result.bundle_url,
                     description="Verified current Switchstand Git repository bundle",
                     mime_type="application/octet-stream",
@@ -887,7 +896,17 @@ def build_ordinary_tools(
         audited("review_request", str(subject_work_id), result.status)
         return result
 
-    async def review_bundle_get(api_version: Literal["1"], review_id: UUID) -> CallToolResult:
+    async def review_bundle_get(
+        api_version: Literal["1"], review_id: UUID,
+        branch: Annotated[str, Field(
+            description="One exact candidate branch name; defaults to main. Never all branches.",
+        )] = "main",
+    ) -> CallToolResult:
+        """Get one branch with original Git history for the exact qualified candidate.
+
+        Specify the candidate's single exact branch when it is not main. A different branch
+        or missing client download/Git capability does not establish a usable candidate checkout.
+        """
         def unavailable(status: str, reason: str | None = None, **detail: object) -> CallToolResult:
             return CallToolResult(content=[TextContent(type="text", text=status)],
                                   structured_content={"status": status, "reason": reason} | detail)
@@ -940,7 +959,9 @@ def build_ordinary_tools(
         status, reason = qualification_status(qualification), qualification.reason
         if status != "READY" or qualification.head_sha is None:
             return unavailable(status, reason, qualification=qualification.model_dump())
-        bundle = await repository_bundle.resolve_repository_bundle(qualification.head_sha)
+        bundle = await repository_bundle.resolve_repository_bundle(
+            qualification.head_sha, branch=branch,
+        )
         if bundle.status != "current" or bundle.bundle_url is None:
             return unavailable("UNKNOWN", bundle.reason, bundle=bundle.model_dump())
         refreshed = await repository_candidate.qualify_repository_candidate(int(number))
@@ -966,7 +987,7 @@ def build_ordinary_tools(
         audited("review_bundle_get", str(review_id), final.status)
         return CallToolResult(
             content=[ResourceLink(
-                type="resource_link", name=repository_bundle.BUNDLE_NAME,
+                type="resource_link", name=repository_bundle.asset_names(branch)[0],
                 uri=bundle.bundle_url, mime_type="application/octet-stream",
             )],
             structured_content=structured,

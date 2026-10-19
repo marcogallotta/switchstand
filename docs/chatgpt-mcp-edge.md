@@ -54,7 +54,12 @@ The executable inventory and client policy are owned by
 the repository's `.codex/config.toml`. Do not copy the full tool list into prose:
 it changes as capabilities are added or retired. `repository_bundle_get` is the
 bootstrap route for an ordinary ChatGPT session without a normal checkout; a
-Codex session that already has the repository uses Git normally.
+Codex session that already has the repository uses Git normally. Bundles default to
+`main` with original Git history; `branch` requests one exact branch, never all branches.
+The resource link is a delivery pointer: actual ChatGPT acceptance requires downloaded
+bytes, verified SHA-256, Git materialization and a guide read in that client's execution
+environment. Missing client capabilities remain explicit rather than inferred from a
+successful metadata response.
 
 The edge does not create a second authority system. It resolves the verified
 OAuth principal to the current workspace admission. Work tools apply the
