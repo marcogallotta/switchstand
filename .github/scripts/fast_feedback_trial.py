@@ -97,8 +97,10 @@ def main() -> int:
         summary.write("Partial coverage only. **Full authoritative Quality remains required.**\n\n")
         summary.write(f"Subject: `{subject}`; planner: `{plan.mode}`.\n\n")
         summary.write("| Check | Result | Seconds |\n| --- | --- | --- |\n")
-        for name, check in checks.items():
-            summary.write(f"| {name} | {check['result']} | {check['seconds']} |\n")
+        summary.writelines(
+            f"| {name} | {check['result']} | {check['seconds']} |\n"
+            for name, check in checks.items()
+        )
         summary.write("\nSelected representative modules:\n\n")
         summary.writelines(f"- `{test}`\n" for test in REPRESENTATIVE_TESTS)
         summary.write(
