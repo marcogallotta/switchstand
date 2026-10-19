@@ -36,6 +36,11 @@ LOCAL_FILE_ACTION = re.compile(
     r"Read (?P<input>/[^\s;]+|[\w.-]+) and write its exact contents to "
     r"(?P<output>/[^\s;]+|[\w.-]+); read it back\."
 )
+CONTINUATION_CHECK = re.compile(
+    r"(?:testing|checking|trying) (?:if|whether) (?:(?:the|this|new) )?"
+    r"(?:continuatio[n]?|resumption) (?:works|is working)\.?\s+"
+    r"(?:please )?end (?:your|this) (?:turn|reply)[.!]?", re.IGNORECASE,
+)
 
 
 def _native_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
@@ -124,6 +129,43 @@ def _user_text(records: list[dict[str, Any]], turn_id: str) -> str:
     return "\n".join(matches)
 
 
+def _interrupted_check(records: list[dict[str, Any]], turn_id: str) -> bool:
+    starts = [index for index, record in enumerate(records) if record["type"] == "event_msg"
+              and record["payload"].get("type") == "task_started"]
+    if len(starts) < 2 or records[starts[-1]]["payload"].get("turn_id") != turn_id:
+        return False
+    previous_start, current_start = starts[-2:]
+    previous = records[previous_start:current_start]
+    previous_id = previous[0]["payload"].get("turn_id")
+    if not isinstance(previous_id, str) or previous_id == turn_id:
+        return False
+    if sum(records[index]["payload"].get("turn_id") == previous_id for index in starts) != 1:
+        return False
+    aborts = [index for index, record in enumerate(previous) if record["type"] == "event_msg"
+              and record["payload"].get("type") == "turn_aborted"]
+    if len(aborts) != 1:
+        return False
+    abort = previous[aborts[0]]["payload"]
+    if abort.get("turn_id") != previous_id or abort.get("reason") != "interrupted":
+        return False
+    ended, started = abort.get("completed_at"), records[current_start]["payload"].get("started_at")
+    if type(ended) is not int or type(started) is not int or not 0 <= started - ended <= 10:
+        return False
+    for index, record in enumerate(previous):
+        item = record["payload"]
+        # Native HookPrompt is the source-backed receipt of a prior correction.
+        # Calls may have partly executed before interruption; never blindly retry.
+        event_item = item.get("item", {})
+        if not isinstance(event_item, dict):
+            return False
+        if item.get("type") == "task_complete" or event_item.get("type") == "HookPrompt" \
+                or "_call" in str(item.get("type")):
+            return False
+        if index > aborts[0] and record["type"] == "response_item" and item.get("role") == "user":
+            return False
+    return bool(CONTINUATION_CHECK.fullmatch(_user_text(previous, previous_id)))
+
+
 def _isolated_file_action(
     payload: dict[str, Any], records: list[dict[str, Any]], instruction: str, clauses: list[str],
 ) -> bool:
@@ -160,6 +202,9 @@ def affirmed_action(payload: dict[str, Any], actions: list[str]) -> str | None:
     } for record in current):
         return None
     text = _user_text(current, payload["turn_id"])
+    if actions and (CONTINUATION_CHECK.fullmatch(text)
+                    or text == "." and _interrupted_check(records, payload["turn_id"])):
+        return actions[0]
     for match in ACTIVE_ASSIGNMENT.finditer(text):
         for action in actions:
             _, separator, instruction = action.partition(": ")

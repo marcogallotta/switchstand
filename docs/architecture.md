@@ -661,8 +661,12 @@ Every remaining clause must fit its conservative auxiliary grammar for reply ord
 continuation checking and bounded tool authority; unknown clauses, conversation, STOP,
 quotations, conditions and revocations release without forcing work. The helper is shared by
 both handlers and must accompany them when installed. Source provenance alone never grants
-action authority. A no-production or external-service restriction accepts only an explicit local
-file read/write/readback action.
+action authority. A whole announced continuation check followed by a turn-ending-only instruction
+also permits the exact current action. A sole neutral dot may carry that context only from the
+immediately preceding complete native interrupted turn, within ten seconds, with no prior
+correction, call or completion; STOP, pause, questions and unknown user sources break eligibility.
+This uses transcript evidence and adds no wake mechanism or persistent state. A no-production or
+external-service restriction accepts only an explicit local file read/write/readback action.
 That action additionally requires the announced test context and input/output paths resolved
 inside the exact native session workspace, whose root is under `/tmp`; missing workspace evidence,
 cwd disagreement, and symlink or parent escapes remain UNKNOWN. This proves only the bounded

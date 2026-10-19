@@ -180,6 +180,86 @@ def test_malformed_outer_metadata_is_caught_unknown(tmp_path: Path, metadata: ob
         HELPER["affirmed_action"](payload, [ACTION])
 
 
+def interrupted_source(tmp_path: Path, *messages: str) -> dict[str, str]:
+    payload = source(tmp_path, *messages)
+    path = Path(payload["transcript_path"])
+    previous = [json.loads(line) for line in path.read_text().splitlines()]
+    current = source(tmp_path, ".")
+    following = [json.loads(line) for line in path.read_text().splitlines()][1:]
+    for record in following:
+        item = record["payload"]
+        if item.get("type") == "task_started":
+            item["turn_id"] = "dot"
+            item["started_at"] = 101
+        elif item.get("role") == "user":
+            item["internal_chat_message_metadata_passthrough"]["turn_id"] = "dot"
+    previous.append({"type": "event_msg", "payload": {
+        "type": "turn_aborted", "turn_id": "turn", "reason": "interrupted", "completed_at": 100,
+    }})
+    path.write_text("".join(json.dumps(row) + "\n" for row in previous + following))
+    return current | {"turn_id": "dot"}
+
+
+def test_announced_end_turn_and_immediate_interrupted_dot_keep_assignment(tmp_path: Path) -> None:
+    announcement = "testing if new continuatio works."
+    assert HELPER["affirmed_action"](source(tmp_path, announcement, "end your turn"), [ACTION]) \
+        == ACTION
+    assert HELPER["affirmed_action"](
+        interrupted_source(tmp_path, announcement, "end your turn"), [ACTION],
+    ) == ACTION
+
+
+@pytest.mark.parametrize("damage", [
+    "stop", "pause", "question", "late", "negative_time", "missing_time", "correction",
+    "unknown_user", "call", "completed", "wrong_abort", "unannounced", "intervening_turn",
+])
+def test_interrupted_context_never_overrides_controls_or_ambiguous_effects(
+    tmp_path: Path, damage: str,
+) -> None:
+    messages = ["checking whether the continuation is working.", "end this reply"]
+    if damage in {"stop", "pause", "question"}:
+        messages.append({"stop": "STOP", "pause": "pause the task",
+                         "question": "What happens next?"}[damage])
+    elif damage == "unannounced":
+        messages = ["end your turn"]
+    payload = interrupted_source(tmp_path, *messages)
+    path = Path(payload["transcript_path"])
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    abort = next(row["payload"] for row in rows if row["payload"].get("type") == "turn_aborted")
+    if damage == "late":
+        abort["completed_at"] = 1
+    elif damage == "negative_time":
+        abort["completed_at"] = 102
+    elif damage == "missing_time":
+        abort.pop("completed_at")
+    elif damage == "wrong_abort":
+        abort["turn_id"] = "other"
+    elif damage in {"correction", "call", "completed", "unknown_user", "intervening_turn"}:
+        extra = {
+            "correction": {"type": "event_msg", "payload": {
+                "type": "item_completed", "turn_id": "turn", "item": {"type": "HookPrompt"},
+            }},
+            "call": {"type": "response_item", "payload": {"type": "custom_tool_call"}},
+            "completed": {"type": "event_msg", "payload": {"type": "task_complete"}},
+            "unknown_user": {"type": "response_item", "payload": {
+                "role": "user", "internal_chat_message_metadata_passthrough": {
+                    "turn_id": "turn", "content_item_kinds": ["unknown"],
+                },
+            }},
+            "intervening_turn": {"type": "event_msg", "payload": {
+                "type": "task_started", "turn_id": "other",
+            }},
+        }[damage]
+        rows.insert(-2, extra)
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    try:
+        result = HELPER["affirmed_action"](payload, [ACTION])
+    except ValueError as error:
+        assert "UNKNOWN" in str(error)
+    else:
+        assert result is None
+
+
 @pytest.mark.parametrize("damage", ["session", "turn", "duplicate", "partial", "mixed", "start"])
 def test_incomplete_or_misattributed_source_releases_unknown(tmp_path: Path, damage: str) -> None:
     payload = source(tmp_path, ACTIVE)
