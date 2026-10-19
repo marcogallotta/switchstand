@@ -1,11 +1,10 @@
 import asyncio
-import os
 from typing import Literal
 from uuid import UUID, uuid4
 
 import pytest
 from pydantic import JsonValue
-from sqlalchemy import insert, select, text, update
+from sqlalchemy import insert, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -79,17 +78,14 @@ def test_api_v1_mailbox_outputs_remain_compatible_with_strict_predeploy_clients(
 
 
 @pytest.fixture
-async def agent_messaging(database_prerequisite):
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
-    engine = create_async_engine(url)
+async def agent_messaging(state_database_schema: str):
+    engine = create_async_engine(state_database_schema)
     async with engine.begin() as connection:
-        await connection.run_sync(metadata.drop_all)
-        await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions"
-        ))
-        await connection.run_sync(metadata.create_all)
+        tables = ", ".join(
+            connection.dialect.identifier_preparer.format_table(table)
+            for table in metadata.tables.values()
+        )
+        await connection.exec_driver_sql(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE")
     owner = PrincipalContext(issuer="fixture", subject="owner", client_id="test", assurance="test")
     other = PrincipalContext(issuer="fixture", subject="other", client_id="test", assurance="test")
     actor, session = [owner], ["chat-a"]
@@ -106,11 +102,6 @@ async def agent_messaging(database_prerequisite):
         agent_identity=lambda: session[0],
     ))
     yield tools, actor, session, owner, other, service
-    async with engine.begin() as connection:
-        await connection.run_sync(metadata.drop_all)
-        await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions"
-        ))
     await engine.dispose()
 
 
