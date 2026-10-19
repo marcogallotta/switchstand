@@ -173,7 +173,15 @@ metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.
-Ordinary creation accepts one admitted parent WorkId or canonical project ID. Native canonical
+`project_create(api_version, operation_id, name)` creates an empty flat canonical project through
+authenticated workspace admission and the existing canonical runtime. Names are trimmed, require
+1–500 non-NUL characters, and may repeat: the project ID is identity. One transaction persists the
+project and its applied `effect_intents` receipt; exact principal/operation/canonical-name replay
+returns that receipt, including after admission refresh. A changed identity conflicts. The legacy
+journal target is namespaced `project:<UUID>` and confers no work access. No work, membership,
+provider fallback, new table or migration is involved; canonical-disabled service is unavailable.
+
+Ordinary work creation accepts one admitted parent WorkId or canonical project ID. Native canonical
 creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
 `SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
 parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary

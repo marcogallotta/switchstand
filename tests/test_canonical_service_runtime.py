@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -5,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import Table, delete, select
+from sqlalchemy import Table, delete, event, func, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
@@ -25,12 +26,14 @@ from switchstand.canonical_work import (
     CurrentWork,
     canonical_metadata,
     canonical_revision,
+    canonical_work,
 )
 from switchstand.canonical_work_runtime import (
     CONFIRM_CANCELS_REVIEW_MESSAGE,
     CanonicalWorkRuntime,
 )
 from switchstand.chatgpt import ChatGPTService
+from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import (
     LaunchAuthority,
     WorkEventRequest,
@@ -44,8 +47,10 @@ from switchstand.grants import (
     CreateReceipt,
     EffectReceipt,
     PrincipalContext,
+    ProjectCreateReceipt,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedProjectCreate,
     ProtectedRelation,
     ProtectedUpdate,
     RelationPatch,
@@ -67,6 +72,7 @@ from switchstand.reviews import (
 )
 from switchstand.state import PostgresState, metadata, work_handles
 from switchstand.work_events import WorkEventRepository
+from switchstand.workspace_admission import WorkspaceAdmissionState
 
 
 @dataclass
@@ -133,6 +139,143 @@ async def subject(canonical_database_schema: str) -> AsyncGenerator[Subject]:
     value = Subject(engine, service, runtime, events, grants, principal, handle.id, grant)
     yield value
     await engine.dispose()
+
+
+async def test_project_create_atomic_replay_identity_and_empty_project(subject: Subject) -> None:
+    admission = WorkspaceAdmissionState(subject.engine, subject.service.principal)
+    subject.service.admission_grants = admission
+    request = ProtectedProjectCreate(api_version="1", operation_id=uuid4(), grant_version=1,
+                                     name="  Repeated label  ")
+    async with subject.engine.connect() as connection:
+        work_count = await connection.scalar(select(func.count()).select_from(canonical_work))
+        handle_count = await connection.scalar(select(func.count()).select_from(work_handles))
+    first, concurrent = await asyncio.gather(
+        subject.service.project_create(request), subject.service.project_create(request),
+    )
+    assert first == concurrent and first.effect == "applied"
+    assert isinstance(first.receipt, ProjectCreateReceipt)
+    project_id = first.receipt.project_id
+    assert first.work_id is None and not hasattr(first.receipt, "task_gid")
+    assert first.receipt.name == "Repeated label"
+    # A lost committed response is reconciled solely with the retained request identity.
+    replay = await subject.service.project_create(request.model_copy(update={
+        "name": "Repeated label", "grant_version": 99,
+    }))
+    assert replay == first
+    duplicate = await subject.service.project_create(request.model_copy(update={"operation_id": uuid4()}))
+    assert isinstance(duplicate.receipt, ProjectCreateReceipt)
+    assert duplicate.receipt.project_id != project_id
+    boundary = await subject.service.project_create(request.model_copy(update={
+        "operation_id": uuid4(), "name": "é" * 500,
+    }))
+    assert isinstance(boundary.receipt, ProjectCreateReceipt) and boundary.receipt.name == "é" * 500
+    assert (await subject.service.project_create(request.model_copy(update={"name": "Changed"}))).reason == "operation_identity_conflict"
+    other = subject.principal.model_copy(update={"subject": "another-principal"})
+    assert (await subject.runtime.relations.protected_project_create(admission, other, request)).reason == "operation_identity_conflict"
+    await subject.grants.issue(subject.grant.model_copy(update={"version": 2, "state": "revoked"}), 1)
+    assert await subject.runtime.relations.protected_project_create(
+        subject.grants, subject.principal, request,
+    ) == first
+    async with subject.engine.connect() as connection:
+        stored = (await connection.execute(select(projects).where(projects.c.project_id == project_id))).mappings().one()
+        journal = (await connection.execute(select(effect_intents).where(
+            effect_intents.c.operation_id == str(request.operation_id)
+        ))).mappings().one()
+        assert stored["name"] == first.receipt.name and stored["asana_project_gid"] is None
+        assert journal["work_id"] == f"project:{project_id}"
+        assert journal["intent"]["subject_kind"] == "PROJECT"
+        assert await connection.scalar(select(func.count()).select_from(canonical_work)) == work_count
+        assert await connection.scalar(select(func.count()).select_from(work_handles)) == handle_count
+        assert await connection.scalar(select(func.count()).select_from(project_memberships)) == 0
+    assert not await subject.grants.created_work_allowed(subject.principal.key, project_id)
+    # Another journal operation sharing the global operation identity cannot be adopted.
+    async with subject.engine.begin() as connection:
+        await connection.execute(effect_intents.update().where(
+            effect_intents.c.operation_id == str(request.operation_id)
+        ).values(intent={"operation": "work_create", "request": request.model_dump(mode="json")}))
+    assert (await subject.service.project_create(request)).reason == "operation_identity_conflict"
+
+
+async def test_project_create_rollback_before_receipt_and_exact_retry(subject: Subject) -> None:
+    subject.service.admission_grants = WorkspaceAdmissionState(subject.engine, subject.service.principal)
+    request = ProtectedProjectCreate(api_version="1", operation_id=uuid4(), grant_version=1, name="Rollback")
+
+    def fail_journal(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement.startswith("INSERT INTO effect_intents"):
+            raise SQLAlchemyError("injected before journal persistence")
+
+    event.listen(subject.engine.sync_engine, "before_cursor_execute", fail_journal)
+    try:
+        failed = await subject.service.project_create(request)
+    finally:
+        event.remove(subject.engine.sync_engine, "before_cursor_execute", fail_journal)
+    assert (failed.status, failed.effect, failed.retry) == ("unknown", "unknown", "reconcile")
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(projects)) == 0
+        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 0
+    applied = await subject.service.project_create(request)
+    assert applied.effect == "applied"
+    assert await subject.service.project_create(request) == applied
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({"operations": frozenset()}, "operation_not_granted"),
+    ({"scope": "launch", "operations": frozenset({"project_create"})}, "operation_not_granted"),
+    ({"create_qualification": "real:wrong-assurance"}, "create_not_qualified_for_this_surface"),
+    ({"version": 2}, "grant_version_changed"),
+    ({"state": "revoked"}, "no_current_grant"),
+])
+async def test_project_create_admission_boundaries(subject: Subject, changes: dict, reason: str) -> None:
+    grant = subject.grant.model_copy(update={"version": 2, "operations": frozenset({"project_create"}), **changes})
+    await subject.grants.issue(grant, subject.grant.version)
+    request = ProtectedProjectCreate(api_version="1", operation_id=uuid4(),
+                                     grant_version=1 if reason == "grant_version_changed" else 2, name="Denied")
+    result = await subject.service.project_create(request)
+    assert result.reason == reason and result.effect == "not_sent"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(projects)) == 0
+        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 0
+
+
+@pytest.mark.parametrize("name", ["", " \t\n", "a\0b", "x" * 501])
+async def test_project_create_invalid_names_are_unsent(subject: Subject, name: str) -> None:
+    result = await subject.service.project_create(ProtectedProjectCreate(
+        api_version="1", operation_id=uuid4(), grant_version=1, name=name,
+    ))
+    assert result.reason == "name_invalid" and result.effect == "not_sent"
+
+
+async def test_project_create_actual_mcp_schema_replay_and_existing_placement(subject: Subject) -> None:
+    from mcp import Client
+
+    subject.service.admission_grants = WorkspaceAdmissionState(subject.engine, subject.service.principal)
+    async with Client(build_chatgpt_server(subject.service)) as client:
+        listed = {tool.name: tool for tool in (await client.list_tools()).tools}
+        assert set(listed["project_create"].input_schema["properties"]) == {"api_version", "operation_id", "name"}
+        args = {"api_version": "1", "operation_id": str(uuid4()), "name": "MCP project"}
+        created = await client.call_tool("project_create", args)
+        assert not created.is_error and created.content and created.structured_content is not None
+        receipt = created.structured_content["receipt"]
+        assert (await client.call_tool("project_create", args)).structured_content == created.structured_content
+        placement: dict = {"api_version": "1", "work_id": str(subject.work_id),
+                     "observed_revision": canonical_revision(subject.work_id, 1),
+                     "operation_id": str(uuid4()), "patch": {"kind": "placement", "action": "add",
+                                                            "project_id": receipt["project_id"]}}
+        added = await client.call_tool("work_relate", placement)
+        assert not added.is_error and added.structured_content is not None
+        assert added.structured_content["effect"] == "applied"
+        assert (await subject.runtime.relations.get(subject.work_id)).placements[0].name == "MCP project"
+        placement.update(operation_id=str(uuid4()), observed_revision=canonical_revision(subject.work_id, 2))
+        placement["patch"]["action"] = "remove"
+        removed = await client.call_tool("work_relate", placement)
+        assert not removed.is_error and removed.structured_content is not None
+        assert removed.structured_content["effect"] == "applied"
+        assert not (await subject.runtime.relations.get(subject.work_id)).placements
+    subject.service.canonical_work_active = False
+    unavailable = await subject.service.project_create(ProtectedProjectCreate(
+        api_version="1", operation_id=uuid4(), grant_version=1, name="No provider fallback",
+    ))
+    assert unavailable.status == "unknown" and unavailable.effect == "not_sent"
 
 
 def update(subject: Subject, operation_id: UUID | None = None, **patch: object) -> ProtectedUpdate:

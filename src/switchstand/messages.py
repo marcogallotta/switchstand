@@ -1254,7 +1254,7 @@ class MessageState:
             return "effect_evidence_unknown"
         if outcome.effect == "not_sent":
             return "effect_not_applied"
-        if outcome.receipt is None or outcome.receipt.work_id != expected_work_id:
+        if outcome.receipt is None or getattr(outcome.receipt, "work_id", None) != expected_work_id:
             return "effect_evidence_mismatch"
         return None
 

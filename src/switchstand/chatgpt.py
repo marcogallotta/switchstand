@@ -52,6 +52,7 @@ from .grants import (
     ProtectedAppend,
     ProtectedCreate,
     ProtectedFeedbackClassification,
+    ProtectedProjectCreate,
     ProtectedRelation,
     ProtectedUpdate,
     ScalarPatch,
@@ -810,6 +811,20 @@ class ChatGPTService:
                 )
             return await self.canonical_append.append(principal, request)
         return await self.gateway.append(principal, request)
+
+    async def project_create(self, request: ProtectedProjectCreate) -> GuardOutcome:
+        principal = await self.principal()
+        if principal is None:
+            return self.denied("project_create", "authenticated_principal_required")
+        if not self.canonical_work_active or self.canonical_work is None:
+            return GuardOutcome(
+                status="unknown", operation="project_create", operation_id=request.operation_id,
+                reason="canonical_projects_unavailable", effect="not_sent",
+                next_action="Restore the canonical runtime; do not use a provider fallback.",
+            )
+        return await self.canonical_work.relations.protected_project_create(
+            self.admission_grants, principal, request,
+        )
 
     async def create(self, request: ProtectedCreate) -> GuardOutcome:
         principal = await self.principal()
