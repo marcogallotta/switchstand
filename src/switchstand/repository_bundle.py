@@ -34,6 +34,7 @@ class RepositoryBundleResolution(BaseModel):
     required_sha_is_head: bool | None = None
     reason: str | None = None
     next_action: str | None = None
+    actions_artifact: dict[str, str] | None = None
 
 
 def canonical_ref_map_digest(refs: dict[str, str]) -> str:
@@ -173,6 +174,17 @@ async def resolve_repository_bundle(
         ):
             reason = "required_sha_unproved" if required_sha else "refs_advanced"
             return _pending(required_sha, reason, branch)
+        provenance = manifest.get("provenance", {})
+        run_id, attempt = str(provenance.get("run_id", "")), str(provenance.get("run_attempt", ""))
+        artifact_name = f"{bundle_name.removesuffix('.bundle')}-{authoritative_sha}-run-{run_id}-{attempt}"
+        mirror = None
+        if (
+            re.fullmatch(r"[1-9][0-9]*", run_id)
+            and re.fullmatch(r"[1-9][0-9]*", attempt)
+            and provenance.get("artifact_name") == artifact_name
+        ):
+            mirror = {"name": artifact_name, "run_id": run_id,
+                      "run_url": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"}
         return RepositoryBundleResolution(
             status="current",
             branch=branch,
@@ -182,6 +194,7 @@ async def resolve_repository_bundle(
             refs=manifest_refs,
             required_sha=required_sha,
             required_sha_is_head=True if required_sha else None,
+            actions_artifact=mirror,
         )
     except httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError:
         return RepositoryBundleResolution(

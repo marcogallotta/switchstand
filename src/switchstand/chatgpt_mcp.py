@@ -381,7 +381,10 @@ def build_ordinary_tools(
         when a verified local checkout is already available. On ``refresh_pending``, retry boundedly
         rather than reconstructing the repository through repeated remote file/tree reads. Pass
         ``required_sha`` only as the exact local checkout target; it never selects another bundle.
-        The link is not downloaded bytes. Use an available binary download tool, verify SHA-256,
+        The link is not downloaded bytes. If actions_artifact is present and the client has a
+        GitHub artifact download tool, download that named artifact from the exact run and extract
+        its ZIP (bundle, manifest, checksum). Otherwise report missing file-transfer capability.
+        The locator does not prove retention or receipt. Verify the extracted bundle SHA-256,
         then clone the bundle with Git and read the guide from that checkout. Report unavailable
         client download or Git capability explicitly; never claim materialization from metadata.
         """
@@ -394,6 +397,7 @@ def build_ordinary_tools(
             "snapshot_digest": result.snapshot_digest,
             "bundle_sha256": result.bundle_sha256,
             "bundle_url": result.bundle_url,
+            "actions_artifact": result.actions_artifact,
             "ref_count": len(result.refs),
             "required_sha": result.required_sha,
             "required_sha_is_head": result.required_sha_is_head,

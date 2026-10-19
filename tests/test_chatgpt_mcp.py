@@ -81,6 +81,7 @@ async def test_repository_bundle_tool_selects_one_branch_and_preserves_digest(mo
     resolution = RepositoryBundleResolution(
         status="current", branch=branch, bundle_url="https://example.invalid/bundle",
         bundle_sha256=digest, refs={f"refs/heads/{branch}": "a" * 40},
+        actions_artifact={"name": "exact-artifact", "run_id": "123"},
     )
     resolve = AsyncMock(return_value=resolution)
     monkeypatch.setattr(chatgpt_mcp.repository_bundle, "resolve_repository_bundle", resolve)
@@ -90,6 +91,7 @@ async def test_repository_bundle_tool_selects_one_branch_and_preserves_digest(mo
     assert result.structured_content["branch"] == branch
     assert result.structured_content["ref_count"] == 1
     assert result.structured_content["bundle_sha256"] == digest
+    assert result.structured_content["actions_artifact"] == resolution.actions_artifact
     link = next(item for item in result.content if item.type == "resource_link")
     assert link.name == chatgpt_mcp.repository_bundle.asset_names(branch)[0]
     assert str(link.uri) == "https://example.invalid/bundle"

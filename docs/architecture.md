@@ -564,6 +564,9 @@ change, and causal tests for both layers.
 
 ## Repository transport
 
+The publisher also uploads the same bundle, manifest and checksum as an Actions ZIP artifact before Release publication. Its provenance marker binds a deterministic artifact name to the existing run identity and selected SHA. Resolution exposes an optional `actions_artifact` locator only for matching markers; it does not check retention or download bytes. No artifact enumeration, new service or credential expansion is introduced.
+
+
 `repository_bundle.py` resolves the ordinary `repository_bundle_get` transport. The rolling GitHub
 release is only a cache: it contains a bundle, manifest, and checksum published by
 `.github/workflows/repository-bundle.yml` after Quality or an authorized exact-branch manual dispatch.

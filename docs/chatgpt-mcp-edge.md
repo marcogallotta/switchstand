@@ -61,6 +61,8 @@ bytes, verified SHA-256, Git materialization and a guide read in that client's e
 environment. Missing client capabilities remain explicit rather than inferred from a
 successful metadata response.
 
+When `actions_artifact` is present, a client that already has a GitHub artifact download tool can select that exact repository/run/name and materialize its ZIP containing the full-history `.bundle`, manifest and checksum. Verify the extracted bundle SHA-256 and Git checkout as above. This route is conditional on actual client capability; it does not require installing a connector. An absent/expired artifact is `unavailable`; missing file-transfer capability is `MISSING_CAPABILITY`, and actual ChatGPT receipt remains `NOT_RUN` until evidenced. The locator is declared publication identity, not proof of live retention or file receipt.
+
 The edge does not create a second authority system. It resolves the verified
 OAuth principal to the current workspace admission. Work tools apply the
 existing WorkId, grant-version, revision, operation-identity, UNKNOWN, and

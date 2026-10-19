@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -46,6 +47,7 @@ def client_for(
     downloaded_checksum=CHECKSUM,
     authoritative_pages=None,
     redirect_manifest=False,
+    provenance=None,
     seen=None,
 ):
     refs = refs if refs is not None else {f"refs/heads/{branch}": REFS[f"refs/heads/{branch}"]}
@@ -59,6 +61,7 @@ def client_for(
         "refs": refs,
         "snapshot_digest": manifest_digest or canonical_ref_map_digest(refs),
         "bundle_sha256": manifest_checksum,
+        "provenance": provenance or {},
     }
     release = {
         "assets": [
@@ -244,6 +247,24 @@ def _git(*args: str, cwd: Path | None = None) -> str:
     ).stdout.strip()
 
 
+@pytest.mark.parametrize("marker", ["valid", "absent", "foreign", "invalid_run"])
+async def test_artifact_locator_requires_matching_publisher_marker(marker):
+    name = f"switchstand-current-{REFS['refs/heads/main']}-run-123-2"
+    provenance = {"run_id": "123", "run_attempt": "2", "artifact_name": name}
+    if marker == "absent":
+        provenance.pop("artifact_name")
+    elif marker == "foreign":
+        provenance["artifact_name"] = "https://foreign.invalid/asset"
+    elif marker == "invalid_run":
+        provenance["run_id"] = "../../foreign"
+    result = await resolve_repository_bundle(client=client_for(provenance=provenance))
+    assert result.status == "current"
+    assert result.actions_artifact == ({
+        "name": name, "run_id": "123",
+        "run_url": "https://github.com/marcogallotta/switchstand/actions/runs/123",
+    } if marker == "valid" else None)
+
+
 @pytest.mark.parametrize("branch", ["main", "review"])
 def test_workflow_exports_one_branch_with_original_history(tmp_path: Path, branch):
     source = tmp_path / "source"
@@ -278,7 +299,15 @@ def test_workflow_exports_one_branch_with_original_history(tmp_path: Path, branc
                GIT_CONFIG_VALUE_0="https://github.com/test/repo.git")
     subprocess.run(["bash", "-c", script], cwd=tmp_path, env=env, check=True, capture_output=True)
     bundle = tmp_path / asset_names(branch)[0]
+    manifest = json.loads((tmp_path / asset_names(branch)[1]).read_text())
     expected_sha = main_sha if branch == "main" else review_sha
+    artifact_name = f"{bundle.stem}-{expected_sha}-run-1-1"
+    assert manifest["provenance"]["artifact_name"] == artifact_name
+    assert f"ARTIFACT_NAME={artifact_name}\n" in (tmp_path / "github.env").read_text()
+    upload = workflow.split("      - name: Upload repository bundle ZIP mirror", 1)[1].split("      - name:", 1)[0]
+    assert "actions/upload-artifact@v7" in upload
+    assert all(f"${{{{ env.{key} }}}}" in upload for key in ("BUNDLE_NAME", "MANIFEST_NAME", "CHECKSUM_NAME"))
+    assert "if-no-files-found: error" in upload
     assert _git("bundle", "list-heads", str(bundle)) == f"{expected_sha} refs/heads/{branch}"
     materialized = tmp_path / "materialized"
     assert _git("-C", str(materialized), "rev-parse", "HEAD") == expected_sha
