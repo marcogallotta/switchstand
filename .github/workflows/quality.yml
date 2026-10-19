@@ -23,6 +23,9 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
       - name: Bind exact subject and select fail-closed foreground policy
         id: policy
         env:
@@ -83,14 +86,38 @@ jobs:
           fi
           test "$stack_top" != unknown || subject_verified=false
 
-          selector_health_clear=false
+          plan_file="$RUNNER_TEMP/exact-quality-plan.json"
+          health_needed="$(PYTHONPATH=src python3 - \
+            "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
+            "$subject_verified" "$stack_top" "$EVENT_KIND" "$REF_NAME" \
+            "$DEFAULT_BRANCH" "$SELECTIVE_FOREGROUND_ENABLED" "$plan_file" <<'PY'
+          import json
+          import sys
+          from dataclasses import asdict
+          from pathlib import Path
+          from switchstand.affected_tests import (
+              broad_backstop_required, foreground_authority, plan_exact, validate_execution_tree,
+          )
+          (base, head, execution, verified, stack_top, event_kind, ref_name,
+           default_branch, selective_enabled, plan_file) = sys.argv[1:]
+          plan = validate_execution_tree(Path('.'), plan_exact(Path('.'), base, head), execution)
+          Path(plan_file).write_text(json.dumps(asdict(plan)))
+          eligible = foreground_authority(
+              plan, subject_verified=verified == 'true', selector_health_clear=True,
+              cumulative_stack_top=stack_top == 'true',
+          ).mode == 'PROMOTE_TEST_MODULE_ONLY_V1'
+          print(str(eligible and selective_enabled == 'true' and not broad_backstop_required(
+              event_kind, ref_name, default_branch,
+          )).lower())
+          PY
+          )"
           current_blob="$(git rev-parse "$execution_sha:.github/workflows/quality.yml")"
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || true)"
           main_blob="$(git rev-parse "origin/$DEFAULT_BRANCH:.github/workflows/quality.yml" 2>/dev/null || true)"
           history_file="$RUNNER_TEMP/broad-quality-history.tsv"
           : > "$history_file"
           history_complete=false
-          if test "$current_blob" = "$main_blob"; then
+          if test "$health_needed" = true && test "$current_blob" = "$main_blob"; then
             if push_count="$(gh api \
                 "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
                 --method GET -f branch="$DEFAULT_BRANCH" -f event=push \
@@ -152,7 +179,8 @@ jobs:
             "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
             "$subject_verified" "$history_complete" "$current_blob" "$default_sha" \
             "$history_file" "$stack_top" "$EVENT_KIND" "$REF_NAME" \
-            "$DEFAULT_BRANCH" "$SELECTIVE_FOREGROUND_ENABLED" "$GITHUB_OUTPUT" <<'PY'
+            "$DEFAULT_BRANCH" "$SELECTIVE_FOREGROUND_ENABLED" "$GITHUB_OUTPUT" \
+            "$plan_file" "$health_needed" <<'PY'
           import json
           import subprocess
           import sys
@@ -160,8 +188,8 @@ jobs:
           from datetime import UTC, datetime
           from pathlib import Path
           from switchstand.affected_tests import (
-              BroadQualityRun, broad_backstop_required, foreground_authority, plan_exact,
-              selector_health_clear, validate_execution_tree,
+              BroadQualityRun, Plan, broad_backstop_required, foreground_authority,
+              selector_health_clear,
           )
           from switchstand.full_suite_due import (
               FullSuiteDecision, FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due,
@@ -169,7 +197,7 @@ jobs:
 
           (base, head, execution, verified, history_complete, current_blob,
            default_sha, history_file, stack_top, event_kind, ref_name,
-           default_branch, selective_enabled, output) = sys.argv[1:]
+           default_branch, selective_enabled, output, plan_file, health_needed) = sys.argv[1:]
           rows = tuple(line.rstrip('\n').split('\t')
                        for line in Path(history_file).read_text().splitlines())
           runs = tuple(BroadQualityRun(
@@ -182,7 +210,7 @@ jobs:
               default_sha=default_sha,
               runs=runs,
           )
-          plan = validate_execution_tree(Path('.'), plan_exact(Path('.'), base, head), execution)
+          plan = Plan(**json.loads(Path(plan_file).read_text()))
           decision = foreground_authority(
               plan,
               subject_verified=verified == 'true',
@@ -190,6 +218,8 @@ jobs:
               cumulative_stack_top=stack_top == 'true',
           )
           try:
+              if health_needed != 'true':
+                  raise ValueError('optional observations cannot affect full fallback')
               candidates = tuple(row for row in rows if (
                   row[2] == 'success' and row[3] == current_blob and row[1] != head and row[4]
               ))
@@ -240,10 +270,14 @@ jobs:
                   current_truth_known=history_complete == 'true',
               ), FullSuitePolicy(20, 24 * 60 * 60, 100, 2_000, 50, 0.5))
           except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-              adaptive = FullSuiteDecision('UNKNOWN', ('observation-unavailable',), None)
+              reason = 'observations-skipped-full-fallback' if health_needed != 'true' \
+                  else 'observation-unavailable'
+              adaptive = FullSuiteDecision('UNKNOWN', (reason,), None)
           summary = {
               'authority': decision.mode,
               'authority_reasons': decision.reasons,
+              'selector_health_observation': 'UNKNOWN' if history_complete != 'true' \
+                  else ('CLEAR' if health else 'NOT_CLEAR'),
               'adaptive_full_suite_shadow': asdict(adaptive),
               'planner': {
                   'planner_revision': plan.planner_revision,
@@ -392,7 +426,7 @@ jobs:
           PY
           execution_kind=full
           test '${{ needs.plan.outputs.mode }}' != PROMOTE_TEST_MODULE_ONLY_V1 || execution_kind=selected
-          python3 src/switchstand/test_metrics.py --execution-kind "$execution_kind" \
+          PYTHONPATH=src python3 -m switchstand.test_metrics --execution-kind "$execution_kind" \
             --identity "$METRICS_DIR/identity.json" --planner "$METRICS_DIR/planner.json" \
             --junit "$METRICS_DIR/junit.xml" \
             --output "$METRICS_DIR/metrics.json"

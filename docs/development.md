@@ -319,7 +319,7 @@ Python/uv binary hashes from the built container); the source-bearing candidate 
 so ordinary source changes do not invalidate comparisons. Unknown environment fields yield a null
 comparison key; mismatched/unknown environments require INSUFFICIENT_DATA in future
 trend analysis. GitHub job metadata supplies CI duration; JUnit supplies suite/test
-time. `python src/switchstand/test_metrics.py --help` describes the shared formatter;
+time. `PYTHONPATH=src python3 -m switchstand.test_metrics --help` describes the shared formatter;
 optional planner selections count files, never JUnit cases. The authoritative foreground Quality
 job promotes only `PROMOTE_TEST_MODULE_ONLY_V1`: every changed path and selected path must be a
 direct `tests/test_*.py` module on an exact current subject, with no delete/rename, planner fallback,
@@ -327,7 +327,10 @@ selector-health warning, or cumulative native-stack-top obligation. Every other 
 full fallback, including all production, helper, configuration, documentation, workflow, migration,
 and unknown changes. Default-branch pushes and the nightly schedule always run the full suite; a
 missing or unsuccessful current default-branch Quality result, or any failed default/scheduled broad
-result in the same workflow generation, demotes the sole promoted rule to full fallback. Unresolved
+result in the same workflow generation, demotes the sole promoted rule to full fallback. The
+authoritative planner uses Python 3.14. Once the exact validated plan and mandatory gates make
+promotion impossible, history and adaptive observations are skipped and explicitly `UNKNOWN`;
+eligible candidates still require the complete same-generation health check. Unresolved
 run identity or a provider result cap also fails closed. A later green run cannot clear that
 generation's demotion; correction changes the reviewed workflow generation. Docker lifecycle
 evidence is omitted only for the exact promoted class. One stable
