@@ -172,6 +172,24 @@ def _attempt(run_attempt: int = 1, **changes: object) -> dict[str, object]:
     return qualification_attempt_observation(identity, {'mode': 'FULL_FALLBACK'})
 
 
+def test_parallel_shards_are_distinct_scopes_but_same_shard_rerun_is_a_retry() -> None:
+    def provider(index: int, attempt: int = 1) -> dict[str, str]:
+        return {'repository': 'owner/repo', 'workflow': 'Quality',
+                'job': f'quality-shard-{index}', 'run_id': '17', 'run_attempt': str(attempt)}
+
+    attempts = tuple(_attempt(shard={'index': index, 'count': 4}, github=provider(index))
+                     for index in range(4))
+    assert len({item['scope']['plan_digest'] for item in attempts}) == 4
+    assert attempts[0]['partition'] == {'index': 0, 'count': 4}
+    summary = summarize_lineage(attempts)
+    assert summary['status'] == 'AVAILABLE'
+    assert summary['repeated_scope_retry_count'] == 0
+
+    rerun = _attempt(2, shard={'index': 0, 'count': 4}, github=provider(0, 2))
+    assert rerun['scope'] == attempts[0]['scope']
+    assert summarize_lineage((attempts[0], rerun))['repeated_scope_retry_count'] == 1
+
+
 def test_lineage_scope_metrics_and_provider_dedupe() -> None:
     first = _attempt(1, quality_outcome='failure',
                      failure_classification={'decisive_failure_at': '2026-10-07T10:00:20+00:00'})
