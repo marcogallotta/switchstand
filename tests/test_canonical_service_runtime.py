@@ -1111,3 +1111,74 @@ async def test_resource_app_preserves_canonical_runtime(
     assert seen[0].canonical_work is subject.runtime
     assert seen[0].canonical_events is subject.service.canonical_events
     assert seen[0].canonical_work_active
+
+
+@pytest.mark.parametrize("case", ["runnable", "review_due", "message_due", "future", "blocker", "unknown", "unpicked", "picked_up", "completed", "inactive"])
+async def test_stop_obligations_reads_real_canonical_assignments(subject: Subject, case: str):
+    import httpx
+    from sqlalchemy import update as sql_update
+
+    from switchstand.agent_mailboxes import (
+        CODEX_COORDINATOR_KEY,
+        CODEX_COORDINATOR_NAME,
+        agent_mailboxes,
+    )
+    from switchstand.chatgpt_edge import _codex_stop_obligations
+    from switchstand.work_policy import validate_resultant_state
+
+    binding = await AgentMailboxState(subject.engine).register_agent(
+        "Acceptance", subject.principal.key, "codex:acceptance-session",
+    )
+    assert binding.status == "ok"
+    async with subject.engine.begin() as connection:
+        await connection.execute(sql_update(agent_mailboxes).where(
+            agent_mailboxes.c.name_key == "acceptance",
+        ).values(name_key=CODEX_COORDINATOR_KEY, display_name=CODEX_COORDINATOR_NAME))
+    subject.service.messages = MessageState(subject.engine, subject.grants)
+    original = await subject.runtime.works.get(subject.work_id)
+    assert original is not None
+    work = replace(original, owner_key=CODEX_COORDINATOR_NAME)
+    if case in {"review_due", "message_due", "future", "blocker", "unpicked"}:
+        work = replace(
+            work, lifecycle_state="WAITING", next_action_class="NONE", next_action_ref="NONE",
+            wait_kind="MESSAGE" if case == "message_due" else "REVIEW",
+            unblock_condition="receive exact existing review result",
+            next_due=(datetime.now(UTC) + timedelta(days=1 if case == "future" else -1)).isoformat(),
+        )
+    if case in {"blocker", "unpicked"}:
+        work = replace(work, wait_kind="DEPENDENCY", next_due="UNSCHEDULED")
+    if case == "unknown":
+        work = replace(work, next_action_class="UNKNOWN", next_action_ref="UNKNOWN")
+    if case == "picked_up":
+        work = replace(work, owner_key="agent:recipient")
+    if case == "completed":
+        work = replace(work, completed=True, lifecycle_state="TERMINAL",
+                       next_action_class="NONE", next_action_ref="NONE")
+    validate_resultant_state(**{field: getattr(work, field) for field in (
+        "lifecycle_state", "canonical_root", "owner_key", "wait_kind", "unblock_condition",
+        "next_due", "next_action_class", "next_action_ref",
+    )})
+    stored = await subject.runtime.works.replace(work)
+    if case == "inactive":
+        subject.service.canonical_work_active = False
+    result = await _codex_stop_obligations(subject.service, "acceptance-session")
+    assert result["status"] == (
+        "unknown" if case in {"unknown", "picked_up", "completed", "inactive"} else "ok"
+    )
+    assert bool(result.get("actions")) == (case in {"runnable", "review_due", "message_due"})
+    assert await subject.runtime.works.get(subject.work_id) == stored
+    assert (await _codex_stop_obligations(subject.service, "other-session"))["status"] == "unknown"
+    # Exercise the real HTTP wrapper: ordinary admission has no OAuth identity on
+    # this existing loopback route, unlike direct service calls above.
+    app = chatgpt_edge._create_resource_app(
+        subject.service, issuer_url="https://issuer.example",
+        resource_url="https://resource.example", auth=None, certification_runtime=None,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1",
+    ) as client:
+        response = await client.post("/internal/codex-stop-mailbox", json={
+            "session_id": "acceptance-session", "check_obligations": True,
+        })
+    assert response.status_code == 200
+    assert response.json() == result

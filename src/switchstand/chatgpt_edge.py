@@ -11,6 +11,7 @@ import re
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
@@ -35,7 +36,7 @@ from .activation_continuity import (
 )
 from .activation_continuity_store import ActivationContinuity
 from .activation_contract_loader import load_activation_contracts_from_environment
-from .agent_mailboxes import AgentMailboxState
+from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailboxState
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_relations import CanonicalRelationsRepository
 from .canonical_work import CanonicalWorkRepository
@@ -81,6 +82,8 @@ from .task_control import TaskControlState
 from .task_runs import TaskRunState
 from .work_events import WorkEventRepository
 from .work_hygiene import WorkHygieneState
+from .work_policy import validate_resultant_state
+from .workspace_admission import WorkspaceAdmissionState
 
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
@@ -328,9 +331,79 @@ async def _codex_stop_mailbox_page(
         return {"status": result.status, "reason": result.reason}
     return {
         "status": "ok",
+        "coordinator": binding.name == CODEX_COORDINATOR_NAME,
         "delivery_ids": [str(message.delivery_id) for message in result.messages],
         "has_more": result.has_more,
         "next_cursor": None if result.next_cursor is None else str(result.next_cursor),
+    }
+
+
+async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> dict[str, object]:
+    """Project existing Coordinator assignments; never receive, complete or reassign work."""
+    if service.messages is None or service.canonical_work is None or not service.canonical_work_active:
+        return {"status": "unknown", "reason": "state_unavailable"}
+    mailboxes = AgentMailboxState(service.messages.engine)
+    bound = await mailboxes.for_session(f"codex:{session_id}")
+    binding = bound.mailbox
+    if bound.status != "ok" or binding is None or binding.name != CODEX_COORDINATOR_NAME:
+        return {"status": "unknown", "reason": "not_current_coordinator"}
+    # Ordinary admission is request-local generic capability, not task authority.
+    # The loopback read uses the existing current assignment and session binding.
+    ordinary = isinstance(service.admission_grants, WorkspaceAdmissionState)
+    grant = None if ordinary else await service.admission_grants.current(binding.principal_key)
+    if not ordinary and (grant is None or not grant.current()):
+        return {"status": "unknown", "reason": "missing_authority"}
+    works = service.canonical_work.works
+    page = await works.search(owner_key=CODEX_COORDINATOR_NAME, completed=False, limit=100)
+    if page.next_cursor is not None:
+        return {"status": "unknown", "reason": "incomplete_assignment_page"}
+    actions: list[str] = []
+    unknown = False
+    now = datetime.now(UTC)
+    for work in page.items:
+        if (grant is not None and not grant.can_write(work.work_id)) \
+                or work.lifecycle_state not in {"CURRENT", "WAITING"}:
+            unknown = True
+            continue
+        if await works.get(work.work_id) != work:
+            return {"status": "unknown", "reason": "stale_assignment"}
+        try:
+            validate_resultant_state(**{
+                field: getattr(work, field) for field in (
+                    "lifecycle_state", "canonical_root", "owner_key", "wait_kind",
+                    "unblock_condition", "next_due", "next_action_class", "next_action_ref",
+                )
+            })
+        except ValueError:
+            unknown = True
+            continue
+        if work.lifecycle_state == "CURRENT" and work.wait_kind == "NONE" \
+                and work.next_action_class == "OWNER_CAN_DO":
+            actions.append(f"{work.work_id}: {work.next_action_ref}")
+        elif work.lifecycle_state == "WAITING" and work.wait_kind in {"REVIEW", "MESSAGE"}:
+            try:
+                due = datetime.fromisoformat(work.next_due or "")
+                if due.tzinfo is None:
+                    raise ValueError("due time must include timezone")
+            except ValueError:
+                unknown = True
+                continue
+            if due <= now:
+                actions.append(
+                    f"{work.work_id}: poll the existing {work.wait_kind.lower()} watch "
+                    f"for {work.unblock_condition}; preserve ownership until attributable pickup/result"
+                )
+        elif work.next_action_class == "UNKNOWN":
+            unknown = True
+    if await mailboxes.for_session(f"codex:{session_id}") != bound:
+        return {"status": "unknown", "reason": "coordinator_replaced"}
+    if not ordinary and await service.admission_grants.current(binding.principal_key) != grant:
+        return {"status": "unknown", "reason": "authority_changed"}
+    if not actions and (unknown or not page.items):
+        return {"status": "unknown", "reason": "assignment_coverage_unknown"}
+    return {
+        "status": "ok", "currentness": "CURRENT", "actions": actions,
+        "unknown_obligations": unknown,
     }
 
 
@@ -590,10 +663,13 @@ def _create_resource_app(
             if not isinstance(raw_payload, dict):
                 raise TypeError("invalid request object")
             payload = cast(dict[str, object], raw_payload)
-            if set(payload) - {"session_id", "cursor"}:
+            if set(payload) - {"session_id", "cursor", "check_obligations"}:
                 raise ValueError("invalid request object")
             session_id = payload.get("session_id")
             cursor_value = payload.get("cursor")
+            check_obligations = payload.get("check_obligations", False)
+            if not isinstance(check_obligations, bool):
+                raise TypeError("invalid check_obligations")
             if not isinstance(session_id, str) or not session_id:
                 raise ValueError("invalid session_id")
             if cursor_value is not None and not isinstance(cursor_value, str):
@@ -604,6 +680,8 @@ def _create_resource_app(
                 {"status": "recovery_required", "reason": "malformed_request"},
                 status_code=400,
             )
+        if check_obligations:
+            return JSONResponse(await _codex_stop_obligations(service, session_id))
         return JSONResponse(await _codex_stop_mailbox_page(service, session_id, cursor))
     if certification_runtime is not None:
         runtime_sha, run_id = certification_runtime

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -53,6 +54,11 @@ def _pending(endpoint: str, session_id: str) -> list[str]:
             status = page.get("status", "missing_status")
             reason = page.get("reason", "missing_reason")
             raise ValueError(f"mailbox unavailable ({status}: {reason})")
+        coordinator = page.get("coordinator")
+        if not isinstance(coordinator, bool):
+            raise ValueError("missing Coordinator binding evidence")
+        if not coordinator:
+            return []
         ids = page.get("delivery_ids")
         has_more = page.get("has_more")
         next_cursor = page.get("next_cursor")
@@ -85,6 +91,15 @@ def main() -> None:
         if not isinstance(active, bool):
             raise TypeError("missing stop_hook_active")
         if active:
+            _emit({})
+            return
+        if any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path")):
+            _emit({})
+            return
+        message = payload.get("last_assistant_message")
+        if isinstance(message, str) and re.fullmatch(
+            r"\s*<!-- SWITCHSTAND_YIELD:USER_STOP -->\s*", message,
+        ):
             _emit({})
             return
         session_id = payload.get("session_id")

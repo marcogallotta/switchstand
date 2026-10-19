@@ -69,6 +69,7 @@ def stop(*, active: bool = False) -> dict[str, object]:
     return {
         "hook_event_name": "Stop",
         "session_id": "session-1",
+        "last_assistant_message": "<!-- SWITCHSTAND_YIELD:HANDOFF -->",
         "stop_hook_active": active,
     }
 
@@ -88,7 +89,7 @@ def test_repository_config_keeps_mailbox_and_continuity_stop_hooks() -> None:
 
 def test_empty_mailbox_allows_stop_and_active_escape_skips_read() -> None:
     with MailboxServer([{
-        "status": "ok", "delivery_ids": [], "has_more": False, "next_cursor": None,
+        "status": "ok", "coordinator": True, "delivery_ids": [], "has_more": False, "next_cursor": None,
     }]) as server:
         assert invoke(stop(), server.endpoint) == {}
         assert server.requests == [{"session_id": "session-1", "cursor": None}]
@@ -99,9 +100,9 @@ def test_empty_mailbox_allows_stop_and_active_escape_skips_read() -> None:
 def test_pending_mail_scans_every_page_and_requests_one_continuation() -> None:
     first, second = str(uuid4()), str(uuid4())
     with MailboxServer([
-        {"status": "ok", "delivery_ids": [first], "has_more": True,
+        {"status": "ok", "coordinator": True, "delivery_ids": [first], "has_more": True,
          "next_cursor": first},
-        {"status": "ok", "delivery_ids": [second], "has_more": False,
+        {"status": "ok", "coordinator": True, "delivery_ids": [second], "has_more": False,
          "next_cursor": None},
     ]) as server:
         result = invoke(stop(), server.endpoint)
@@ -115,7 +116,7 @@ def test_pending_mail_scans_every_page_and_requests_one_continuation() -> None:
 @pytest.mark.parametrize("response", [
     {"status": "denied", "reason": "agent_not_registered"},
     {"status": "recovery_required", "reason": "state_unavailable"},
-    {"status": "ok", "delivery_ids": "wrong", "has_more": False,
+    {"status": "ok", "coordinator": True, "delivery_ids": "wrong", "has_more": False,
      "next_cursor": None},
 ])
 def test_unavailable_or_malformed_mailbox_fails_open_visibly(response: dict[str, Any]) -> None:
@@ -131,3 +132,36 @@ def test_malformed_hook_input_fails_open_without_read() -> None:
         result = invoke({}, server.endpoint)
     assert result["continue"] is True
     assert not server.requests
+
+
+@pytest.mark.parametrize("message", ["Hello", "Stopped", "<!-- SWITCHSTAND_YIELD:USER_STOP -->"])
+def test_conversation_without_pending_delivery_and_stop_release(message: str) -> None:
+    with MailboxServer([{
+        "status": "ok", "coordinator": True, "delivery_ids": [],
+        "has_more": False, "next_cursor": None,
+    }]) as server:
+        assert invoke(stop() | {"last_assistant_message": message}, server.endpoint) == {}
+        assert len(server.requests) == (0 if "USER_STOP" in message else 1)
+
+
+def test_worker_mailbox_never_forces_continuation() -> None:
+    with MailboxServer([{
+        "status": "ok", "coordinator": False, "delivery_ids": [str(uuid4())],
+        "has_more": False, "next_cursor": None,
+    }]) as server:
+        assert invoke(stop(), server.endpoint) == {}
+
+
+def test_markerless_progress_still_checks_pending_delivery_once() -> None:
+    delivery = str(uuid4())
+    with MailboxServer([{
+        "status": "ok", "coordinator": True, "delivery_ids": [delivery],
+        "has_more": False, "next_cursor": None,
+    }]) as server:
+        payload = stop() | {"last_assistant_message": "Checkpoint only"}
+        first = invoke(payload, server.endpoint)
+        second = invoke(payload | {"stop_hook_active": True}, server.endpoint)
+    assert first["decision"] == "block"
+    assert delivery in first["reason"]
+    assert second == {}
+    assert len(server.requests) == 1

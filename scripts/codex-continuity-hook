@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,13 +21,6 @@ MARKER_PATTERN = "|".join(MARKER_NAMES)
 MARKER = re.compile(rf"<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->")
 TERMINAL_MARKER = re.compile(
     rf"\A\s*<!-- SWITCHSTAND_YIELD:({MARKER_PATTERN}) -->\s*\Z"
-)
-CONTINUATION = (
-    "This top-level Codex assignment is still active. Do not end merely because you replied, "
-    "reported status, finished one item, received feedback, or hit a partial blocker. Continue "
-    "the next owned executable action. If the run is genuinely finished, blocked, stopped, or "
-    "handed off, reissue a dedicated final reply containing exactly one permitted hidden yield "
-    "marker and no other text: {markers}."
 )
 PROMPT_CONTEXT = (
     "This user message arrived while the top-level assignment is active. Treat it as an "
@@ -74,15 +68,27 @@ def _subagent(payload: dict[str, Any]) -> bool:
     return any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path"))
 
 
-def _continuation(lifetime: str) -> str:
-    allowed = (
-        marker for marker in MARKER_NAMES
-        if lifetime == "ASSIGNMENT" or marker != "ASSIGNMENT_COMPLETE"
+def _next_action(session_id: str) -> str | None:
+    endpoint = os.getenv(
+        "SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:8790/internal/codex-stop-mailbox",
     )
-    markers = ", ".join(
-        f"`<!-- SWITCHSTAND_YIELD:{marker} -->`" for marker in allowed
+    request = urllib.request.Request(
+        endpoint, data=json.dumps({
+            "session_id": session_id, "check_obligations": True,
+        }).encode(), headers={"Content-Type": "application/json"}, method="POST",
     )
-    return CONTINUATION.format(markers=markers)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=2) as response:
+        evidence = json.load(response)
+    if not isinstance(evidence, dict) or evidence.get("status") != "ok" \
+            or evidence.get("currentness") != "CURRENT":
+        raise ValueError(
+            "UNKNOWN Coordinator evidence; preserve outstanding obligations; do not claim completion"
+        )
+    actions = evidence.get("actions")
+    if not isinstance(actions, list) or not all(isinstance(a, str) and a for a in actions):
+        raise ValueError("malformed Coordinator actions")
+    return actions[0] if actions else None
 
 
 def main() -> None:
@@ -117,21 +123,35 @@ def main() -> None:
         matches = list(MARKER.finditer(message or ""))
         terminal = TERMINAL_MARKER.search(message or "")
         marker = terminal.group(1) if terminal and len(matches) == 1 else None
-        allowed = marker in MARKERS and not (
-            marker == "ASSIGNMENT_COMPLETE" and arguments.lifetime == "STANDING"
-        )
+        active = payload.get("stop_hook_active")
+        if not isinstance(active, bool):
+            raise ValueError("missing stop_hook_active")
+        action = None
+        if not active and not _subagent(payload) and marker != "USER_STOP":
+            session_id = payload.get("session_id")
+            if not isinstance(session_id, str) or not session_id:
+                raise ValueError("missing Stop session identity")
+            action = _next_action(session_id)
         _append(arguments.telemetry, _event(
             payload,
             event="stop",
-            stop_attempt=1,
-            blocked=0 if allowed else 1,
-            yield_marker=marker,
+            stop_attempt=2 if active else 1,
+            blocked=1 if action else 0,
+            attempted_yield_marker=marker,
+            # Existing consumers treat ASSIGNMENT_COMPLETE as certified completion.
+            # This hook only rejects proven runnable work; release proves no completion.
+            yield_marker=None if marker == "ASSIGNMENT_COMPLETE" else marker,
             hook_error=None,
         ))
-        if allowed:
+        if action is None:
             print("{}")
         else:
-            print(json.dumps({"decision": "block", "reason": _continuation(arguments.lifetime)}))
+            print(json.dumps({"decision": "block", "reason": (
+                f"Fresh Tracker evidence shows an unfinished Coordinator action: {action}. "
+                "Perform that exact action within current authority. This is the only corrective "
+                "continuation for this human turn. Explicit STOP takes precedence. If the next "
+                "Stop releases with work remaining, preserve it and do not claim completion."
+            )}))
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         _fail_open(arguments.telemetry, payload, str(error))
 
