@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from typing import Any, Literal, cast
-from urllib.parse import urlsplit
+import re
+from typing import Any, Literal
+from urllib.parse import quote, urlsplit
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,7 +16,7 @@ BUNDLE_NAME = "switchstand-current.bundle"
 MANIFEST_NAME = "switchstand-current.manifest.json"
 CHECKSUM_NAME = "switchstand-current.bundle.sha256"
 RELEASE_API = f"https://api.github.com/repos/{REPOSITORY}/releases/tags/{RELEASE_TAG}"
-REFS_API = f"https://api.github.com/repos/{REPOSITORY}/git/matching-refs/heads/"
+REFS_API = f"https://api.github.com/repos/{REPOSITORY}/git/ref/heads/"
 GITHUB_TOKEN_ENV = "SWITCHSTAND_REPOSITORY_BUNDLE_GITHUB_TOKEN"
 
 
@@ -24,6 +25,7 @@ class RepositoryBundleResolution(BaseModel):
 
     status: Literal["current", "refresh_pending", "unavailable"]
     repository: str = REPOSITORY
+    branch: str = "main"
     snapshot_digest: str | None = None
     bundle_sha256: str | None = None
     bundle_url: str | None = None
@@ -31,6 +33,8 @@ class RepositoryBundleResolution(BaseModel):
     required_sha: str | None = None
     required_sha_is_head: bool | None = None
     reason: str | None = None
+    next_action: str | None = None
+    actions_artifact: dict[str, str] | None = None
 
 
 def canonical_ref_map_digest(refs: dict[str, str]) -> str:
@@ -43,36 +47,41 @@ def _asset(release: dict[str, Any], name: str) -> dict[str, Any] | None:
     return found[0] if len(found) == 1 else None
 
 
-def _pending(required_sha: str | None, reason: str) -> RepositoryBundleResolution:
+def _pending(required_sha: str | None, reason: str, branch: str) -> RepositoryBundleResolution:
     return RepositoryBundleResolution(
-        status="refresh_pending", required_sha=required_sha, reason=reason
+        status="refresh_pending", required_sha=required_sha, reason=reason, branch=branch,
+        next_action=(
+            f"No verified current single-branch artifact is available for {branch!r}. "
+            "An authorized agent/operator can run the existing repository-bundle.yml "
+            f"workflow_dispatch with branch={branch!r}, then retry after publication. "
+            "This request does not start a build."
+        ),
     )
 
 
-def _grounding_is_current(
-    manifest_refs: dict[str, str],
-    authoritative_refs: dict[str, str],
-    required_sha: str | None,
-) -> bool:
-    if required_sha is None:
-        manifest_main = manifest_refs.get("refs/heads/main")
-        return (
-            manifest_main is not None
-            and authoritative_refs.get("refs/heads/main") == manifest_main
-        )
-    return any(
-        sha == required_sha and authoritative_refs.get(ref) == required_sha
-        for ref, sha in manifest_refs.items()
+def valid_branch(branch: str) -> bool:
+    return bool(branch) and branch != "@" and not (
+        branch.startswith(("-", "/")) or branch.endswith(("/", "."))
+        or any(part.startswith(".") or part.endswith(".lock") for part in branch.split("/"))
+        or any(token in branch for token in ("..", "//", "@{", ","))
+        or re.search(r"[\x00-\x20\x7f~^:?*\[\\]", branch)
     )
 
 
-def _is_bundle_api_url(url: str, *, release: bool = False) -> bool:
+def asset_names(branch: str) -> tuple[str, str, str]:
+    stem = "switchstand-current" if branch == "main" else (
+        "switchstand-branch-" + hashlib.sha256(branch.encode()).hexdigest()
+    )
+    return f"{stem}.bundle", f"{stem}.manifest.json", f"{stem}.bundle.sha256"
+
+
+def _is_bundle_api_url(url: str, *, release: bool = False, branch: str = "main") -> bool:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or parsed.netloc != "api.github.com" or parsed.fragment:
         return False
     if release:
         return parsed.path == urlsplit(RELEASE_API).path and not parsed.query
-    return parsed.path == urlsplit(REFS_API).path
+    return parsed.path == urlsplit(REFS_API + quote(branch, safe="/")).path and not parsed.query
 
 
 async def _api_get(
@@ -81,45 +90,27 @@ async def _api_get(
     token: str,
     *,
     release: bool = False,
+    branch: str = "main",
 ) -> httpx.Response:
-    if not _is_bundle_api_url(url, release=release):
+    if not _is_bundle_api_url(url, release=release, branch=branch):
         raise ValueError("foreign GitHub API URL")
     return await http.get(url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=False)
-
-
-async def _authoritative_refs(http: httpx.AsyncClient, token: str) -> dict[str, str]:
-    refs: dict[str, str] = {}
-    next_url: str | None = REFS_API
-    seen_urls: set[str] = set()
-    while next_url is not None:
-        if next_url in seen_urls:
-            raise ValueError("cyclic refs pagination")
-        seen_urls.add(next_url)
-        response = await _api_get(http, next_url, token)
-        response.raise_for_status()
-        payload = response.json()
-        if not isinstance(payload, list):
-            raise TypeError("refs response must be a list")
-        for item in cast(list[dict[str, Any]], payload):
-            ref = str(item["ref"])
-            if not ref.startswith("refs/heads/"):
-                continue
-            if ref in refs:
-                raise ValueError("duplicate ref across pages")
-            refs[ref] = str(item["object"]["sha"])
-        next_link = response.links.get("next")
-        next_url = str(next_link["url"]) if next_link is not None else None
-    return refs
 
 
 async def resolve_repository_bundle(
     required_sha: str | None = None,
     client: httpx.AsyncClient | None = None,
+    *,
+    branch: str = "main",
 ) -> RepositoryBundleResolution:
+    if not valid_branch(branch):
+        return RepositoryBundleResolution(status="unavailable", reason="invalid_branch")
+    ref = f"refs/heads/{branch}"
+    bundle_name, manifest_name, checksum_name = asset_names(branch)
     token = os.getenv(GITHUB_TOKEN_ENV, "").strip()
     if not token:
         return RepositoryBundleResolution(
-            status="unavailable", required_sha=required_sha, reason="github_unavailable"
+            status="unavailable", branch=branch, required_sha=required_sha, reason="github_unavailable"
         )
     owned = client is None
     http = client or httpx.AsyncClient(
@@ -134,14 +125,14 @@ async def resolve_repository_bundle(
     try:
         release_response = await _api_get(http, RELEASE_API, token, release=True)
         if release_response.status_code == 404:
-            return _pending(required_sha, "cache_missing")
+            return _pending(required_sha, "cache_missing", branch)
         release_response.raise_for_status()
         release = release_response.json()
-        bundle_asset = _asset(release, BUNDLE_NAME)
-        manifest_asset = _asset(release, MANIFEST_NAME)
-        checksum_asset = _asset(release, CHECKSUM_NAME)
+        bundle_asset = _asset(release, bundle_name)
+        manifest_asset = _asset(release, manifest_name)
+        checksum_asset = _asset(release, checksum_name)
         if bundle_asset is None or manifest_asset is None or checksum_asset is None:
-            return _pending(required_sha, "cache_transition")
+            return _pending(required_sha, "cache_transition", branch)
 
         manifest_response = await http.get(
             str(manifest_asset["browser_download_url"]), follow_redirects=True
@@ -154,8 +145,16 @@ async def resolve_repository_bundle(
         checksum_response.raise_for_status()
         checksum = checksum_response.text.strip().split()[0]
 
-        authoritative = await _authoritative_refs(http, token)
+        # Exact ref lookup: no enumeration or all-branch fallback.
+        ref_response = await _api_get(http, REFS_API + quote(branch, safe="/"), token, branch=branch)
+        if ref_response.status_code == 404:
+            return _pending(required_sha, "branch_missing", branch)
+        ref_response.raise_for_status()
+        authoritative = ref_response.json()
+        authoritative_sha = str(authoritative["object"]["sha"])
         manifest_refs = {str(k): str(v) for k, v in manifest.get("refs", {}).items()}
+        if set(manifest_refs) != {ref}:
+            return _pending(required_sha, "branch_scope_mismatch", branch)
         snapshot_digest = canonical_ref_map_digest(manifest_refs)
         expected_checksum = str(manifest.get("bundle_sha256", ""))
         asset_digest = str(bundle_asset.get("digest") or "")
@@ -164,26 +163,42 @@ async def resolve_repository_bundle(
                 status="unavailable", required_sha=required_sha, reason="repository_mismatch"
             )
         if not expected_checksum or checksum != expected_checksum:
-            return _pending(required_sha, "checksum_transition")
+            return _pending(required_sha, "checksum_transition", branch)
         if asset_digest != f"sha256:{expected_checksum}":
-            return _pending(required_sha, "bundle_transition")
+            return _pending(required_sha, "bundle_transition", branch)
         if manifest.get("snapshot_digest") != snapshot_digest:
-            return _pending(required_sha, "manifest_digest_mismatch")
-        if not _grounding_is_current(manifest_refs, authoritative, required_sha):
+            return _pending(required_sha, "manifest_digest_mismatch", branch)
+        if (
+            authoritative.get("ref") != ref or manifest_refs[ref] != authoritative_sha
+            or (required_sha is not None and required_sha != authoritative_sha)
+        ):
             reason = "required_sha_unproved" if required_sha else "refs_advanced"
-            return _pending(required_sha, reason)
+            return _pending(required_sha, reason, branch)
+        provenance = manifest.get("provenance", {})
+        run_id, attempt = str(provenance.get("run_id", "")), str(provenance.get("run_attempt", ""))
+        artifact_name = f"{bundle_name.removesuffix('.bundle')}-{authoritative_sha}-run-{run_id}-{attempt}"
+        mirror = None
+        if (
+            re.fullmatch(r"[1-9][0-9]*", run_id)
+            and re.fullmatch(r"[1-9][0-9]*", attempt)
+            and provenance.get("artifact_name") == artifact_name
+        ):
+            mirror = {"name": artifact_name, "run_id": run_id,
+                      "run_url": f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"}
         return RepositoryBundleResolution(
             status="current",
+            branch=branch,
             snapshot_digest=snapshot_digest,
             bundle_sha256=expected_checksum,
             bundle_url=str(bundle_asset["browser_download_url"]),
             refs=manifest_refs,
             required_sha=required_sha,
             required_sha_is_head=True if required_sha else None,
+            actions_artifact=mirror,
         )
     except httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError:
         return RepositoryBundleResolution(
-            status="unavailable", required_sha=required_sha, reason="github_unavailable"
+            status="unavailable", branch=branch, required_sha=required_sha, reason="github_unavailable"
         )
     finally:
         if owned:
