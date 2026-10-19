@@ -1,5 +1,12 @@
 name: Current repository bundle publisher
 on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Exact single branch to export with complete original history
+        type: string
+        default: main
+        required: true
   workflow_run:
     workflows: [Quality]
     types: [completed]
@@ -8,7 +15,7 @@ jobs:
     name: Current repository bundle
     if: >-
       vars.SWITCHSTAND_REPOSITORY_BUNDLE_PUBLISH_ENABLED == 'true' &&
-      github.event.workflow_run.event == 'push'
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -24,25 +31,36 @@ jobs:
       - name: Build and verify current bundle
         env:
           REPOSITORY: ${{ github.repository }}
+          BRANCH: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.event.workflow_run.head_branch }}
           EVENT_SHA: ${{ github.event.workflow_run.head_sha }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
+          git check-ref-format "refs/heads/$BRANCH"
+          test "${BRANCH#-}" = "$BRANCH"
+          case "$BRANCH" in *,*|@) exit 1 ;; esac
+          if [ "$BRANCH" != main ]; then
+            key="$(printf '%s' "$BRANCH" | sha256sum | cut -d' ' -f1)"
+            BUNDLE_NAME="switchstand-branch-$key.bundle"
+            MANIFEST_NAME="switchstand-branch-$key.manifest.json"
+            CHECKSUM_NAME="switchstand-branch-$key.bundle.sha256"
+          fi
+          export BUNDLE_NAME MANIFEST_NAME CHECKSUM_NAME
+          printf '%s\n' "BUNDLE_NAME=$BUNDLE_NAME" "MANIFEST_NAME=$MANIFEST_NAME" \
+            "CHECKSUM_NAME=$CHECKSUM_NAME" >> "$GITHUB_ENV"
           git init --bare repository.git
           git -C repository.git remote add origin "https://github.com/${REPOSITORY}.git"
-          git -C repository.git fetch --prune origin '+refs/heads/*:refs/heads/*'
-          git -C repository.git for-each-ref --format='%(refname) %(objectname)' refs/heads \
-            | LC_ALL=C sort > refs.txt
-          test -s refs.txt
-          git -C repository.git bundle create "$PWD/$BUNDLE_NAME" --branches
+          ref="refs/heads/$BRANCH"
+          git -C repository.git fetch --no-tags origin "+$ref:$ref"
+          sha="$(git -C repository.git rev-parse "$ref")"
+          printf '%s %s\n' "$ref" "$sha" > refs.txt
+          git -C repository.git bundle create "$PWD/$BUNDLE_NAME" "$ref"
           git init --bare verify.git
           git -C verify.git bundle verify "$PWD/$BUNDLE_NAME"
-          git clone --quiet --branch main "$PWD/$BUNDLE_NAME" materialized
-          while read -r ref sha; do
-            branch="${ref#refs/heads/}"
-            test "$(git -C materialized rev-parse "refs/remotes/origin/$branch")" = "$sha"
-          done < refs.txt
+          test "$(git bundle list-heads "$BUNDLE_NAME")" = "$sha $ref"
+          git clone --quiet --branch "$BRANCH" "$PWD/$BUNDLE_NAME" materialized
+          test "$(git -C materialized rev-parse HEAD)" = "$sha"
           bundle_sha256="$(sha256sum "$BUNDLE_NAME" | cut -d' ' -f1)"
           snapshot_digest="$(sha256sum refs.txt | cut -d' ' -f1)"
           BUNDLE_SHA256="$bundle_sha256" SNAPSHOT_DIGEST="$snapshot_digest" python - <<'PY'

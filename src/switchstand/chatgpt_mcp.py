@@ -398,12 +398,14 @@ def build_ordinary_tools(
             "required_sha": result.required_sha,
             "required_sha_is_head": result.required_sha_is_head,
             "reason": result.reason,
+            "next_action": result.next_action,
         }
         if result.status != "current" or result.bundle_url is None:
             return CallToolResult(
                 content=[TextContent(
                     type="text",
-                    text=f"Repository bundle {result.status}: {result.reason or 'unavailable'}.",
+                    text=(f"Repository bundle {result.status}: {result.reason or 'unavailable'}. "
+                          f"{result.next_action or ''}"),
                 )],
                 structured_content=structured,
             )
