@@ -1,4 +1,3 @@
-import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -6,7 +5,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import Table, delete, select, text
+from sqlalchemy import Table, delete, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
@@ -82,16 +81,16 @@ class Subject:
     grant: WorkGrant
 
 @pytest.fixture
-async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
-    del database_prerequisite
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required")
+async def subject(canonical_database_schema: str) -> AsyncGenerator[Subject]:
+    url = canonical_database_schema
     assert make_url(url).database == "switchstand_test"
     engine = create_async_engine(url)
     async with engine.begin() as connection:
-        await connection.run_sync(metadata.create_all)
-        await connection.run_sync(canonical_metadata.create_all)
+        tables = ", ".join(
+            connection.dialect.identifier_preparer.format_table(table)
+            for schema in (metadata, canonical_metadata) for table in schema.tables.values()
+        )
+        await connection.exec_driver_sql(f"TRUNCATE TABLE {tables} RESTART IDENTITY CASCADE")
     state, grants = PostgresState(engine), GrantState(engine)
     handle = await state.bind("asana", "123")
     works = CanonicalWorkRepository(engine)
@@ -133,12 +132,6 @@ async def subject(database_prerequisite: None) -> AsyncGenerator[Subject]:
     )
     value = Subject(engine, service, runtime, events, grants, principal, handle.id, grant)
     yield value
-    async with engine.begin() as connection:
-        await connection.run_sync(metadata.drop_all)
-        await connection.execute(text(
-            "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, activation_obligation_revisions"
-        ))
-        await connection.run_sync(canonical_metadata.drop_all)
     await engine.dispose()
 
 

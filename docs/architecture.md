@@ -605,6 +605,14 @@ fallback during qualification of the semantic path.
 
 Selective foreground is default-off behind `SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED=true`; all
 other values use the full suite. Adaptive broad truth remains shadow-only and preserves its backstop.
+Quality always binds its exact subject and computes its validated plan under Python 3.14; it
+fetches broad history only when the promoted rule can still apply. Skipped health/adaptive
+observations remain `UNKNOWN` and never reduce full-suite or Docker lifecycle requirements.
+Full fallback partitions pytest's actual collected items into four whole-module shards using a
+stable module-path hash in `scripts/pytest-shard`. Each runner owns a PostgreSQL service;
+Ruff/Pyright run on shard zero. Selected execution remains one runner. The stable terminal gate
+requires matrix success and the existing lifecycle policy. Per-shard artifacts retain collected
+and assigned node IDs and identify partial `full-shard` metrics rather than claiming a full suite.
 `full_suite_due.py` owns its pure tri-state evaluator: known baseline absence or non-ancestry is
 `FULL_SUITE_DUE`, while unavailable or contradictory observations are `UNKNOWN`. It neither
 dispatches CI nor reduces the existing cadence/backstop, and it grants no merge authority.
