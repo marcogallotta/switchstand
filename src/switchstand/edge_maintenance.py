@@ -71,7 +71,7 @@ UPGRADE_SOURCES = frozenset((  # noqa: SIM905 - compact exact protocol allowlist
     "0015_work_admission_time 0016_agent_mailbox_transfers 0017_priority_claims 0018_task_runs "
     "0019_task_run_executions 0020_task_run_results 0021_human_reviews "
     "0022_implementation_requests 0023_activation_continuity 0024_mcp_operation_timings "
-    "0025_task_control_checkpoints"
+    "0025_task_control_checkpoints 0026_agent_message_ack"
 ).split())
 
 
