@@ -1,3 +1,4 @@
+# Temporary image-cache source invalidation timing probe.
 """Durable identity, state, and candidate proof for Coordinator workers."""
 
 from __future__ import annotations

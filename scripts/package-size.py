@@ -1,3 +1,4 @@
+# Temporary image-cache source invalidation timing probe.
 """Report retained fixed-base package size without storing or setting policy."""
 
 import argparse
