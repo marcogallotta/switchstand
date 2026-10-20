@@ -77,8 +77,9 @@ use its separate connection and database for candidate qualification.
 
 ## Noninteractive commands from an Implementation Specification
 
-Each head can run its own authorized local checks directly. Put every required check in one
-`spec-test-commands` JSON fence in the exact specification's notes:
+Specification authors should include every required noninteractive command in one
+`spec-test-commands` JSON fence in the Implementation Specification's notes. Each head runs
+these authorized local checks directly:
 
 ````text
 ```spec-test-commands
@@ -87,8 +88,13 @@ Each head can run its own authorized local checks directly. Put every required c
 ```
 ````
 
-Read current work through `work_get`, save its successful JSON payload (or full CallToolResult)
-outside the candidate, and bind that export's exact identity and clean candidate:
+When resuming an older specification without the block, add the agreed executable checks
+before using the runner, preserving its acceptance criteria; no bulk rewrite is needed.
+Keep visible or human ChatGPT testing duties separately identified and Coordinator-owned.
+
+The executing head reads current work through `work_get`, saves its successful JSON payload
+(or full CallToolResult) outside the candidate, and runs against that exact specification
+identity and clean candidate:
 
 ```bash
 scripts/spec-test-commands --spec /tmp/spec.json --work-id <WorkId> \
