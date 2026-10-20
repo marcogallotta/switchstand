@@ -120,62 +120,69 @@ jobs:
           : > "$history_file"
           history_complete=false
           if test "$health_needed" = true && test "$current_blob" = "$main_blob"; then
-            if push_count="$(gh api \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
-                --method GET -f branch="$DEFAULT_BRANCH" -f event=push \
-                -f status=completed -f per_page=1 --jq '.total_count' 2>/dev/null)" \
-              && schedule_count="$(gh api \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
-                --method GET -f event=schedule -f status=completed -f per_page=1 \
-                --jq '.total_count' 2>/dev/null)" \
-              && push_history="$(gh api \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
-                --method GET --paginate -f branch="$DEFAULT_BRANCH" -f event=push \
-                -f status=completed -f per_page=100 \
-                --jq '.workflow_runs[] | ["push", .head_sha, .conclusion, .updated_at] | @tsv' 2>/dev/null)" \
-              && schedule_history="$(gh api \
-                "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
-                --method GET --paginate -f event=schedule -f status=completed -f per_page=100 \
-                --jq '.workflow_runs[] | ["schedule", .head_sha, .conclusion, .updated_at] | @tsv' \
-                2>/dev/null)"; then
-              history_fetched=true
-              broad_history="$push_history"$'\n'"$schedule_history"
-            else
-              history_fetched=false
-              broad_history=""
-            fi
-            push_complete=false
-            schedule_complete=false
-            test "${push_count:-1000}" -lt 1000 && push_complete=true
-            test "${schedule_count:-1000}" -lt 1000 && schedule_complete=true
-            push_open=true
-            schedule_open=true
-            while IFS=$'\t' read -r broad_event broad_sha broad_conclusion broad_completed_at; do
-              test -n "$broad_sha" || continue
-              if { test "$broad_event" = push && test "$push_open" = false; } \
-                || { test "$broad_event" = schedule && test "$schedule_open" = false; }; then
-                continue
-              fi
-              broad_blob="$(git rev-parse "$broad_sha:.github/workflows/quality.yml" 2>/dev/null || true)"
-              if test -n "$broad_blob" && test "$broad_blob" != "$current_blob"; then
-                if test "$broad_event" = push; then
-                  push_complete=true
-                  push_open=false
-                else
-                  schedule_complete=true
-                  schedule_open=false
+            history_complete=true
+            declare -A observed_runs=()
+            for broad_event in push schedule; do
+              event_complete=false
+              expected_count=""
+              observed_count=0
+              for page in {1..10}; do
+                query=(-f event="$broad_event" -f status=completed -f per_page=100 -f page="$page")
+                test "$broad_event" != push || query+=(-f branch="$DEFAULT_BRANCH")
+                if ! history_page="$(gh api \
+                    "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
+                    --method GET "${query[@]}" \
+                    --jq '([.total_count] | @tsv), (.workflow_runs[] | [.id, .head_sha, .conclusion, .updated_at] | @tsv)' \
+                    2>/dev/null)"; then
+                  break
                 fi
-                continue
+                reported_count="${history_page%%$'\n'*}"
+                [[ "$reported_count" =~ ^[0-9]+$ ]] || break
+                test -z "$expected_count" || test "$expected_count" = "$reported_count" || break
+                expected_count="$reported_count"
+                page_rows=0
+                page_valid=true
+                rows=""
+                [[ "$history_page" != *$'\n'* ]] || rows="${history_page#*$'\n'}"
+                while IFS=$'\t' read -r run_id broad_sha broad_conclusion broad_completed_at; do
+                  test -n "$run_id" || continue
+                  if ! [[ "$run_id" =~ ^[0-9]+$ && "$broad_sha" =~ ^[0-9a-f]{40}$ ]] \
+                    || test -z "$broad_conclusion" || test -z "$broad_completed_at" \
+                    || test -n "${observed_runs[$run_id]:-}"; then
+                    page_valid=false
+                    break
+                  fi
+                  observed_runs[$run_id]=true
+                  page_rows=$((page_rows + 1))
+                  observed_count=$((observed_count + 1))
+                  if test "$observed_count" -gt "$expected_count"; then
+                    page_valid=false
+                    break
+                  fi
+                  if ! broad_blob="$(git rev-parse "$broad_sha:.github/workflows/quality.yml" 2>/dev/null)"; then
+                    broad_blob=""
+                  fi
+                  if test -n "$broad_blob" && test "$broad_blob" != "$current_blob"; then
+                    event_complete=true
+                    break
+                  fi
+                  printf '%s\t%s\t%s\t%s\t%s\n' \
+                    "$broad_event" "$broad_sha" "$broad_conclusion" "$broad_blob" \
+                    "$broad_completed_at" >> "$history_file"
+                done <<< "$rows"
+                test "$page_valid" = true || break
+                test "$event_complete" != true || break
+                if test "$observed_count" = "$expected_count" && test "$expected_count" -lt 1000; then
+                  event_complete=true
+                  break
+                fi
+                test "$page_rows" -eq 100 || break
+              done
+              if test "$event_complete" != true; then
+                history_complete=false
+                break
               fi
-              printf '%s\t%s\t%s\t%s\t%s\n' \
-                "$broad_event" "$broad_sha" "$broad_conclusion" "$broad_blob" \
-                "$broad_completed_at" >> "$history_file"
-            done <<< "$broad_history"
-            if test "$history_fetched" = true \
-              && test "$push_complete" = true \
-              && test "$schedule_complete" = true; then
-              history_complete=true
-            fi
+            done
           fi
           PYTHONPATH=src python3 - \
             "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
