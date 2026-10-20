@@ -133,3 +133,97 @@ def test_rollback_uses_only_local_runtime_check(
     monkeypatch.setattr(subject, "authenticated_smoke", Mock(side_effect=AssertionError))
     target.rollback()
     assert "--expected-sha" in doctor.call_args.args[0]
+
+
+@pytest.fixture(name="target")
+def code_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> subject.Deployer:
+    target = deployer(tmp_path, monkeypatch)
+    subject.LAUNCHER.write_text(launcher(tmp_path / "old"))
+    target.runtime.mkdir(parents=True)
+    monkeypatch.setattr(subject, "ENV_FILE", tmp_path / "env")
+    subject.ENV_FILE.write_text("unchanged config")
+
+    def git(path: Path, *arguments: str):
+        sha = "b" * 40 if path == tmp_path / "old" else SHA
+        outputs = {"rev-parse": sha, "ls-tree": "same dependencies"}
+        return subject.subprocess.CompletedProcess([], 0, outputs.get(arguments[0], ""), "")
+
+    monkeypatch.setattr(subject, "git", git)
+    monkeypatch.setattr(subject, "command", Mock(return_value=Mock(stdout="schema")))
+    monkeypatch.setattr(
+        subject, "ScriptDirectory", Mock(return_value=Mock(get_heads=lambda: ["schema"]))
+    )
+    monkeypatch.setattr(target, "service", Mock(return_value=Mock(stdout="0")))
+    monkeypatch.setattr(target, "backup", Mock(side_effect=AssertionError))
+    monkeypatch.setattr(target, "migrate", Mock(side_effect=AssertionError))
+    monkeypatch.setattr(target, "local_smoke", Mock())
+    monkeypatch.setattr(subject, "authenticated_smoke", Mock())
+    return target
+
+
+@pytest.mark.parametrize("failure", [True, False])
+def test_code_only_preserves_writes_and_supported_rollback(
+    target: subject.Deployer, monkeypatch: pytest.MonkeyPatch, failure: bool
+) -> None:
+    old = subject.LAUNCHER.read_bytes()
+    writes = ["before"]
+
+    def service(*arguments: str):
+        if arguments == ("restart",) and subject.LAUNCHER.read_bytes() != old:
+            assert target.cutover_started
+            writes.append("candidate write")
+            if failure:
+                raise RuntimeError("after launcher replacement")
+        return Mock(stdout="0")
+
+    monkeypatch.setattr(target, "service", service)
+    monkeypatch.setattr(target, "smoke", Mock())
+    if failure:
+        with pytest.raises(RuntimeError):
+            target.run("b" * 40)
+    else:
+        target.run("b" * 40)
+        monkeypatch.setattr(subject, "Deployer", Mock(return_value=target))
+        assert subject.main([SHA, "--repo", str(target.repo), "--rollback-code-only"]) == 0
+        subject.authenticated_smoke.assert_called_once_with("b" * 40)  # type: ignore[attr-defined]
+    assert subject.LAUNCHER.read_bytes() == old
+    assert writes == ["before", "candidate write"]
+    assert all(
+        "psql" in call.args[0] or "--verify-import-only" in call.args[0]
+        for call in subject.command.call_args_list
+    )  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "drift", ["preimage", "active", "record", "config", "schema", "source", "launcher", "full"]
+)
+def test_code_only_rejects_drift_before_effects(
+    target: subject.Deployer, monkeypatch: pytest.MonkeyPatch, drift: str
+) -> None:
+    target.prepare()
+    target.code_record.write_text(target.code_identity())
+    if drift != "preimage":
+        subject.LAUNCHER.write_bytes(target.launcher_candidate.read_bytes())
+    if drift == "preimage":
+        target.code_record.unlink()
+        target.launcher_before.write_text("retained preimage")
+    elif drift == "record":
+        target.code_record.unlink()
+    elif drift == "config":
+        subject.ENV_FILE.write_text("changed")
+    elif drift == "schema":
+        monkeypatch.setattr(subject, "command", Mock(return_value=Mock(stdout="other schema")))
+    elif drift == "source":
+        monkeypatch.setattr(subject, "git", Mock(return_value=Mock(stdout="dirty")))
+    elif drift == "launcher":
+        target.launcher_candidate.write_text("different candidate")
+    before = target.launcher_before.read_bytes()
+    current = subject.LAUNCHER.read_bytes()
+    with pytest.raises((RuntimeError, OSError, SyntaxError)):
+        if drift in ("preimage", "active", "full"):
+            target.run(None if drift == "full" else "b" * 40)
+        else:
+            target.rollback_code_only()
+    assert target.launcher_before.read_bytes() == before
+    assert subject.LAUNCHER.read_bytes() == current
+    target.service.assert_not_called()  # type: ignore[attr-defined]
