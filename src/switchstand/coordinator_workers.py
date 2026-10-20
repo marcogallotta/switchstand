@@ -63,7 +63,8 @@ class CoordinatorWorkers:
         existing = self.store.load(operation_id)
         if existing is not None:
             if (existing.work_id != work_id or existing.objective != objective
-                    or existing.task_request_id != task_request_id):
+                    or (existing.command[-3] if existing.command[-4:-3] == ("--task-request-id",) else None)
+                    != (str(task_request_id) if task_request_id else None)):
                 return WorkerSpawnResult(
                     status="denied", work_id=work_id, reason="operation_identity_conflict"
                 )
@@ -80,7 +81,6 @@ class CoordinatorWorkers:
             spawn_id=operation_id,
             work_id=work_id,
             objective=objective,
-            task_request_id=task_request_id,
             writer=str(writer),
             branch=branch,
             base_sha=base,
