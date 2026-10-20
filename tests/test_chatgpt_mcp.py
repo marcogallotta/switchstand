@@ -37,6 +37,7 @@ from switchstand.grants import (
     ProtectedAppend,
     ProtectedCreate,
 )
+from switchstand.human_reviews import HumanReviewConsequence, HumanReviewRecord, HumanReviewResult
 from switchstand.implementation_requests import ImplementationRequestResult
 from switchstand.outcome_state import ActionSummary, OutcomeAction, OutcomeWrite
 from switchstand.priority_claim_service import HumanPriorityClear, HumanPrioritySet
@@ -73,6 +74,42 @@ def test_review_bundle_tool_is_default_off():
     assert "review_bundle_get" in dict(build_ordinary_tools(
         subject, review_bundle_enabled=True,
     ))
+
+
+async def test_approval_api_requires_live_mailbox_and_derives_requester(monkeypatch):
+    subject = service()
+    assert "human_review_create" not in dict(build_ordinary_tools(subject))
+    mailbox = AgentMailbox(name="Builder", name_key="builder", endpoint_id=uuid4(),
+        principal_key=PRINCIPAL.key, session_key="session", generation=1)
+    binding = AsyncMock(return_value=AgentMailboxResult(
+        status="denied", reason="agent_not_registered"))
+    monkeypatch.setattr(chatgpt_mcp, "AgentMailboxState",
+        lambda _engine: SimpleNamespace(for_actor=binding))
+    subject.messages = SimpleNamespace(engine=object())
+    propose = AsyncMock(return_value=HumanReviewResult(status="UNKNOWN", reason="state_unavailable"))
+    subject.human_reviews = SimpleNamespace(propose=propose)
+    subject.human_review_origin = "https://review.example.test"
+    tools = dict(build_ordinary_tools(subject, agent_identity=lambda: "session"))
+    assert {name for name in tools if name.startswith("human_review_")} == {
+        "human_review_create", "human_review_get"}
+    consequence = HumanReviewConsequence(package_work_id=ACTIVE, package_revision="r1",
+        implementation_scope=("Exact change",), implementation_target="repository",
+        excluded_effects=("activation",))
+    assert (await tools["human_review_create"]("1", consequence))["reason"] == "agent_not_registered"
+    propose.assert_not_awaited()
+    binding.return_value = AgentMailboxResult(status="ok", mailbox=mailbox)
+    await tools["human_review_create"]("1", consequence)
+    bound = propose.call_args.args[0]
+    assert bound.requester.name == "Builder" and bound.requester.mailbox_id == mailbox.endpoint_id
+    assert bound.digest != consequence.digest
+    assert (await tools["human_review_create"]("1", bound))["reason"] == "requester_is_server_owned"
+    assert propose.await_count == 1
+    assert "decision" not in signature(tools["human_review_get"]).parameters
+    propose.return_value = HumanReviewResult(status="PREPARED", record=HumanReviewRecord(
+        consequence_id=bound.consequence_id, package_work_id=ACTIVE, package_revision="r1",
+        consequence_digest=bound.digest, consequence=bound, decision=None, state="PENDING"))
+    created = await tools["human_review_create"]("1", consequence)
+    assert created["url"] == f"https://review.example.test/human-review/{ACTIVE}?revision=r1"
 
 
 @pytest.mark.parametrize("branch", ["main", "review/exact-candidate"])

@@ -58,6 +58,7 @@ from .grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from .human_reviews import HumanReviewState
 from .human_trajectory import (
     HumanTrajectoryData,
     HumanTrajectoryRevision,
@@ -170,6 +171,8 @@ class ChatGPTService:
         activation_runtime: ActivationRuntimeResolver | None = None,
         activation_proof: ActivationProofResolver | None = None,
         issue_projects: dict[str, UUID] | None = None,
+        human_reviews: HumanReviewState | None = None,
+        human_review_origin: str | None = None,
     ):
         self.principal, self.state, self.grants, self.providers = principal, state, grants, providers
         self.admission_grants = (
@@ -187,6 +190,8 @@ class ChatGPTService:
         self.create_gateway = CreateGateway(state, self.admission_grants, providers)
         self.update_gateway = UpdateGateway(state, self.admission_grants, providers)
         self.relation_gateway = RelationGateway(state, self.admission_grants, providers)
+        self.human_reviews = human_reviews
+        self.human_review_origin = human_review_origin
         self.messages = messages
         self.required_results = required_results
         self.canonical_work = canonical_work

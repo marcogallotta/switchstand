@@ -1,4 +1,3 @@
-import base64
 import os
 from uuid import UUID
 
@@ -31,7 +30,6 @@ from switchstand.human_reviews import (
 WORK = UUID("60000000-0000-4000-8000-000000000001")
 REVISION = "pg_exact"
 ORIGIN = "https://review.example.test"
-USERNAME = "marco"
 PASSWORD = "correct horse"
 
 
@@ -110,11 +108,12 @@ def shell() -> tuple[TestClient, FakeState, dict[str, str]]:
     app = create_human_review_shell(
         state,
         expected_origin=ORIGIN,
-        username=USERNAME,
         password_hash=password_hash,
     )
-    token = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
-    return TestClient(app), state, {"Authorization": f"Basic {token}"}
+    client = TestClient(app, base_url=ORIGIN)
+    assert client.post(f"/human-review/{WORK}?revision={REVISION}",
+        headers={"Origin": ORIGIN}, data={"password": PASSWORD}).status_code == 200
+    return client, state, {}
 
 
 def _form(record: HumanReviewRecord, decision: str = "APPROVED") -> dict[str, str]:
@@ -127,18 +126,23 @@ def _form(record: HumanReviewRecord, decision: str = "APPROVED") -> dict[str, st
     }
 
 
-def test_shell_is_basic_authenticated_and_renders_server_owned_consequence(shell):
+def test_shell_is_password_authenticated_and_renders_server_owned_consequence(shell):
     client, _, auth = shell
     path = f"/human-review/{WORK}?revision={REVISION}"
 
-    assert client.get(path).status_code == 401
+    session = dict(client.cookies)
+    client.cookies.clear()
+    locked = client.get(path)
+    assert locked.status_code == 401
+    assert 'type="password"' in locked.text and "username" not in locked.text
     assert client.get(path, headers={"Authorization": "Bearer irrelevant"}).status_code == 401
+    client.cookies.update(session)
     response = client.get(path, headers=auth)
 
     assert response.status_code == 200
     assert "land &lt;reviewed&gt; code" in response.text
     assert "READY_FOR_IMPLEMENTATION_ONLY" in response.text
-    assert response.text.count('<button name="decision"') == 4
+    assert response.text.count('<button name="decision"') == 2
     assert response.headers["cache-control"] == "no-store"
     assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
     assert response.headers["x-frame-options"] == "DENY"
@@ -183,8 +187,6 @@ def test_exact_origin_and_bound_fields_fail_closed_before_decision(shell):
     ("decision", "expected_state"),
     [
         ("APPROVED", "READY_FOR_IMPLEMENTATION"),
-        ("WAIT", "WAIT"),
-        ("HOLD", "HOLD"),
         ("NO_DISPATCH", "NO_DISPATCH"),
     ],
 )
@@ -223,24 +225,30 @@ def test_malformed_or_oversized_submission_never_calls_writer(shell):
     assert state.submissions == []
 
 
-def test_oversized_basic_password_fails_closed(shell):
-    client, _, _ = shell
-    token = base64.b64encode(f"{USERNAME}:{'x' * 73}".encode()).decode()
-    response = client.get(
-        f"/human-review/{WORK}?revision={REVISION}",
-        headers={"Authorization": f"Basic {token}"},
-    )
+@pytest.mark.parametrize("password", ["wrong", "x" * 73, "é" * 40])
+def test_wrong_or_oversized_password_fails_closed(shell, password):
+    client, state, _ = shell
+    client.cookies.clear()
+    response = client.post(f"/human-review/{WORK}?revision={REVISION}",
+        headers={"Origin": ORIGIN}, data={"password": password})
     assert response.status_code == 401
+    assert not client.cookies
+    assert state.submissions == []
 
 
-def test_unicode_basic_username_fails_closed(shell):
-    client, _, _ = shell
-    token = base64.b64encode(f"márco:{PASSWORD}".encode()).decode()
-    response = client.get(
-        f"/human-review/{WORK}?revision={REVISION}",
-        headers={"Authorization": f"Basic {token}"},
-    )
-    assert response.status_code == 401
+def test_session_cookie_is_secure_and_forgery_and_extra_states_fail_closed(shell):
+    client, state, _ = shell
+    path = f"/human-review/{WORK}?revision={REVISION}"
+    response = client.post(path, headers={"Origin": ORIGIN}, data={"password": PASSWORD})
+    cookie = response.headers["set-cookie"]
+    assert all(value in cookie for value in ("Secure", "HttpOnly", "SameSite=strict", "Max-Age=1800"))
+    assert client.post("/human-review/submit", headers={"Origin": ORIGIN},
+        data=_form(state.record, "HOLD")).status_code == 400
+    client.cookies.clear()
+    client.cookies.set("__Host-human-review", "9999999999.forged")
+    assert client.post("/human-review/submit", headers={"Origin": ORIGIN},
+        data=_form(state.record)).status_code == 401
+    assert state.submissions == []
 
 
 async def test_chunked_oversized_form_stops_before_reading_more_or_writing(shell):
@@ -255,7 +263,8 @@ async def test_chunked_oversized_form_stops_before_reading_more_or_writing(shell
     async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as browser:
         response = await browser.post(
             "/human-review/submit",
-            headers={**auth, "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded"},
+            headers={**auth, "Origin": ORIGIN, "Content-Type": "application/x-www-form-urlencoded",
+                     "Cookie": "; ".join(f"{k}={v}" for k, v in client.cookies.items())},
             content=chunks(),
         )
     assert response.status_code == 413
@@ -271,14 +280,14 @@ def test_configuration_requires_an_exact_https_origin(origin):
     password_hash = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt(rounds=4)).decode()
     with pytest.raises(ValueError, match="exact HTTPS origin"):
         create_human_review_shell(
-            state, expected_origin=origin, username=USERNAME, password_hash=password_hash
+            state, expected_origin=origin, password_hash=password_hash
         )
 
 
 def test_configuration_rejects_a_malformed_bcrypt_hash():
     with pytest.raises(ValueError, match="valid bcrypt hash"):
         create_human_review_shell(
-            FakeState(), expected_origin=ORIGIN, username=USERNAME, password_hash="$2b$broken"
+            FakeState(), expected_origin=ORIGIN, password_hash="$2b$broken"
         )
 
 
@@ -312,13 +321,14 @@ async def test_persistent_shell_factory_records_decision_in_real_state(database_
         assert proposed.status == "PREPARED" and proposed.record is not None
         password_hash = bcrypt.hashpw(PASSWORD.encode(), bcrypt.gensalt(rounds=4)).decode()
         app = create_persistent_human_review_shell(
-            engine, expected_origin=ORIGIN, username=USERNAME, password_hash=password_hash,
+            engine, expected_origin=ORIGIN, password_hash=password_hash,
         )
-        token = base64.b64encode(f"{USERNAME}:{PASSWORD}".encode()).decode()
-        headers = {"Authorization": f"Basic {token}"}
+        headers = {}
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url=ORIGIN) as browser:
+            assert (await browser.post(f"/human-review/{WORK}?revision={revision}",
+                headers={"Origin": ORIGIN}, data={"password": PASSWORD})).status_code == 200
             shown = await browser.get(
                 f"/human-review/{WORK}?revision={revision}", headers=headers,
             )
@@ -327,9 +337,12 @@ async def test_persistent_shell_factory_records_decision_in_real_state(database_
                 headers={**headers, "Origin": ORIGIN},
                 data=_form(proposed.record),
             )
+            saved = await browser.get(f"/human-review/{WORK}?revision={revision}")
 
         assert shown.status_code == 200
         assert decided.status_code == 200
+        assert "Saved: APPROVED" in saved.text
+        assert '<button name="decision"' not in saved.text
         async with engine.connect() as connection:
             row = (await connection.execute(
                 human_review_consequences.select()

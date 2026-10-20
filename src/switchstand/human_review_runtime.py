@@ -25,7 +25,6 @@ def _required(environment: Mapping[str, str], name: str) -> str:
 class HumanReviewRuntimeConfig:
     database_url: str = field(repr=False)
     expected_origin: str
-    username: str
     password_hash: str = field(repr=False)
     bind_host: str
     bind_port: int
@@ -52,7 +51,6 @@ class HumanReviewRuntimeConfig:
         return cls(
             database_url=_required(values, "DATABASE_URL"),
             expected_origin=_required(values, "SWITCHSTAND_HUMAN_REVIEW_ORIGIN"),
-            username=_required(values, "SWITCHSTAND_HUMAN_REVIEW_USERNAME"),
             password_hash=_required(values, "SWITCHSTAND_HUMAN_REVIEW_PASSWORD_HASH"),
             bind_host=host,
             bind_port=port,
@@ -66,7 +64,6 @@ async def serve(config: HumanReviewRuntimeConfig | None = None) -> None:
         app = create_persistent_human_review_shell(
             engine,
             expected_origin=runtime.expected_origin,
-            username=runtime.username,
             password_hash=runtime.password_hash,
         )
         server = uvicorn.Server(

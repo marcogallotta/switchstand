@@ -45,6 +45,7 @@ from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
+from .human_reviews import HumanReviewState
 from .implementation_requests import ImplementationRequestState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
 from .messages import MessagePendingRequest, MessageState
@@ -843,6 +844,9 @@ async def resource_service(
             implementation_requests=implementation_requests,
             reviews=review_service,
             issue_projects=issue_projects,
+            human_reviews=(HumanReviewState(engine, canonical_repository)
+                           if os.getenv("SWITCHSTAND_HUMAN_REVIEW_ORIGIN") else None),
+            human_review_origin=os.getenv("SWITCHSTAND_HUMAN_REVIEW_ORIGIN"),
             activation_continuity=(
                 None
                 if activation_contracts is None

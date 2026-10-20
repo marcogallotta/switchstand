@@ -9,7 +9,6 @@ def _environment() -> dict[str, str]:
     return {
         "DATABASE_URL": "postgresql+psycopg://switchstand@localhost/switchstand",
         "SWITCHSTAND_HUMAN_REVIEW_ORIGIN": "https://review.example.test",
-        "SWITCHSTAND_HUMAN_REVIEW_USERNAME": "marco",
         "SWITCHSTAND_HUMAN_REVIEW_PASSWORD_HASH": "$2b$12$valid-at-shell-boundary",
         "SWITCHSTAND_HUMAN_REVIEW_BIND_HOST": "127.0.0.1",
         "SWITCHSTAND_HUMAN_REVIEW_BIND_PORT": "8792",

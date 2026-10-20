@@ -115,6 +115,11 @@ class HumanReviewBaselineV2(ClosedModel):
         return self
 
 
+class HumanReviewRequester(ClosedModel):
+    name: str = Field(min_length=1, max_length=80)
+    mailbox_id: UUID
+
+
 class HumanReviewConsequence(ClosedModel):
     """The exact server-owned meaning of approving one package revision."""
 
@@ -128,6 +133,7 @@ class HumanReviewConsequence(ClosedModel):
         "CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
     ] = "READY_FOR_IMPLEMENTATION_ONLY"
     baseline: HumanReviewBaselineV2 | None = None
+    requester: HumanReviewRequester | None = None
 
     @model_validator(mode="after")
     def bounded_unique_items(self) -> HumanReviewConsequence:
@@ -152,8 +158,11 @@ class HumanReviewConsequence(ClosedModel):
 
     @property
     def digest(self) -> str:
+        values = self.model_dump(mode="json")
+        if self.requester is None:
+            values.pop("requester")  # Preserve the exact digest of existing consequences.
         payload = json.dumps(
-            self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), allow_nan=False
+            values, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode()
         return hashlib.sha256(payload).hexdigest()
 
