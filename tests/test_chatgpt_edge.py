@@ -494,9 +494,10 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
     plain_app = create_app(service(), CONFIG, client_storage=MemoryStore())
     plain_tools = {tool.name for tool in await plain_app.state.fastmcp_server.list_tools()}
     assert "activation_obligation_transition" not in plain_tools
+    assert not {"human_review_create", "human_review_get"} & plain_tools
 
     subject = service()
-    dependencies = [object() for _ in range(7)]
+    dependencies = [object() for _ in range(8)]
     (
         subject.priority_claims,
         subject.priority_context,
@@ -505,7 +506,9 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
         subject.activation_technical,
         subject.activation_runtime,
         subject.activation_proof,
+        subject.human_reviews,
     ) = dependencies
+    subject.human_review_origin = "https://review.example.test"
     subject.priority_claims_enabled = True
     subject.priority_context_enabled = True
     injected_app = create_app(subject, CONFIG, client_storage=MemoryStore())
@@ -513,7 +516,7 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
 
     assert {
         "priority_claim_get", "priority_claim_record", "priority_context_get",
-        "review_submit", "review_bundle_get",
+        "review_submit", "review_bundle_get", "human_review_create", "human_review_get",
     } <= injected_tools
     assert {"review_request", "review_get", "review_recover"} <= injected_tools
     assert [
@@ -524,7 +527,9 @@ async def test_resource_edge_preserves_injected_services(monkeypatch):
         captured[-1].activation_technical,
         captured[-1].activation_runtime,
         captured[-1].activation_proof,
+        captured[-1].human_reviews,
     ] == dependencies
+    assert captured[-1].human_review_origin == subject.human_review_origin
 
 
 async def test_resource_service_priority_surface_is_explicit_and_default_off(monkeypatch):

@@ -629,6 +629,8 @@ def _create_resource_app(
         activation_runtime=service.activation_runtime,
         activation_proof=service.activation_proof,
         issue_projects=service.issue_projects,
+        human_reviews=service.human_reviews,
+        human_review_origin=service.human_review_origin,
     )
     currentness_config = _ProductCurrentnessConfig.from_environment()
     if currentness_config is not None:
