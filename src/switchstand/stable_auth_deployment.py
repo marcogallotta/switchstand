@@ -427,6 +427,7 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
     receipt = ActivationReceipt(config)
     phase = "PREFLIGHT"
     gate_attempted = False
+    exposure_attempted = False
     receipt.write(phase)
     try:
         operations.preflight()
@@ -461,23 +462,14 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
         operations.route_split()
         phase = "SPLIT_ROUTED"
         receipt.write(phase)
+        exposure_attempted = True
         operations.ungate()
         phase = "UNGATED"
         receipt.write(phase)
         if not operations.public_ready():
             raise Unknown("split public verification failed after possible OAuth writes")
-        receipt.write("COMPLETE", "PASS")
-        return "PASS"
-    except Unknown as exc:
-        error = type(exc).__name__
-        try:
-            if gate_attempted and not operations.gate_exact():
-                operations.gate()
-        except Failed, Unknown, OSError, subprocess.SubprocessError:
-            error = "GateRetentionUnknown"
-        receipt.write(phase, "UNKNOWN", error)
-        return "UNKNOWN"
     except (
+        Unknown,
         Failed,
         MigrationFailure,
         OSError,
@@ -485,6 +477,15 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
+        if isinstance(exc, Unknown) or exposure_attempted:
+            error = type(exc).__name__
+            try:
+                if gate_attempted and not operations.gate_exact():
+                    operations.gate()
+            except Failed, Unknown, OSError, subprocess.SubprocessError:
+                error = "GateRetentionUnknown"
+            receipt.write(phase, "UNKNOWN", error)
+            return "UNKNOWN"
         try:
             if phase != "PREFLIGHT" and not operations.rollback_pre_exposure():
                 raise Unknown("combined rollback verification failed")
@@ -499,6 +500,12 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
             return "UNKNOWN"
         receipt.write("ROLLED_BACK", "FAIL", type(exc).__name__)
         return "FAIL"
+    # Readiness succeeded. Terminal storage uncertainty cannot change the verified runtime.
+    try:
+        receipt.write("COMPLETE", "PASS")
+    except OSError:
+        return "UNKNOWN"
+    return "PASS"
 
 
 class HostActivationOperations:
