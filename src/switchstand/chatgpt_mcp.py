@@ -87,6 +87,7 @@ from .priority_claim_service import (
 from .priority_claims import PriorityBand, RelationKind, SubjectKind
 from .priority_context import PriorityContextResult
 from .product_currentness import ProductCurrentness
+from .pull_requests import PullRequestChange, PullRequestPage
 from .reviews import (
     BaselineAssessment,
     BaselineCheck,
@@ -111,6 +112,7 @@ class OrdinaryWorkResult(ClosedModel):
     status: Status
     item: PublicWorkItem | None = None
     guard: PublicReadGuard | None = None
+    pull_requests: PullRequestPage | None = None
 
 
 class ActionSummaryUnavailable(ClosedModel):
@@ -193,13 +195,15 @@ def project_activation_continuity(result: ContinuityResult) -> ActivationContinu
 
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
-    kind: Literal["parent", "dependency", "placement"]
+    kind: Literal["parent", "dependency", "placement", "pull_request"]
     action: Literal["set", "clear", "add", "remove"]
     target_work_id: UUID | None = None
     project_id: UUID | None = None
+    pull_request: PullRequestChange | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
+        self.internal()
         if self.kind == "parent":
             if self.action not in {"set", "clear"}:
                 raise ValueError("parent relation requires set or clear")
@@ -225,6 +229,7 @@ class OrdinaryRelationPatch(ClosedModel):
         return RelationPatch(
             kind=self.kind, action=self.action, target_work_id=self.target_work_id,
             project_id=self.project_id,
+            pull_request=self.pull_request,
         )
 
 
@@ -304,6 +309,7 @@ def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     projected = project_work(result)
     return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
+        pull_requests=result.pull_requests,
     )
 
 
@@ -467,6 +473,8 @@ def build_ordinary_tools(
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
+        pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
     ) -> OrdinaryWorkResult:
         """Read an exact WorkId's current notes, routing and placement context.
 
@@ -478,7 +486,7 @@ def build_ordinary_tools(
         Reading work or a procedure does not grant assignment or effect authority.
         """
         correlate(work_id)
-        result = await service.get(work_id)
+        result = await service.get(work_id, pr_cursor=pr_cursor, pr_link_cursor=pr_link_cursor)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
 
@@ -1153,11 +1161,14 @@ def build_ordinary_tools(
             return admission_unknown("work_relate", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_relate", "no_current_grant")
+        caller = await agent_context() if patch.kind == "pull_request" else None
+        if isinstance(caller, tuple):
+            return service.denied("work_relate", "agent_not_registered")
         result = await service.relate(ProtectedRelation(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision,
             patch=patch.internal(),
-        ))
+        ), caller=None if caller is None else caller.mailbox)
         audited("work_relate", str(work_id), result.status)
         return result
 

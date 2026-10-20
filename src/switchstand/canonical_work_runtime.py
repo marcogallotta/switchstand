@@ -8,12 +8,13 @@ from dataclasses import replace
 from typing import Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import Text, exists, insert, select
+from sqlalchemy import Text, exists, insert, select, update
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .agent_mailboxes import CODEX_COORDINATOR_NAME
+from . import pull_requests
+from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
 from .canonical_relations import (
     CanonicalRelationsRepository,
     WorkRelations,
@@ -791,6 +792,7 @@ class CanonicalWorkRuntime:
 
     async def protected_relation(
         self, grants: GrantState, principal: PrincipalContext, request: ProtectedRelation,
+        *, caller: AgentMailbox | None = None,
     ) -> GuardOutcome:
         """Apply and journal one canonical parent or dependency change atomically."""
         fingerprint = RelationGateway.fingerprint(principal, request)
@@ -856,7 +858,7 @@ class CanonicalWorkRuntime:
                             request, "stale", "source_revision_changed"
                         )
                     patch = request.patch
-                    if patch.kind not in {"parent", "dependency", "placement"}:
+                    if patch.kind not in {"parent", "dependency", "placement", "pull_request"}:
                         return RelationGateway.guard(
                             request, "denied", "invalid_database_relation"
                         )
@@ -865,7 +867,18 @@ class CanonicalWorkRuntime:
                         return RelationGateway.guard(
                             request, "denied", "relation_target_not_granted"
                         )
-                    if patch.kind == "parent":
+                    pr_record = None
+                    if patch.kind == "pull_request":
+                        if caller is None or patch.pull_request is None:
+                            return RelationGateway.guard(request, "denied", "agent_not_registered")
+                        pr_record = await pull_requests.change(
+                            connection, request.work_id, patch.action, patch.pull_request,
+                            caller, principal.key, request.operation_id,
+                        )
+                        await connection.execute(update(canonical_work).where(
+                            canonical_work.c.work_id == request.work_id
+                        ).values(row_version=current.row_version + 1))
+                    elif patch.kind == "parent":
                         await self.relations.set_parent(
                             request.work_id, target, current.row_version,
                             connection=connection,
@@ -895,7 +908,7 @@ class CanonicalWorkRuntime:
                         work_id=request.work_id, provider="postgres",
                         task_gid=str(request.work_id),
                         observed_revision=request.observed_revision,
-                        patch=patch, qualification=qualification,
+                        patch=patch, qualification=qualification, pull_request=pr_record,
                     )
                     outcome = GuardOutcome(
                         status="ok", operation="work_relate", work_id=request.work_id,
