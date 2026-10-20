@@ -608,8 +608,9 @@ other values use the full suite. Adaptive broad truth remains shadow-only and pr
 Quality always binds its exact subject and computes its validated plan under Python 3.14; it
 fetches broad history only when the promoted rule can still apply. Skipped health/adaptive
 observations remain `UNKNOWN` and never reduce full-suite or Docker lifecycle requirements.
-Full fallback partitions pytest's actual collected items into four whole-module shards using a
-stable module-path hash in `scripts/pytest-shard`. Each runner owns a PostgreSQL service;
+Full fallback balances pytest's actual collection into four whole-module shards using measured
+costs in `scripts/pytest-shard-weights.json` and a fixed default for unmeasured modules.
+`scripts/pytest-shard` assigns modules deterministically. Each runner owns a PostgreSQL service;
 Ruff/Pyright run on the last shard, including the sole runner in selected execution. The stable terminal gate
 requires matrix success and the existing lifecycle policy. Per-shard artifacts retain collected
 and assigned node IDs and identify partial `full-shard` metrics rather than claiming a full suite.

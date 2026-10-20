@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 import textwrap
@@ -13,11 +14,13 @@ import pytest
 ROOT = Path(__file__).parents[1]
 
 
-def run_shard(root: Path, index: int, count: int) -> subprocess.CompletedProcess[str]:
+def run_shard(
+    root: Path, index: int, count: int, pytest_args: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, ROOT / "scripts/pytest-shard", "--index", str(index),
          "--count", str(count), "--membership", root / f"shard-{index}.json", "--",
-         "-q", "--junitxml", root / f"shard-{index}.xml"],
+         "-q", "--junitxml", root / f"shard-{index}.xml", *pytest_args],
         cwd=root, env=os.environ | {"PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1", "PYTEST_ADDOPTS": ""},
         capture_output=True, text=True, timeout=30, check=False,
     )
@@ -26,6 +29,28 @@ def run_shard(root: Path, index: int, count: int) -> subprocess.CompletedProcess
 def cases(path: Path) -> set[tuple[str | None, str | None]]:
     return {(case.get("classname"), case.get("name"))
             for case in ElementTree.parse(path).iter("testcase")}
+
+
+def test_duration_partition_balances_cost():
+    assign = runpy.run_path(str(ROOT / "scripts/pytest-shard"))["module_shards"]
+    weights = json.loads((ROOT / "scripts/pytest-shard-weights.json").read_text())
+    modules = set(weights["module_seconds"]) | {"new/test_unknown.py"}
+    assignments = assign(modules, 4)
+    assert set(assignments) == modules
+    assert set(assignments.values()) == set(range(4))
+    loads = [0.0, 0.0, 0.0, weights["static_seconds"]]
+    for module, shard in assignments.items():
+        loads[shard] += weights["module_seconds"].get(module, weights["default_seconds"])
+    assert max(loads) - min(loads) < 2
+    assert set(assign(modules, 1).values()) == {0}
+
+
+def test_unknown_modules_use_all_shards_and_stable_default():
+    assign = runpy.run_path(str(ROOT / "scripts/pytest-shard"))["module_shards"]
+    modules = {f"new/test_{index}.py" for index in range(17)}
+    assignments = assign(modules, 4)
+    assert set(assignments) == modules
+    assert set(assignments.values()) == set(range(4))
 
 
 def test_real_shards_preserve_collection_union_and_whole_modules(tmp_path: Path):
@@ -69,6 +94,31 @@ def test_real_shards_preserve_collection_union_and_whole_modules(tmp_path: Path)
     original = (tmp_path / "shard-0.json").read_text()
     assert run_shard(tmp_path, 0, 4).returncode == 0
     assert (tmp_path / "shard-0.json").read_text() == original
+    reversed_files = tuple(sorted(
+        (str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*.py")), reverse=True,
+    ))
+    result = run_shard(tmp_path, 0, 4, reversed_files)
+    assert result.returncode == 0, result.stdout + result.stderr
+    reordered = json.loads((tmp_path / "shard-0.json").read_text())
+    assert reordered["collected_nodeids"] != collected
+    assert set(reordered["collected_nodeids"]) == set(collected or [])
+    assert set(reordered["assigned_nodeids"]) == set(json.loads(original)["assigned_nodeids"])
+
+
+def test_selected_single_shard_keeps_exact_subset(tmp_path: Path):
+    (tmp_path / "test_selected.py").write_text("def test_selected(): pass\n")
+    (tmp_path / "test_other.py").write_text("def test_other(): assert False\n")
+    result = run_shard(tmp_path, 0, 1, ("test_selected.py",))
+    assert result.returncode == 0, result.stdout + result.stderr
+    membership = json.loads((tmp_path / "shard-0.json").read_text())
+    assert membership["assigned_nodeids"] == ["test_selected.py::test_selected"]
+    assert membership["collected_nodeids"] == membership["assigned_nodeids"]
+
+
+def test_membership_write_failure_fails_closed(tmp_path: Path):
+    (tmp_path / "test_case.py").write_text("def test_case(): pass\n")
+    (tmp_path / "shard-0.json").mkdir()
+    assert run_shard(tmp_path, 0, 1).returncode != 0
 
 
 @pytest.mark.parametrize(("content", "index", "count", "expected"), [
