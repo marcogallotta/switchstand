@@ -297,6 +297,11 @@ flag. It reuses existing operational tools, verifies the running runtime, makes 
 `work_get`, and logs each step's duration to `edge-deploy.log`. Any failure after shutdown cleanly
 restores and verifies the database and prior runtime. It uses no signed receipt or Caddy gate.
 
+For an independently source-reviewed and old→new→old replay-qualified exact pair, add `--code-only-from <old-full-sha>`; schema/dependency equality alone is insufficient qualification. The candidate must still be exact current `origin/main`.
+This branch skips backup/migration and keeps ALL database writes, including mistaken candidate writes, when returning to old code. Each landed release needs exact-pair qualification before use.
+To return after successful code-only deployment, use the same command and candidate SHA with `--rollback-code-only`. It checks the retained exact attempt, launchers, clean sources, schema and configuration under the existing lock before stopping; drift/missing identity refuses effects.
+The ordinary full migration/recovery route remains available. Ten-second deployment/five-second rollback are goals; actual systemd/production timings remain unproved.
+
 Follow-up after a proven live deploy: remove the legacy transaction/tests, full R0 production probe,
 sealed qualifier, Caddy receipt gate, and hand-staged launcher procedure.
 
