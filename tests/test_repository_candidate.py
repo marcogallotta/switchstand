@@ -18,7 +18,8 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
            job_failure: bool = False, stacked: bool = False,
            selected: bool = False, omit_policy_evidence: bool = False,
            affected: bool = False, docker_result: str = "success",
-           selected_shard: int = 0) -> httpx.AsyncClient:
+           selected_shard: int = 0, full_shards: tuple[int, ...] | None = None,
+           shard_override: dict[str, object] | None = None) -> httpx.AsyncClient:
     overrides = overrides or {}
     pr_reads = 0
     def response(request: httpx.Request) -> httpx.Response:
@@ -66,9 +67,12 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                     execution_name = f"Quality execution / {mode}"
                     if selected or affected:
                         execution_name += f" / shard {selected_shard}"
+                    execution_names = [execution_name] if full_shards is None else [
+                        f"Quality execution / {mode} / shard {shard}" for shard in full_shards
+                    ]
                     companions = (
                         ("Quality policy", "success"),
-                        (execution_name, "success"),
+                        *((name, "success") for name in execution_names),
                         (
                             "Exact-head Docker lifecycle" if kind == "exact_head"
                             else "PR composition Docker lifecycle",
@@ -85,6 +89,8 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                             "details_url": "https://github.com/marcogallotta/switchstand/actions/"
                                            f"runs/{index}/job/{1000 + index * 10 + offset}",
                         })
+                        if companion.endswith(" / shard 3"):
+                            checks[-1].update(shard_override or {})
             payload = {"check_runs": checks}
         elif "/actions/runs/" in path:
             index = int(path.rsplit("/", 1)[1])
@@ -143,6 +149,32 @@ async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_clos
         missing = await qualify_repository_candidate(7, client=http)
     assert missing.status == "NOT_READY"
     assert all(gate.reason == "policy-evidence-missing" for gate in missing.gates)
+
+
+@pytest.mark.parametrize(("shards", "override", "reason"), [
+    ((0, 1, 2, 3), {}, None),
+    ((0, 1, 2), {}, "policy-evidence-missing"),
+    ((0, 1, 2, 3, 0), {}, "policy-evidence-conflicting"),
+    ((0, 1, 2, 3), {"conclusion": "failure"}, "policy-evidence-failed"),
+    ((0, 1, 2, 3), {"status": "in_progress"}, "policy-evidence-running"),
+    ((0, 1, 2, 3), {"head_sha": "f" * 40}, "policy-evidence-missing"),
+    ((0, 1, 2, 3), {"app": {"slug": "other"}}, "policy-evidence-missing"),
+    ((0, 1, 2, 3), {"details_url": "https://github.com/actions/runs/999/job/123"},
+     "policy-evidence-missing"),
+    ((0, 1, 2, 3), {"details_url": "malformed"}, "policy-evidence-missing"),
+    ((0, 1, 2, 3), {"name": "Quality execution / FULL_FALLBACK / shard x"},
+     "policy-evidence-missing"),
+])
+async def test_full_fallback_requires_complete_successful_same_identity_shards(
+    shards: tuple[int, ...], override: dict[str, object], reason: str | None,
+):
+    async with client(full_shards=shards, shard_override=override) as http:
+        result = await qualify_repository_candidate(7, client=http)
+    assert result.status == ("READY" if reason is None else "NOT_READY")
+    assert all(gate.reason == reason for gate in result.gates)
+    assert all(("BROAD_QUALITY" in gate.evidence_dimensions) == (reason is None)
+               for gate in result.gates)
+    assert layer_qualification_is_sufficient(result.proportional_evidence()) == (reason is None)
 
 
 @pytest.mark.parametrize(("docker", "shard"), [("skipped", 0), ("failure", 0), ("success", 1)])
