@@ -1127,6 +1127,14 @@ async def test_disposable_deployment_escape_queue_to_owner_and_verified_resoluti
     await add_work(engine, owner)
     await add_work(engine, followup)
     queue = PendingFailureQueue(tmp_path / "pending")
+    empty = (await report(engine, owner, include_failure_detail=True))["failures"]
+    assert empty["capture_coverage"] == {
+        "status": "UNKNOWN", "reason": "NO_DURABLE_ESCAPE_EVIDENCE",
+        "supported": ["STABLE_AUTH_ACTIVATION_UNTIL_DURABLE_PASS"],
+        "uncovered": ["RUNTIME_AFTER_PASS", "OTHER_DEPLOYMENT_PATHS", "UNAVAILABLE_STORAGE",
+                      "NO_FOLLOWUP_INVOCATION"],
+    }
+    assert empty["total_records"] == 0
     assert activate(subject, FakeOperations(public_ready=False), queue=queue) == "UNKNOWN"
     record, = queue.pending()
     journal = FailureJournal(engine)
@@ -1137,6 +1145,7 @@ async def test_disposable_deployment_escape_queue_to_owner_and_verified_resoluti
     assert queue.pending() == () and await journal.get(record.attempt_id) == record
     opened = (await report(engine, owner, include_failure_detail=True))["failures"]
     assert opened["open_count"] == 1 and opened["total_records"] == 1
+    assert opened["capture_coverage"]["reason"] == "CAPTURE_COVERAGE_UNPROVEN"
     assert opened["items"][0]["detail"]["evidence"] == list(record.evidence)
     investigation = f"work:{followup}"
     action = "https://qualification.example/actions/regate-and-verify"

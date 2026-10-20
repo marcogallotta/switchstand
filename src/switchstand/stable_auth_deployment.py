@@ -608,16 +608,8 @@ def activate(
         except OSError:
             return "UNKNOWN"
         return "PASS"
-    except Unknown as exc:
-        error = type(exc).__name__
-        try:
-            if gate_attempted and not operations.gate_exact():
-                operations.gate()
-        except Failed, Unknown, OSError, subprocess.SubprocessError:
-            error = "GateRetentionUnknown"
-        _finish_attempt(receipt, pointer, queue, phase, "UNKNOWN", error)
-        return "UNKNOWN"
     except (
+        Unknown,
         Failed,
         MigrationFailure,
         OSError,
@@ -625,6 +617,17 @@ def activate(
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
+        if isinstance(exc, Unknown) or (
+            receipt.value["exposure_attempted"] and not receipt.value.get("ungate_not_sent")
+        ):
+            error = type(exc).__name__
+            try:
+                if gate_attempted and not operations.gate_exact():
+                    operations.gate()
+            except Failed, Unknown, OSError, subprocess.SubprocessError:
+                error = "GateRetentionUnknown"
+            _finish_attempt(receipt, pointer, queue, phase, "UNKNOWN", error)
+            return "UNKNOWN"
         try:
             if phase != "PREFLIGHT" and not operations.rollback_pre_exposure():
                 raise Unknown("combined rollback verification failed")

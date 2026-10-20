@@ -620,7 +620,7 @@ def test_real_caddy_proxy_transition_preserves_intervening_unrelated_route(
 
 @pytest.mark.parametrize("boundary", (
     "before_marker", "marker_before_ungate", "ungate_before_receipt", "after_ungated",
-    "partial_ungate_rolled_back", "pass_before_clear",
+    "partial_ungate_regated", "pass_before_clear",
 ))
 def test_sigkill_reconciles_exact_attempt_without_activation_effects(tmp_path, monkeypatch, boundary):
     subject = config(tmp_path)
@@ -639,7 +639,7 @@ def test_sigkill_reconciles_exact_attempt_without_activation_effects(tmp_path, m
         if (
             boundary == "marker_before_ungate" and value["exposure_attempted"]
             or boundary == "after_ungated" and phase == "UNGATED"
-            or boundary == "partial_ungate_rolled_back" and phase == "ROLLED_BACK"
+            or boundary == "partial_ungate_regated" and value["status"] == "UNKNOWN"
             or boundary == "pass_before_clear" and value["status"] == "PASS"
         ):
             kill()
@@ -654,7 +654,7 @@ def test_sigkill_reconciles_exact_attempt_without_activation_effects(tmp_path, m
             super().ungate()
             if boundary == "ungate_before_receipt":
                 kill()
-            if boundary == "partial_ungate_rolled_back":
+            if boundary == "partial_ungate_regated":
                 raise Failed("partial ungate")
 
     child = os.fork()
@@ -788,9 +788,26 @@ def test_postexposure_telemetry_failure_does_not_block_regating(tmp_path, monkey
         original(path, value, **kwargs)
 
     monkeypatch.setattr(deployment, "_atomic_json", unavailable)
-    operations = FakeOperations(rollback=False)
+    operations = FakeOperations(rollback=True)
     assert activate(subject, operations) == "UNKNOWN"
     assert operations.gated
     assert operations.events[-1] == "gate"
+    assert "rollback_pre_exposure" not in operations.events
     record, = deployment.PendingFailureQueue(tmp_path / "pending").pending()
     assert "exposure UNKNOWN" in record.observed_result
+
+
+def test_interrupted_legacy_rolled_back_receipt_retains_exposure_evidence(tmp_path):
+    # Explicit historical fixture; current post-exposure errors regate forward instead.
+    subject = config(tmp_path)
+    receipt = ActivationReceipt(subject)
+    receipt.value.update(exposure_attempted=True, exposure_confirmed=True,
+                         boundary_at="2026-10-20T10:00:00+00:00")
+    receipt.write("ROLLED_BACK", "FAIL")
+    pointer = tmp_path / "activation-pending.json"
+    deployment._atomic_json(pointer, deployment._identity(receipt.value).model_dump(mode="json"))
+    queue = deployment.PendingFailureQueue(tmp_path / "pending")
+    assert deployment.reconcile_attempt(pointer, queue) == "PENDING_SYNC"
+    record, = queue.pending()
+    assert "exposure PROVEN" in record.observed_result
+    assert not pointer.exists()
