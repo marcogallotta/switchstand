@@ -315,6 +315,12 @@ messaging, and required continuation:
   relation and receipt. `task_control.py` owns append-only owner checkpoints whose server-computed
   control basis excludes notes but includes reviewed routing and structural relations; missing or
   unreadable checkpoints remain `UNKNOWN`, and intended effect labels never grant authority.
+  `task_control_refs.py` decodes only versioned `control-ref:` navigation hints in those
+  capsules. Reads project recorded review watches and accepted-obligation pointers with
+  `UNCHECKED` evidence status and explicit malformed/unsupported-format gaps; raw references,
+  including hygiene's literal `message:` pointers, remain unchanged. Complete decoding never
+  proves complete inventory, target currentness, existence or recipient acceptance. No new
+  storage, grant, write path or scheduler is introduced.
   `work_hygiene.py` derives deterministic readiness from canonical work, that checkpoint API,
   reviews, messages, typed finding capture, and unresolved effects. It creates no persistence,
   scheduler, scanner, ownership registry, repair, or automatic work. The repository's ordinary
