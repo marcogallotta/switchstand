@@ -286,3 +286,5 @@ class WorkerStore:
                 "GIT_TERMINAL_PROMPT": "0",
             },
         )
+
+# Temporary CI qualification: exercise this audited affected-test input.
