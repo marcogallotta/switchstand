@@ -465,7 +465,15 @@ def build_ordinary_tools(
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
     ) -> OrdinaryWorkResult:
-        """Read canonical current state, including current notes, routing, and placement context."""
+        """Read an exact WorkId's current notes, routing and placement context.
+
+        Use the assigned WorkId directly; use work_search for discovery or
+        work_resolve_reference for a legacy task ID/URL. Omit work_id only in a
+        trusted task-bound launch. Current notes supersede stale summaries;
+        follow their procedure references before Human Review or another phase.
+        If no route is known, resolve START HERE (1218327002478382).
+        Reading work or a procedure does not grant assignment or effect authority.
+        """
         correlate(work_id)
         result = await service.get(work_id)
         audited("work_get", None if work_id is None else str(work_id), result.status)
@@ -568,7 +576,13 @@ def build_ordinary_tools(
         work_type: str | None = None, canonical_root: str | None = None,
         cursor: str | None = None, limit: int = 50,
     ) -> WorkSearchResult:
-        """Search admitted workspace work and return only stable provider-neutral WorkIds."""
+        """Find admitted work by text or routing filters when its WorkId is unknown.
+
+        Use work_get for an exact WorkId or work_resolve_reference for a legacy
+        task ID/URL. Read a candidate's current notes with work_get before acting;
+        search results are navigation, not assignment or authority. Follow
+        next_cursor for more matches; an empty query result does not prove no work.
+        """
         result = await service.search(WorkSearchRequest(
             api_version=api_version, text=text, completed=completed,
             lifecycle_state=lifecycle_state, owner_key=owner_key, priority=priority,
@@ -582,7 +596,13 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         reference: Annotated[str, Field(min_length=1, max_length=2048)],
     ) -> OrdinaryWorkResult:
-        """Resolve one exact legacy task reference to current provider-neutral work."""
+        """Resolve one exact legacy task ID/URL to its WorkId and current notes.
+
+        Use work_get for a known WorkId; use work_search for a title or topic.
+        UNKNOWN or denied does not establish that the task does not exist:
+        check the exact reference or search the admitted workspace, without
+        guessing IDs or treating a discovered task as an assignment.
+        """
         result = await service.resolve_reference(WorkResolveReferenceRequest(
             api_version=api_version, reference=reference,
         ))
@@ -1701,6 +1721,7 @@ def build_ordinary_tools(
     # FastMCP derives argument-schema titles from the callable name. Codex rejects a
     # tool whose registered name and generated argument title disagree.
     enriched_work_get.__name__ = "work_get"
+    enriched_work_get.__doc__ = work_get.__doc__
     enriched_work_update.__name__ = "work_update"
     _ = activation_obligation_transition  # Intentionally unavailable on this surface.
 

@@ -113,7 +113,9 @@ async def _provision(url, subject):
     denied = await state.bind("asana", "789")
     works = CanonicalWorkRepository(engine)
     for handle, title in ((active, "Task"), (reference, "Reference"), (denied, "Denied")):
-        await works.create(CurrentWork(handle.id, title, False, f"{title} notes"))
+        notes = (f"Task notes\nHuman Review procedure: work_get {reference.id}"
+                 if handle == active else f"{title} notes")
+        await works.create(CurrentWork(handle.id, title, False, notes))
         await works.bind_asana_gid(handle.provider_work_id, handle.id)
     await WorkEventRepository(engine).append(
         active.id, observed_version=1, operation_id=uuid4(), subtype="comment_added",
@@ -208,6 +210,31 @@ async def _discover(endpoint, selected):
             "api_version": "1", "text": "Task", "limit": 10,
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
+        descriptions = {tool.name: tool.description for tool in listed_tools}
+        assert "procedure references" in descriptions["work_get"]
+        assert "not assignment" in descriptions["work_search"]
+        assert "title or topic" in descriptions["work_resolve_reference"]
+        wrong = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": str(uuid4()),
+        })).structured_content
+        assert wrong["status"] == "denied" and wrong["item"] is None
+        assert wrong["guard"]["reason"] == "work_not_granted"
+        recovery = wrong["guard"]["next_action"]
+        assert "changed nothing" in recovery and "work_search" in recovery
+        recovered = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": search["items"][0]["id"],
+        })).structured_content
+        assert recovered["item"] == observed["item"]
+        procedure_id = recovered["item"]["notes"].split("work_get ", 1)[1]
+        procedure = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": procedure_id,
+        })).structured_content
+        assert procedure["item"]["id"] == str(selected.authority.reference_work_ids[0])
+        assert procedure["item"]["notes"] == "Reference notes"
+        resolved = (await client.call_tool("work_resolve_reference", {
+            "api_version": "1", "reference": "456",
+        })).structured_content
+        assert resolved["item"] == procedure["item"]
         for tool in listed_tools:
             if tool.name in {"work_search", "work_get", "work_history", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))

@@ -550,7 +550,17 @@ class ChatGPTService:
                 if authority is None:
                     return GrantedWorkResult(
                         status="denied",
-                        guard=self.denied("work_get", reason or "work_not_granted"),
+                        guard=self.denied(
+                            "work_get", reason or "work_not_granted",
+                            "This WorkId is unavailable to this connection. This read changed "
+                            "nothing. Check the exact assigned WorkId; use work_search for "
+                            "admitted workspace discovery or work_resolve_reference for a "
+                            "legacy task ID/URL. Discovery does not grant authority."
+                            if reason == "work_not_granted" else
+                            "Supply the exact assigned work_id; this read changed nothing."
+                            if reason == "explicit_work_id_required" else
+                            "Use the authenticated connection and trusted work issuer.",
+                        ),
                     )
                 if self.canonical_work_active:
                     if self.canonical_work is None:
