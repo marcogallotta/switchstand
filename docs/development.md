@@ -75,6 +75,43 @@ For real ChatGPT testing of an unreleased candidate, start with the
 Check the existing TEST service and its current owner before creating another;
 use its separate connection and database for candidate qualification.
 
+## Noninteractive commands from an Implementation Specification
+
+Each head can run its own authorized local checks directly. Put every required check in one
+`spec-test-commands` JSON fence in the exact specification's notes:
+
+````text
+```spec-test-commands
+[{"name":"focused quality","argv":["sh","scripts/check","tests/test_example.py"],
+  "cwd":".","timeout_seconds":120,"noninteractive":true}]
+```
+````
+
+Read current work through `work_get`, save its successful JSON payload (or full CallToolResult)
+outside the candidate, and bind that export's exact identity and clean candidate:
+
+```bash
+scripts/spec-test-commands --spec /tmp/spec.json --work-id <WorkId> \
+  --revision <exact-revision> --candidate <40-character-SHA> --repo "$PWD" > /tmp/results.json
+```
+
+The runner reads the specification; there is no caller-maintained command subset. Every entry is
+required. Only all actual zero exits plus unchanged source bytes and clean candidate produce PASS.
+Missing/invalid commands or prerequisites remain NOT_RUN; failures/timeouts are FAIL; detected
+post-run source/candidate drift is STALE. The JSON records each argv, cwd, output, exit and duration
+with the specification identity/digest, candidate, reason, next owner and action. Closed stdin,
+CI/display guards and process-group timeouts support noninteractive execution. These guards are
+not a sandbox: the head must select only authorized noninteractive checks that do not launch a
+browser or affect live services. An export cannot prove live canonical currentness; refresh the
+exact spec before execution and reconcile before recording its result.
+
+The executing head records the exact result once through existing Tracker `work_update`; the
+runner prints evidence and does not write Tracker or send a PASS mailbox message. On partial or
+failed evidence, diagnose why and choose code/fixture/spec repair, genuine human input, or a real
+blocker; retain reason/owner/next action. Independent review challenges that judgment, including
+when no change is chosen. Local execution needs no Coordinator approval. Existing review and
+qualification requirements still apply to their own boundaries.
+
 ## Match evidence to the claim
 
 Record the immutable subject that each result exercised. A green result establishes
