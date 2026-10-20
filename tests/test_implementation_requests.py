@@ -424,7 +424,7 @@ asyncio.run(finish())
         assert evidence.result.evidence_refs == ("git:" + observed.candidate_sha,)
         assert (writer / "native.txt").read_text().strip() == "native implementation proof"
     for revision in ("44d59bd1f6de96c6a05b39402a5d763694fd774e", "5dc19e230fa03619325595c8c6ad6d692d365299"):
-        legacy: dict = {"__name__": "switchstand.compat", "__package__": "switchstand"}
+        legacy: dict = {"__name__": "switchstand.coordinator_worker_state", "__package__": "switchstand"}
         exec(host.git(host.SOURCE, "show", revision + ":src/switchstand/coordinator_worker_state.py"), legacy)  # noqa: S102 - exact pinned local source
         assert legacy["WorkerStore"](home, subject.store.root).load(operation) is not None
         exec(host.git(host.SOURCE, "show", revision + ":src/switchstand/coordinator_workers.py"), legacy)  # noqa: S102 - exact pinned local source
