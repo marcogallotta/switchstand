@@ -77,6 +77,7 @@ required = true
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
+                 "project_create",
                  "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
                  "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
@@ -97,6 +98,7 @@ required = false
 default_tools_approval_mode = "approve"
 enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
                  "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
+                 "project_create",
                  "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
                  "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management",
                  "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
