@@ -340,7 +340,8 @@ mode-required Docker result are all valid; internal mode never changes its requi
 Full fallback runs four independent GitHub runners, each with its own PostgreSQL service.
 `scripts/pytest-shard` partitions pytest's actual collection by SHA-256 of the whole module path
 modulo four. Each shard retains full collected and assigned node IDs plus module membership;
-its `full-shard` timing record covers only that partition. Ruff/Pyright run once on shard zero.
+its `full-shard` timing record covers only that partition. Ruff/Pyright run once on the last shard,
+including the sole runner in selected execution.
 The promoted selected-module path runs once on shard zero. Matrix fail-fast is disabled, and
 terminal success requires the entire matrix to succeed; failures, cancellations and skips fail closed.
 Planner identity,
