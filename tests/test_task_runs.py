@@ -44,7 +44,7 @@ from switchstand.task_runs import (
 
 
 @pytest.fixture
-async def subject(database_prerequisite):
+async def subject(database_prerequisite, request):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for PostgreSQL task-run tests")
@@ -63,7 +63,7 @@ async def subject(database_prerequisite):
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    command.upgrade(config, getattr(request, "param", "head"))
     canonical_work.create(sync, checkfirst=True)
     engine = create_async_engine(url)
     state = PostgresState(engine)
@@ -136,6 +136,7 @@ def test_public_result_contract_rejects_runtime_identity_and_bad_evidence(change
         result(**change)
 
 
+@pytest.mark.parametrize("subject", ["0026_agent_message_ack"], indirect=True)
 async def test_request_is_durable_without_runtime_and_replays_exactly(subject):
     state, engine, requester, execution = subject
     operation_id = uuid4()
@@ -262,6 +263,7 @@ async def test_concurrent_exact_replay_creates_one_request(subject):
         assert await connection.scalar(select(func.count()).select_from(task_run_requests)) == 1
 
 
+@pytest.mark.parametrize("subject", ["0026_agent_message_ack"], indirect=True)
 async def test_start_bind_is_trusted_exact_and_one_to_one(subject):
     state, engine, requester, execution = subject
     first = await state.request(requester, uuid4(), request(execution))
@@ -489,6 +491,7 @@ async def test_result_replay_rejects_cross_request_terminal_pointer(subject):
     )
 
 
+@pytest.mark.parametrize("subject", ["0026_agent_message_ack"], indirect=True)
 async def test_result_currentness_unknown_then_current_and_stale_evidence(subject):
     state, engine, requester, execution = subject
     requested = await state.request(requester, uuid4(), request(execution))

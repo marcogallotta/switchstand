@@ -39,7 +39,7 @@ def trajectory(*, current: str = "Read-only qualification") -> HumanTrajectoryDa
 
 
 @pytest.fixture
-async def store(database_prerequisite):
+async def store(database_prerequisite, request):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for human-trajectory tests")
@@ -58,7 +58,7 @@ async def store(database_prerequisite):
     await engine.dispose()
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    command.upgrade(config, getattr(request, "param", "head"))
     engine = create_async_engine(url)
     async with engine.begin() as connection:
         await connection.execute(text(
@@ -167,6 +167,7 @@ async def test_corrupt_digest_fails_closed_without_touching_other_state(store):
             assert await connection.scalar(text(f"SELECT count(*) FROM {table}")) == count
 
 
+@pytest.mark.parametrize("store", ["0026_agent_message_ack"], indirect=True)
 async def test_populated_migration_refuses_to_discard_trajectory(store):
     await store.record(**record_args(uuid4()))
     config = Config("alembic.ini")
