@@ -106,8 +106,11 @@ existing accept, challenge, evidence, and focused-rereview boundaries.
 
 #### Setup and workflow failure journal
 
-Immediately record every newly observed setup or workflow failure through the repo-local,
-Git-ignored friction register. `friction.md` is its short policy and category index; detailed entries
+For feedback capture and routing, follow [feedback capture and triage](source-history-feedback.md#feedback-capture-and-triage)
+and reuse the underlying issue. A local journal is execution evidence only when the exact assigned
+work explicitly needs it; it is not a mandatory second report for every workflow failure.
+When such a journal is required, use the repo-local, Git-ignored friction register.
+`friction.md` is its short policy and category index; detailed entries
 live in `friction/capability.md`, `friction/process.md`, or `friction/implementation.md`, selected by
 the primary clearing action rather than symptoms or keywords. Capability covers access, tools,
 runtimes, and environment; process covers routing, ownership, coordination, and procedure;
@@ -252,7 +255,7 @@ Keep one semantic owner for each real concern. Preserve the same task GID and Wo
 
 **Tracker portfolio/handoff:** For an assigned multi-WorkId Tracker portfolio or named agent replacement, read the current Tracker guide `b974bf05-5397-53b5-ab5a-0932dbea1310` through authenticated MCP. It owns lightweight recovery, handoff and outstanding-obligation rules; it does not grant ownership or add a portfolio ceremony for narrow single-task workers.
 
-Tracker Issues V1-A owns Feedback V1's shared reporting function and its code/tests; agents use it rather than adding another reporting path. The always-loaded draw, mandatory-report, and reply-mark behavior lives in [AGENTS.md](../AGENTS.md).
+Tracker Issues V1-A owns Feedback V1's shared reporting function and its code/tests; agents use it rather than adding another reporting path. The first-minute trigger and reply marks live in [AGENTS.md](../AGENTS.md); concrete-failure capture, rating and triage live in [source compatibility](source-history-feedback.md#feedback-capture-and-triage).
 
 Durable message tools and state are the current agent-to-agent surface. Ordinary interactive agents address registered names through `agent_message_*`; managed task-bound runtimes retain WorkId-addressed `message_*`. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
 
