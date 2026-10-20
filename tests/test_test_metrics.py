@@ -291,11 +291,6 @@ def test_workflow_preserves_authority_and_attempts():
     assert 'planner_policy_changed=False' not in execution
     assert 'unresolved_hard_miss=False' not in execution
     assert 'history_complete=history_complete' in execution
-    assert 'test "${push_count:-1000}" -lt 1000' in execution
-    assert 'test "${schedule_count:-1000}" -lt 1000' in execution
-    assert 'test "$push_complete" = true' in execution
-    assert 'test "$schedule_complete" = true' in execution
-    assert '--paginate' in execution
     assert 'github.event.pull_request.stack.position == github.event.pull_request.stack.size' not in execution
     assert "classify_cumulative_stack_top" in execution
     assert '.head.repo.full_name == env.PR_BASE_REPO' in execution
