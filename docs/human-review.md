@@ -113,6 +113,21 @@ second Human Review solely because implementation is complete. `MATERIAL_DEVIATI
 `NEW_HUMAN_CHOICE` returns only the affected choice before commitment; `UNKNOWN` establishes no
 conformance claim and does not become a portfolio hold.
 
+## Exact code candidate pilot
+
+For work enrolled in the approved Task/Agent notes pilot, Task approval and final code approval
+are separate decisions. Every code candidate needs Marco's exact candidate decision before merge.
+Use ordinary `human_review_create` with the current Task approval identity and exact PR/base/head/
+composition tuple; retain the returned consequence identity and URL. Read that exact occurrence
+with `human_review_get`; pending, rejection, changed Task, or changed candidate stops landing.
+Agent notes are editable context, never Task authority. Scope changes require human-approved Task
+supersession. The independent reviewer loads the current Task and review rules and checks whether
+Human Input was missed before judging conformance. Preserve existing independent review and CI gates.
+Immediately before the normal GitHub merge, use `repository_candidate_qualification_get` with the
+pilot WorkId and require READY. An existing PR request remains binding if that argument is omitted.
+Unbound legacy CI reads remain compatible; raw GitHub commands can bypass this supported workflow.
+This pilot does not grant activation or prove the Task/notes dependency live.
+
 ## Change after review
 
 Raise Human Review again when a material change affects the agreed outcome, scope, architecture, scale, durable ownership, authority/trust, failure/recovery model, migration/rollback, evidence/risk envelope, aggregate cost/support burden, or protected effects. Nonmaterial realization that conforms to the approved baseline remains agent-owned.

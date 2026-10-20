@@ -83,7 +83,9 @@ class FakeState:
         self.record = _record()
         self.submissions: list[tuple[UUID, UUID, str, HumanDecision]] = []
 
-    async def prepare(self, package_work_id: UUID, package_revision: str) -> HumanReviewResult:
+    async def prepare(
+        self, package_work_id: UUID, package_revision: str, consequence_id: UUID | None = None,
+    ) -> HumanReviewResult:
         if package_work_id != WORK or package_revision != REVISION:
             return HumanReviewResult(status="STALE", reason="package_revision_changed")
         return HumanReviewResult(status="PREPARED", record=self.record)

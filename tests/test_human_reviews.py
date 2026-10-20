@@ -1,27 +1,116 @@
 import asyncio
 import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import bcrypt
+import httpx
 import pytest
+from chatgpt_fixture import PRINCIPAL, service
 from sqlalchemy import insert, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand import chatgpt_mcp
+from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxResult
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     canonical_metadata,
     canonical_revision,
     canonical_work,
 )
+from switchstand.human_review_shell import create_human_review_shell
 from switchstand.human_reviews import (
+    HumanReviewCandidate,
     HumanReviewConsequence,
     HumanReviewState,
     approved_baseline_in_transaction,
     human_review_consequences,
 )
+from switchstand.repository_candidate import RepositoryCandidateQualification
 
 PACKAGE = UUID("60000000-0000-4000-8000-000000000001")
+
+
+@pytest.mark.parametrize("decision", ["APPROVED", "NO_DISPATCH"])
+async def test_ordinary_agent_consumes_separate_candidate_decision(subject, monkeypatch, decision):
+    store, source, engine = subject
+    task = v2_consequence(source.value.package_revision)
+    await store.propose(task)
+    await store.submit(task.consequence_id, PACKAGE, task.package_revision, "APPROVED")
+    mailbox = AgentMailbox(name="Builder", name_key="builder", endpoint_id=uuid4(),
+        principal_key=PRINCIPAL.key, session_key="session", generation=1)
+    monkeypatch.setattr(chatgpt_mcp, "AgentMailboxState", lambda _: SimpleNamespace(
+        for_actor=AsyncMock(return_value=AgentMailboxResult(status="ok", mailbox=mailbox))))
+    application = service()
+    application.messages = SimpleNamespace(engine=engine)
+    application.human_reviews = store
+    application.human_review_origin = "https://review.example.test"
+    tools = dict(chatgpt_mcp.build_ordinary_tools(application, agent_identity=lambda: "session"))
+    candidate = HumanReviewCandidate(task_approval_id=task.consequence_id,
+        pull_request=7, base_sha="a" * 40, head_sha="b" * 40, composition_sha="c" * 40)
+    quality = RepositoryCandidateQualification(status="READY", pull_request=7, gates=[],
+        base_sha=candidate.base_sha, head_sha=candidate.head_sha,
+        composition_sha=candidate.composition_sha)
+    monkeypatch.setattr(chatgpt_mcp.repository_candidate, "qualify_repository_candidate",
+        AsyncMock(return_value=quality))
+    qualify = tools["repository_candidate_qualification_get"]
+    assert (await qualify("1", 7, work_id=PACKAGE)).reason == "candidate_approval_required"
+    request = HumanReviewConsequence(package_work_id=PACKAGE, package_revision=task.package_revision,
+        implementation_scope=("Merge the independently reviewed exact code candidate",),
+        implementation_target="repository main", excluded_effects=("activation",),
+        approval_effect="APPROVE_EXACT_CANDIDATE_FOR_LANDING", candidate=candidate)
+    created = await tools["human_review_create"]("1", request)
+    identity = UUID(created["record"]["consequence_id"])
+    assert "consequence_id=" in created["url"]
+    assert (await qualify("1", 7)).reason == "candidate_approval_pending"
+    assert (await store.prepare(PACKAGE, task.package_revision)).record.consequence_id == task.consequence_id
+    browser = create_human_review_shell(store, expected_origin=application.human_review_origin,
+        password_hash=bcrypt.hashpw(b"human password", bcrypt.gensalt(rounds=4)).decode())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=browser),
+        base_url=application.human_review_origin) as human:
+        assert (await human.post(created["url"], data={"password": "human password"},
+            headers={"Origin": application.human_review_origin})).status_code == 200
+        page = await human.get(created["url"])
+        assert "Approve exact code candidate for merge" in page.text
+        assert candidate.head_sha in page.text
+        response = await human.post("/human-review/submit", data={
+            "consequence_id": str(identity), "package_work_id": str(PACKAGE),
+            "package_revision": task.package_revision,
+            "consequence_digest": created["record"]["consequence_digest"], "decision": decision,
+        }, headers={"Origin": application.human_review_origin})
+        assert response.status_code == 200
+    saved = await tools["human_review_get"]("1", PACKAGE, task.package_revision, identity)
+    assert saved["record"]["decision"] == decision
+    result = await qualify("1", 7)
+    if decision != "APPROVED":
+        assert result.status == "NOT_READY" and result.reason == "candidate_approval_rejected"
+        return
+    assert result.status == "READY"
+    for field in ("base_sha", "head_sha", "composition_sha"):
+        monkeypatch.setattr(chatgpt_mcp.repository_candidate, "qualify_repository_candidate",
+            AsyncMock(return_value=quality.model_copy(update={field: "d" * 40})))
+        assert (await qualify("1", 7)).reason == "candidate_changed"
+    monkeypatch.setattr(chatgpt_mcp.repository_candidate, "qualify_repository_candidate",
+        AsyncMock(return_value=quality))
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(notes="new agent notes", row_version=2))
+    assert (await qualify("1", 7)).status == "READY"
+    replacement = v2_consequence(canonical_revision(PACKAGE, 2), supersedes=task.consequence_id)
+    await store.propose(replacement)
+    await store.submit(replacement.consequence_id, PACKAGE, replacement.package_revision, "APPROVED")
+    assert (await qualify("1", 7)).reason == "task_approval_changed"
+    assert (await tools["human_review_get"](
+        "1", PACKAGE, task.package_revision, identity))["status"] == "STALE"
+    renewed = request.model_copy(update={"package_revision": replacement.package_revision,
+        "candidate": candidate.model_copy(update={"task_approval_id": replacement.consequence_id})})
+    created = await tools["human_review_create"]("1", renewed)
+    assert (await qualify("1", 7)).reason == "candidate_approval_pending"
+    await store.submit(UUID(created["record"]["consequence_id"]), PACKAGE,
+        replacement.package_revision, "APPROVED")
+    assert (await qualify("1", 7)).status == "READY"
 
 
 class ConsequenceSource:
@@ -237,10 +326,13 @@ async def test_duplicate_proposal_rows_fail_closed(subject):
         ))
 
     read = await store.prepare(PACKAGE, source.value.package_revision)
+    selected = await store.prepare(
+        PACKAGE, source.value.package_revision, prepared.record.consequence_id,
+    )
     submit = await store.submit(
         prepared.record.consequence_id, PACKAGE, source.value.package_revision, "APPROVED"
     )
-    assert read.status == submit.status == "UNKNOWN"
+    assert read.status == selected.status == submit.status == "UNKNOWN"
     assert read.reason == submit.reason == "state_unavailable"
 
 
