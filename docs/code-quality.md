@@ -33,6 +33,11 @@ Before material coding:
 4. Choose the earliest practical evidence capable of falsifying the real claim. Where implementation and tests/mocks can share the same false model — provider, Git, persistence, subprocess, runtime or other external semantics — include proportionate real/hermetic boundary evidence rather than letting the mock world define truth.
 5. Treat the expected implementation envelope as an alarm, never as a budget to spend. Large/unexpected mechanism, owner/trust surface, defensive machinery, fixture/support burden or aggregate stack growth is a stop-and-classify signal. Current routed procedure controls any exact hard size/exemption rule.
 
+Implementation Specification authors should include runnable required noninteractive checks using the
+[command-block guidance](development.md#noninteractive-commands-from-an-implementation-specification).
+When resuming an older specification, add its missing command block with the agreed executable checks
+while preserving its acceptance criteria.
+
 During implementation:
 - Fix the causal owner; do not patch callers/tests around the defect.
 - At each quality refresh, compare the actual trajectory with the current Execution Plan. Unexpected new owner/provider/persistence/trust/interface/external-I/O/recovery surface, materially larger defensive/test-support machinery, or loss of the planned discriminating proof means stop/replan/classify the affected path before adding another patch layer. Routine local/private/reversible mechanics remain worker-owned.
