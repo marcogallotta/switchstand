@@ -948,7 +948,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         relate = next(tool for tool in tools if tool.name == "work_relate")
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
         assert relation["properties"]["kind"]["enum"] == [
-            "parent", "dependency", "placement",
+            "parent", "dependency", "placement", "pull_request",
         ]
         assert "project_id" in relation["properties"]
         assert "gid" not in str(relation).lower()
