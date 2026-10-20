@@ -56,10 +56,12 @@ def test_real_cli_planner_identity_and_unknown_environment(tmp_path: Path):
     plan = {'planner_revision': 'v1', 'base': 'base', 'head': 'head', 'mode': 'SELECTED',
             'selected_tests': ['tests/a.py'], 'fallback_reasons': []}
     planner.write_text(json.dumps(plan))
-    result = subprocess.run([sys.executable, ROOT / 'src/switchstand/test_metrics.py',
+    result = subprocess.run([sys.executable, '-m', 'switchstand.test_metrics',
                              '--identity', identity, '--planner', planner, '--execution-kind', 'selected',
                              '--junit', tmp_path / 'missing', '--output', output],
-                            env=os.environ | {'GITHUB_STEP_SUMMARY': str(summary)}, check=False)
+                            env=os.environ | {'GITHUB_STEP_SUMMARY': str(summary),
+                                              'PYTHONPATH': str(ROOT / 'src')},
+                            cwd=tmp_path, check=False)
     assert result.returncode == 0
     data = json.loads(output.read_text())
     assert data['planner'] == {k: plan[k] for k in ('planner_revision', 'base', 'head', 'mode')}
@@ -170,6 +172,24 @@ def _attempt(run_attempt: int = 1, **changes: object) -> dict[str, object]:
     return qualification_attempt_observation(identity, {'mode': 'FULL_FALLBACK'})
 
 
+def test_parallel_shards_are_distinct_scopes_but_same_shard_rerun_is_a_retry() -> None:
+    def provider(index: int, attempt: int = 1) -> dict[str, str]:
+        return {'repository': 'owner/repo', 'workflow': 'Quality',
+                'job': f'quality-shard-{index}', 'run_id': '17', 'run_attempt': str(attempt)}
+
+    attempts = tuple(_attempt(shard={'index': index, 'count': 4}, github=provider(index))
+                     for index in range(4))
+    assert len({item['scope']['plan_digest'] for item in attempts}) == 4
+    assert attempts[0]['partition'] == {'index': 0, 'count': 4}
+    summary = summarize_lineage(attempts)
+    assert summary['status'] == 'AVAILABLE'
+    assert summary['repeated_scope_retry_count'] == 0
+
+    rerun = _attempt(2, shard={'index': 0, 'count': 4}, github=provider(0, 2))
+    assert rerun['scope'] == attempts[0]['scope']
+    assert summarize_lineage((attempts[0], rerun))['repeated_scope_retry_count'] == 1
+
+
 def test_lineage_scope_metrics_and_provider_dedupe() -> None:
     first = _attempt(1, quality_outcome='failure',
                      failure_classification={'decisive_failure_at': '2026-10-07T10:00:20+00:00'})
@@ -235,8 +255,8 @@ def test_workflow_preserves_authority_and_attempts():
     assert "github.event_name == 'schedule' && 'scheduled exact-head'" in text
     assert "github.event_name == 'schedule' && 'Scheduled exact-head Quality'" in terminal
     assert "github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle'" in lifecycle
-    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in execution
-    assert "ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}" in lifecycle
+    assert execution.count('ref: ${{ github.sha }}') == 2
+    assert 'ref: ${{ github.sha }}' in lifecycle
     assert execution.count('if: always()') == execution.count('continue-on-error: true') == 2
     authoritative = execution.split(
         '      - name: Authoritative proportional or full-fallback Quality'
@@ -245,10 +265,19 @@ def test_workflow_preserves_authority_and_attempts():
     assert '-v "$PWD:/workspace:ro"' in authoritative
     assert '-v "$RUNNER_TEMP/test-metrics:/metrics"' in authoritative
     assert '--junitxml=/metrics/junit.xml' in authoritative
-    assert authoritative.split('--junitxml=/metrics/junit.xml', 1)[0].rstrip().endswith('\\')
-    assert 'shift 1 &&' in authoritative
+    assert 'mode="$1"; shift 1' in authoritative
+    assert 'scripts/pytest-shard' in authoritative
+    assert 'fail-fast: false' in execution
+    assert 'shard: ${{ fromJSON(needs.plan.outputs.shards) }}' in execution
+    assert "'[0]' if decision.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' else '[0,1,2,3]'" in execution
+    assert 'if test "$SHARD_INDEX" = 0; then' in authoritative
+    assert 'execution_kind=full-shard' in execution
+    assert '"-shard-" + e["SHARD_INDEX"]' in execution
+    assert '-quality-shard-${{ matrix.shard }}' in execution
     assert 'needs.plan.outputs.selected_tests' in authoritative
     assert '--planner ' in execution and "'planner_revision': plan.planner_revision" in execution
+    assert "python-version: '3.14'" in execution.split('  quality_execution:')[0]
+    assert 'PYTHONPATH=src python3 -m switchstand.test_metrics' in execution
     assert '--method GET' in execution
     assert 'selector_health_clear(' in execution
     assert 'broad_backstop_required(event_kind, ref_name, default_branch)' in execution
@@ -298,3 +327,24 @@ def test_workflow_preserves_authority_and_attempts():
     assert all(token in execution for token in identity)
     assert all(token in lifecycle for token in identity)
     assert 'SWITCHSTAND_REAL_DOCKER=1' in lifecycle
+
+
+def test_partial_shard_metrics_preserve_membership_and_do_not_claim_full_suite(tmp_path: Path):
+    identity = tmp_path / "identity.json"
+    membership = tmp_path / "shard.json"
+    output = tmp_path / "metrics.json"
+    summary = tmp_path / "summary"
+    identity.write_text(json.dumps({"environment": {}, "github": {"job": "quality-shard-2"}}))
+    shard = {"index": 2, "count": 4, "modules": ["tests/test_a.py"],
+             "collected_nodeids": ["tests/test_a.py::test_a", "tests/test_b.py::test_b"],
+             "assigned_nodeids": ["tests/test_a.py::test_a"]}
+    membership.write_text(json.dumps(shard))
+    subprocess.run([sys.executable, "-m", "switchstand.test_metrics", "--identity", identity,
+                    "--execution-kind", "full-shard", "--shard-membership", membership,
+                    "--junit", tmp_path / "missing", "--output", output], check=True,
+                   env=os.environ | {"GITHUB_STEP_SUMMARY": str(summary)})
+    record = json.loads(output.read_text())
+    assert record["execution_kind"] == "full-shard" and record["shard"] == shard
+    assert record["github"]["job"] == "quality-shard-2"
+    assert record["metrics_status"] == "METRICS_UNAVAILABLE"
+    assert "Partial full-suite shard" in summary.read_text()

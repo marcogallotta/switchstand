@@ -80,8 +80,9 @@ only that subject and boundary:
   composed result, an uncommitted worktree, or live activation.
 - **Pull request composition:** the candidate combined with the current base. The
   Quality workflow records the candidate, base, and synthetic composition SHAs and
-  verifies the composition's ordered parents. This proves the tested integration of
-  those exact revisions; it is separate from exact-head evidence and can become stale
+  checks out the event's immutable SHA and verifies the composition's ordered parents.
+  A regenerated PR merge reference cannot silently change the checkout. This proves
+  the tested integration of those exact revisions; it is separate from exact-head evidence and can become stale
   when the base changes.
 - **Integration or hermetic boundary:** a test that exercises real cooperating
   components inside a controlled boundary, such as real subprocesses, sockets, and a
@@ -309,7 +310,7 @@ Canonical cumulative handwritten Python LOC is counted with
 Official Codex installation and updates are owned by npm. The repository does not install,
 repair, wrap, or redirect the global `codex` command.
 
-Quality emits non-authoritative test timing in `test-metrics-<run_id>-<run_attempt>-quality`
+Quality emits non-authoritative test timing in `test-metrics-<run_id>-<run_attempt>-quality-shard-<index>`
 artifacts retained for 90 days, plus a bounded slow-test job summary. The original
 Quality exit status remains authoritative even when collection/upload fails. JUnit and
 JSON preserve failed/partial attempts separately from reruns. JSON binds exact subject,
@@ -319,7 +320,7 @@ Python/uv binary hashes from the built container); the source-bearing candidate 
 so ordinary source changes do not invalidate comparisons. Unknown environment fields yield a null
 comparison key; mismatched/unknown environments require INSUFFICIENT_DATA in future
 trend analysis. GitHub job metadata supplies CI duration; JUnit supplies suite/test
-time. `python src/switchstand/test_metrics.py --help` describes the shared formatter;
+time. `PYTHONPATH=src python3 -m switchstand.test_metrics --help` describes the shared formatter;
 optional planner selections count files, never JUnit cases. The authoritative foreground Quality
 job promotes only `PROMOTE_TEST_MODULE_ONLY_V1`: every changed path and selected path must be a
 direct `tests/test_*.py` module on an exact current subject, with no delete/rename, planner fallback,
@@ -327,12 +328,21 @@ selector-health warning, or cumulative native-stack-top obligation. Every other 
 full fallback, including all production, helper, configuration, documentation, workflow, migration,
 and unknown changes. Default-branch pushes and the nightly schedule always run the full suite; a
 missing or unsuccessful current default-branch Quality result, or any failed default/scheduled broad
-result in the same workflow generation, demotes the sole promoted rule to full fallback. Unresolved
+result in the same workflow generation, demotes the sole promoted rule to full fallback. The
+authoritative planner uses Python 3.14. Once the exact validated plan and mandatory gates make
+promotion impossible, history and adaptive observations are skipped and explicitly `UNKNOWN`;
+eligible candidates still require the complete same-generation health check. Unresolved
 run identity or a provider result cap also fails closed. A later green run cannot clear that
 generation's demotion; correction changes the reviewed workflow generation. Docker lifecycle
 evidence is omitted only for the exact promoted class. One stable
 terminal Quality check runs under `always()` and fails unless planning, Quality execution, and the
 mode-required Docker result are all valid; internal mode never changes its required check name.
+Full fallback runs four independent GitHub runners, each with its own PostgreSQL service.
+`scripts/pytest-shard` partitions pytest's actual collection by SHA-256 of the whole module path
+modulo four. Each shard retains full collected and assigned node IDs plus module membership;
+its `full-shard` timing record covers only that partition. Ruff/Pyright run once on shard zero.
+The promoted selected-module path runs once on shard zero. Matrix fail-fast is disabled, and
+terminal success requires the entire matrix to succeed; failures, cancellations and skips fail closed.
 Planner identity,
 mode, selected membership, JUnit, and timings are retained with the authoritative result. There is
 no telemetry service or second test scheduler.

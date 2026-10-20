@@ -66,10 +66,13 @@ def main() -> None:
     parser.add_argument("--junit", type=Path, required=True)
     parser.add_argument("--identity", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--execution-kind", choices=("full", "selected"), required=True)
+    parser.add_argument("--execution-kind", choices=("full", "full-shard", "selected"), required=True)
+    parser.add_argument("--shard-membership", type=Path)
     parser.add_argument("--planner", type=Path)
     args = parser.parse_args()
     identity = json.loads(args.identity.read_text())
+    if args.shard_membership and args.shard_membership.exists():
+        identity["shard"] = json.loads(args.shard_membership.read_text())
     environment = identity["environment"]
     identity["environment_key"] = (
         hashlib.sha256(json.dumps(environment, sort_keys=True).encode()).hexdigest()
@@ -82,6 +85,8 @@ def main() -> None:
     if summary:
         with Path(summary).open("a") as stream:
             stream.write("### Test timing (observational)\n\n")
+            if args.execution_kind == "full-shard":
+                stream.write("Partial full-suite shard; counts and timings cover this shard only.\n\n")
             if record["metrics_status"] == "AVAILABLE":
                 data = record["pytest"]
                 stream.write(f"{data['test_count']} cases; {data['test_seconds']:.3f}s summed test time\n\n")

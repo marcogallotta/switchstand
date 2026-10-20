@@ -62,11 +62,15 @@ def qualification_attempt_observation(
                "candidate_image": identity.get("candidate_image")}
     outcome = {"success": "SUCCESS", "failure": "FAILURE"}.get(
         cast(str, identity.get("quality_outcome")), "UNKNOWN")
+    shard = _dict(identity.get("shard"))
+    partition = {key: shard.get(key) for key in ("index", "count")} if shard else None
+    plan_scope = {"planner": planner, "partition": partition} if partition else planner
     return {
         "lineage_id": lineage, "provider": provider,
+        "partition": partition,
         "scope": {"candidate_sha": identity.get("subject_sha"),
                   "base_sha": identity.get("base_sha"),
-                  "plan_digest": _stable_id("plan", planner) if planner is not None else None,
+                  "plan_digest": _stable_id("plan", plan_scope) if planner is not None else None,
                   "harness_digest": _stable_id("harness", harness) if all(harness.values()) else None,
                   "environment_digest": identity.get("environment_key")},
         "retry_reason": rework.get("retry_reason", "PROVIDER_RETRY" if str(provider.get("run_attempt", "")).isdigit() and int(provider["run_attempt"]) > 1 else "UNKNOWN"),
