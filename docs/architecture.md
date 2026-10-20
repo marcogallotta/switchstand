@@ -719,6 +719,19 @@ first response, and failures are visible and nonblocking.
 On PostToolUse, the hook keeps only a locked due/counter record per payload `(session_id, agent_id-or-parent)` under `$XDG_STATE_HOME/switchstand/codex/notifications` (default `~/.local/state`).
 The first boundary starts five minutes; the next due boundary bundles messages/actionable feedback and fork supervision (three LIGHT notifications, then HARD, repeating), and reminds the agent to resume its original approved objective.
 Activity never postpones the deadline; actors are isolated, duplicates suppressed and missed ticks never burst. The hook only delivers reminders: agents perform checks; no idle wake or completion acknowledgement exists.
+The default-off `codex_inbound_wake.py` adapter is owned by the resource edge lifetime.
+`MessageState` signals accepted ordinary deliveries/replays after commit. A private JSON file
+selected by `SWITCHSTAND_CODEX_WAKE_CONTROL` supplies `socket` and boolean `enabled`; no file
+means no adapter. Removing/disabling the file stops new wakes without deleting mail or stopping
+accepted turns. The adapter hashes metadata thread IDs against current mailbox bindings on that
+one existing daemon, subscribes with configuration-preserving resume before reading fresh status,
+and retains dirty intent while busy. Generation fencing and fresh resource admission precede a
+same-thread mailbox turn. Exact delivery markers in paged user-input history suppress duplicate
+wakes; acceptance is separate from receive/reply/disposition. Uncertain starts suspend that
+recipient without replay; durable crash recovery is outside V1. The installed 0.163.0 runtime
+rejects direct resume/input for native multi-agent v2 subagents: those recipients remain DENIED;
+this adapter currently proves independent Root wake only, not native Head wake.
+
 The synchronous mailbox `Stop` hook calls the loopback-only
 `/internal/codex-stop-mailbox` route on the existing edge. That route resolves only the current
 `codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs

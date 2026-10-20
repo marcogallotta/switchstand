@@ -40,6 +40,36 @@ def digest(evidence: DispositionEvidence) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+async def test_delivery_signal_after_commit_replay_and_rejection(subject):
+    state, engine, _grants, principal, sender, _recipient_principal, recipient = subject
+    submitted = request(sender)
+    route = MessageRoute(recipient_work_id=recipient.authority.active_work_id,
+                         recipient_grant_version=recipient.version)
+    observed = []
+    sync = create_engine(engine.url)
+    def committed(message, fresh):
+        with sync.connect() as connection:
+            assert connection.scalar(select(message_deliveries.c.delivery_id).where(
+                message_deliveries.c.delivery_id == message.delivery_id)) == message.delivery_id
+        observed.append((message.delivery_id, fresh))
+    state.on_delivery = committed
+    try:
+        first = await state.submit(principal, route, submitted)
+        assert first.status == "ok" and first.message is not None
+        replay = await state.submit(principal, route, submitted)
+        assert replay == first
+        conflict = await state.submit(principal, route, submitted.model_copy(
+            update={"payload": {"text": "different"}}))
+        assert conflict.status == "conflict"
+        assert observed == [(first.message.delivery_id, True), (first.message.delivery_id, False)]
+        def unavailable(_message, _fresh):
+            raise RuntimeError("observer unavailable")
+        state.on_delivery = unavailable
+        assert (await state.submit(principal, route, request(sender))).status == "ok"
+    finally:
+        sync.dispose()
+
+
 @pytest.fixture
 async def subject(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL")

@@ -1,5 +1,18 @@
 # ChatGPT MCP edge
 
+## Disposable inbound-wake prototype
+
+Run `scripts/prototype-inbound-wake --control /private/control.json --state /private/state.json --port 18764`
+with the writer's Python. It owns one disposable `switchstand_test` PostgreSQL instance and
+loopback MCP edge. The control JSON contains an absolute existing Codex `socket` path and
+boolean `enabled`. This does not launch a Codex daemon or consume production database settings.
+Its synthetic principal and caller metadata are for disposable local testing, not OAuth or
+production identity qualification. Register only new bounded disposable recipients in this DB.
+TERM to the exact state-file PID stops its edge and owned database; all trial logs/data remain.
+Never stop the shared daemon. Setting `enabled` false suspends new wakes while retaining mail
+and accepted turns. Runtime 0.163.0 rejects direct native multi-agent v2 Head input; preserve
+DENIED rather than substitute a thread or active-parent relay. Independent Root wake is supported.
+
 This is Switchstand's authenticated HTTP/OAuth edge for ordinary ChatGPT and
 Codex clients. It is distinct from the launcher-bound managed Codex STDIO
 surface and from the local development MCP. Landing edge code or documentation
