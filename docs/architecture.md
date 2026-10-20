@@ -31,10 +31,11 @@ append/create/update/relation operations; registered-name `agent_message_*` mess
 required-result persistence; and repository bundle transport. Provider-era effects receive any
 provider readback through the exact pre-cutover deployment while its provider is still configured.
 Fixed reporting tools route bugs, missing features, process complaints, avoidable performance
-latency, Human Review feedback, and the all-event Fork Management trial to separate
-server-selected canonical projects. Fork Management reuses this reporting path for assignments,
-timestamped checks (including no findings), and outcomes under the
-[supervision contract](coordinator-tracker-contract.md#fork-management-feedback-trial).
+latency, Human Review feedback, and Fork Management to separate server-selected canonical
+projects. Fork Management reuses this reporting path for one concise assignment checkpoint
+plus material exceptions/interventions and outcomes under the
+[supervision contract](coordinator-tracker-contract.md#fork-management-checkpoints-and-exceptions).
+Routine checks do not each create a report; a logging receipt does not prove supervision.
 They share one
 private create path with explicit public-argument forwarding (audit callbacks stay local)
 and a narrow `file_issue` grant operation; callers cannot select projects or
@@ -672,11 +673,17 @@ preflight. This is a transitional trusted-host bridge, not a provider API for ag
 
 Ordinary Codex uses the official npm-installed CLI directly. Repository configuration and
 instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
-global `codex` command. A stateless repository hook re-injects the existing Feedback V1 obligation
-on every user prompt and immediately after compaction. It performs no classification, reporting,
-network call, transcript scan, or persistence; the agent still uses the canonical Tracker Issues
+global `codex` command. A repository hook re-injects the existing Feedback V1 obligation
+on every user prompt and immediately after compaction. Compact recovery precedes feedback context:
+the agent restores the exact task's original approved objective, current scope/STOP and role guidance;
+summaries confer no approval, and corrections require recording and approval on that task.
+The hook performs no classification, reporting,
+network call or transcript scan; the agent still uses the canonical Tracker Issues
 V1-A tools and their readback. Its one-second local timeout preserves prompt acknowledgement as the
 first response, and failures are visible and nonblocking.
+On PostToolUse, the hook keeps only a locked due/counter record per payload `(session_id, agent_id-or-parent)` under `$XDG_STATE_HOME/switchstand/codex/notifications` (default `~/.local/state`).
+The first boundary starts five minutes; the next due boundary bundles messages/actionable feedback and fork supervision (three LIGHT notifications, then HARD, repeating), and reminds the agent to resume its original approved objective.
+Activity never postpones the deadline; actors are isolated, duplicates suppressed and missed ticks never burst. The hook only delivers reminders: agents perform checks; no idle wake or completion acknowledgement exists.
 The synchronous mailbox `Stop` hook calls the loopback-only
 `/internal/codex-stop-mailbox` route on the existing edge. That route resolves only the current
 `codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs

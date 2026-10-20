@@ -37,7 +37,13 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 
 ### Ordinary Codex Coordinator
 
-Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, Wakeful supervisor, or launch-bound WorkId. A stateless repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `Codex Coordinator` calls `agent_takeover("Codex Coordinator", message=<Marco's full current message>)`. A first cross-principal attempt without that confirmation stops with `takeover_confirmation_required` and tells the agent to ask Marco; the retry passes Marco's full confirmation message. `/root` remains a temporary inbound alias for old senders. The Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, Wakeful supervisor, or launch-bound WorkId. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `Codex Coordinator` calls `agent_takeover("Codex Coordinator", message=<Marco's full current message>)`. A first cross-principal attempt without that confirmation stops with `takeover_confirmation_required` and tells the agent to ask Marco; the retry passes Marco's full confirmation message. `/root` remains a temporary inbound alias for old senders. The Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+
+After compaction, the same hook first directs recovery of the ORIGINAL APPROVED objective,
+current constraints/STOP and bounded agent notes from the exact assigned task; agent summaries
+are not approval. Corrections must be recorded and approved on that task. Preserve role/WorkId,
+read current role guidance (Root: the Coordinator tracking contract; others: their AGENTS route),
+and load other docs only for the current function/phase/trigger; AGENTS is already supplied.
 
 Switchstand-authored policy remains subordinate to Marco. A Coordinator executes ordinary
 reversible direction, warns briefly and continues through bounded risk unless material ambiguity
@@ -68,9 +74,11 @@ does not require launching another fork to admit its own launch. Missing evidenc
 Do not claim a repository instruction overrides a higher-priority mandatory main-agent
 operation, disables host compaction, or supplies an unavailable native capability.
 
-The initial Fork Management trial logs all assignments/checks/outcomes through the existing
-fixed `file_fork_management` feedback adapter. Its category is `FORK_MANAGEMENT`; ordinary
-edge and managed profiles read `SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
+Fork Management records one concise checkpoint per bounded assignment plus material exceptions
+and outcomes through the existing fixed `file_fork_management` feedback adapter; routine checks
+do not each create a report. A logging receipt does not prove actual supervision. Its category
+is `FORK_MANAGEMENT`; ordinary edge and managed profiles read
+`SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
 canonical project destination. Provisioning/configuring that destination and activating a
 runtime are separate effects. Missing configuration truthfully denies reporting; source
 landing does not establish collection. The later ticker is not part of this implementation.

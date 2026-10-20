@@ -308,7 +308,9 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     assert "must stop and ask Marco for confirmation" in agents
     assert "never retake the Coordinator after losing it" in agents
     assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
-    assert "A stateless repository hook re-injects the existing Feedback V1 obligation" in usage
+    assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
+    assert "The first boundary starts five minutes" in architecture
+    assert "three LIGHT notifications, then HARD, repeating" in architecture
     assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
     assert "`/root` remains a temporary inbound alias" in usage
     assert "stops with `takeover_confirmation_required`" in usage
