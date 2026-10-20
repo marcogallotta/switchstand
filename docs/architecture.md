@@ -163,7 +163,9 @@ service/state/route transition, binds both split processes to one exact candidat
 transfers persistent systemd startup ownership with exact readback. Caddy changes are scoped to
 the four owned proxy IDs so unrelated ingress changes are preserved. It automatically restores the
 combined service only while public exposure is still disproved. Any
-ambiguous or post-exposure outcome stays gated and never rewinds OAuth state. It does not own the
+operationally ambiguous or post-exposure failure stays gated and never rewinds OAuth state.
+After positive public readiness, terminal receipt persistence uncertainty returns UNKNOWN without
+changing the verified runtime. It does not own the
 future split edge-only replacement transaction, candidate preparation, live qualification, or
 activation authority.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible

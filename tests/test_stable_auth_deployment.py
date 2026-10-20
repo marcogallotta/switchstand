@@ -5,6 +5,7 @@ import json
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import time
 from dataclasses import replace
@@ -614,3 +615,64 @@ def test_real_caddy_proxy_transition_preserves_intervening_unrelated_route(
     finally:
         process.terminate()
         process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("fault", ("before_replace", "parent_fsync"))
+def test_terminal_receipt_failure_retains_verified_runtime(tmp_path, monkeypatch, fault):
+    subject = config(tmp_path)
+    original_json, original_sync = deployment._atomic_json, os.fsync
+    writing_pass = False
+
+    def persist(path, value, **kwargs):
+        nonlocal writing_pass
+        if value.get("status") == "UNKNOWN":
+            raise AssertionError("terminal telemetry must not publish a regated outcome")
+        writing_pass = value.get("status") == "PASS"
+        try:
+            if writing_pass and fault == "before_replace":
+                raise OSError("PASS publication unavailable")
+            original_json(path, value, **kwargs)
+        finally:
+            writing_pass = False
+
+    def fsync(descriptor):
+        if writing_pass and stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError("PASS rename visible; parent fsync failed")
+        original_sync(descriptor)
+
+    monkeypatch.setattr(deployment, "_atomic_json", persist)
+    monkeypatch.setattr(os, "fsync", fsync)
+    operations = FakeOperations(rollback=True)
+    assert activate(subject, operations) == "UNKNOWN"
+    assert operations.events[-1] == "public_ready"
+    assert not operations.gated
+    assert "rollback_pre_exposure" not in operations.events
+    assert receipt(subject)["status"] == ("PASS" if fault == "parent_fsync" else "RUNNING")
+
+
+@pytest.mark.parametrize("fault", ("partial_ungate", "ungated_receipt"))
+def test_operational_exposure_uncertainty_regates_without_oauth_rollback(
+    tmp_path, monkeypatch, fault,
+):
+    subject = config(tmp_path)
+    original = deployment._atomic_json
+
+    def persist(path, value, **kwargs):
+        if fault == "ungated_receipt" and value.get("phase") == "UNGATED" and (
+            value.get("status") == "RUNNING"
+        ):
+            raise OSError("UNGATED receipt unavailable")
+        original(path, value, **kwargs)
+
+    class PartialUngate(FakeOperations):
+        def ungate(self):
+            super().ungate()
+            if fault == "partial_ungate":
+                raise Failed("candidate gate removed but response lost")
+
+    monkeypatch.setattr(deployment, "_atomic_json", persist)
+    operations = PartialUngate(rollback=True)
+    assert activate(subject, operations) == "UNKNOWN"
+    assert operations.gated
+    assert "rollback_pre_exposure" not in operations.events
+    assert receipt(subject)["status"] == "UNKNOWN"
