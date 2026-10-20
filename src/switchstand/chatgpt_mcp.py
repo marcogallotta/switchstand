@@ -1,6 +1,7 @@
 import re
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Self
+from urllib.parse import urlencode
 from uuid import UUID
 
 from mcp.server import MCPServer
@@ -56,6 +57,7 @@ from .grants import (
     RelationPatch,
     ScalarPatch,
 )
+from .human_reviews import HumanReviewConsequence, HumanReviewRequester
 from .human_trajectory import HumanTrajectoryData, SourceKind
 from .implementation_requests import ImplementationRequestResult
 from .mcp import PublicReadGuard, PublicWorkItem, closed_tool, feedback_report_tool, project_work
@@ -271,6 +273,7 @@ PRODUCT_CURRENTNESS_TOOLS = frozenset({"product_currentness_get"})
 ACTIVATION_CONTINUITY_TOOLS = frozenset({"activation_obligation_transition"})
 REVIEW_TOOLS = frozenset({"review_request", "review_get", "review_recover", "review_submit",
                           "review_bundle_get"})
+HUMAN_REVIEW_TOOLS = frozenset({"human_review_create", "human_review_get"})
 OBSERVABILITY_TOOLS = frozenset({"observability_get"})
 
 
@@ -284,6 +287,7 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
         | ACTIVATION_CONTINUITY_TOOLS
         | REVIEW_TOOLS
         | OBSERVABILITY_TOOLS
+        | HUMAN_REVIEW_TOOLS
     ):
         raise ValueError(f"ordinary tool lacks annotations: {name}")
     return ToolAnnotations(
@@ -1180,6 +1184,40 @@ def build_ordinary_tools(
             return "denied", "agent_not_registered"
         return AgentMessageContext(principal, binding.mailbox)
 
+    async def human_review_create(
+        api_version: Literal["1"], consequence: HumanReviewConsequence,
+    ) -> dict[str, Any]:
+        """Create an immutable request as this registered agent; never decide it."""
+        del api_version
+        context = await agent_context()
+        if isinstance(context, tuple):
+            return {"status": context[0], "reason": context[1]}
+        if consequence.requester is not None:
+            return {"status": "denied", "reason": "requester_is_server_owned"}
+        assert service.human_reviews is not None
+        bound = consequence.model_copy(update={"requester": HumanReviewRequester(
+            name=context.mailbox.name, mailbox_id=context.mailbox.endpoint_id,
+        )})
+        result = await service.human_reviews.propose(bound)
+        values = result.model_dump(mode="json")
+        if result.record is not None:
+            values["url"] = (
+                f"{service.human_review_origin}/human-review/{bound.package_work_id}?"
+                + urlencode({"revision": bound.package_revision})
+            )
+        return values
+
+    async def human_review_get(
+        api_version: Literal["1"], work_id: UUID, revision: str,
+    ) -> dict[str, Any]:
+        """Read this exact request and saved decision; no decision argument exists."""
+        del api_version
+        context = await agent_context()
+        if isinstance(context, tuple):
+            return {"status": context[0], "reason": context[1]}
+        assert service.human_reviews is not None
+        return (await service.human_reviews.prepare(work_id, revision)).model_dump(mode="json")
+
     unregistered_agent_next_action = (
         "Call agent_register for this exact session using its intended durable agent name, "
         "then retry. Do not infer Codex Coordinator from an internal role label. When "
@@ -1667,6 +1705,9 @@ def build_ordinary_tools(
     _ = activation_obligation_transition  # Intentionally unavailable on this surface.
 
     return (
+        *(((("human_review_create", human_review_create),
+             ("human_review_get", human_review_get)))
+          if service.human_reviews is not None and service.human_review_origin else ()),
         ("repository_bundle_get", repository_bundle_get),
         ("repository_candidate_qualification_get", repository_candidate_qualification_get),
         *(((("observability_get", observability_get),)) if service.reviews is not None else ()),

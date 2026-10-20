@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
+import hashlib
 import hmac
+import secrets
+import time
 from html import escape
 from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
@@ -21,7 +22,9 @@ from .canonical_work import CanonicalWorkRepository
 from .human_reviews import HumanDecision, HumanReviewResult, HumanReviewState
 
 MAX_FORM_BYTES = 8192
-DECISIONS: tuple[HumanDecision, ...] = ("APPROVED", "WAIT", "HOLD", "NO_DISPATCH")
+DECISIONS: tuple[HumanDecision, ...] = ("APPROVED", "NO_DISPATCH")
+COOKIE = "__Host-human-review"
+SESSION_SECONDS = 1800
 
 
 class HumanReviewWriter(Protocol):
@@ -45,12 +48,24 @@ def _field(values: dict[str, list[str]], name: str, *, limit: int) -> str:
 
 def _page(body: str, *, status: int = 200) -> HTMLResponse:
     return HTMLResponse(
-        "<!doctype html><html><head><meta charset=utf-8><title>Human Review</title></head>"
+        "<!doctype html><html><head><meta charset=utf-8>"
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        "<title>Approval · Switchstand</title><style>"
+        "body{margin:0;background:#f5f5f2;color:#202720;font:16px/1.6 system-ui}"
+        "main{max-width:650px;margin:60px auto;padding:28px;background:white;"
+        "border:1px solid #dedfd7;border-radius:13px}h1{line-height:1.2}"
+        "button,input{font:inherit;padding:12px;border:1px solid #d7dcd0;border-radius:7px}"
+        "button{cursor:pointer;margin:8px;background:#344e2e;color:white}"
+        "button[value=NO_DISPATCH]{background:white;color:#5e433a}"
+        "li,p{overflow-wrap:anywhere}</style></head>"
         f"<body><main>{body}</main></body></html>",
         status_code=status,
         headers={
             "Cache-Control": "no-store",
-            "Content-Security-Policy": "default-src 'none'; form-action 'self'; frame-ancestors 'none'",
+            "Content-Security-Policy": (
+                "default-src 'none'; style-src 'unsafe-inline'; "
+                "form-action 'self'; frame-ancestors 'none'"
+            ),
             "Referrer-Policy": "no-referrer",
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
@@ -97,7 +112,8 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
     controls = ""
     if form and record.decision is None:
         buttons = "".join(
-            f'<button name="decision" value="{decision}">{decision}</button>'
+            f'<button name="decision" value="{decision}">'
+            f'{"Approve" if decision == "APPROVED" else "Reject"}</button>'
             for decision in DECISIONS
         )
         controls = (
@@ -108,8 +124,13 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
             f'<input type="hidden" name="consequence_digest" value="{record.consequence_digest}">'
             f"{buttons}</form>"
         )
+    requester = consequence.requester
+    identity = ("" if requester is None else
+        f"<p>Requested by <strong>{escape(requester.name)}</strong> · "
+        f"{requester.mailbox_id}</p>")
+    saved = "" if record.decision is None else f"<h2>Saved: {escape(record.decision)}</h2>"
     return _page(
-        f"{opening}<h1>Human Review: {escape(result.status)}</h1>"
+        f"{identity}{saved}{opening}<h1>Human Review: {escape(result.status)}</h1>"
         f"{baseline_content}"
         f"<p>Target: {escape(consequence.implementation_target)}</p>"
         f"<h2>Implementation scope</h2><ul>{details}</ul>"
@@ -119,29 +140,23 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
     )
 
 
-def _authorized(request: Request, username: bytes, password_hash: bytes) -> bool:
-    scheme, _, encoded = request.headers.get("authorization", "").partition(" ")
-    if scheme.lower() != "basic" or not encoded:
-        return False
-    try:
-        supplied_user, password = base64.b64decode(encoded, validate=True).split(b":", 1)
-    except (binascii.Error, ValueError):
-        return False
-    if len(password) > 72:
-        return False
-    valid_user = hmac.compare_digest(supplied_user, username)
-    try:
-        valid_password = bcrypt.checkpw(password, password_hash)
-    except ValueError:
-        return False
-    return valid_user and valid_password
+async def _read_form(request: Request) -> dict[str, list[str]]:
+    if request.headers.get("content-type", "").split(";", 1)[0] != (
+        "application/x-www-form-urlencoded"
+    ):
+        raise ValueError("invalid content type")
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_FORM_BYTES:
+            raise ValueError("form too large")
+        body.extend(chunk)
+    return parse_qs(bytes(body).decode("utf-8"), keep_blank_values=True, max_num_fields=5)
 
 
 def create_human_review_shell(
     state: HumanReviewWriter,
     *,
     expected_origin: str,
-    username: str,
     password_hash: str,
 ) -> Starlette:
     """Build an unregistered shell; the caller separately owns route installation."""
@@ -157,9 +172,6 @@ def create_human_review_shell(
         or expected_origin.endswith("/")
     ):
         raise ValueError("expected_origin must be an exact HTTPS origin without trailing slash")
-    if not username or ":" in username or len(username) > 256:
-        raise ValueError("username must be a bounded Basic-auth username")
-    encoded_username = username.encode()
     encoded_hash = password_hash.encode()
     if len(encoded_hash) > 128 or not encoded_hash.startswith((b"$2a$", b"$2b$", b"$2y$")):
         raise ValueError("password_hash must be a bcrypt hash")
@@ -168,13 +180,41 @@ def create_human_review_shell(
     except ValueError as error:
         raise ValueError("password_hash must be a valid bcrypt hash") from error
 
-    def authenticate(request: Request) -> Response | None:
-        if _authorized(request, encoded_username, encoded_hash):
-            return None
-        return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Human Review"'})
+    session_key = secrets.token_bytes(32)
 
-    async def review(request: Request) -> Response:
-        denied = authenticate(request)
+    def signature(expiry: str) -> str:
+        return hmac.new(session_key, expiry.encode(), hashlib.sha256).hexdigest()
+
+    def authenticate(request: Request) -> Response | None:
+        expiry, _, supplied = request.cookies.get(COOKIE, "").partition(".")
+        if (expiry.isdecimal() and len(expiry) <= 12 and int(expiry) > time.time()
+                and hmac.compare_digest(signature(expiry).encode(), supplied.encode())):
+            return None
+        return _page(
+            '<h1>Switchstand approval</h1><form method="post">'
+            '<label>Password <input name="password" type="password" '
+            'autocomplete="current-password" required maxlength="72"></label>'
+            '<button>Unlock</button></form>', status=401,
+        )
+
+    async def login(request: Request) -> Response:
+        if request.headers.get("origin") != expected_origin:
+            return Response(status_code=403)
+        try:
+            password = _field(await _read_form(request), "password", limit=72).encode()
+            valid = len(password) <= 72 and bcrypt.checkpw(password, encoded_hash)
+        except (UnicodeDecodeError, ValueError):
+            valid = False
+        if not valid:
+            return _page('<h1>Password not accepted</h1><a href="">Try again</a>', status=401)
+        response = await review(request, unlocked=True)
+        expiry = str(int(time.time()) + SESSION_SECONDS)
+        response.set_cookie(COOKIE, f"{expiry}.{signature(expiry)}", max_age=SESSION_SECONDS,
+                            secure=True, httponly=True, samesite="strict", path="/")
+        return response
+
+    async def review(request: Request, unlocked: bool = False) -> Response:
+        denied = None if unlocked else authenticate(request)
         if denied is not None:
             return denied
         try:
@@ -236,6 +276,7 @@ def create_human_review_shell(
         routes=[
             Route("/human-review/submit", submit, methods=["POST"]),
             Route("/human-review/{package_work_id}", review, methods=["GET"]),
+            Route("/human-review/{package_work_id}", login, methods=["POST"]),
         ]
     )
 
@@ -244,13 +285,11 @@ def create_persistent_human_review_shell(
     engine: AsyncEngine,
     *,
     expected_origin: str,
-    username: str,
     password_hash: str,
 ) -> Starlette:
     """Build the local persistent shell; the caller owns the engine lifecycle."""
     return create_human_review_shell(
         HumanReviewState(engine, CanonicalWorkRepository(engine)),
         expected_origin=expected_origin,
-        username=username,
         password_hash=password_hash,
     )
