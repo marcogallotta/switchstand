@@ -290,8 +290,9 @@ def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequ
         )).one() == ("work-identity-migration-complete-v1", "a" * 64)
 
 
+@pytest.mark.parametrize("report", [None, '{"report": "Retain this task-list status"}'])
 def test_agent_identity_migration_preserves_endpoint_and_delivery(
-    monkeypatch, database_prerequisite,
+    monkeypatch, database_prerequisite, report,
 ):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
@@ -354,6 +355,17 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
     assert ("endpoint_id",) in unique_columns
     assert ("principal_key", "session_key") in unique_columns
     assert ("principal_key",) not in unique_columns
+
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE agent_mailboxes SET agent_status = CAST(:report AS jsonb)"),
+                           {"report": report})
+        before = connection.execute(text("SELECT * FROM agent_mailboxes")).all()
+    with pytest.raises(RuntimeError, match="Preserve agent reports"):
+        command.downgrade(config, "0026_agent_message_ack")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0027_agent_status"
+        assert connection.execute(text("SELECT * FROM agent_mailboxes")).all() == before
 
 
 def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
@@ -584,27 +596,3 @@ def test_event_identity_downgrade_refuses_to_discard_mapping(database_prerequisi
         command.downgrade(config, "0004_required_result_persistence")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM work_event_handles")) == 1
-
-
-@pytest.mark.parametrize("report", [None, '{"report": "Retain this task-list status"}'])
-def test_agent_status_downgrade_preserves_optional_column_and_reports(report):
-    url = disposable_url()
-    config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
-    engine = create_engine(url)
-    with engine.begin() as connection:
-        connection.execute(text(
-            "INSERT INTO agent_mailboxes "
-            "(name_key, display_name, endpoint_id, principal_key, session_key, generation, "
-            "agent_status) VALUES ('agent', 'Agent', :endpoint, 'owner', 'session', 1, "
-            "CAST(:report AS jsonb))"
-        ), {"endpoint": uuid4(), "report": report})
-        before = connection.execute(text("SELECT * FROM agent_mailboxes")).all()
-    with pytest.raises(RuntimeError, match="Preserve agent reports"):
-        command.downgrade(config, "0026_agent_message_ack")
-    with engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_agent_status"
-        assert connection.execute(text("SELECT * FROM agent_mailboxes")).all() == before
-    engine.dispose()
