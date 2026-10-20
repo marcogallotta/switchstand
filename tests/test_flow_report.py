@@ -4,27 +4,33 @@ import json
 import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
+from chatgpt_fixture import service
 from sqlalchemy import insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand import flow_report
 from switchstand.activation_continuity import ActivationContract, Obligation, seal_obligation
+from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.canonical_relations import work_dependencies, work_parents
 from switchstand.canonical_work import (
+    CanonicalWorkRepository,
     canonical_metadata,
     canonical_revision,
     canonical_work,
     normalize_title,
 )
+from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.failure_journal import (
     EffectState,
     FailureJournal,
     FailureRecord,
     FailureResolution,
+    failure_records,
 )
 from switchstand.flow_report import report
 from switchstand.human_reviews import human_review_consequences
@@ -35,6 +41,7 @@ from switchstand.human_trajectory import (
 )
 from switchstand.observability import register_timing_persistence
 from switchstand.outcome_state import OutcomeItem, OutcomeStateStore
+from switchstand.reviews import ReviewOccurrenceState, ReviewPolicy
 from switchstand.state import human_trajectory_revisions, outcome_state_revisions, work_handles
 from switchstand.state import metadata as state_metadata
 from switchstand.task_runs import (
@@ -419,7 +426,7 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     journal = FailureJournal(engine)
     target_failure = FailureRecord(
         attempt_id=uuid4(), operation_id=uuid4(), owner=str(target),
-        attempted_claim="private claim", observed_result="private result",
+        attempted_claim="private claim", observed_result="private result token=unsafe",
         clearing_action="private clearing action", effect_state=EffectState.NOT_SENT,
         occurred_at=failed_at, evidence=("private evidence",),
     )
@@ -431,7 +438,7 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     resolution = FailureResolution(
         resolution_id=uuid4(), operation_id=uuid4(), attempt_id=target_failure.attempt_id,
         resolved_at=failed_at + timedelta(seconds=12), summary="private resolution",
-        evidence=("private resolution evidence",),
+        evidence=("private resolution evidence", "https://evidence.test/?token=unsafe"),
     )
     assert (await journal.resolve(resolution)).status == "APPLIED"
 
@@ -473,6 +480,45 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
         "private claim", "private result", "private clearing action", "private evidence",
         "private resolution", "private resolution evidence",
     ))
+    subject = service()
+    subject.reviews = SimpleNamespace(occurrences=ReviewOccurrenceState(  # type: ignore[assignment]
+        CanonicalWorkRepository(engine), AgentMailboxState(engine), ReviewPolicy("test"),
+    ))
+    server = build_chatgpt_server(subject)
+    default = await server.call_tool("observability_get", {"work_id": str(target)})
+    assert default.structured_content["failures"] == result["failures"]
+    detailed = await server.call_tool("observability_get", {
+        "work_id": str(target), "include_failure_detail": True,
+    })
+    failures = detailed.structured_content["failures"]
+    assert failures["total_records"] == 1 and failures["open_count"] == 0
+    assert failures["items"] == [result["failures"]["items"][0] | {"detail": {
+        "attempted_claim": "private claim", "observed_result": "private result token=[redacted]",
+        "clearing_action": "private clearing action", "evidence": ["private evidence"],
+        "resolution": {"summary": "private resolution", "evidence": [
+            "private resolution evidence", "https://evidence.test/?token=[redacted]",
+        ]},
+    }}]
+    assert "unsafe" not in json.dumps(detailed.structured_content)
+    # Validators compare sanitized digests; even raw storage drift must not expose secrets.
+    async with engine.begin() as connection:
+        await connection.execute(update(failure_records).where(
+            failure_records.c.attempt_id == target_failure.attempt_id,
+        ).values(observed_result="private result token=storage-secret"))
+    redacted = await server.call_tool("observability_get", {
+        "work_id": str(target), "include_failure_detail": True,
+    })
+    assert redacted.structured_content["failures"] == failures
+    async with engine.begin() as connection:
+        await connection.execute(update(failure_records).where(
+            failure_records.c.attempt_id == target_failure.attempt_id,
+        ).values(content_digest="corrupt"))
+    corrupt = await server.call_tool("observability_get", {
+        "work_id": str(target), "include_failure_detail": True,
+    })
+    assert corrupt.structured_content["failures"] == {
+        "status": "UNKNOWN", "reason": "CORRUPT_RECORD", "items": [],
+    }
     assert result["activation"]["status"] == "PARTIAL"
     assert result["activation"]["items"][0]["state"] == "WAITING_ACTIVATION"
     assert result["activation"]["items"][0]["correlation_roles"] == ["product_work_id"]
@@ -596,7 +642,7 @@ async def test_failure_adapter_bounds_recent_records_truthfully(
         ))).status == "APPLIED"
     monkeypatch.setattr(flow_report, "FAILURE_LIMIT", 1)
 
-    result = await report(engine, target)
+    result = await report(engine, target, include_failure_detail=True)
 
     assert result["failures"]["status"] == "PARTIAL"
     assert result["failures"]["reason"] == "MOST_RECENT_RECORDS_ONLY"
@@ -604,6 +650,8 @@ async def test_failure_adapter_bounds_recent_records_truthfully(
     assert result["failures"]["truncated"] is True
     assert result["failures"]["open_count"] is None
     assert result["failures"]["observed_open_count"] == 1
+    assert len(result["failures"]["items"]) == 1
+    assert result["failures"]["items"][0]["detail"]["resolution"] is None
 
 
 @pytest.mark.parametrize(

@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from chatgpt_fixture import ACTIVE, PRINCIPAL, service
 
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxResult
@@ -127,7 +128,10 @@ async def test_review_poll_and_recovery_derive_mailbox_and_distinct_received_gui
     assert [record[0] for record in audits] == ["review_get", "review_recover"]
 
 
-async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
+@pytest.mark.parametrize("include_failure_detail", [False, True])
+async def test_observability_get_is_exact_read_only_delegation(
+    monkeypatch, include_failure_detail,
+):
     subject = service()
     occurrences = SimpleNamespace(engine=object())
     subject.reviews = SimpleNamespace(occurrences=occurrences)
@@ -151,17 +155,21 @@ async def test_observability_get_is_exact_read_only_delegation(monkeypatch):
     targets = []
     tool = dict(build_ordinary_tools(subject, correlate_work=targets.append))["observability_get"]
 
-    result = await tool(ACTIVE)
+    result = await tool(ACTIVE, include_failure_detail=include_failure_detail)
 
     assert result == expected
-    report.assert_awaited_once_with(occurrences.engine, ACTIVE, occurrences)
+    report.assert_awaited_once_with(
+        occurrences.engine, ACTIVE, occurrences,
+        include_failure_detail=include_failure_detail,
+    )
     assert targets == [ACTIVE]
     server = build_chatgpt_server(subject)
     schema = next(
         item.input_schema for item in await server.list_tools()
         if item.name == "observability_get"
     )
-    assert set(schema["properties"]) == {"work_id"}
+    assert set(schema["properties"]) == {"work_id", "include_failure_detail"}
+    assert schema["properties"]["include_failure_detail"]["default"] is False
 
 
 async def test_review_submit_derives_current_reviewer_and_delegates_exact_verdict(monkeypatch):
