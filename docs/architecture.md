@@ -423,7 +423,8 @@ messaging, and required continuation:
   mismatch remains fail-closed.
   `human_review_shell.py` provides a default-off server-rendered password-only and exact-Origin
   confirmation app over that store. Its local persistent factory wires the canonical state owner
-  without owning the database engine lifecycle. Login issues a secure, HttpOnly, SameSite session
+  without owning the database engine lifecycle. Pages use a same-origin referrer policy so browser
+  form POSTs retain the exact Origin required by login and decision submission. Login issues a secure, HttpOnly, SameSite session
   lasting 30 minutes (invalidated by restart); the page offers only Approve and Reject and displays
   the saved decision. `human_review_runtime.py` adds an explicit,
   default-off command that owns the engine and Uvicorn lifecycle, requires every configuration
