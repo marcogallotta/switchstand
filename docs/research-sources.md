@@ -230,6 +230,12 @@ for combined count/run responses, 100-row pages and the 1,000-result filtered-se
 Real provider/Git evidence found 751 main push runs with the current workflow-generation boundary
 at row 5; older pages were unnecessary under the existing health contract.
 
+CI image reuse (2026-10-20): USED [Docker gha cache backend](https://docs.docker.com/build/cache/backends/gha/)
+and [GitHub Actions cache examples](https://docs.docker.com/build/ci/github-actions/cache/)
+for runtime-token authentication, shared cache scopes, main-push export, export-only ignore-error
+and bounded transport timeout. Ordinary layers preserve the existing development target;
+REJECTED registry/inline transport because it adds unnecessary image pushes and credentials.
+
 ## Tier 3 and use with caution
 
 - **LangGraph / LangChain** — https://docs.langchain.com. Use only for pause, persist and resume
