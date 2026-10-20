@@ -1301,13 +1301,15 @@ def build_ordinary_tools(
                 return "Task-list status UNKNOWN; reconcile capability while continuing unaffected authorized work."
             if result.due:
                 return f"Task-list status due (generation {result.generation}). At a safe checkpoint call agent_status_get, read your cross-project list, report finished/current/waiting-and-why/next and priority/scope/forgotten obligations, or defer concretely. Existing authority governs."
-        except (TimeoutError, SQLAlchemyError, ValueError, KeyError, TypeError):
+        except Exception:  # noqa: BLE001 -- advisory failures must preserve primary receipts; BaseException propagates.
             return "Task-list status UNKNOWN; primary result unchanged."
         return None
 
     async def ordinary_review(result: ReviewResult) -> OrdinaryReviewResult:
         value = OrdinaryReviewResult.model_validate(result.model_dump())
-        if result.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED", "WAITING_REVIEWER"}:
+        if result.status == "WAITING_REVIEWER":
+            value.next_action = "At a safe checkpoint do any due task-list check; continue already-authorized runnable work. " + result.next_action
+        elif result.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"}:
             value.next_action = f"At a safe checkpoint do any due task-list check. Continue already-authorized runnable work while retaining review {result.review_id} and its watch. If none remains, use bounded sleep 20 then review_get on this same review repeatedly; pending is not completion. Preserve the exact watch at a real host limit."
         value.agent_status_checkpoint = await status_checkpoint()
         return value

@@ -1,13 +1,16 @@
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from chatgpt_fixture import PRINCIPAL
 from mcp import Client
 from pydantic import ValidationError
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.agent_mailboxes import AgentMailboxState, agent_mailboxes
+from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState, agent_mailboxes
 from switchstand.agent_status import AgentStatusState, StatusWrite, project
 from switchstand.canonical_relations import (
     CanonicalRelationsRepository,
@@ -20,8 +23,8 @@ from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.contracts import WorkSearchRequest
 from switchstand.grant_state import GrantState
-from switchstand.grants import PrincipalContext
 from switchstand.messages import MessageState
+from switchstand.reviews import ReviewResult
 from switchstand.state import PostgresState
 
 
@@ -32,8 +35,8 @@ async def status_owner(canonical_database_schema):
         await connection.exec_driver_sql("TRUNCATE agent_mailboxes CASCADE")
         await connection.exec_driver_sql("TRUNCATE canonical_work, projects CASCADE")
     mailboxes = AgentMailboxState(engine)
-    alpha = (await mailboxes.register_agent("Alpha", "owner", "a")).mailbox
-    beta = (await mailboxes.register_agent("Beta", "owner", "b")).mailbox
+    alpha = (await mailboxes.register_agent("Alpha", PRINCIPAL.key, "a")).mailbox
+    beta = (await mailboxes.register_agent("Beta", PRINCIPAL.key, "b")).mailbox
     assert alpha is not None and beta is not None
     yield engine, mailboxes, alpha, beta
     await engine.dispose()
@@ -89,15 +92,16 @@ async def test_persisted_report_replay_cas_and_replacement(status_owner):
     assert deferred.document["reported_at"] == first.document["reported_at"]
     assert not deferred.due and deferred.generation == 2
     assert (await state.write(alpha, request)).status == "STALE"
-    moved = (await mailboxes.takeover("Alpha", "owner", "replacement")).mailbox
+    moved = (await mailboxes.takeover("Alpha", PRINCIPAL.key, "replacement")).mailbox
     assert moved is not None
     assert (await state.write(alpha, request)).status == "STALE"
     assert (await state.get(moved, moved)).status == "STALE_BINDING"
     assert (await state.get(moved, moved)).due
 
 
-async def test_due_boundaries_and_deferral_expiry(status_owner, monkeypatch):
-    _engine, _mailboxes, alpha, _beta = status_owner
+def test_due_boundaries_and_deferral_expiry(monkeypatch):
+    alpha = AgentMailbox(name="Alpha", name_key="alpha", endpoint_id=uuid4(),
+                         principal_key=PRINCIPAL.key, session_key="a", generation=1)
     now = datetime.now(UTC)
 
     class Clock(datetime):
@@ -122,19 +126,13 @@ async def test_due_boundaries_and_deferral_expiry(status_owner, monkeypatch):
 
 
 async def test_real_mcp_status_tools_admission_and_primary_result(status_owner, monkeypatch):
-    engine, mailboxes, _alpha, _beta = status_owner
-    principal = PrincipalContext(issuer="fixture", subject="mcp-owner", client_id="test", assurance="test")
-
-    async def resolve():
-        return principal
-
-    await mailboxes.register_agent("MCP", principal.key, "mcp")
+    engine, _mailboxes, _alpha, _beta = status_owner
     grants = GrantState(engine)
-    service = ChatGPTService(resolve, PostgresState(engine), grants, {}, MessageState(engine, grants),
-                            ordinary_workspace_admission=True)
-    tools = dict(build_ordinary_tools(service, agent_identity=lambda: "mcp"))
+    service = ChatGPTService(AsyncMock(return_value=PRINCIPAL), PostgresState(engine), grants, {}, MessageState(engine, grants),
+                            ordinary_workspace_admission=True, reviews=AsyncMock())
+    tools = dict(build_ordinary_tools(service, agent_identity=lambda: "a"))
     missing = await tools["agent_status_get"]("1")
-    assert missing.status == "MISSING" and missing.owner_key == "agent:mcp"
+    assert missing.status == "MISSING" and missing.owner_key == "agent:alpha"
     # Public MCP registration/schema and actual tool request validation, with the real PG owner.
     from mcp.server import MCPServer
 
@@ -146,7 +144,7 @@ async def test_real_mcp_status_tools_admission_and_primary_result(status_owner, 
         result = await client.call_tool("agent_status_update", {"api_version": "1", "operation_id": str(uuid4()),
             "expected_generation": 0, "report": "A waiting; B next; C capture only", "coverage": "UNKNOWN"})
         assert not result.is_error and result.structured_content["generation"] == 1
-        assert (await client.call_tool("agent_status_get", {"api_version": "1", "name": "Alpha"})).structured_content["name"] == "Alpha"
+        assert (await client.call_tool("agent_status_get", {"api_version": "1", "name": "Beta"})).structured_content["name"] == "Beta"
     baseline = await service.get(uuid4())
     got = await tools["work_get"]("1", uuid4())
     assert got.status == baseline.status and got.agent_status_checkpoint is None
@@ -155,6 +153,28 @@ async def test_real_mcp_status_tools_admission_and_primary_result(status_owner, 
     monkeypatch.setattr(AgentStatusState, "get", broken)
     failed_hint = await tools["work_get"]("1", uuid4())
     assert failed_hint.status == baseline.status and "UNKNOWN" in failed_hint.agent_status_checkpoint
+    for review_status in ("SENT", "WAITING_REVIEWER", "PASS"):
+        primary = ReviewResult(status=review_status, review_id=uuid4(),
+            delivery_id=None if review_status == "WAITING_REVIEWER" else uuid4(),
+            reason="reviewer_not_available" if review_status == "WAITING_REVIEWER" else None,
+            verdict="PASS" if review_status == "PASS" else None,
+            verdict_digest="receipt" if review_status == "PASS" else None)
+        request = AsyncMock(return_value=primary)
+        monkeypatch.setattr(service, "reviews", SimpleNamespace(request=request))
+        with monkeypatch.context() as fault:
+            fault.setattr(service, "admission_get", AsyncMock(side_effect=RuntimeError("advisory unavailable")))
+            receipt = await tools["review_request"]("1", uuid4(), "revision", "CODE")
+        request.assert_awaited_once()
+        assert "UNKNOWN" in receipt.agent_status_checkpoint
+        assert receipt.model_dump(exclude={"next_action", "agent_status_checkpoint"}) == primary.model_dump(exclude={"next_action"})
+        if review_status == "WAITING_REVIEWER":
+            assert receipt.next_action.endswith(primary.next_action)
+            assert "due task-list check" in receipt.next_action
+        elif review_status == "SENT":
+            assert "bounded sleep 20" in receipt.next_action
+            assert "already-authorized runnable work" in receipt.next_action
+        else:
+            assert receipt.next_action == primary.next_action
     service.admission_grants = grants
     assert (await tools["agent_status_get"]("1")).status == "DENIED"
     assert (await tools["agent_status_update"]("1", uuid4(), 1, report="unauthorized", coverage="UNKNOWN")).status == "DENIED"
