@@ -19,6 +19,12 @@ GATES = (
     ("PR composition Quality", "composition"),
 )
 DETAILS_RE = re.compile(r"/actions/runs/(?P<run>[0-9]+)(?:/job/(?P<job>[0-9]+))?")
+# GitHub leaves this quality.yml job name unevaluated when the job is skipped.
+SKIPPED_DOCKER_NAME = (
+    "github.event_name == 'pull_request' && 'PR composition Docker lifecycle' || "
+    "github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle' || "
+    "'Exact-head Docker lifecycle'"
+)
 
 
 class QualificationGate(BaseModel):
@@ -186,14 +192,22 @@ def _policy_evidence(
         "Exact-head Docker lifecycle" if kind == "exact_head"
         else "PR composition Docker lifecycle"
     )
+
+    def evidence_name(check: dict[str, Any]) -> str:
+        name = str(check.get("name") or "")
+        if (name == SKIPPED_DOCKER_NAME and check.get("status") == "completed"
+                and check.get("conclusion") == "skipped"):
+            return docker_name
+        return name
+
     relevant = [
         check for check in checks
         if same_run(check) and (
-            check.get("name") in {"Quality policy", docker_name}
+            evidence_name(check) in {"Quality policy", docker_name}
             or str(check.get("name") or "").startswith("Quality execution / ")
         )
     ]
-    by_name = {str(check["name"]): check for check in relevant}
+    by_name = {evidence_name(check): check for check in relevant}
     if len(by_name) != len(relevant):
         return [], "policy-evidence-conflicting"
     executions = [value for name, value in by_name.items()

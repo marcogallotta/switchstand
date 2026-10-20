@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from switchstand.repository_candidate import GATES, qualify_repository_candidate
+from switchstand.repository_candidate import GATES, _policy_evidence, qualify_repository_candidate
 from switchstand.stacked_delivery import layer_qualification_is_sufficient
 
 BASE, HEAD, COMPOSITION, PREFIX, TARGET = (
@@ -149,6 +149,53 @@ async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_clos
         missing = await qualify_repository_candidate(7, client=http)
     assert missing.status == "NOT_READY"
     assert all(gate.reason == "policy-evidence-missing" for gate in missing.gates)
+
+
+@pytest.mark.parametrize("kind", ["exact_head", "composition"])
+@pytest.mark.parametrize("override", [
+    {}, {"name": "arbitrary Docker lifecycle"}, {"status": "in_progress"},
+    {"conclusion": "failure"}, {"conclusion": "success"},
+    {"head_sha": "f" * 40}, {"app": {"slug": "other"}},
+    {"details_url": "https://github.com/actions/runs/999/job/123"},
+    {"details_url": "malformed"},
+])
+def test_real_skipped_docker_name_preserves_identity_and_mode_checks(
+    kind: str, override: dict[str, object],
+):
+    # Projection of PR1041 GitHub checks, run39485815393, head7f0893bd5608eebf….
+    # Keep the literal provider name independent of the parser's compatibility alias.
+    head = "7f0893bd5608eebfb99043f5778a11f692694bc2"
+    names = [
+        "Quality policy", "Quality execution / PROMOTE_TEST_MODULE_ONLY_V1 / shard 0",
+        (
+            "github.event_name == 'pull_request' && 'PR composition Docker lifecycle' || "
+            "github.event_name == 'schedule' && 'Scheduled exact-head Docker lifecycle' || "
+            "'Exact-head Docker lifecycle'"
+        ),
+    ]
+    checks = [{
+        "name": name, "head_sha": head, "app": {"slug": "github-actions"},
+        "status": "completed", "conclusion": "skipped" if index == 2 else "success",
+        "details_url": "https://github.com/marcogallotta/switchstand/actions/"
+                       f"runs/39485815393/job/{job}",
+    } for index, (name, job) in enumerate(zip(names, [118845817540, 118845920358, 118845922580]))]
+    checks[-1].update(override)
+    dimensions, reason = _policy_evidence(checks, 39485815393, kind, head)
+    assert (reason is None) == (not override)
+    assert ("LAYER_CAUSAL_QUALITY" in dimensions) == (not override)
+    assert "RUNTIME_LIFECYCLE" not in dimensions
+    if override:
+        return
+    checks.append({**checks[-1], "name": (
+        "Exact-head Docker lifecycle" if kind == "exact_head" else "PR composition Docker lifecycle"
+    )})
+    assert _policy_evidence(checks, 39485815393, kind, head) == ([], "policy-evidence-conflicting")
+    checks.pop()
+    for mode in ("FULL_FALLBACK", "PROMOTE_AFFECTED_INPUTS_V1 / shard 0"):
+        checks[1]["name"] = f"Quality execution / {mode}"
+        assert _policy_evidence(checks, 39485815393, kind, head) == (
+            [], "policy-evidence-conflicting",
+        )
 
 
 @pytest.mark.parametrize(("shards", "override", "reason"), [
