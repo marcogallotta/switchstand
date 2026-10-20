@@ -1,15 +1,21 @@
+import asyncio
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.canonical_work import CanonicalWorkRepository, CurrentWork, canonical_revision
 from switchstand.chatgpt_mcp import OrdinaryRelationPatch
-from switchstand.messages import message_deliveries, messages
-from switchstand.pull_requests import PullRequestChange, change, project, pull_requests
+from switchstand.pull_requests import (
+    PullRequestChange,
+    StaleVersion,
+    change,
+    project,
+    pull_requests,
+)
 
 
 def test_pr_identity_normalizes_and_rejects_unrelated_relation_fields() -> None:
@@ -81,38 +87,6 @@ async def test_links_preserve_first_owner_filter_backlinks_and_retain_orphan(sub
         assert relinked.owner_key == first.name_key
 
 
-async def test_transfer_requires_exact_durable_recipient_acceptance(subject) -> None:
-    engine, _, work_ids, principal, first, second, patch = subject
-    async with engine.begin() as connection:
-        await change(connection, work_ids[0], "add", patch, first, principal, uuid4())
-    delivery_id, message_id = uuid4(), uuid4()
-    transfer = patch.model_copy(update={
-        "expected_version": 1, "recipient_key": second.name_key,
-        "acceptance_delivery_id": delivery_id,
-    })
-    with pytest.raises(ValueError, match="acceptance"):
-        async with engine.begin() as connection:
-            await change(connection, work_ids[0], "set", transfer, first, principal, uuid4())
-    async with engine.begin() as connection:
-        await connection.execute(insert(messages).values(
-            sender_work_id=second.endpoint_id, message_id=message_id,
-            route_ref="agent.message", kind="request", digest="test-evidence",
-            payload={"kind": "pr_owner_acceptance", "repository": patch.repository,
-                     "number": 1, "previous_owner": first.name_key,
-                     "expected_version": 1, "package_ref": patch.package_ref},
-        ))
-        await connection.execute(insert(message_deliveries).values(
-            delivery_id=delivery_id, sender_work_id=second.endpoint_id, message_id=message_id,
-            recipient_work_id=first.endpoint_id, state="AVAILABLE", recipient_grant_version=1,
-        ))
-        accepted = await change(connection, work_ids[0], "set", transfer,
-                                first, principal, uuid4())
-        assert accepted.owner_key == second.name_key and accepted.row_version == 2
-    with pytest.raises(ValueError, match="version"):
-        async with engine.begin() as connection:
-            await change(connection, work_ids[0], "set", transfer, first, principal, uuid4())
-
-
 async def test_fk_and_fencing_fail_without_leaving_an_identity(subject) -> None:
     engine, _, _, principal, first, _, patch = subject
     with pytest.raises(IntegrityError):
@@ -127,3 +101,49 @@ async def test_fk_and_fencing_fail_without_leaving_an_identity(subject) -> None:
             await change(connection, uuid4(), "add", patch,
                          first.model_copy(update={"generation": first.generation + 1}),
                          principal, uuid4())
+
+
+async def test_task_pr_pagination_binds_principal_and_source_revision(subject) -> None:
+    engine, _, work_ids, principal, first, _, patch = subject
+    for number in range(1, 13):
+        async with engine.begin() as connection:
+            await change(connection, work_ids[0], "add", patch.model_copy(update={"number": number}),
+                         first, principal, uuid4())
+
+    async def readable(work_id):
+        return work_id in work_ids
+
+    async with engine.connect() as connection:
+        revision = canonical_revision(work_ids[0], 1)
+        page = await project(connection, work_ids[0], principal, revision, readable, None, None)
+        assert page.has_more and len(page.records) == 10
+        rest = await project(connection, work_ids[0], principal, revision, readable,
+                             page.next_cursor, None)
+        assert not rest.has_more
+        assert [row.number for row in page.records + rest.records] == list(range(1, 13))
+        wrong_principal = await project(connection, work_ids[0], "another-principal", revision,
+                                        readable, page.next_cursor, None)
+        assert wrong_principal.status == "stale" and not wrong_principal.records
+        stale_source = await project(connection, work_ids[0], principal,
+                                     canonical_revision(work_ids[0], 2), readable, None, None)
+        assert stale_source.status == "stale" and not stale_source.records
+
+
+async def test_concurrent_registration_converges_without_owner_reset(subject) -> None:
+    engine, _, work_ids, principal, first, second, patch = subject
+
+    async def register(work_id, caller):
+        async with engine.begin() as connection:
+            return await change(connection, work_id, "add", patch, caller, principal, uuid4())
+
+    left, right = await asyncio.gather(register(work_ids[0], first), register(work_ids[1], second))
+    assert left == right and left.owner_key in {first.name_key, second.name_key}
+    with pytest.raises(StaleVersion):
+        async with engine.begin() as connection:
+            await change(connection, work_ids[0], "remove",
+                         patch.model_copy(update={"expected_version": 2}), first, principal, uuid4())
+    async with engine.connect() as connection:
+        retained = (await connection.execute(select(pull_requests).where(
+            pull_requests.c.repository == patch.repository,
+        ))).mappings().one()
+        assert retained["owner_key"] == left.owner_key

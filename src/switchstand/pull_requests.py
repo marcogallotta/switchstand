@@ -19,7 +19,6 @@ from sqlalchemy import (
     Text,
     delete,
     select,
-    update,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert
@@ -54,8 +53,6 @@ class PullRequestChange(ClosedModel):
     repository: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", max_length=200)
     number: int = Field(gt=0)
     expected_version: int | None = Field(default=None, gt=0)
-    recipient_key: str | None = Field(default=None, min_length=1, max_length=80)
-    acceptance_delivery_id: UUID | None = None
     package_ref: str = Field(min_length=1, max_length=200)
 
     @field_validator("repository")
@@ -72,12 +69,15 @@ class PullRequestRecord(ClosedModel):
     acceptance_ref: str
 
 
+class StaleVersion(ValueError):
+    """An expected PR revision is no longer current; no mutation was sent."""
+
+
 async def change(
     connection: AsyncConnection, work_id: UUID, action: str, patch: PullRequestChange,
     caller: AgentMailbox, principal_key: str, operation_id: UUID,
 ) -> PullRequestRecord:
     """Caller is server-resolved; fence it again under the database transaction."""
-    from .messages import message_deliveries, messages
     binding = (await connection.execute(select(agent_mailboxes).where(
         agent_mailboxes.c.name_key == caller.name_key
     ).with_for_update())).mappings().one_or_none()
@@ -95,35 +95,12 @@ async def change(
         ).on_conflict_do_nothing())
     row = (await connection.execute(select(pull_requests).where(
         key
-    ).with_for_update())).mappings().one()
+    ).with_for_update())).mappings().one_or_none()
+    if row is None:
+        raise ValueError("PR identity does not exist")
     if patch.expected_version is not None and row["row_version"] != patch.expected_version:
-        raise ValueError("PR version changed")
-    if action == "set":
-        if row["owner_key"] != caller.name_key or patch.expected_version is None:
-            raise ValueError("only current PR owner can transfer exact version")
-        recipient = (await connection.execute(select(agent_mailboxes).where(
-            agent_mailboxes.c.name_key == patch.recipient_key
-        ).with_for_update())).mappings().one()
-        acceptance = await connection.scalar(select(messages.c.payload).join(
-            message_deliveries,
-            (messages.c.sender_work_id == message_deliveries.c.sender_work_id)
-            & (messages.c.message_id == message_deliveries.c.message_id),
-        ).where(
-            message_deliveries.c.delivery_id == patch.acceptance_delivery_id,
-            messages.c.sender_work_id == recipient["endpoint_id"],
-            message_deliveries.c.recipient_work_id == caller.endpoint_id,
-        ))
-        if acceptance != {
-            "kind": "pr_owner_acceptance", "repository": patch.repository,
-            "number": patch.number, "previous_owner": caller.name_key,
-            "expected_version": patch.expected_version, "package_ref": patch.package_ref,
-        }:
-            raise ValueError("exact durable recipient acceptance required")
-        await connection.execute(update(pull_requests).where(key).values(
-            owner_key=recipient["name_key"], row_version=row["row_version"] + 1,
-            acceptance_ref=f"delivery:{patch.acceptance_delivery_id}",
-        ))
-    elif action == "add":
+        raise StaleVersion("PR version changed")
+    if action == "add":
         await connection.execute(insert(work_pull_requests).values(
             work_id=work_id, repository=patch.repository, number=patch.number,
         ).on_conflict_do_nothing())
@@ -183,7 +160,7 @@ async def project(
             work_pull_requests.c.repository == row["repository"],
             work_pull_requests.c.number == row["number"],
         ).order_by(work_pull_requests.c.work_id))).all()
-        visible = tuple(link for link in links if await can_read(link))
+        visible = tuple([link for link in links if await can_read(link)])
         views.append(PullRequestView(
             **dict(row), work_ids=visible,
             visibility="FULL" if len(visible) == len(links) else "PARTIAL",
@@ -192,9 +169,10 @@ async def project(
         principal_key, str(work_id), source,
         [view.model_dump(mode="json") for view in views],
     ], sort_keys=True).encode()).hexdigest()
-    cursor = PageCursor.model_validate_json(pr_cursor or pr_link_cursor) if (
-        pr_cursor or pr_link_cursor
-    ) else PageCursor(basis=basis, offset=0)
+    raw_cursor = pr_cursor or pr_link_cursor
+    cursor = PageCursor.model_validate_json(raw_cursor) if raw_cursor else PageCursor(
+        basis=basis, offset=0,
+    )
     if (cursor.basis != basis or (pr_cursor and pr_link_cursor)
             or (pr_cursor and cursor.pr_key is not None)
             or (pr_link_cursor and cursor.pr_key is None)):

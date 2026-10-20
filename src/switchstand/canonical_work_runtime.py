@@ -925,6 +925,8 @@ class CanonicalWorkRuntime:
                         outcome=outcome.model_dump(mode="json", exclude_none=True),
                     ))
                     return outcome
+            except pull_requests.StaleVersion:
+                return RelationGateway.guard(request, "stale", "pr_revision_changed")
             except IntegrityError:
                 if attempt == 0:
                     continue
