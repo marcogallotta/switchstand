@@ -337,6 +337,10 @@ async def test_notification_attention_process_and_returned_review_over_real_http
         })
         assert requested["status"] == "SENT"
         review_id = requested["review_id"]
+        received_request = await _agent_call(endpoint, "reviewer", "agent_message_receive", {
+            "api_version": "1", "delivery_id": requested["delivery_id"],
+        })
+        assert received_request["status"] == "ok" and received_request["state"] == "RECEIVED"
         recovered = await _agent_call(endpoint, "reviewer", "review_recover", {
             "api_version": "1", "review_id": review_id,
         })
