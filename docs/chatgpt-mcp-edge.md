@@ -208,7 +208,8 @@ https://laptop.tail46f0b9.ts.net/switchstand-test/auth/callback
 
 These identify the existing setup, not permission to alter it. Production remains
 at `/switchstand/mcp`; never refresh the production connection to test an
-unreleased candidate. Use a distinctly named TEST connection and a fresh chat.
+unreleased candidate. Reuse the existing TEST connection under the
+[Root-coordinated TEST rule](how-marco-uses-switchstand.md); connection details below are operator setup information.
 
 ### Reuse and lifecycle
 
@@ -250,10 +251,10 @@ contents into a handoff.
    gates successful login and acceptance; it need not block bounded route exposure
    needed to test the real callback.
 5. Confirm the separate TEST OAuth application's registered callback matches the
-   intended public callback. Install/reinstall the TEST connection, complete real
-   GitHub login, and start a fresh ChatGPT chat. Give it one authorized continuation
-   WorkId from the TEST database separately from the bare endpoint. If the test
-   needs disposable work, create it there under the assigned TEST authority;
+   intended public callback. Root agrees the candidate/slot with the current operator;
+   agents prepare TEST work, fixtures and tester instructions before requesting only
+   “Reload the TEST MCP app” from Marco for his existing connection. New connection or
+   real login/access recovery remains an exceptional human-only prerequisite when needed;
    production tracking IDs do not become TEST records automatically.
 6. Check the authenticated server's exact `tools/list` schema against the pinned
    candidate, then verify the fresh ChatGPT client actually exposes and exercises
@@ -274,8 +275,8 @@ ChatGPT acceptance was `NOT_RUN`. The current work owns any subsequent repair or
 acceptance evidence; this snapshot is not a readiness claim.
 
 If authenticated server schemas match but ChatGPT still shows old tools, verify
-that the connection targets TEST, reinstall it, and use a fresh chat before
-retesting. Preserve `FAILED`, `UNKNOWN`, `MISSING_CAPABILITY`, and `NOT_RUN` for
+that the connection targets TEST and request the coordinated reload first; treat any
+remaining reinstall/login need as exceptional access recovery before retesting. Preserve `FAILED`, `UNKNOWN`, `MISSING_CAPABILITY`, and `NOT_RUN` for
 the exact boundary observed. Missing client-control tools leave the real client
 step human-only; they do not justify substituting a server-only PASS.
 

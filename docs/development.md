@@ -10,6 +10,14 @@ defined in [Code quality: governed implementation packages](code-quality.md#gove
 Keep its package base fixed across delivery branches and use its solution disposition
 before revising PR decomposition; routine implementation remains worker-owned.
 
+## Implementation through preactivation
+
+An in-scope implementation dispatch authorizes all benign work through preactivation readiness: commit/PR, independent review, tests/CI, corrections, integration and nonproduction landing, plus nonproduction activation, failure and rollback rehearsals with tested rollback ready. Do not stop at pre-merge, landing or another artificial phase boundary. Preserve current specific `HOLD`/`STOP`/`DENIED`, required independent review, exact-candidate/composition and technical gates; a blocked effect does not abandon other readiness work.
+
+Anything that actually changes production waits for Marco’s exact Go for that effect and candidate, including a merge that automatically deploys or changes live reliance. Implementation dispatch does not grant production, migration, credential or protected provider effects. Record any production-impacting landing block and finish all remaining benign preparation.
+
+Before claiming ready, prepare dispatch and rehearse the complete supported activation → failure handling → rollback path on TEST or a disposable equivalent. Measure Go through dispatch, execution, required currentness checks and authoritative readback; report elapsed time and limitations. For Marco’s current five-second bound, readiness requires that complete relevant path demonstrated within five seconds. Patch/rollback microbenchmarks alone are insufficient; do not promise unmeasured network or model response times.
+
 ## Normal local workflow
 
 Prepare the shared tools once from the primary checkout, create a task-owned linked

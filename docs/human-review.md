@@ -81,12 +81,12 @@ package. It preserves the attributable human sources, approved meaning, protecte
 non-goals/deferrals, decision-relevant size/burden, scale and risk boundaries, exact occurrence,
 package revision, decision, and named continuation effects. History is append-only.
 
-Approval clears Human Review for the continuation named in that exact handoff. Continue through
-implementation, landing, or activation only when the current direct assignment or `CURRENT` grant
-separately authorizes that effect and surface. Approval does not itself authorize assignment,
-routing, landing, deployment, activation, migration, credentials, or provider-production effects.
-When continuation authority or pickup is separate, report that exact next handoff; approval alone
-does not require a stop or another return to the human.
+Approval clears Human Review for the continuation named in that exact handoff. An in-scope
+implementation dispatch carries all benign preactivation readiness under
+[development](development.md#implementation-through-preactivation); no separate generic pre-merge approval is required.
+Preserve exact-candidate approval requirements and specific holds; they block only their effect,
+not other readiness work. Anything that changes production waits for Marco’s exact Go.
+Approval alone grants no new assignment, routing, migration, credential or protected provider effect.
 
 ## Baseline preservation and deviation
 
