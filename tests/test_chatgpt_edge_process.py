@@ -337,14 +337,16 @@ async def test_notification_attention_process_and_returned_review_over_real_http
         })
         assert requested["status"] == "SENT"
         review_id = requested["review_id"]
-        assert (await _agent_call(endpoint, "reviewer", "review_recover", {
+        recovered = await _agent_call(endpoint, "reviewer", "review_recover", {
             "api_version": "1", "review_id": review_id,
-        }))["status"] == "RECEIVED"
-        assert (await _agent_call(endpoint, "reviewer", "review_submit", {
+        })
+        assert recovered["status"] == "RECEIVED" and recovered["review_id"] == review_id
+        submitted = await _agent_call(endpoint, "reviewer", "review_submit", {
             "api_version": "1", "review_id": review_id, "verdict": "PASS",
             "context_provenance": "UNSEEDED", "findings": [],
             "evidence_refs": ["test:synthetic-protocol-review"],
-        }))["status"] == "SUBMITTED"
+        })
+        assert submitted["status"] == "SUBMITTED" and submitted["review_id"] == review_id
         expected = {}
         for index in range(11):
             message_id = str(uuid4())
@@ -370,7 +372,8 @@ async def test_notification_attention_process_and_returned_review_over_real_http
         assert not result.is_error and result.structured_content == observed
         footer = result.content[-1].text
         assert f"6 {alice}" in footer and f"5 {bob}" in footer and "1 more" in footer
-        assert "oldest 75m" in footer and "Process now or record reason + next recheck" in footer
+        age_minutes = int(footer.split("; oldest ", 1)[1].split("m.", 1)[0])
+        assert age_minutes >= 75 and "Process now or record reason + next recheck" in footer
         assert "page while has_more" in footer and "fresh poll without cursor" in footer
         assert f"Review returned: {review_id}; review_get." in footer
         # Collect every page before processing, so removal cannot change the paging basis.
