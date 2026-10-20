@@ -163,9 +163,18 @@ service/state/route transition, binds both split processes to one exact candidat
 transfers persistent systemd startup ownership with exact readback. Caddy changes are scoped to
 the four owned proxy IDs so unrelated ingress changes are preserved. It automatically restores the
 combined service only while public exposure is still disproved. Any
-ambiguous or post-exposure outcome stays gated and never rewinds OAuth state. It does not own the
+operationally ambiguous or post-exposure failure stays gated and never rewinds OAuth state.
+After positive public readiness, terminal receipt persistence uncertainty returns UNKNOWN without
+changing the verified runtime. It does not own the
 future split edge-only replacement transaction, candidate preparation, live qualification, or
-activation authority.
+activation authority. Each invocation requires an exact WorkId and publishes one private interrupted
+attempt pointer beside the deployment lock before effects. A durable monotonic marker precedes
+candidate ungating. The same lock protects evidence-only `reconcile-existing-attempt`, also run
+before the next activation. It disposes pre-boundary attempts, retains unresolved/corrupt evidence,
+and freezes sanitized receipt/FailureRecord arguments before durable PendingFailureQueue handoff.
+Existing queue sync/readback/ack and append-only failure resolutions own subsequent recovery.
+Coverage ends at durable activation PASS: later runtime failures, other deployment paths, lost
+storage and the gap without another invocation remain unknown. Qualification is not live acceptance.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is

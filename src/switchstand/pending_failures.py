@@ -79,7 +79,14 @@ class PendingFailureQueue:
 
     def __init__(self, directory: Path):
         self.directory = directory
-        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Confirm newly created ancestors too, including replay after mkdir/fsync ambiguity.
+        for parent in directory.resolve().parents:
+            descriptor = os.open(parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
     def _path(self, attempt_id: UUID) -> Path:
         return self.directory / f"{attempt_id}.json"
@@ -99,7 +106,12 @@ class PendingFailureQueue:
         target, temporary = self._path(value.attempt_id), self.directory / f".{uuid4()}.tmp"
         with self._lock():
             if target.exists():
-                return "PENDING_SYNC" if target.read_bytes() == data else "CONFLICT"
+                with target.open("rb") as existing:
+                    if existing.read() != data:
+                        return "CONFLICT"
+                    os.fsync(existing.fileno())
+                self.fsync_directory()
+                return "PENDING_SYNC"
             descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 with os.fdopen(descriptor, "wb") as output:
