@@ -1,5 +1,7 @@
 """Report retained fixed-base package size without storing or setting policy."""
 
+# Temporary CI timing probe; no behavior change.
+
 import argparse
 import fnmatch
 import json

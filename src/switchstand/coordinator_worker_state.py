@@ -1,5 +1,7 @@
 """Durable identity, state, and candidate proof for Coordinator workers."""
 
+# Temporary CI timing probe; no behavior change.
+
 from __future__ import annotations
 
 import fcntl
