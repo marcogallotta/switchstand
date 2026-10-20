@@ -269,7 +269,7 @@ def test_workflow_preserves_authority_and_attempts():
     assert 'scripts/pytest-shard' in authoritative
     assert 'fail-fast: false' in execution
     assert 'shard: ${{ fromJSON(needs.plan.outputs.shards) }}' in execution
-    assert "'[0]' if decision.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' else '[0,1,2,3]'" in execution
+    assert "'[0]' if selected else '[0,1,2,3]'" in execution
     assert 'if test "$SHARD_INDEX" -eq "$((SHARD_COUNT - 1))"; then' in authoritative
     assert 'execution_kind=full-shard' in execution
     assert '"-shard-" + e["SHARD_INDEX"]' in execution

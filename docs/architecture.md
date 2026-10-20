@@ -622,8 +622,17 @@ fallback during qualification of the semantic path.
 Selective foreground is default-off behind `SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED=true`; all
 other values use the full suite. Adaptive broad truth remains shadow-only and preserves its backstop.
 Quality always binds its exact subject and computes its validated plan under Python 3.14; it
-fetches broad history only when the promoted rule can still apply. Skipped health/adaptive
+fetches broad history only when a promoted class can still apply. Skipped health/adaptive
 observations remain `UNKNOWN` and never reduce full-suite or Docker lifecycle requirements.
+Ordinary PR plans use the verified execution composition, so consumers introduced by an advanced
+base participate in selection. Alongside direct-test-only promotion, the closed affected-input
+class permits `scripts/package-size.py` through its explicit subprocess consumer and
+`coordinator_worker_state.py` through transitive Python consumers. Every changed input must be
+accounted for; unknown inputs or missing explicit targets force full. Source/script selection
+retains Docker lifecycle qualification; only direct-test-only selection omits it. Serial-sensitive
+modules, cumulative stack tops, dependencies, migrations, CI infrastructure and nightly/main broad
+backstops retain full execution. `repository_candidate.py` recognizes the actual selected shard-zero
+job and records causal quality and successful lifecycle separately from broad-suite quality.
 Full fallback balances pytest's actual collection into four whole-module shards using measured
 costs in `scripts/pytest-shard-weights.json` and a fixed default for unmeasured modules.
 `scripts/pytest-shard` assigns modules deterministically. Each runner owns a PostgreSQL service;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from switchstand.repository_candidate import GATES, qualify_repository_candidate
 from switchstand.stacked_delivery import layer_qualification_is_sufficient
@@ -15,7 +16,9 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
            malformed: bool = False, wrong_head: str | None = None,
            bad_run: bool = False, changed: bool = False,
            job_failure: bool = False, stacked: bool = False,
-           selected: bool = False, omit_policy_evidence: bool = False) -> httpx.AsyncClient:
+           selected: bool = False, omit_policy_evidence: bool = False,
+           affected: bool = False, docker_result: str = "success",
+           selected_shard: int = 0) -> httpx.AsyncClient:
     overrides = overrides or {}
     pr_reads = 0
     def response(request: httpx.Request) -> httpx.Response:
@@ -58,13 +61,18 @@ def client(*, omitted: str | None = None, mismatch: bool = False,
                 })
                 if not omit_policy_evidence:
                     mode = "PROMOTE_TEST_MODULE_ONLY_V1" if selected else "FULL_FALLBACK"
+                    if affected:
+                        mode = "PROMOTE_AFFECTED_INPUTS_V1"
+                    execution_name = f"Quality execution / {mode}"
+                    if selected or affected:
+                        execution_name += f" / shard {selected_shard}"
                     companions = (
                         ("Quality policy", "success"),
-                        (f"Quality execution / {mode}", "success"),
+                        (execution_name, "success"),
                         (
                             "Exact-head Docker lifecycle" if kind == "exact_head"
                             else "PR composition Docker lifecycle",
-                            "skipped" if selected else "success",
+                            "skipped" if selected else docker_result,
                         ),
                     )
                     for offset, (companion, companion_conclusion) in enumerate(companions, 1):
@@ -125,10 +133,27 @@ async def test_selected_policy_evidence_is_typed_and_missing_evidence_fails_clos
     assert selected.status == "READY"
     assert all("RUNTIME_LIFECYCLE" not in gate.evidence_dimensions for gate in selected.gates)
 
+    async with client(affected=True) as http:
+        affected = await qualify_repository_candidate(7, client=http)
+    assert affected.status == "READY"
+    assert all("RUNTIME_LIFECYCLE" in gate.evidence_dimensions for gate in affected.gates)
+    assert all("BROAD_QUALITY" not in gate.evidence_dimensions for gate in affected.gates)
+
     async with client(omit_policy_evidence=True) as http:
         missing = await qualify_repository_candidate(7, client=http)
     assert missing.status == "NOT_READY"
     assert all(gate.reason == "policy-evidence-missing" for gate in missing.gates)
+
+
+@pytest.mark.parametrize(("docker", "shard"), [("skipped", 0), ("failure", 0), ("success", 1)])
+async def test_affected_policy_requires_successful_docker_and_single_selected_shard(
+    docker: str, shard: int,
+):
+    async with client(affected=True, docker_result=docker, selected_shard=shard) as http:
+        result = await qualify_repository_candidate(7, client=http)
+    assert result.status == "NOT_READY"
+    assert all(gate.reason in {"policy-evidence-conflicting", "policy-evidence-unknown"}
+               for gate in result.gates)
 
 
 async def test_native_stack_composition_is_bound_through_prefix_to_current_target():

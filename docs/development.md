@@ -322,19 +322,25 @@ comparison key; mismatched/unknown environments require INSUFFICIENT_DATA in fut
 trend analysis. GitHub job metadata supplies CI duration; JUnit supplies suite/test
 time. `PYTHONPATH=src python3 -m switchstand.test_metrics --help` describes the shared formatter;
 optional planner selections count files, never JUnit cases. The authoritative foreground Quality
-job promotes only `PROMOTE_TEST_MODULE_ONLY_V1`: every changed path and selected path must be a
-direct `tests/test_*.py` module on an exact current subject, with no delete/rename, planner fallback,
-selector-health warning, or cumulative native-stack-top obligation. Every other change runs the
-full fallback, including all production, helper, configuration, documentation, workflow, migration,
-and unknown changes. Default-branch pushes and the nightly schedule always run the full suite; a
+job promotes direct test-only changes as `PROMOTE_TEST_MODULE_ONLY_V1`. It also promotes
+`PROMOTE_AFFECTED_INPUTS_V1` for `scripts/package-size.py` (explicit subprocess consumer
+`tests/test_package_size.py`) and `src/switchstand/coordinator_worker_state.py` (all transitive
+Python test consumers), optionally alongside direct `tests/test_*.py` changes. Every changed input
+must be accounted for; unknown inputs and missing explicit consumers force full fallback.
+PR selection uses the verified execution composition, including consumers added by the current
+base. Both promoted classes require exact current identity, direct selected test modules, no
+delete/rename, planner fallback, serial-sensitive test, selector-health warning, or cumulative
+native-stack-top obligation. Other production/helper/configuration/documentation/workflow/migration
+changes remain full. Default-branch pushes and the nightly schedule always run the full suite; a
 missing or unsuccessful current default-branch Quality result, or any failed default/scheduled broad
-result in the same workflow generation, demotes the sole promoted rule to full fallback. The
+result in the same workflow generation, demotes both promoted classes to full fallback. The
 authoritative planner uses Python 3.14. Once the exact validated plan and mandatory gates make
 promotion impossible, history and adaptive observations are skipped and explicitly `UNKNOWN`;
 eligible candidates still require the complete same-generation health check. Unresolved
 run identity or a provider result cap also fails closed. A later green run cannot clear that
 generation's demotion; correction changes the reviewed workflow generation. Docker lifecycle
-evidence is omitted only for the exact promoted class. One stable
+evidence is omitted only for direct-test-only promotion; selected source/script execution still
+requires successful Docker lifecycle evidence. One stable
 terminal Quality check runs under `always()` and fails unless planning, Quality execution, and the
 mode-required Docker result are all valid; internal mode never changes its required check name.
 Full fallback runs four independent GitHub runners, each with its own PostgreSQL service.
