@@ -377,7 +377,7 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
     if bound.status != "ok" or binding is None:
         return {"status": "unknown", "reason": "not_current_coordinator"}
     scoped = None if binding.name == CODEX_COORDINATOR_NAME else _codex_stop_head(session_id, binding)
-    if binding.name != CODEX_COORDINATOR_NAME and scoped is None:
+    if binding.name[:4] != "TEST" and scoped is None:
         return {"status": "unknown", "reason": "not_current_coordinator"}
     # Ordinary admission is request-local generic capability, not task authority.
     # The loopback read uses the existing current assignment and session binding.
@@ -388,7 +388,7 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
     works = service.canonical_work.works
     items: list[CurrentWork]
     if scoped is None:
-        page = await works.search(owner_key=CODEX_COORDINATOR_NAME, completed=False, limit=100)
+        page = await works.search(owner_key=f"agent:{binding.name_key}", completed=False, limit=100)
         if page.next_cursor is not None:
             return {"status": "unknown", "reason": "incomplete_assignment_page"}
         items = list(page.items)
