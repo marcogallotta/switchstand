@@ -64,7 +64,7 @@ R0_ENV = {
     "tools_sha256": "SWITCHSTAND_R0_EXPECTED_TOOLS_SHA256",
     "principal": "SWITCHSTAND_R0_EXPECTED_PRINCIPAL",
 }
-STATE_REVISION = "0026_agent_message_ack"
+STATE_REVISION = "0027_pull_requests"
 UPGRADE_SOURCES = frozenset((  # noqa: SIM905 - compact exact protocol allowlist
     "0002_grants_and_effects 0004_required_result_persistence 0005_work_event_handles 0006_agent_mailboxes "
     "0007_agent_chat_identity 0012_outcome_state 0013_failure_journal 0014_canonical_routing "

@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from test_canonical_service_runtime import relation
 from test_canonical_service_runtime import subject as service_subject_fixture
 
-from switchstand.agent_mailboxes import AgentMailboxState
+from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from switchstand.canonical_work import CurrentWork, canonical_revision
 from switchstand.chatgpt_mcp import OrdinaryRelationPatch, build_ordinary_tools
 from switchstand.grants import RelationPatch, RelationReceipt
@@ -57,7 +57,7 @@ async def subject(canonical_subject):
     yield engine, works, work_ids, principal, first.mailbox, second.mailbox, patch
 
 
-async def test_links_preserve_first_owner_filter_backlinks_and_retain_orphan(subject) -> None:
+async def test_links_preserve_first_owner_and_retain_orphan(subject) -> None:
     engine, _, work_ids, principal, first, second, patch = subject
     for index, work_id in enumerate(work_ids):
         async with engine.begin() as connection:
@@ -65,21 +65,11 @@ async def test_links_preserve_first_owner_filter_backlinks_and_retain_orphan(sub
                                first if index == 0 else second, principal, uuid4())
         assert row.owner_key == first.name_key and row.row_version == 1
 
-    async def readable(work_id):
-        return work_id != work_ids[-1]
-
     async with engine.connect() as connection:
         page = await project(connection, work_ids[0], principal,
-                             canonical_revision(work_ids[0], 1), readable, None, None)
+                             canonical_revision(work_ids[0], 1), None)
         assert page.status == "ok" and len(page.records) == 1
-        record = page.records[0]
-        assert record.visibility == "PARTIAL" and record.link_has_more
-        assert work_ids[-1] not in record.work_ids
-        rest = await project(connection, work_ids[0], principal,
-                             canonical_revision(work_ids[0], 1), readable,
-                             None, record.link_next_cursor)
-        assert set(record.work_ids + rest.records[0].work_ids) == set(work_ids[:-1])
-        assert not rest.records[0].link_has_more
+        assert page.records[0].owner_key == first.name_key
     for work_id in work_ids:
         async with engine.begin() as connection:
             await change(connection, work_id, "remove", patch, second, principal, uuid4())
@@ -116,22 +106,18 @@ async def test_task_pr_pagination_binds_principal_and_source_revision(subject) -
             await change(connection, work_ids[0], "add", patch.model_copy(update={"number": number}),
                          first, principal, uuid4())
 
-    async def readable(work_id):
-        return work_id in work_ids
-
     async with engine.connect() as connection:
         revision = canonical_revision(work_ids[0], 1)
-        page = await project(connection, work_ids[0], principal, revision, readable, None, None)
+        page = await project(connection, work_ids[0], principal, revision, None)
         assert page.has_more and len(page.records) == 10
-        rest = await project(connection, work_ids[0], principal, revision, readable,
-                             page.next_cursor, None)
+        rest = await project(connection, work_ids[0], principal, revision, page.next_cursor)
         assert not rest.has_more
         assert [row.number for row in page.records + rest.records] == list(range(1, 13))
         wrong_principal = await project(connection, work_ids[0], "another-principal", revision,
-                                        readable, page.next_cursor, None)
+                                        page.next_cursor)
         assert wrong_principal.status == "stale" and not wrong_principal.records
         stale_source = await project(connection, work_ids[0], principal,
-                                     canonical_revision(work_ids[0], 2), readable, None, None)
+                                     canonical_revision(work_ids[0], 2), None)
         assert stale_source.status == "stale" and not stale_source.records
 
 
@@ -155,34 +141,20 @@ async def test_concurrent_registration_converges_without_owner_reset(subject) ->
         assert retained["owner_key"] == left.owner_key
 
 
-async def test_backlink_cursor_invalidates_on_foreign_link_and_visibility_change(subject) -> None:
-    engine, _, work_ids, principal, first, _, patch = subject
-    hidden = set()
-
-    async def readable(work_id):
-        return work_id not in hidden
-
-    for work_id in work_ids:
-        async with engine.begin() as connection:
-            await change(connection, work_id, "add", patch, first, principal, uuid4())
-    revision = canonical_revision(work_ids[0], 1)
-    async with engine.connect() as connection:
-        initial = await project(connection, work_ids[0], principal, revision, readable, None, None)
-        cursor = initial.records[0].link_next_cursor
-        assert cursor is not None
-        hidden.add(work_ids[-1])
-        stale = await project(connection, work_ids[0], principal, revision, readable, None, cursor)
-        assert stale.status == "stale" and not stale.records
-        filtered = await project(connection, work_ids[0], principal, revision, readable, None, None)
-        assert filtered.records[0].visibility == "PARTIAL"
-        assert str(work_ids[-1]) not in filtered.model_dump_json()
-        cursor = filtered.records[0].link_next_cursor
-        assert cursor is not None
+async def test_unlinked_remove_cannot_read_or_change_pr_metadata(subject) -> None:
+    engine, _, work_ids, principal, first, second, patch = subject
     async with engine.begin() as connection:
-        await change(connection, work_ids[1], "remove", patch, first, principal, uuid4())
+        registered = await change(connection, work_ids[0], "add", patch, first, principal, uuid4())
+    with pytest.raises(ValueError, match="not linked"):
+        async with engine.begin() as connection:
+            await change(connection, work_ids[1], "remove", patch, second, principal, uuid4())
     async with engine.connect() as connection:
-        stale = await project(connection, work_ids[0], principal, revision, readable, None, cursor)
-        assert stale.status == "stale" and not stale.records
+        page = await project(connection, work_ids[0], principal,
+                             canonical_revision(work_ids[0], 1), None)
+        assert page.records == (registered,)
+        unrelated = await project(connection, work_ids[1], principal,
+                                  canonical_revision(work_ids[1], 1), None)
+        assert not unrelated.records
 
 
 async def test_ordinary_relation_replay_preserves_owner_and_atomic_revision(
@@ -232,6 +204,36 @@ async def test_ordinary_relation_replay_preserves_owner_and_atomic_revision(
     assert removed.effect == "applied"
     empty = await tools["work_get"]("1", subject.work_id)
     assert not empty.pull_requests.records
+
+
+@pytest.mark.parametrize("failure", ["database", "identity", "not_registered"])
+async def test_ordinary_pr_relation_preserves_unavailable_caller_evidence(
+    canonical_subject, monkeypatch, failure,
+) -> None:
+    subject = canonical_subject
+    subject.service.messages = MessageState(subject.engine, subject.grants)
+
+    async def unavailable(*args):
+        return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
+
+    if failure == "database":
+        monkeypatch.setattr(AgentMailboxState, "for_actor", unavailable)
+    tools = dict(build_ordinary_tools(
+        subject.service, agent_identity=lambda: "" if failure == "identity" else "session",
+    ))
+    result = await tools["work_relate"](
+        "1", uuid4(), subject.work_id, canonical_revision(subject.work_id, 1),
+        OrdinaryRelationPatch(kind="pull_request", action="add", pull_request=PullRequestChange(
+            repository="owner/repository", number=1, package_ref="work:approved",
+        )),
+    )
+    assert result.effect == "not_sent"
+    assert result.status == ("denied" if failure == "not_registered" else "unknown")
+    assert result.reason == (
+        "agent_not_registered" if failure == "not_registered" else "admission_state_unavailable"
+    )
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(pull_requests.c.repository)) is None
 
 
 def test_populated_migration_refuses_to_discard_pr_ownership(database_prerequisite) -> None:

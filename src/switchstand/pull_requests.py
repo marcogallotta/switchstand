@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
 from typing import Literal
 from uuid import UUID
 
@@ -98,6 +97,13 @@ async def change(
     ).with_for_update())).mappings().one_or_none()
     if row is None:
         raise ValueError("PR identity does not exist")
+    link = (work_pull_requests.c.work_id == work_id) & (
+        work_pull_requests.c.repository == patch.repository
+    ) & (work_pull_requests.c.number == patch.number)
+    if action == "remove" and await connection.scalar(
+        select(work_pull_requests.c.work_id).where(link)
+    ) is None:
+        raise ValueError("PR is not linked to this work")
     if patch.expected_version is not None and row["row_version"] != patch.expected_version:
         raise StaleVersion("PR version changed")
     if action == "add":
@@ -118,30 +124,21 @@ async def change(
 
 class PullRequestPage(ClosedModel):
     status: Literal["ok", "stale"] = "ok"
-    records: tuple[PullRequestView, ...] = ()
+    records: tuple[PullRequestRecord, ...] = ()
     next_cursor: str | None = None
     has_more: bool = False
-
-
-class PullRequestView(PullRequestRecord):
-    work_ids: tuple[UUID, ...] = ()
-    visibility: Literal["FULL", "PARTIAL"] = "FULL"
-    link_has_more: bool = False
-    link_next_cursor: str | None = None
 
 
 class PageCursor(ClosedModel):
     basis: str
     offset: int = Field(ge=0)
-    pr_key: str | None = None
 
 
 async def project(
     connection: AsyncConnection, work_id: UUID, principal_key: str, revision: str,
-    can_read: Callable[[UUID], Awaitable[bool]],
-    pr_cursor: str | None, pr_link_cursor: str | None,
+    pr_cursor: str | None,
 ) -> PullRequestPage:
-    """Page navigation, binding both cursors to current rows and readable backlinks."""
+    """Page task-linked PRs, binding continuation to the caller and current rows."""
     source = await connection.scalar(select(canonical_work.c.row_version).where(
         canonical_work.c.work_id == work_id
     ))
@@ -154,47 +151,19 @@ async def project(
     ).where(work_pull_requests.c.work_id == work_id).order_by(
         pull_requests.c.repository, pull_requests.c.number,
     ))).mappings().all()
-    views: list[PullRequestView] = []
-    for row in rows:
-        links = (await connection.scalars(select(work_pull_requests.c.work_id).where(
-            work_pull_requests.c.repository == row["repository"],
-            work_pull_requests.c.number == row["number"],
-        ).order_by(work_pull_requests.c.work_id))).all()
-        visible = tuple([link for link in links if await can_read(link)])
-        views.append(PullRequestView(
-            **dict(row), work_ids=visible,
-            visibility="FULL" if len(visible) == len(links) else "PARTIAL",
-        ))
+    records = [PullRequestRecord.model_validate(dict(row)) for row in rows]
     basis = hashlib.sha256(json.dumps([
         principal_key, str(work_id), source,
-        [view.model_dump(mode="json") for view in views],
+        [record.model_dump(mode="json") for record in records],
     ], sort_keys=True).encode()).hexdigest()
-    raw_cursor = pr_cursor or pr_link_cursor
-    cursor = PageCursor.model_validate_json(raw_cursor) if raw_cursor else PageCursor(
+    cursor = PageCursor.model_validate_json(pr_cursor) if pr_cursor else PageCursor(
         basis=basis, offset=0,
     )
-    if (cursor.basis != basis or (pr_cursor and pr_link_cursor)
-            or (pr_cursor and cursor.pr_key is not None)
-            or (pr_link_cursor and cursor.pr_key is None)):
+    if cursor.basis != basis:
         return PullRequestPage(status="stale")
-    selected = views[cursor.offset:cursor.offset + 10] if pr_link_cursor is None else [
-        view for view in views if f"{view.repository}#{view.number}" == cursor.pr_key
-    ]
-    if pr_link_cursor and not selected:
-        return PullRequestPage(status="stale")
-    result: list[PullRequestView] = []
-    for view in selected:
-        offset = cursor.offset if pr_link_cursor else 0
-        more = len(view.work_ids) > offset + 10
-        result.append(view.model_copy(update={
-            "work_ids": view.work_ids[offset:offset + 10], "link_has_more": more,
-            "link_next_cursor": PageCursor(
-                basis=basis, offset=offset + 10, pr_key=f"{view.repository}#{view.number}",
-            ).model_dump_json() if more else None,
-        }))
-    more = not pr_link_cursor and len(views) > cursor.offset + 10
+    more = len(records) > cursor.offset + 10
     return PullRequestPage(
-        records=tuple(result), has_more=bool(more),
+        records=tuple(records[cursor.offset:cursor.offset + 10]), has_more=more,
         next_cursor=PageCursor(basis=basis, offset=cursor.offset + 10).model_dump_json()
         if more else None,
     )

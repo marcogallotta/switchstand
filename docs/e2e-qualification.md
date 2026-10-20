@@ -118,20 +118,21 @@ error, no private payload, subsequent valid success and unchanged business state
 
 ### PR links and accountable ownership
 
-Prepare two admitted TEST tasks, two registered agents and a non-readable task.
+Prepare two admitted TEST tasks and two registered agents.
 Use a synthetic repository/PR identity: this metadata test never creates a GitHub PR.
 Prompt the first agent to record its PR against both admitted tasks using ordinary
 work_relate, then read the current tasks. Require one normalized identity and one
 initial owner. Have the second agent link the same PR: the owner must remain first.
 Replay the exact operation; changed arguments with that ID must be denied.
 Remove every link, then relink from an admitted task: ownership must survive.
-Exercise more than ten PRs and backlinks, exhausting both continuations without
-duplicates or omissions. Hidden backlinks must disclose neither IDs nor counts;
-visibility/link changes must invalidate an outstanding continuation as STALE.
+Exercise more than ten PRs and exhaust task-to-PR continuation without duplicates or
+omissions. Caller, source revision or PR metadata changes invalidate continuation.
+Removal from an unrelated task must deny without exposing PR metadata.
 An uncoached fresh client must recover the recorded identity/owner from an admitted
 linked WorkId. Missing tool/schema/runtime leaves this claim NOT_RUN, not PASS.
-Accepted ownership transfer is a separate delivery; do not imply it works from
-registration/link proof. Record the exact candidate, receipts and cleanup below.
+Authorized PR-to-task backlinks and accepted ownership transfer are stage2 deliveries;
+their earlier cases are retained at bd7478 for restoration and qualification. Do not
+imply either works from registration/link proof. Record the exact candidate, receipts and cleanup below.
 
 Before any client launch the owner sets a finite deadline/tool-turn budget for cost
 control, prepares fixtures, results delivery and cleanup, and coordinates the one

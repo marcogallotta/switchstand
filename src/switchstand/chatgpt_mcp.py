@@ -474,7 +474,6 @@ def build_ordinary_tools(
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
         pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
-        pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
     ) -> OrdinaryWorkResult:
         """Read an exact WorkId's current notes, routing and placement context.
 
@@ -486,7 +485,7 @@ def build_ordinary_tools(
         Reading work or a procedure does not grant assignment or effect authority.
         """
         correlate(work_id)
-        result = await service.get(work_id, pr_cursor=pr_cursor, pr_link_cursor=pr_link_cursor)
+        result = await service.get(work_id, pr_cursor=pr_cursor)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result)
 
@@ -1163,7 +1162,9 @@ def build_ordinary_tools(
             return service.denied("work_relate", "no_current_grant")
         caller = await agent_context() if patch.kind == "pull_request" else None
         if isinstance(caller, tuple):
-            return service.denied("work_relate", "agent_not_registered")
+            if caller[0] == "recovery_required":
+                return admission_unknown("work_relate", work_id, operation_id)
+            return service.denied("work_relate", caller[1])
         result = await service.relate(ProtectedRelation(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision,

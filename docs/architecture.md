@@ -84,8 +84,9 @@ PR metadata uses `pull_requests.py` and two existing-PostgreSQL tables: one norm
 repository/number identity with accountable owner, and restrictive WorkId links.
 Ordinary work_relate shares canonical admission, revision CAS and atomic effect receipts;
 adding a link never replaces an existing owner, and unlinking never releases accountability.
-Ordinary work_get pages PRs and authorized backlinks, with permission-bound stale cursors
-and explicit partial visibility. It grants no global PR lookup or testing/deployment authority.
+Ordinary work_get pages task-linked PRs with caller- and revision-bound stale cursors.
+Authorized PR-to-task backlinks and accepted ownership transfer are deferred to stage2;
+this stage exposes neither a backlink schema nor global PR lookup or deployment authority.
 Migration0027 refuses downgrade while durable PR identities remain.
 
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
