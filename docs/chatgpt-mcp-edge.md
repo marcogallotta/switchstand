@@ -184,6 +184,111 @@ Command-line resource, local, and public URL options remain available for
 one-off checks and override values in the file. An explicit local probe URL
 must be credential-free loopback HTTP at exact path `/mcp`.
 
+## Isolated real ChatGPT TEST MCP
+
+Use this route to exercise an unreleased candidate through the real HTTP/OAuth
+edge and ChatGPT. Before provisioning another instance, read current operational
+WorkId `9411a0ab-be9b-54ab-ab42-f9f649139b59` on the production tracking service
+with `work_get`: it owns the existing TEST service, candidate, operator artifacts,
+latest checks, and cleanup. Check whether that service can be reused for the exact
+assigned candidate; do not infer that it is running or ready from this document.
+The tracking WorkId is not present in the fresh TEST database.
+
+The recorded TEST endpoint is:
+
+```text
+https://laptop.tail46f0b9.ts.net/switchstand-test/mcp
+```
+
+The separate TEST GitHub OAuth application's intended callback is:
+
+```text
+https://laptop.tail46f0b9.ts.net/switchstand-test/auth/callback
+```
+
+These identify the existing setup, not permission to alter it. Production remains
+at `/switchstand/mcp`; never refresh the production connection to test an
+unreleased candidate. Use a distinctly named TEST connection and a fresh chat.
+
+### Reuse and lifecycle
+
+The authorized operator retains one service/proxy mutation owner and records the
+exact clean candidate SHA, runtime environment, TEST database/role, state path,
+loopback port, public resource/issuer, process or user-service identity, and
+receipts on the current work. Existing host-only scripts and evidence are under
+`~/.local/state/switchstand/test-mcp-9411-527bd6f0/`; their README is historical
+staging guidance, so reconcile it with current work and operational review before
+execution. They are candidate-specific operator artifacts, not a general install
+command. Never print `database-private.json`, OAuth values, tokens, or environment
+contents into a handoff.
+
+1. Pin the assigned immutable candidate in an owned clean checkout and use its
+   locked environment. Obtain action-specific [resource admission](agent-resource-admission.md)
+   before migration, listener launch, or another memory-heavy step; keep Firefox
+   open. Reusing a live instance still requires checking its actual candidate and
+   identity, rather than assuming the checkout describes the running process.
+2. Use a separate TEST database and non-elevated role, with no production grants,
+   and a fresh dedicated `FASTMCP_HOME`. The existing setup shares the PostgreSQL
+   cluster; separate role/database ownership does not establish full cluster
+   isolation. Do not copy production OAuth state or source production environment,
+   provider credentials, activation contracts, or feature flags. Use the normal
+   GitHub authentication path and only the TEST configuration required by the
+   candidate; pytest synthetic tokens or MemoryStore do not qualify this route.
+3. Migrate only that TEST database to the pinned candidate's migration head and
+   read back the revision. Launch the edge on its dedicated loopback port under
+   an owned supervisor and retain process/service identity. If the installed
+   `switchstand-chatgpt-edge` console script is absent, the equivalent entry point
+   is the pinned environment's Python with `-m switchstand.chatgpt_edge`, from the
+   candidate with its source import path and isolated TEST environment. Do not
+   substitute the system Python or a production launcher.
+4. Verify loopback protected-resource and issuer metadata identify TEST, and an
+   unauthenticated MCP request receives its real OAuth challenge. Expose only the
+   additive TEST namespace through the existing proxy; preserve the exact current
+   preimage and refuse an overwrite if it changed. Public discovery, OAuth routes,
+   callback and MCP must reach that same TEST edge with the namespace rewrites.
+   Read back the public metadata and challenge after routing. Callback registration
+   gates successful login and acceptance; it need not block bounded route exposure
+   needed to test the real callback.
+5. Confirm the separate TEST OAuth application's registered callback matches the
+   intended public callback. Install/reinstall the TEST connection, complete real
+   GitHub login, and start a fresh ChatGPT chat. Give it one authorized continuation
+   WorkId from the TEST database separately from the bare endpoint. If the test
+   needs disposable work, create it there under the assigned TEST authority;
+   production tracking IDs do not become TEST records automatically.
+6. Check the authenticated server's exact `tools/list` schema against the pinned
+   candidate, then verify the fresh ChatGPT client actually exposes and exercises
+   the expected schema and behavior. Record these as separate server/client
+   results. Complete the candidate's assigned behavior and persistence/restart
+   checks against that same TEST identity. Metadata `200`, unauthenticated `401`,
+   or server schema alone never establishes real ChatGPT acceptance.
+
+### Troubleshooting and cleanup
+
+A GitHub error such as `The redirect_uri is not associated with this application`
+means login has failed. Reconcile the TEST application's callback and actual
+outgoing redirect URI with the intended callback above; do not change production
+OAuth or bypass authentication. Refreshing the tool registry cannot fix GitHub
+callback registration. At the 2026-10-20 documentation handoff, public
+metadata/challenge checks had passed, this real login had failed, and actual
+ChatGPT acceptance was `NOT_RUN`. The current work owns any subsequent repair or
+acceptance evidence; this snapshot is not a readiness claim.
+
+If authenticated server schemas match but ChatGPT still shows old tools, verify
+that the connection targets TEST, reinstall it, and use a fresh chat before
+retesting. Preserve `FAILED`, `UNKNOWN`, `MISSING_CAPABILITY`, and `NOT_RUN` for
+the exact boundary observed. Missing client-control tools leave the real client
+step human-only; they do not justify substituting a server-only PASS.
+
+For an authorized stop, retain logs and receipts, stop only the recorded TEST
+process/service, and prove its port is released. Restore the proxy preimage only
+if the current configuration still matches the owned TEST proposal; otherwise
+reconcile the TEST delta without overwriting other routes. Before separately
+authorized database cleanup, verify the exact database/role creation receipt and
+absence of TEST clients, then remove only those owned resources. Never stop or
+remove the shared PostgreSQL container, production listener/state, or Firefox to
+clean up TEST. An interrupted multi-statement database creation or ambiguous proxy
+write requires exact-state reconciliation before any retry.
+
 ## Maintenance-window replacement
 
 `scripts/switchstand-edge-maintenance <sha>` is the sole production replacement command. It derives

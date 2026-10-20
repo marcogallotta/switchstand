@@ -70,6 +70,11 @@ friction state is quarantined and regenerated visibly so launch and unrelated di
 
 The detailed lifecycle, recovery, and isolated-candidate routes remain below.
 
+For real ChatGPT testing of an unreleased candidate, start with the
+[isolated TEST MCP lifecycle](chatgpt-mcp-edge.md#isolated-real-chatgpt-test-mcp).
+Check the existing TEST service and its current owner before creating another;
+use its separate connection and database for candidate qualification.
+
 ## Match evidence to the claim
 
 Record the immutable subject that each result exercised. A green result establishes
