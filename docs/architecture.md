@@ -358,7 +358,8 @@ messaging, and required continuation:
   meaning, protected requirements, non-goals, decision context, named continuation and optional
   superseded baseline. The consequence digest is its baseline identity; approvals remain
   append-only. Legacy V1 exact-revision rows remain readable but cannot authorize cross-revision
-  baseline conformance.
+  baseline conformance. Candidate consequences bind a separate decision to the approved Task's
+  identity and an exact PR/base/head/composition tuple; they cannot replace the Task baseline.
   `reviews.py` owns durable review requests and outcomes.
   Typed reviews route to the `Coordinator` mailbox. That reviewer endpoint is distinct from the
   `Codex Coordinator` control mailbox and does not follow its `/root` rename or takeover lifecycle.
@@ -442,7 +443,8 @@ messaging, and required continuation:
   When `SWITCHSTAND_HUMAN_REVIEW_ORIGIN` is configured on the ordinary edge, `human_review_create`
   and `human_review_get` reuse the same store. Creation requires the current authenticated session's
   registered mailbox and binds its server-derived name and mailbox ID into the immutable digest;
-  the returned URL identifies one exact WorkId/revision. These tools cannot decide requests. Legacy
+  candidate URLs add a `consequence_id` selecting the exact occurrence, which `human_review_get`
+  also accepts separately from the default Task approval. These tools cannot decide requests. Legacy
   consequence digests remain unchanged. This is an API boundary: host agents running as the same
   OS user can still access database credentials and files.
 
@@ -619,6 +621,9 @@ gate identity, reason, and timing are returned by default, while bounded failed-
 detail is opt-in. This provisional preferred read neither authorizes nor performs review, merge,
 ruleset, credential, provider-write, or rollout effects; raw public GitHub reads remain a diagnostic
 fallback during qualification of the semantic path.
+The ordinary qualification wrapper also consumes the saved human candidate decision for an explicit
+pilot WorkId or an already-bound PR. Pending, rejected, or stale decisions deny readiness; unbound
+legacy qualification reads retain their existing CI semantics.
 
 Selective foreground is default-off behind `SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED=true`; all
 other values use the full suite. Adaptive broad truth remains shadow-only and preserves its backstop.
