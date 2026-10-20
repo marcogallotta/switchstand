@@ -610,7 +610,7 @@ fetches broad history only when the promoted rule can still apply. Skipped healt
 observations remain `UNKNOWN` and never reduce full-suite or Docker lifecycle requirements.
 Full fallback partitions pytest's actual collected items into four whole-module shards using a
 stable module-path hash in `scripts/pytest-shard`. Each runner owns a PostgreSQL service;
-Ruff/Pyright run on shard zero. Selected execution remains one runner. The stable terminal gate
+Ruff/Pyright run on the last shard, including the sole runner in selected execution. The stable terminal gate
 requires matrix success and the existing lifecycle policy. Per-shard artifacts retain collected
 and assigned node IDs and identify partial `full-shard` metrics rather than claiming a full suite.
 `full_suite_due.py` owns its pure tri-state evaluator: known baseline absence or non-ancestry is
