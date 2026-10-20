@@ -709,13 +709,14 @@ map is compatibility input, not an action whitelist or authority grant. Configur
 are rechecked before returning actions; missing/malformed opt-in or stale evidence releases UNKNOWN.
 The same file may set the explicit boolean `test_prefix: true` to enable TEST-prefix mailboxes;
 removing that flag disables the prefix trial while preserving any exact-session opt-in.
-Current executable owner actions and due review/message watches may reject a dedicated
-HANDOFF, REAL_BLOCKER or ASSIGNMENT_COMPLETE Stop once; ordinary prose and conversation pass. Missing authority, stale or contradictory evidence
-releases without certifying completion. With no runnable obligation or pending delivery, conversation passes. Both Stop handlers pass explicit
-USER_STOP and honor `stop_hook_active` before any network check. They never mutate obligations or
-certify recipient pickup, and the second Stop releases even if work remains. Completion, blocker
-and handoff markers do not bypass the work check; ordinary prose is not a machine
-completion certificate. This is not a scheduler or an autonomous wake mechanism.
+The retained continuity hook gates opted-in PILOT runs on a dedicated final reply containing
+exactly one permitted yield marker. ASSIGNMENT accepts ASSIGNMENT_COMPLETE, REAL_BLOCKER,
+HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. Ordinary prose remains blocked;
+this hook does not inspect work obligations or use `stop_hook_active` as an escape. The separate
+mailbox hook honors that escape after one continuation and passes explicit USER_STOP. Neither
+hook mutates obligations or certifies completion or recipient pickup. The optional obligations
+projection above is read-only capability, not enforcement by these retained hooks. This is not
+a scheduler or an autonomous wake mechanism.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
