@@ -3,11 +3,29 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 import pytest
+
+
+def module_shards(modules: set[str], count: int) -> dict[str, int]:
+    """Balance observed module costs; new modules use the remaining modules' mean."""
+    weights = json.loads(Path(__file__).with_name("pytest-shard-weights.json").read_text())
+    costs = {module: weights["module_seconds"].get(module, weights["default_seconds"])
+             for module in modules}
+    loads = [0.0] * count
+    # Quality runs static checks on the last shard, including selected count=1 runs.
+    loads[-1] = weights["static_seconds"]
+    assignments: dict[str, int] = {}
+    occupied: set[int] = set()
+    for module in sorted(modules, key=lambda module: (-costs[module], module)):
+        # Keep small/new collections usable without hiding genuinely empty shards.
+        shard = min(range(count), key=lambda index: (index in occupied, loads[index], index))
+        assignments[module] = shard
+        occupied.add(shard)
+        loads[shard] += costs[module]
+    return assignments
 
 
 class Shard:
@@ -15,13 +33,15 @@ class Shard:
         self.index, self.count, self.membership = index, count, membership
 
     def pytest_collection_modifyitems(self, config: pytest.Config, items: list[pytest.Item]):
+        assignments = module_shards(
+            {item.path.relative_to(config.rootpath).as_posix() for item in items}, self.count,
+        )
         assigned: list[pytest.Item] = []
         deselected: list[pytest.Item] = []
         modules: set[str] = set()
         for item in items:
             module = item.path.relative_to(config.rootpath).as_posix()
-            shard = int.from_bytes(hashlib.sha256(module.encode()).digest()) % self.count
-            if shard == self.index:
+            if assignments[module] == self.index:
                 assigned.append(item)
                 modules.add(module)
             else:
