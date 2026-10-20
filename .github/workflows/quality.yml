@@ -358,7 +358,18 @@ jobs:
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA"
           fi
-      - run: docker build --target development --tag switchstand-quality .
+      - name: Set up reusable Quality builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build exact Quality image with reusable layers
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          target: development
+          load: true
+          push: false
+          tags: switchstand-quality
+          cache-from: type=gha,scope=switchstand-quality-development
+          cache-to: ${{ github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && matrix.shard == 0 && 'type=gha,scope=switchstand-quality-development,mode=max,ignore-error=true,timeout=60s' || '' }}
       - name: Prepare observational metrics
         run: mkdir -p "$RUNNER_TEMP/test-metrics"
       - name: Authoritative proportional or full-fallback Quality
@@ -498,7 +509,17 @@ jobs:
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA"
           fi
-      - run: docker build --target development --tag switchstand-quality .
+      - name: Set up reusable Quality builder
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build exact Quality image with reusable layers
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          target: development
+          load: true
+          push: false
+          tags: switchstand-quality
+          cache-from: type=gha,scope=switchstand-quality-development
       - name: Prove real Docker lifecycle boundary
         run: >-
           docker run --rm
