@@ -225,6 +225,11 @@ current dispositions and remaining proof are summarized in
   Nick Cameron's critique (https://ncameron.org/blog/the-problem-with-rfcs): slow, one template for
   every change size, no record of what was built. Use: mechanics and opinion. Fit: partial.
 
+CI history acquisition (2026-10-20): USED [GitHub workflow-runs REST reference](https://docs.github.com/en/rest/actions/workflow-runs)
+for combined count/run responses, 100-row pages and the 1,000-result filtered-search cap.
+Real provider/Git evidence found 751 main push runs with the current workflow-generation boundary
+at row 5; older pages were unnecessary under the existing health contract.
+
 ## Tier 3 and use with caution
 
 - **LangGraph / LangChain** — https://docs.langchain.com. Use only for pause, persist and resume

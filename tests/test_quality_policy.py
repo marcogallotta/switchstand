@@ -15,14 +15,20 @@ ROOT = Path(__file__).parents[1]
 
 
 @pytest.mark.parametrize('changed,history,enabled,event,expected_calls', [
-    ('tests/test_example.py', 'healthy', 'true', 'push', 4),
+    ('tests/test_example.py', 'healthy', 'true', 'push', 2),
     ('tests/test_example.py', 'unavailable', 'true', 'push', 1),
     ('README.md', 'healthy', 'true', 'push', 0),
     ('tests/test_example.py', 'healthy', 'false', 'push', 0),
     ('tests/test_example.py', 'healthy', 'true', 'schedule', 0),
-    ('scripts/package-size.py', 'healthy', 'true', 'push', 4),
-    ('src/switchstand/coordinator_worker_state.py', 'healthy', 'true', 'push', 4),
-    ('src/switchstand/coordinator_worker_state.py', 'healthy', 'true', 'pull_request', 6),
+    ('scripts/package-size.py', 'healthy', 'true', 'push', 2),
+    ('src/switchstand/coordinator_worker_state.py', 'healthy', 'true', 'push', 2),
+    ('src/switchstand/coordinator_worker_state.py', 'healthy', 'true', 'pull_request', 4),
+    *[('tests/test_example.py', history, 'true', 'push', calls) for history, calls in (
+        ('old-failure', 2), ('boundary', 2), ('multipage', 3), ('cap', 10),
+        ('missing-blob', 2), ('truncated', 1), ('empty', 1), ('bad-count', 1),
+        ('negative-count', 1), ('missing-count', 1), ('changed-count', 2),
+        ('duplicate', 2),
+    )],
 ])
 def test_policy_skips_only_irrelevant_observations(
     tmp_path: Path, changed: str, history: str, enabled: str, event: str, expected_calls: int,
@@ -51,6 +57,10 @@ def test_policy_skips_only_irrelevant_observations(
     verifier.write_text((ROOT / 'scripts/verify-quality-composition').read_text())
     verifier.chmod(0o755)
     git('add', '.')
+    git('commit', '-qm', 'old workflow')
+    old = git('rev-parse', 'HEAD')
+    (tmp_path / '.github/workflows/quality.yml').write_text('current workflow\n')
+    git('add', '.')
     git('commit', '-qm', 'base')
     base = git('rev-parse', 'HEAD')
     git('update-ref', 'refs/remotes/origin/main', base)
@@ -76,15 +86,32 @@ def test_policy_skips_only_irrelevant_observations(
     # Only the provider boundary is substituted; Git and the workflow run unmodified.
     gh = tools / 'gh'
     gh.write_text(textwrap.dedent('''\
-        #!/bin/bash
-        echo call >> "$RUNNER_TEMP/gh-calls"
-        test "$HISTORY" != unavailable || exit 1
-        if [[ "$*" == *pulls* ]]; then echo 0
-        elif [[ "$*" == *total_count* ]]; then
-          if [[ "$*" == *event=schedule* ]]; then echo 0; else echo 1; fi
-        elif [[ "$*" == *branch=main* ]]; then
-          printf 'push\t%s\tsuccess\t2026-10-19T12:00:00+00:00\n' "$PUSH_BASE_SHA"
-        fi
+        #!/usr/bin/env python3
+        import os, pathlib, sys
+        e = os.environ
+        with pathlib.Path(e['RUNNER_TEMP'], 'gh-calls').open('a') as sink:
+            print(' '.join(sys.argv[1:]), file=sink)
+        h = e['HISTORY']
+        if h == 'unavailable': sys.exit(1)
+        if any(a.endswith('/pulls') for a in sys.argv): print(0); sys.exit()
+        if 'event=schedule' in sys.argv: print(0); sys.exit()
+        page = int(next(a.split('=')[1] for a in sys.argv if a.startswith('page=')))
+        count = {'old-failure': 2, 'boundary': 751, 'multipage': 101, 'cap': 1000,
+                 'truncated': 101, 'empty': 101, 'bad-count': 'oops',
+                 'negative-count': -1, 'missing-count': '', 'changed-count': 101,
+                 'duplicate': 101}.get(h, 1)
+        print(102 if h == 'changed-count' and page == 2 else count)
+        rows = 100 if h in {'multipage', 'cap', 'changed-count', 'duplicate'} and page == 1 else 1
+        if h == 'cap': rows = 100
+        if h == 'empty': rows = 0
+        for i in range(rows):
+            run_id = (page - 1) * 100 + i + 1
+            if h == 'duplicate' and page == 2: run_id = 1
+            sha = 'f' * 40 if h == 'missing-blob' else e['PUSH_BASE_SHA']
+            print(run_id, sha, 'success', '2026-10-19T12:00:00+00:00', sep='\t')
+        if h in {'old-failure', 'boundary'}:
+            sha = e['OLD_SHA'] if h == 'boundary' else e['PUSH_BASE_SHA']
+            print(2, sha, 'failure', '2026-10-19T11:00:00+00:00', sep='\t')
         '''))
     gh.chmod(0o755)
     workflow = (ROOT / '.github/workflows/quality.yml').read_text()
@@ -99,16 +126,21 @@ def test_policy_skips_only_irrelevant_observations(
         'PR_BASE_SHA': base, 'PR_HEAD_SHA': head, 'PR_BASE_OWNER': 'owner',
         'PR_BASE_REF': 'main', 'PR_HEAD_REF': 'topic', 'PR_BASE_REPO': 'owner/repo',
         'PR_HEAD_REPO': 'owner/repo', 'STACK_BASE_REF': 'main',
+        'OLD_SHA': old,
     }
     result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', policy], cwd=tmp_path,
                             env=environment, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     summary = json.loads(result.stdout)
-    health = expected_calls >= 4
+    health = history in {'healthy', 'boundary', 'multipage'} and expected_calls >= 2
     plan = validate_execution_tree(tmp_path, plan_exact(tmp_path, base, execution), execution)
     expected = foreground_authority(plan, subject_verified=True, selector_health_clear=health)
     assert summary['authority'] == expected.mode
     assert summary['authority_reasons'] == list(expected.reasons)
+    if history in {'old-failure', 'missing-blob'}:
+        assert summary['selector_health_observation'] == 'NOT_CLEAR'
+    elif history not in {'healthy', 'boundary', 'multipage'}:
+        assert summary['selector_health_observation'] == 'UNKNOWN'
     assert summary['planner'] == {key: value for key, value in json.loads(
         (tmp_path / 'exact-quality-plan.json').read_text(),
     ).items() if key != 'reasons_by_test' and key != 'basis_kind'}

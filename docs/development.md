@@ -338,7 +338,12 @@ authoritative planner uses Python 3.14. Once the exact validated plan and mandat
 promotion impossible, history and adaptive observations are skipped and explicitly `UNKNOWN`;
 eligible candidates still require the complete same-generation health check. Unresolved
 run identity or a provider result cap also fails closed. A later green run cannot clear that
-generation's demotion; correction changes the reviewed workflow generation. Docker lifecycle
+generation's demotion; correction changes the reviewed workflow generation. History acquisition
+reads counts and runs together, requesting another 100-run page only while the current generation
+remains open. A known different workflow blob closes that event's generation; otherwise every
+reported run below the provider's 1,000-result cap must be observed. Missing/changed counts,
+duplicate observed run IDs, truncated pages and provider failures preserve UNKNOWN/full fallback.
+An unresolved Git blob cannot establish a generation boundary. Docker lifecycle
 evidence is omitted only for direct-test-only promotion; selected source/script execution still
 requires successful Docker lifecycle evidence. One stable
 terminal Quality check runs under `always()` and fails unless planning, Quality execution, and the

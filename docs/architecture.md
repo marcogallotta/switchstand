@@ -623,7 +623,9 @@ fallback during qualification of the semantic path.
 Selective foreground is default-off behind `SWITCHSTAND_SELECTIVE_FOREGROUND_ENABLED=true`; all
 other values use the full suite. Adaptive broad truth remains shadow-only and preserves its backstop.
 Quality always binds its exact subject and computes its validated plan under Python 3.14; it
-fetches broad history only when a promoted class can still apply. Skipped health/adaptive
+fetches broad history only when a promoted class can still apply, paging only until each event's
+existing workflow-generation boundary or complete uncapped history is established. Inconsistent
+or unavailable acquisition cannot authorize selection. Skipped health/adaptive
 observations remain `UNKNOWN` and never reduce full-suite or Docker lifecycle requirements.
 Ordinary PR plans use the verified execution composition, so consumers introduced by an advanced
 base participate in selection. Alongside direct-test-only promotion, the closed affected-input
