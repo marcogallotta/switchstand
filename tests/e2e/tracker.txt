@@ -1,0 +1,4 @@
+tests/test_canonical_service_runtime.py
+tests/test_canonical_relations.py
+tests/test_agent_messages.py
+tests/test_chatgpt_edge_process.py

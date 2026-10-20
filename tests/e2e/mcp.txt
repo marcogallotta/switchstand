@@ -1,0 +1,5 @@
+tests/test_chatgpt_mcp.py
+tests/test_mcp.py
+tests/test_review_mcp.py
+tests/test_development.py::test_development_surface_is_closed
+tests/test_coordinator_sync.py::test_worker_tools_are_closed_and_explicit_when_enabled

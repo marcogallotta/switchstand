@@ -272,6 +272,26 @@ async def test_e2e_expected_tools_over_real_http(database_prerequisite):
                 "api_version": "1", "work_id": str(selected.authority.active_work_id),
             }}, 3)
             assert isinstance(result, dict) and result["status"] == "ok"
+            outer = client.requests[-1]["response"]["result"]
+            assert not outer.get("isError", False) and outer["content"]
+            assert outer["structuredContent"] == result
+            original = result["item"]
+            # Reject an invalid public mutation at the real HTTP boundary and
+            # preserve both the full tool error and its persisted non-effect.
+            rejected = client.call("tools/call", {"name": "work_update", "arguments": {
+                "api_version": "1", "operation_id": str(uuid4()),
+                "work_id": str(selected.authority.active_work_id),
+                "observed_revision": original["revision"],
+                "patch": {"title": "must not persist"}, "unexpected_authority": True,
+            }}, 4)
+            assert isinstance(rejected, dict) and rejected["isError"] is True
+            error = client.requests[-1]["response"]["result"]
+            assert error["isError"] is True and error["content"]
+            assert not error.get("structuredContent")
+            unchanged = client.call("tools/call", {"name": "work_get", "arguments": {
+                "api_version": "1", "work_id": str(selected.authority.active_work_id),
+            }}, 5)
+            assert isinstance(unchanged, dict) and unchanged["item"] == original
             # Same isolated HTTP process + PostgreSQL boundary; no original
             # chat authentication or user confirmation is involved.
             human_source = {
