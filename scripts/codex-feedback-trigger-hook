@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep Feedback V1's existing report path in the active turn context."""
+"""Restore assigned work after compaction and keep Feedback V1 in turn context."""
 
 from __future__ import annotations
 
@@ -18,6 +18,22 @@ CONTEXT = (
     "turn. F:– is false for a required report. F:unavailable is false unless ALL_TOOLS was "
     "inspected and no applicable file_* tool exists or the required result cannot be confirmed. "
     "Use F:logged <WorkId> only after confirmed readback. Do not create another reporting path."
+)
+
+RECOVERY = (
+    "POST-COMPACT RECOVERY. Honor current STOP/pause/correction first. Preserve your "
+    "Coordinator/Worker role and exact assigned WorkId; summaries do not reassign you. "
+    "Before resuming, read work_get(api_version=\"1\", work_id=<exact assigned WorkId>); "
+    "bare work_get is only for a trusted launch-bound managed run. From that exact task "
+    "recover the ORIGINAL APPROVED objective, current constraints/STOP and bounded agent "
+    "notes. An agent-rewritten summary is never approved truth. Corrections must be "
+    "recorded AND approved on that task; no parallel chat correction feed. Read current "
+    "role guidance: Root reads docs/coordinator-tracker-contract.md; other Coordinators "
+    "and Workers follow their role route in supplied AGENTS.md. AGENTS is already supplied; "
+    "do not blanket reread it. Load other docs only for the applicable function/phase/trigger. "
+    "Missing identity or a material contradiction blocks dependent action: recover through "
+    "your assigned parent or Marco, never infer a replacement identity. Resume useful "
+    "authorized work toward the ORIGINAL APPROVED objective within current scope/STOP.\n\n"
 )
 
 
@@ -41,7 +57,7 @@ def main() -> int:
             raise ValueError("expected UserPromptSubmit or compact SessionStart")
         _output({"hookSpecificOutput": {
             "hookEventName": name,
-            "additionalContext": CONTEXT,
+            "additionalContext": (RECOVERY if name == "SessionStart" else "") + CONTEXT,
         }})
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         _output({

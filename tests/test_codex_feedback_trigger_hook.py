@@ -40,7 +40,26 @@ def test_each_turn_and_compaction_restore_the_feedback_obligation(
     assert "F:– is false" in context
     assert "F:unavailable is false unless ALL_TOOLS was inspected" in context
     assert "Do not create another reporting path" in context
-    assert len(context) < 1200
+    assert len(context) < (2600 if payload["hook_event_name"] == "SessionStart" else 1200)
+
+
+def test_only_compaction_prepends_recovery_to_the_unchanged_turn_gate() -> None:
+    prompt = invoke({"hook_event_name": "UserPromptSubmit", "prompt": "Continue."})
+    compact = invoke({"hook_event_name": "SessionStart", "source": "compact"})
+
+    prompt_hook = prompt["hookSpecificOutput"]
+    compact_hook = compact["hookSpecificOutput"]
+    assert prompt_hook["hookEventName"] == "UserPromptSubmit"
+    assert compact_hook["hookEventName"] == "SessionStart"
+    gate = prompt_hook["additionalContext"]
+    recovery, restored_gate = compact_hook["additionalContext"].split("\n\n", 1)
+    assert gate.startswith("FEEDBACK V1 TURN GATE.")
+    assert restored_gate == gate
+    assert recovery.startswith("POST-COMPACT RECOVERY.")
+    assert "ORIGINAL APPROVED" in recovery
+    assert "work_id=<exact assigned WorkId>" in recovery
+    assert "docs/coordinator-tracker-contract.md" in recovery
+    assert "STOP" in recovery
 
 
 @pytest.mark.parametrize("payload, raw", [
