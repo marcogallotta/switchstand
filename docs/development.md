@@ -338,8 +338,12 @@ evidence is omitted only for the exact promoted class. One stable
 terminal Quality check runs under `always()` and fails unless planning, Quality execution, and the
 mode-required Docker result are all valid; internal mode never changes its required check name.
 Full fallback runs four independent GitHub runners, each with its own PostgreSQL service.
-`scripts/pytest-shard` partitions pytest's actual collection by SHA-256 of the whole module path
-modulo four. Each shard retains full collected and assigned node IDs plus module membership;
+`scripts/pytest-shard` balances whole modules from pytest's actual collection using checked-in
+observed JUnit costs in `scripts/pytest-shard-weights.json`. Unmeasured modules use a fixed default;
+module-path and shard-index ties make assignment independent of collection order. Every shard
+gets a module when enough modules exist. The last shard's estimated load includes static checks.
+These weights guide scheduling, never selection. Each shard retains full collected and assigned
+node IDs plus module membership;
 its `full-shard` timing record covers only that partition. Ruff/Pyright run once on the last shard,
 including the sole runner in selected execution.
 The promoted selected-module path runs once on shard zero. Matrix fail-fast is disabled, and
