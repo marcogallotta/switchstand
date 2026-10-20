@@ -127,7 +127,7 @@ def main() -> None:
         if not isinstance(active, bool):
             raise ValueError("missing stop_hook_active")
         action = None
-        if not active and not _subagent(payload) and marker != "USER_STOP":
+        if not active and not _subagent(payload) and marker in MARKERS - {"USER_STOP"}:
             session_id = payload.get("session_id")
             if not isinstance(session_id, str) or not session_id:
                 raise ValueError("missing Stop session identity")
@@ -147,7 +147,7 @@ def main() -> None:
             print("{}")
         else:
             print(json.dumps({"decision": "block", "reason": (
-                f"Fresh Tracker evidence shows an unfinished Coordinator action: {action}. "
+                f"Fresh Tracker evidence shows your unfinished assigned action: {action}. "
                 "Perform that exact action within current authority. This is the only corrective "
                 "continuation for this human turn. Explicit STOP takes precedence. If the next "
                 "Stop releases with work remaining, preserve it and do not claim completion."
