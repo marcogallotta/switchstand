@@ -48,7 +48,7 @@ TOOLS = {
     "work_get", "human_trajectory_get", "human_trajectory_record",
     "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append", "capability_preflight_get",
-    "work_create", "work_update", "work_relate",
+    "work_create", "work_update", "work_relate", "project_create",
     "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
     "file_fork_management",
     "task_control_get", "task_control_checkpoint", "work_hygiene_check",
@@ -293,6 +293,73 @@ async def _agent_call(endpoint, chat_session, tool, arguments):
             meta={} if chat_session is None else {"openai/session": chat_session},
         )
         return result.structured_content
+
+
+async def test_project_create_replay_placement_read_remove_over_real_http(database_prerequisite):
+    """Ordinary HTTP protocol with synthetic identity; not real ChatGPT acceptance."""
+    url = os.environ["TEST_DATABASE_URL"]
+    selected, _ = await _provision(url, str(uuid4().int))
+    work_id = str(selected.authority.active_work_id)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": selected.principal.subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    with _server(env, port) as endpoint:
+        transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+        async with Client(transport) as client:
+            listed = {tool.name: tool for tool in await client.list_tools()}
+            assert set(listed["project_create"].inputSchema["properties"]) == {
+                "api_version", "operation_id", "name",
+            }
+
+            async def call(tool, arguments):
+                result = await client.call_tool(tool, arguments)
+                assert not result.is_error and result.content and result.structured_content is not None
+                return result.structured_content
+
+            read_args = {"api_version": "1", "work_id": work_id}
+            before = await call("work_get", read_args)
+            assert before["status"] == "ok" and not before["item"]["context"]["placements"]
+            create_args = {"api_version": "1", "operation_id": str(uuid4()),
+                           "name": f"HTTP test project {uuid4()}"}
+            created = await call("project_create", create_args)
+            assert created["status"] == "ok" and created["effect"] == "applied"
+            receipt = created["receipt"]
+            assert receipt["name"] == create_args["name"]
+            assert receipt["operation_id"] == create_args["operation_id"]
+            assert receipt["project_id"] and "work_id" not in receipt
+            # Preserve the exact original operation/name for replay through a fresh HTTP client.
+            async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as replay:
+                repeated = await replay.call_tool("project_create", create_args)
+                assert not repeated.is_error and repeated.structured_content == created
+            assert await call("work_get", read_args) == before
+            placement = {"api_version": "1", "work_id": work_id,
+                         "observed_revision": before["item"]["revision"],
+                         "operation_id": str(uuid4()), "patch": {
+                             "kind": "placement", "action": "add", "project_id": receipt["project_id"],
+                         }}
+            added = await call("work_relate", placement)
+            assert added["status"] == "ok" and added["effect"] == "applied"
+            assert added["receipt"]["patch"]["project_id"] == receipt["project_id"]
+            placed = await call("work_get", read_args)
+            assert placed["status"] == "ok" and placed["item"]["revision"] != before["item"]["revision"]
+            # Public placement reads expose the project name; identity is in the mutation receipt.
+            placements = placed["item"]["context"]["placements"]
+            assert len(placements) == 1 and placements[0]["area"] == create_args["name"]
+            assert placements[0].get("stage") is None
+            placement.update(operation_id=str(uuid4()), observed_revision=placed["item"]["revision"])
+            placement["patch"]["action"] = "remove"
+            removed = await call("work_relate", placement)
+            assert removed["status"] == "ok" and removed["effect"] == "applied"
+            assert removed["receipt"]["patch"]["project_id"] == receipt["project_id"]
+            after = await call("work_get", read_args)
+            assert after["status"] == "ok" and not after["item"]["context"]["placements"]
+            assert after["item"]["revision"] != placed["item"]["revision"]
 
 
 async def test_sigterm_drains_an_inflight_mcp_call(
