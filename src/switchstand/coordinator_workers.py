@@ -94,9 +94,11 @@ class CoordinatorWorkers:
                 str(work_id),
                 "--commit",
                 base,
-                *(("--task-request-id", str(task_request_id)) if task_request_id else ()),
+                *(("--agent-task", "--task-request-id", str(task_request_id)) if task_request_id else ()),
                 "--noninteractive",
-                self._prompt(work_id, objective),
+                self._prompt(work_id, objective) + (
+                    f" Submit terminal evidence via agent_task_result for request {task_request_id}, including the candidate Git SHA." if task_request_id else ""
+                ),
             ),
         )
         self.store.write(record)

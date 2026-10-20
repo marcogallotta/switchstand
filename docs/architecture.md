@@ -493,6 +493,7 @@ messaging, and required continuation:
   currentness preserves evidence nonterminal for later reconciliation. The managed launcher can
   bind one explicitly supplied exact START request to its durable RunReceipt before
   development setup; omission performs no selection or binding, and uncertain binding aborts launch.
+  IMPLEMENTATION bind rechecks current approval, grant, revision and lifecycle; current HUMAN WORK HOLD denies, and dependency edges return UNKNOWN until eligibility is authoritative.
   The managed client allowlist and default grant exclude `agent_task`. An explicit trusted
   `--agent-task` launch opt-in atomically adds that operation to the newly rotated launch grant and
   exposes only the existing request/result adapters to that launched client. It selects no request
@@ -780,7 +781,8 @@ Their frozen compact/currentness checks and `switchstand-worktree-lifecycle` rem
 and retire those exact generations. Stock Codex creates none of this state and does not use the
 legacy launcher selectors, profiles, hooks, repair units, or dispatcher.
 
-The Coordinator-control MCP also owns the narrow asynchronous implementation handoff. An exact
+The Coordinator-control MCP also owns the narrow asynchronous implementation handoff.
+An optional exact `task_request_id` is forwarded with `--agent-task` and result instructions; omission preserves ordinary launch semantics. An exact
 WorkId, caller-chosen operation identity, and bounded objective start the existing trusted
 `switchstand --isolated` path, which binds a managed Worker to that WorkId and its durable
 task-private linked writer. Spawn returns immediately so Root remains available for coordination;

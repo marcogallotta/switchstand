@@ -359,12 +359,10 @@ import asyncio, os, subprocess, sys
 from pathlib import Path
 from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import create_async_engine
-from switchstand import launch
-from switchstand.canonical_work import CanonicalWorkRepository
+from switchstand import launch, provision
 from switchstand.development import DevelopmentBoundary
-from switchstand.messages import RuntimeCurrentness
+from switchstand.mcp import server_from_env
 from switchstand.task_run_bind import bind_task_start
-from switchstand.task_runs import AgentTaskResult, TaskRunState
 url, control, native_home = sys.argv[1:4]
 args = launch.parser().parse_args(sys.argv[4:])
 control = Path(control)
@@ -385,11 +383,17 @@ def local_bind(*values):
         assert asyncio.run(bind(*values)) == result  # Exact-ID lost-reply reconciliation.
     if result.status != "ok":
         raise RuntimeError(result.model_dump_json())
-launch.provision = lambda *a: launch.Authority(package, ())
+os.environ.update(DATABASE_URL=url, SWITCHSTAND_MANAGED="1", ACTIVE_WORK_ID=str(package))
+def local_provision(*a, agent_task=False):
+    asyncio.run(provision.run(args.active, (), managed_agent=True, agent_task=agent_task))
+    return launch.Authority(package, ())
+launch.provision = local_provision
 launch.bind_task_start = local_bind
 launch.prepare_development = lambda *a: DevelopmentBoundary("fixture", "fixture", "fixture", "fixture")
 launch.cleanup_development = lambda *a: None
-prepared = launch.prepare_managed_run(control, writer, branch, args.active, (), dict(os.environ), git_dir, package, args.task_request_id)
+prepared = launch.prepare_managed_run(control, writer, branch, args.active, (), dict(os.environ), git_dir, package, args.task_request_id, args.agent_task)
+os.environ.update(SWITCHSTAND_RUN_ID=str(prepared.receipt.run_id), SWITCHSTAND_WORKTREE=str(writer), SWITCHSTAND_BRANCH=branch, SWITCHSTAND_GIT_DIR=str(git_dir))
+assert "agent_task_result" in " ".join(launch.codex_command(control, writer, [], agent_task=args.agent_task))
 (writer / "AGENTS.md").write_text("This file is the sole project instruction source. Do not read global CLAUDE.md. No fanout. Only create native.txt. The fixture supervisor commits the output.\n")
 env = dict(os.environ, HOME=native_home, SWITCHSTAND_WORKTREE=str(writer))
 command = ["/usr/bin/timeout", "--kill-after=2", "90", native_home + "/.local/state/switchstand/codex/updater-bin/bin/codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", str(writer), "-c", "mcp_servers={}", "Create native.txt containing native implementation proof. Do not commit; the fixture supervisor commits your output. Do no other work. Do not use subagents or MCP."]
@@ -401,13 +405,8 @@ subprocess.run(["git", "-C", str(writer), "add", "native.txt", "AGENTS.md"], che
 subprocess.run(["git", "-C", str(writer), "commit", "-q", "-m", "Native implementation fixture"], check=True)
 head = subprocess.check_output(["git", "-C", str(writer), "rev-parse", "HEAD"], text=True).strip()
 async def finish():
-    engine = create_async_engine(url)
-    try:
-        run = str(prepared.receipt.run_id)
-        result = await TaskRunState(engine, CanonicalWorkRepository(engine)).submit_result(args.task_request_id, uuid4(), RuntimeCurrentness(generation=run, current_generation=run), AgentTaskResult(api_version="1", outcome="PASS", summary="Native implementer committed candidate", evidence_refs=("git:" + head,)))
-        assert result.status == "ok", result
-    finally:
-        await engine.dispose()
+    result = await server_from_env().call_tool("agent_task_result", dict(api_version="1", request_id=str(args.task_request_id), result_id=str(uuid4()), outcome="PASS", summary="Native implementer candidate", evidence_refs=["git:" + head]))
+    assert result.structured_content["status"] == "ok", result
 asyncio.run(finish())
 """
     subject = host.CoordinatorWorkers(home, state_root=tmp_path / "worker-state",
