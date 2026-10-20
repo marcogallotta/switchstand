@@ -92,7 +92,7 @@ def test_conversation_without_runnable_work_and_explicit_stop_release(
             pass
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = Thread(target=server.serve_forever, daemon=True)
+        thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         monkeypatch.setenv(
             "SWITCHSTAND_CODEX_STOP_ENDPOINT", f"http://127.0.0.1:{server.server_port}",
@@ -136,7 +136,7 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
             pass
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = Thread(target=server.serve_forever, daemon=True)
+        thread = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         thread.start()
         monkeypatch.setenv(
             "SWITCHSTAND_CODEX_STOP_ENDPOINT", f"http://127.0.0.1:{server.server_port}",
