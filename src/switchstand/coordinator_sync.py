@@ -421,9 +421,10 @@ def build_server(
         async def _coordinator_implementation_spawn(
             api_version: Literal["1"], operation_id: UUID, work_id: UUID,
             objective: str = Field(min_length=1, max_length=8_000),
+            task_request_id: UUID | None = None,
         ) -> WorkerSpawnResult:
             """Start one exact implementation in an isolated private writer and return now."""
-            return workers.spawn(operation_id, work_id, objective)
+            return workers.spawn(operation_id, work_id, objective, task_request_id)
 
         async def _coordinator_implementation_status(
             api_version: Literal["1"], spawn_id: UUID,
