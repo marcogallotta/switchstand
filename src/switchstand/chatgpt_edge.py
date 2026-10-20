@@ -346,6 +346,8 @@ def _codex_stop_head(session_id: str, binding: AgentMailbox) -> dict[str, str] |
         if not isinstance(raw, dict):
             return None
         value = cast(dict[str, Any], raw)
+        if value.get("test_prefix") is True and binding.name.startswith("TEST"):
+            return {}
         if value.get("session_id") != session_id:
             return None
         if value.get("mailbox_name") != binding.name or \
@@ -377,7 +379,7 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
     if bound.status != "ok" or binding is None:
         return {"status": "unknown", "reason": "not_current_coordinator"}
     scoped = None if binding.name == CODEX_COORDINATOR_NAME else _codex_stop_head(session_id, binding)
-    if binding.name != CODEX_COORDINATOR_NAME and binding.name[:4] != "TEST" and scoped is None:
+    if binding.name != CODEX_COORDINATOR_NAME and scoped is None:
         return {"status": "unknown", "reason": "not_current_coordinator"}
     # Ordinary admission is request-local generic capability, not task authority.
     # The loopback read uses the existing current assignment and session binding.
