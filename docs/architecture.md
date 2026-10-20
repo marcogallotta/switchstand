@@ -280,7 +280,11 @@ messaging, and required continuation:
 
 - `failure_journal.py` owns append-only redacted failure attempts and resolutions;
   `pending_failures.py` owns the atomic offline queue and close/handoff gate. Stateful reads may
-  project unresolved clearing actions, but the journal remains authoritative. The legacy
+  project unresolved clearing actions, but the journal remains authoritative. The
+  `observability_get` exact-owner failure projection keeps details private by default;
+  `include_failure_detail=true` includes bounded, validated, redacted failure and resolution
+  evidence. Recorded clearing establishes a fact at its timestamp, not continuing health or
+  complete production coverage. The legacy
   `friction.md` source cannot be archived until import, read parity, queue synchronization, and an
   explicit cutoff all pass.
 - `bootstrap_identity.py` and `bootstrap_adapters.py` own the temporary pre-migration launch

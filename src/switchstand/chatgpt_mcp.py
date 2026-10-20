@@ -451,13 +451,16 @@ def build_ordinary_tools(
         audited("repository_candidate_qualification_get", str(pull_request), result.status)
         return result
 
-    async def observability_get(work_id: UUID) -> dict[str, object]:
-        """Read current exact-WorkId flow evidence and authenticated review pickup state."""
+    async def observability_get(
+        work_id: UUID, include_failure_detail: bool = False,
+    ) -> dict[str, object]:
+        """Read exact-WorkId flow evidence; opt in for redacted failure/clearing detail."""
         correlate(work_id)
         if service.reviews is None:
             raise RuntimeError("canonical review occurrence state is unavailable")
         result = await flow_report.report(
             service.reviews.occurrences.engine, work_id, service.reviews.occurrences,
+            include_failure_detail=include_failure_detail,
         )
         audited("observability_get", str(work_id), "ok")
         return result

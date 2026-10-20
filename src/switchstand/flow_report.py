@@ -449,6 +449,7 @@ async def _human_reviews(
 
 async def _failures(
     connection: AsyncConnection, work_id: UUID, captured_at: datetime,
+    *, include_failure_detail: bool = False,
 ) -> tuple[dict[str, object], bool]:
     available = cast(bool, await connection.scalar(text(
         "SELECT to_regclass('public.failure_records') IS NOT NULL "
@@ -506,6 +507,16 @@ async def _failures(
                 (resolution.resolved_at - record.occurred_at).total_seconds() * 1000
             ),
         })
+        if include_failure_detail:
+            canonical = record.canonical()
+            cleared = None if resolution is None else resolution.canonical()
+            items[-1]["detail"] = {
+                key: canonical[key] for key in (
+                    "attempted_claim", "observed_result", "clearing_action", "evidence",
+                )
+            } | {"resolution": None if cleared is None else {
+                "summary": cleared["summary"], "evidence": cleared["evidence"],
+            }}
     items.reverse()
     truncated = total > len(items)
     return {
@@ -678,6 +689,7 @@ async def _snapshot(
     connection: AsyncConnection, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
     timing_write_failed: bool = False,
+    *, include_failure_detail: bool = False,
 ) -> dict[str, object]:
     await connection.execute(text("SET TRANSACTION READ ONLY"))
     captured_at = cast(datetime, await connection.scalar(select(func.now())))
@@ -704,7 +716,9 @@ async def _snapshot(
     trajectory_values = (await connection.execute(select(human_trajectory_revisions).where(
         human_trajectory_revisions.c.work_id_ref == work_id
     ).order_by(human_trajectory_revisions.c.generation))).all()
-    failures, _failures_available = await _failures(connection, work_id, captured_at)
+    failures, _failures_available = await _failures(
+        connection, work_id, captured_at, include_failure_detail=include_failure_detail,
+    )
     activation, activation_available = await _activation(connection, work_id)
     mcp_timings, timings_available = await _mcp_timings(connection, work_id, timing_write_failed)
     run_receipts, run_receipts_available = await _run_receipts(
@@ -934,12 +948,17 @@ async def _snapshot(
 async def report(
     engine: AsyncEngine, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
+    *, include_failure_detail: bool = False,
 ) -> dict[str, object]:
     store = timing_persistence(engine)
     async with engine.connect() as connection:
         connection = await connection.execution_options(isolation_level="REPEATABLE READ")
         async with connection.begin():
-            return await _snapshot(connection, work_id, review_occurrences, store is not None and store.write_failed)
+            return await _snapshot(
+                connection, work_id, review_occurrences,
+                store is not None and store.write_failed,
+                include_failure_detail=include_failure_detail,
+            )
 
 
 def _gate_interval(gate: QualificationGate) -> tuple[datetime, datetime] | None:
