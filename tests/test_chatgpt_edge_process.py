@@ -53,6 +53,7 @@ TOOLS = {
     "file_fork_management",
     "task_control_get", "task_control_checkpoint", "work_hygiene_check",
     "agent_register", "agent_takeover", "agent_transfer_request",
+    "agent_status_get", "agent_status_update",
     "agent_message_send", "agent_message_pending",
     "agent_message_receive", "agent_message_recover",
     "agent_message_acknowledge",
@@ -447,7 +448,8 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
     if not url:
         pytest.skip("TEST_DATABASE_URL is required for the MCP process test")
     subject = str(uuid4().int)
-    await _provision(url, subject)
+    selected, _ = await _provision(url, subject)
+    read_args = {"api_version": "1", "work_id": str(selected.authority.active_work_id)}
     port = free_port()
     env = clean_environment() | {
         "DATABASE_URL": url,
@@ -490,6 +492,27 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
         assert (await _agent_call(endpoint, "chat-b", "agent_register", register(beta)))[
             "status"
         ] == "ok"
+        # The status client happy path uses the ordinary socket/session boundary.
+        missing_status = await _agent_call(endpoint, "chat-a", "agent_status_get", {"api_version": "1"})
+        assert missing_status["status"] == "MISSING" and missing_status["due"]
+        assert missing_status["owner_key"] == f"agent:alpha-{suffix}"
+        before_report = await _agent_call(endpoint, "chat-a", "work_get", read_args)
+        assert before_report["status"] == "ok"
+        assert "Task-list status due" in before_report.pop("agent_status_checkpoint")
+        status_args = {"api_version": "1", "operation_id": str(uuid4()), "expected_generation": 0,
+                       "report": "A waiting; B next; C capture only", "coverage": "UNKNOWN"}
+        reported = await _agent_call(endpoint, "chat-a", "agent_status_update", status_args)
+        assert reported["status"] == "ok" and reported["generation"] == 1 and not reported["due"]
+        assert reported["source"] == "SELF_REPORTED" and reported["document"]["report"] == status_args["report"]
+        assert reported["document"]["coverage"] == "UNKNOWN"
+        assert await _agent_call(endpoint, "chat-a", "agent_status_update", status_args) == reported
+        observed_status = await _agent_call(endpoint, "chat-b", "agent_status_get", {
+            "api_version": "1", "name": alpha,
+        })
+        assert observed_status["name"] == alpha and observed_status["document"] == reported["document"]
+        assert (await _agent_call(endpoint, "chat-b", "agent_status_get", {"api_version": "1"}))["status"] == "MISSING"
+        after_report = await _agent_call(endpoint, "chat-a", "work_get", read_args)
+        assert "agent_status_checkpoint" not in after_report and after_report == before_report
         missing = await _agent_call(endpoint, None, "agent_register", register("Missing"))
         assert (missing["status"], missing["reason"]) == (
             "recovery_required", "runtime_identity_unavailable",
@@ -503,6 +526,10 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
 
     # Every operation below uses a fresh HTTP/MCP transport after a server restart.
     with _server(env, port) as endpoint:
+        persisted_status = await _agent_call(endpoint, "chat-a", "agent_status_get", {"api_version": "1"})
+        assert persisted_status["status"] == "ok" and not persisted_status["due"]
+        assert persisted_status["document"] == reported["document"]
+        assert persisted_status["binding_generation"] == reported["binding_generation"]
         pending = await _agent_call(endpoint, "chat-b", "agent_message_pending", {
             "api_version": "1",
         })

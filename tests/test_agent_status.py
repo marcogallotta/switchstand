@@ -5,7 +5,6 @@ from uuid import uuid4
 
 import pytest
 from chatgpt_fixture import PRINCIPAL
-from mcp import Client
 from pydantic import ValidationError
 from sqlalchemy import insert, select
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -131,23 +130,7 @@ async def test_real_mcp_status_tools_admission_and_primary_result(status_owner, 
     service = ChatGPTService(AsyncMock(return_value=PRINCIPAL), PostgresState(engine), grants, {}, MessageState(engine, grants),
                             ordinary_workspace_admission=True, reviews=AsyncMock())
     tools = dict(build_ordinary_tools(service, agent_identity=lambda: "a"))
-    missing = await tools["agent_status_get"]("1")
-    assert missing.status == "MISSING" and missing.owner_key == "agent:alpha"
-    # Public MCP registration/schema and actual tool request validation, with the real PG owner.
-    from mcp.server import MCPServer
-
-    from switchstand.chatgpt_mcp import closed_tool, ordinary_tool_annotations
-    server = MCPServer("status test")
-    for name, function in tools.items():
-        closed_tool(server, name, function, ordinary_tool_annotations(name))
-    async with Client(server) as client:
-        result = await client.call_tool("agent_status_update", {"api_version": "1", "operation_id": str(uuid4()),
-            "expected_generation": 0, "report": "A waiting; B next; C capture only", "coverage": "UNKNOWN"})
-        assert not result.is_error and result.structured_content["generation"] == 1
-        assert (await client.call_tool("agent_status_get", {"api_version": "1", "name": "Beta"})).structured_content["name"] == "Beta"
     baseline = await service.get(uuid4())
-    got = await tools["work_get"]("1", uuid4())
-    assert got.status == baseline.status and got.agent_status_checkpoint is None
     async def broken(*args):
         raise ValueError("unavailable report")
     monkeypatch.setattr(AgentStatusState, "get", broken)
