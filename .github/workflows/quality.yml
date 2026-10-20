@@ -371,7 +371,7 @@ jobs:
             -v "$RUNNER_TEMP/test-metrics:/metrics"
             -v "$PWD:/workspace:ro" -w /workspace switchstand-quality
             sh -ec 'export PYTHONPATH=/workspace/src
-              if test "$SHARD_INDEX" = 0; then
+              if test "$SHARD_INDEX" -eq "$((SHARD_COUNT - 1))"; then
                 /app/.venv/bin/ruff check --no-cache .
                 /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python
               fi
