@@ -1228,6 +1228,9 @@ async def test_stop_head_opt_in_is_exact_and_rechecked(
     )
     assert binding.status == "ok"
     subject.service.messages = MessageState(subject.engine, subject.grants)
+    work = await subject.runtime.works.get(subject.work_id)
+    assert work is not None
+    work = await subject.runtime.works.replace(replace(work, owner_key="agent:assigned-head"))
     config = tmp_path / ".config/switchstand/codex-stop-head.json"
     config.parent.mkdir(parents=True)
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
@@ -1242,7 +1245,7 @@ async def test_stop_head_opt_in_is_exact_and_rechecked(
     if case == "generation":
         value["generation"] = 2
     if case == "owner":
-        value["assignments"] = {str(subject.work_id): "agent:other"}
+        await subject.runtime.works.replace(replace(work, owner_key="agent:other"))
     config.write_text("{" if case == "malformed" else json.dumps(value))
     if case == "removed":
         config.unlink()
@@ -1256,10 +1259,91 @@ async def test_stop_head_opt_in_is_exact_and_rechecked(
 
         monkeypatch.setattr(subject.runtime.works, "get", get_and_revoke)
     result = await chatgpt_edge._codex_stop_obligations(subject.service, "head-session")
-    assert result["status"] == ("ok" if case == "current" else "unknown")
-    assert bool(result.get("actions")) == (case == "current")
-    if case == "current":
+    assert result["status"] == ("ok" if case in {"current", "unlisted"} else "unknown")
+    assert bool(result.get("actions")) == (case in {"current", "unlisted"})
+    if case in {"current", "unlisted"}:
         assert result["actions"] == [f"{subject.work_id}: implement"]
         assert (await chatgpt_edge._codex_stop_obligations(
             subject.service, "other-session",
         ))["status"] == "unknown"
+
+
+@pytest.mark.parametrize("name", ["TEST portfolio", "Assigned portfolio"])
+async def test_stop_reads_all_agent_assignments_not_the_configured_work_list(
+    subject: Subject, tmp_path, monkeypatch: pytest.MonkeyPatch, name: str,
+):
+    import json
+    from pathlib import Path
+
+    from switchstand.workspace_admission import WorkspaceAdmissionState
+
+    registered = await AgentMailboxState(subject.engine).register_agent(
+        name, subject.principal.key, "codex:portfolio-session",
+    )
+    binding = registered.mailbox
+    assert registered.status == "ok" and binding is not None
+    subject.service.messages = MessageState(subject.engine, subject.grants)
+    subject.service.admission_grants = WorkspaceAdmissionState(subject.engine, subject.service.principal)
+    original = await subject.runtime.works.get(subject.work_id)
+    assert original is not None
+    first = replace(original, owner_key=f"agent:{binding.name_key}")
+    second = replace(first, work_id=uuid4(), title="Other assignment", next_action_ref="continue other")
+    foreign = replace(first, work_id=uuid4(), title="Foreign assignment", owner_key="agent:someone-else")
+    await subject.runtime.works.replace(first)
+    await subject.runtime.works.create(second)
+    await subject.runtime.works.create(foreign)
+    foreign_before = await subject.runtime.works.get(foreign.work_id)
+    config = tmp_path / ".config/switchstand/codex-stop-head.json"
+    config.parent.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    if name.startswith("TEST"):
+        config.write_text(json.dumps({"test_prefix": True}))
+    else:
+        config.write_text(json.dumps({
+            "session_id": "portfolio-session", "mailbox_name": name, "generation": binding.generation,
+            "assignments": {str(first.work_id): first.owner_key},
+        }))
+    result = await chatgpt_edge._codex_stop_obligations(subject.service, "portfolio-session")
+    assert result["status"] == "ok"
+    assert set(result["actions"]) == {
+        f"{first.work_id}: implement", f"{second.work_id}: continue other",
+    }
+    assert await subject.runtime.works.get(foreign.work_id) == foreign_before
+
+
+@pytest.mark.parametrize("case", ["on", "off", "nonbool", "nonTEST", "revoked"])
+async def test_stop_test_prefix_requires_current_explicit_flag(
+    subject: Subject, tmp_path, monkeypatch: pytest.MonkeyPatch, case: str,
+):
+    import json
+    from pathlib import Path
+
+    name = "Assigned flag" if case == "nonTEST" else "TEST flag"
+    registered = await AgentMailboxState(subject.engine).register_agent(
+        name, subject.principal.key, "codex:flag-session",
+    )
+    binding = registered.mailbox
+    assert registered.status == "ok" and binding is not None
+    subject.service.messages = MessageState(subject.engine, subject.grants)
+    original = await subject.runtime.works.get(subject.work_id)
+    assert original is not None
+    await subject.runtime.works.replace(replace(original, owner_key=f"agent:{binding.name_key}"))
+    config = tmp_path / ".config/switchstand/codex-stop-head.json"
+    config.parent.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    flag = False if case == "off" else "true" if case == "nonbool" else True
+    config.write_text(json.dumps({"test_prefix": flag}))
+    if case == "revoked":
+        original_get = subject.runtime.works.get
+
+        async def get_and_revoke(work_id):
+            result = await original_get(work_id)
+            config.write_text(json.dumps({"test_prefix": False}))
+            return result
+
+        monkeypatch.setattr(subject.runtime.works, "get", get_and_revoke)
+    result = await chatgpt_edge._codex_stop_obligations(subject.service, "flag-session")
+    assert result["status"] == ("ok" if case == "on" else "unknown")
+    assert result.get("actions", []) == ([f"{subject.work_id}: implement"] if case == "on" else [])
+    if case == "revoked":
+        assert result["reason"] == "head_opt_in_changed"

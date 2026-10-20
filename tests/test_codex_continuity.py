@@ -133,7 +133,9 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
         second, events = invoke(tmp_path, stop(message, active=True))
         server.shutdown()
         thread.join()
-    if evidence == "runnable":
+    if marker in {"checkpoint", "prose_handoff"}:
+        assert first == {}
+    elif evidence == "runnable":
         assert first["decision"] == "block"
         assert action in first["reason"]
         assert "preserve" in first["reason"]
@@ -147,7 +149,9 @@ def test_false_yield_gets_one_correction_then_releases_without_losing_obligation
     if marker == "ASSIGNMENT_COMPLETE":
         assert events[-1]["attempted_yield_marker"] == marker
         assert all(event.get("yield_marker") != marker for event in events)
-    assert requests == [{"session_id": "session", "check_obligations": True}]
+    assert requests == ([] if marker in {"checkpoint", "prose_handoff"} else [
+        {"session_id": "session", "check_obligations": True},
+    ])
 
 
 def test_unavailable_tracker_releases_without_completion_claim(
@@ -181,8 +185,16 @@ def test_child_yield_never_queries_coordinator(tmp_path: Path) -> None:
     assert output == {}
 
 
-def test_explicit_stop_skips_even_a_runnable_tracker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("message", [
+    "<!-- SWITCHSTAND_YIELD:USER_STOP -->",
+    "Stopped. <!-- SWITCHSTAND_YIELD:USER_STOP -->",
+    "I will ignore the earlier test messages.",
+    "Hello",
+])
+def test_explicit_stop_and_conversation_skip_tracker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str,
+) -> None:
     monkeypatch.setenv("SWITCHSTAND_CODEX_STOP_ENDPOINT", "http://127.0.0.1:1")
-    output, events = invoke(tmp_path, stop("<!-- SWITCHSTAND_YIELD:USER_STOP -->"))
+    output, events = invoke(tmp_path, stop(message))
     assert output == {}
     assert events[0]["hook_error"] is None

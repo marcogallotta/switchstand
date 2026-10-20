@@ -347,6 +347,8 @@ def _codex_stop_head(session_id: str, binding: AgentMailbox) -> dict[str, str] |
         if not isinstance(raw, dict):
             return None
         value = cast(dict[str, Any], raw)
+        if value.get("test_prefix") is True and binding.name.startswith("TEST"):
+            return {}
         if value.get("session_id") != session_id:
             return None
         if value.get("mailbox_name") != binding.name or \
@@ -388,19 +390,12 @@ async def _codex_stop_obligations(service: ChatGPTService, session_id: str) -> d
         return {"status": "unknown", "reason": "missing_authority"}
     works = service.canonical_work.works
     items: list[CurrentWork]
-    if scoped is None:
-        page = await works.search(owner_key=CODEX_COORDINATOR_NAME, completed=False, limit=100)
-        if page.next_cursor is not None:
-            return {"status": "unknown", "reason": "incomplete_assignment_page"}
-        items = list(page.items)
-    else:
-        items = []
-        for work_id, owner in scoped.items():
-            work = await works.get(UUID(work_id))
-            if work is None or work.owner_key != owner:
-                return {"status": "unknown", "reason": "scoped_assignment_changed"}
-            if not work.completed:
-                items.append(work)
+    owner = CODEX_COORDINATOR_NAME if binding.name == CODEX_COORDINATOR_NAME \
+        else f"agent:{binding.name_key}"
+    page = await works.search(owner_key=owner, completed=False, limit=100)
+    if page.next_cursor is not None:
+        return {"status": "unknown", "reason": "incomplete_assignment_page"}
+    items = list(page.items)
     actions: list[str] = []
     unknown = False
     now = datetime.now(UTC)
