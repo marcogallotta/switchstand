@@ -590,4 +590,4 @@ ChatGPT app/connection; a server restart, authenticated `tools/list`, connection
 refresh, or fresh chat without reinstall is insufficient. After reinstalling,
 start a fresh chat and verify the exact schema exposed to that client and the
 affected behavior before claiming the change is active. This is a standing
-requirement for all future ChatGPT MCP work, not only initial launch.
+production requirement; normal existing TEST use follows the Root-coordinated reload rule.
