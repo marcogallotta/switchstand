@@ -125,13 +125,6 @@ from push exact-head and pull-request composition runs. GitHub schedules are bes
 until a separate freshness monitor exists, this backstop is **SCHEDULED/BEST-EFFORT**, not
 an operational guarantee. A real scheduled run is required before claiming it is live.
 
-Quality execution and Docker lifecycle build the exact checkout's existing development image
-with Buildx, loading the same local image tag. Both can reuse GitHub Actions layers; only shard
-zero of default-branch pushes exports the shared cache. Cache misses build normally, and the
-locked manifests/source still determine layer invalidation. Optional export errors are nonfatal
-and export has a 60-second timeout; build failures still fail Quality. Cache transport and image
-loading count toward measured CI latency; cache configuration alone does not prove a speedup.
-
 - Bootstrap/build: install Docker with Compose, then `docker compose build controller`.
 - Stable host tools: run `scripts/bootstrap`. The primary checkout uses the bootstrap-owned primary `.venv`; each
   linked writer uses its own `.venv`. They share only the pinned `uv` binary and its Git common-directory cache and
