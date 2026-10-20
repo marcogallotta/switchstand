@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
-PLANNER_REVISION = "affected-tests-v1"
+PLANNER_REVISION = "affected-tests-v2"
 FULL_FALLBACK_PATTERNS = (
     "pyproject.toml",
     "uv.lock",
@@ -32,6 +32,7 @@ FULL_FALLBACK_PATTERNS = (
     "docs/assets/**",
 )
 EXPLICIT_RULES: tuple[tuple[str, tuple[str, ...] | None], ...] = (
+    ("scripts/package-size.py", ("tests/test_package_size.py",)),
     ("src/switchstand/provider.py", ("tests/test_provider.py", "tests/test_relations_provider.py")),
     ("src/switchstand/*_runtime.py", None),
     ("src/switchstand/chatgpt_edge.py", None),
@@ -39,6 +40,10 @@ EXPLICIT_RULES: tuple[tuple[str, tuple[str, ...] | None], ...] = (
 )
 _SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 _DIRECT_TEST_MODULE = re.compile(r"tests/test_[^/]+\.py\Z").fullmatch
+PROMOTED_INPUTS_V1 = frozenset({
+    "scripts/package-size.py",
+    "src/switchstand/coordinator_worker_state.py",
+})
 SERIAL_SENSITIVE_V1 = frozenset({
     "tests/test_chatgpt_edge_process.py",
     "tests/test_update_gateway.py",
@@ -61,7 +66,7 @@ class Plan:
 
 @dataclass(frozen=True)
 class ForegroundAuthority:
-    mode: Literal["PROMOTE_TEST_MODULE_ONLY_V1", "FULL_FALLBACK"]
+    mode: Literal["PROMOTE_TEST_MODULE_ONLY_V1", "PROMOTE_AFFECTED_INPUTS_V1", "FULL_FALLBACK"]
     reasons: tuple[str, ...]
 
 
@@ -111,7 +116,7 @@ def foreground_authority(
     selector_health_clear: bool,
     cumulative_stack_top: bool = False,
 ) -> ForegroundAuthority:
-    """Promote only the reviewed direct test-module class; fail closed otherwise."""
+    """Promote reviewed inputs only, retaining every exact-subject/health guard."""
 
     reasons: list[str] = []
     if plan.basis_kind != "exact" or not subject_verified:
@@ -126,17 +131,23 @@ def foreground_authority(
         reasons.append("planner-did-not-select-cleanly")
     if plan.destructive:
         reasons.append("delete-or-rename")
-    if not plan.changed_paths or any(_DIRECT_TEST_MODULE(path) is None for path in plan.changed_paths):
-        reasons.append("changed-path-outside-direct-test-modules")
+    if not plan.changed_paths or any(
+        _DIRECT_TEST_MODULE(path) is None and path not in PROMOTED_INPUTS_V1
+        for path in plan.changed_paths
+    ):
+        reasons.append("changed-path-outside-promoted-inputs")
     if not plan.selected_tests or any(_DIRECT_TEST_MODULE(path) is None for path in plan.selected_tests):
         reasons.append("selected-path-outside-direct-test-modules")
-    if not set(plan.changed_paths).issubset(plan.selected_tests):
+    if any(_DIRECT_TEST_MODULE(path) and path not in plan.selected_tests
+           for path in plan.changed_paths):
         reasons.append("changed-test-module-not-selected")
     if SERIAL_SENSITIVE_V1.intersection((*plan.changed_paths, *plan.selected_tests)):
         reasons.append("serial-sensitive-test-module")
     if reasons:
         return ForegroundAuthority("FULL_FALLBACK", tuple(sorted(set(reasons))))
-    return ForegroundAuthority("PROMOTE_TEST_MODULE_ONLY_V1", ())
+    if all(_DIRECT_TEST_MODULE(path) for path in plan.changed_paths):
+        return ForegroundAuthority("PROMOTE_TEST_MODULE_ONLY_V1", ())
+    return ForegroundAuthority("PROMOTE_AFFECTED_INPUTS_V1", ())
 
 
 def classify_cumulative_stack_top(*, parent_count: int | None, child_count: int | None) -> bool | None:
@@ -249,6 +260,10 @@ def _plan(
             fallback.append(f"fallback-class:{path}")
         if path.startswith(("src/", "tests/")) and not path.endswith(".py"):
             fallback.append(f"unknown behavioral non-Python input:{path}")
+        elif _module(path) is None and not any(
+            fnmatch.fnmatchcase(path, pattern) for pattern, _ in EXPLICIT_RULES
+        ):
+            fallback.append(f"unmapped changed input:{path}")
     modules: dict[str, str] = {}
     dependencies: dict[str, set[str]] = {}
     direct_test_only = (
@@ -282,6 +297,8 @@ def _plan(
             fallback.append(f"explicit fallback:{path}")
         elif rules:
             for test in rules[0] or ():
+                if test not in tests:
+                    fallback.append(f"explicit test absent:{path}:{test}")
                 select(test, f"explicit rule:{path}")
 
     changed_modules = {name for path in changed if (name := _module(path)) is not None}

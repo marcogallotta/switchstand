@@ -81,7 +81,7 @@ def test_exact_plan_uses_supplied_head_tree_not_checkout(tmp_path: Path) -> None
     assert plan.base == base
     assert plan.head == head
     assert plan.selected_tests == ("tests/test_alpha.py",)
-    assert plan.planner_revision == "affected-tests-v1"
+    assert plan.planner_revision == "affected-tests-v2"
     write(
         repo,
         "tests/test_alpha.py",
@@ -194,7 +194,7 @@ def test_cli_json_binds_basis_and_revision(tmp_path: Path, capsys: CaptureFixtur
     assert output["basis_kind"] == "exact"
     assert output["base"] == base
     assert output["head"] == head
-    assert output["planner_revision"] == "affected-tests-v1"
+    assert output["planner_revision"] == "affected-tests-v2"
     write(repo, "README.md", "documentation only\n")
     docs = plan_exact(repo, head, commit(repo, "docs"))
     assert docs.mode == "FULL_FALLBACK"
@@ -290,6 +290,48 @@ def test_direct_test_change_does_not_parse_unrelated_dependency_graph(
     assert plan.mode == "SELECTED"
     assert plan.selected_tests == ("tests/test_alpha.py",)
     assert plan.fallback_reasons == ()
+
+
+def test_audited_source_selects_transitive_consumers_and_script_has_explicit_edge(
+    tmp_path: Path,
+) -> None:
+    repo, _ = fixture_repo(tmp_path)
+    source = "src/switchstand/coordinator_worker_state.py"
+    write(repo, source, "VALUE = 1\n")
+    write(repo, "src/switchstand/consumer.py", "from .coordinator_worker_state import VALUE\n")
+    write(repo, "tests/test_consumer.py", "from switchstand.consumer import VALUE\n")
+    write(repo, "scripts/package-size.py", "print('base')\n")
+    write(repo, "tests/test_package_size.py", "def test_script(): pass\n")
+    base = commit(repo)
+    write(repo, source, "VALUE = 2\n")
+    write(repo, "scripts/package-size.py", "print('changed')\n")
+    plan = plan_exact(repo, base, commit(repo))
+
+    assert plan.selected_tests == ("tests/test_consumer.py", "tests/test_package_size.py")
+    assert foreground_authority(
+        plan, subject_verified=True, selector_health_clear=True,
+    ).mode == "PROMOTE_AFFECTED_INPUTS_V1"
+
+
+def test_changed_test_cannot_mask_unmapped_input_or_missing_explicit_consumer(
+    tmp_path: Path,
+) -> None:
+    repo, _ = fixture_repo(tmp_path)
+    write(repo, "scripts/package-size.py", "print('base')\n")
+    base = commit(repo)
+    write(repo, "scripts/package-size.py", "print('changed')\n")
+    write(repo, "tests/test_alpha.py", "def test_changed(): pass\n")
+    missing = plan_exact(repo, base, commit(repo))
+    assert missing.mode == "FULL_FALLBACK"
+    assert any("explicit test absent:" in reason for reason in missing.fallback_reasons)
+
+    for path in ("docs/unknown.md", "scripts/unknown.py", "requirements-test.txt"):
+        base = git(repo, "rev-parse", "HEAD")
+        write(repo, "tests/test_alpha.py", f"# {path}\ndef test_changed(): pass\n")
+        write(repo, path, "unknown\n")
+        plan = plan_exact(repo, base, commit(repo))
+        assert plan.mode == "FULL_FALLBACK"
+        assert f"unmapped changed input:{path}" in plan.fallback_reasons
 
 
 def test_test_helpers_nested_modules_and_deletes_are_not_promoted(tmp_path: Path) -> None:

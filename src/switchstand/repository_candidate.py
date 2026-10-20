@@ -201,7 +201,13 @@ def _policy_evidence(
     execution = executions[0]
     execution_name = str(execution["name"])
     raw_mode = execution_name.removeprefix("Quality execution / ")
-    if raw_mode not in {"PROMOTE_TEST_MODULE_ONLY_V1", "FULL_FALLBACK"}:
+    if raw_mode in {
+        "PROMOTE_TEST_MODULE_ONLY_V1 / shard 0", "PROMOTE_AFFECTED_INPUTS_V1 / shard 0",
+    }:
+        raw_mode = raw_mode.removesuffix(" / shard 0")
+    if raw_mode not in {
+        "PROMOTE_TEST_MODULE_ONLY_V1", "PROMOTE_AFFECTED_INPUTS_V1", "FULL_FALLBACK",
+    }:
         return [], "policy-evidence-unknown"
     if any(check.get("status") != "completed" for check in (policy, execution, docker)):
         return [], "policy-evidence-running"
@@ -214,7 +220,9 @@ def _policy_evidence(
     if kind == "composition":
         dimensions.append("CUMULATIVE_TOP_QUALITY")
     if raw_mode == "FULL_FALLBACK":
-        dimensions.extend(("BROAD_QUALITY", "RUNTIME_LIFECYCLE"))
+        dimensions.append("BROAD_QUALITY")
+    if expected_docker == "success":
+        dimensions.append("RUNTIME_LIFECYCLE")
     return dimensions, None
 
 

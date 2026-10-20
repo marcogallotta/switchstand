@@ -65,7 +65,7 @@ jobs:
                 "$parents" "$children")"
             fi
             planner_base_sha="$(git rev-parse HEAD^)"
-            planner_head_sha="$PR_HEAD_SHA"
+            planner_head_sha="$execution_sha"
             if scripts/verify-quality-composition \
                 "$EVENT_SHA" "$PR_HEAD_SHA" "$PR_BASE_SHA" \
                 "$(git rev-parse "origin/$STACK_BASE_REF")" "${{ github.event.pull_request.stack.position }}"; then
@@ -107,7 +107,7 @@ jobs:
           eligible = foreground_authority(
               plan, subject_verified=verified == 'true', selector_health_clear=True,
               cumulative_stack_top=stack_top == 'true',
-          ).mode == 'PROMOTE_TEST_MODULE_ONLY_V1'
+          ).mode in {'PROMOTE_TEST_MODULE_ONLY_V1', 'PROMOTE_AFFECTED_INPUTS_V1'}
           print(str(eligible and selective_enabled == 'true' and not broad_backstop_required(
               event_kind, ref_name, default_branch,
           )).lower())
@@ -294,7 +294,8 @@ jobs:
           }
           with open(output, 'a') as sink:
               print(f'mode={decision.mode}', file=sink)
-              print('shards=' + ('[0]' if decision.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' else '[0,1,2,3]'), file=sink)
+              selected = decision.mode in {'PROMOTE_TEST_MODULE_ONLY_V1', 'PROMOTE_AFFECTED_INPUTS_V1'}
+              print('shards=' + ('[0]' if selected else '[0,1,2,3]'), file=sink)
               print('reasons=' + json.dumps(decision.reasons, separators=(',', ':')), file=sink)
               print('selected_tests=' + json.dumps(plan.selected_tests, separators=(',', ':')), file=sink)
               print('planner_json=' + json.dumps(summary['planner'], separators=(',', ':')), file=sink)
@@ -322,7 +323,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/not_switchstand_test
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
       SHARD_INDEX: ${{ matrix.shard }}
-      SHARD_COUNT: ${{ needs.plan.outputs.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' && 1 || 4 }}
+      SHARD_COUNT: ${{ needs.plan.outputs.shards == '[0]' && 1 || 4 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -366,7 +367,7 @@ jobs:
           mapfile -t selected_tests < <(
             python3 -c 'import json,os; print("\n".join(json.loads(os.environ["SELECTED_TESTS"])))'
           )
-          test "$QUALITY_MODE" != PROMOTE_TEST_MODULE_ONLY_V1 || test "${#selected_tests[@]}" -gt 0
+          test "$SHARD_COUNT" -ne 1 || test "${#selected_tests[@]}" -gt 0
           quality=(
             docker run --rm --network host -e TEST_DATABASE_URL -e SHARD_INDEX -e SHARD_COUNT
             -v "$RUNNER_TEMP/test-metrics:/metrics"
@@ -377,7 +378,7 @@ jobs:
                 /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python
               fi
               mode="$1"; shift 1
-              if test "$mode" = PROMOTE_TEST_MODULE_ONLY_V1; then
+              if test "$SHARD_COUNT" -eq 1; then
                 exec /app/.venv/bin/pytest -ra --durations=50 -p no:cacheprovider \
                   --junitxml=/metrics/junit.xml "$@"
               fi
@@ -385,7 +386,7 @@ jobs:
                 --index "$SHARD_INDEX" --count "$SHARD_COUNT" --membership /metrics/shard.json -- \
                 -ra --durations=50 -p no:cacheprovider --junitxml=/metrics/junit.xml' sh "$QUALITY_MODE"
           )
-          if test "$QUALITY_MODE" = PROMOTE_TEST_MODULE_ONLY_V1; then
+          if test "$SHARD_COUNT" -eq 1; then
             "${quality[@]}" "${selected_tests[@]}"
           else
             "${quality[@]}"
@@ -444,7 +445,7 @@ jobs:
           Path(e["METRICS_DIR"], "identity.json").write_text(json.dumps(identity))
           PY
           execution_kind=full-shard
-          test '${{ needs.plan.outputs.mode }}' != PROMOTE_TEST_MODULE_ONLY_V1 || execution_kind=selected
+          test "$SHARD_COUNT" -ne 1 || execution_kind=selected
           PYTHONPATH=src python3 -m switchstand.test_metrics --execution-kind "$execution_kind" \
             --identity "$METRICS_DIR/identity.json" --planner "$METRICS_DIR/planner.json" \
             --shard-membership "$METRICS_DIR/shard.json" \
@@ -524,7 +525,7 @@ jobs:
             PROMOTE_TEST_MODULE_ONLY_V1)
               test "$DOCKER_RESULT" = skipped
               ;;
-            FULL_FALLBACK)
+            PROMOTE_AFFECTED_INPUTS_V1|FULL_FALLBACK)
               test "$DOCKER_RESULT" = success
               ;;
             *)

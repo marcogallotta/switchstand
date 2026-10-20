@@ -137,6 +137,9 @@ def test_shards_fail_closed(tmp_path: Path, content: str, index: int, count: int
 @pytest.mark.parametrize(("mode", "plan", "execution", "docker", "success"), [
     ("FULL_FALLBACK", "success", "success", "success", True),
     ("PROMOTE_TEST_MODULE_ONLY_V1", "success", "success", "skipped", True),
+    ("PROMOTE_AFFECTED_INPUTS_V1", "success", "success", "success", True),
+    ("PROMOTE_AFFECTED_INPUTS_V1", "success", "success", "skipped", False),
+    ("PROMOTE_AFFECTED_INPUTS_V1", "success", "success", "failure", False),
     ("FULL_FALLBACK", "failure", "success", "success", False),
     *[("FULL_FALLBACK", "success", outcome, "success", False)
       for outcome in ("failure", "cancelled", "skipped", "")],

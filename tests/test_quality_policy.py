@@ -20,6 +20,9 @@ ROOT = Path(__file__).parents[1]
     ('README.md', 'healthy', 'true', 'push', 0),
     ('tests/test_example.py', 'healthy', 'false', 'push', 0),
     ('tests/test_example.py', 'healthy', 'true', 'schedule', 0),
+    ('scripts/package-size.py', 'healthy', 'true', 'push', 4),
+    ('src/switchstand/coordinator_worker_state.py', 'healthy', 'true', 'push', 4),
+    ('src/switchstand/coordinator_worker_state.py', 'healthy', 'true', 'pull_request', 6),
 ])
 def test_policy_skips_only_irrelevant_observations(
     tmp_path: Path, changed: str, history: str, enabled: str, event: str, expected_calls: int,
@@ -31,10 +34,22 @@ def test_policy_skips_only_irrelevant_observations(
         ).strip()
 
     git('init', '-q')
-    for path in ('.github/workflows/quality.yml', 'tests/test_example.py', 'README.md'):
+    for path in ('.github/workflows/quality.yml', 'tests/test_example.py', 'README.md',
+                 'scripts/package-size.py', 'tests/test_package_size.py',
+                 'src/switchstand/coordinator_worker_state.py'):
         destination = tmp_path / path
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text('def test_example(): pass\n' if path.endswith('.py') else 'base\n')
+    (tmp_path / 'tests/test_example.py').write_text(
+        'import switchstand.coordinator_worker_state\ndef test_example(): pass\n',
+    )
+    for module in ('affected_tests.py', 'full_suite_due.py'):
+        (tmp_path / 'src/switchstand' / module).write_text(
+            (ROOT / 'src/switchstand' / module).read_text(),
+        )
+    verifier = tmp_path / 'scripts/verify-quality-composition'
+    verifier.write_text((ROOT / 'scripts/verify-quality-composition').read_text())
+    verifier.chmod(0o755)
     git('add', '.')
     git('commit', '-qm', 'base')
     base = git('rev-parse', 'HEAD')
@@ -44,6 +59,17 @@ def test_policy_skips_only_irrelevant_observations(
     git('add', '.')
     git('commit', '-qm', 'candidate')
     head = git('rev-parse', 'HEAD')
+    if event == 'pull_request':
+        git('checkout', '-qb', 'advanced-base', base)
+        (tmp_path / 'tests/test_base_consumer.py').write_text(
+            'from switchstand.coordinator_worker_state import VALUE\n',
+        )
+        git('add', '.')
+        git('commit', '-qm', 'new base consumer')
+        base = git('rev-parse', 'HEAD')
+        git('update-ref', 'refs/remotes/origin/main', base)
+        git('merge', '--no-ff', '-m', 'verified composition', head)
+    execution = git('rev-parse', 'HEAD')
     tools = tmp_path / 'bin'
     tools.mkdir()
     (tools / 'python3').symlink_to(sys.executable)
@@ -53,7 +79,8 @@ def test_policy_skips_only_irrelevant_observations(
         #!/bin/bash
         echo call >> "$RUNNER_TEMP/gh-calls"
         test "$HISTORY" != unavailable || exit 1
-        if [[ "$*" == *total_count* ]]; then
+        if [[ "$*" == *pulls* ]]; then echo 0
+        elif [[ "$*" == *total_count* ]]; then
           if [[ "$*" == *event=schedule* ]]; then echo 0; else echo 1; fi
         elif [[ "$*" == *branch=main* ]]; then
           printf 'push\t%s\tsuccess\t2026-10-19T12:00:00+00:00\n' "$PUSH_BASE_SHA"
@@ -62,28 +89,35 @@ def test_policy_skips_only_irrelevant_observations(
     gh.chmod(0o755)
     workflow = (ROOT / '.github/workflows/quality.yml').read_text()
     policy = textwrap.dedent(workflow.split('        run: |\n', 1)[1].split('\n  quality_execution:', 1)[0])
+    policy = policy.replace('${{ github.event.pull_request.stack.position }}', '')
     environment = os.environ | {
         'PATH': f'{tools}:{os.environ["PATH"]}', 'PYTHONPATH': str(ROOT / 'src'),
         'RUNNER_TEMP': str(tmp_path), 'GITHUB_OUTPUT': str(tmp_path / 'outputs'),
-        'GITHUB_REPOSITORY': 'owner/repo', 'EVENT_KIND': event, 'EVENT_SHA': head,
+        'GITHUB_REPOSITORY': 'owner/repo', 'EVENT_KIND': event, 'EVENT_SHA': execution,
         'PUSH_BASE_SHA': base, 'PUSH_FORCED': 'false', 'DEFAULT_BRANCH': 'main',
         'REF_NAME': 'topic', 'SELECTIVE_FOREGROUND_ENABLED': enabled, 'HISTORY': history,
+        'PR_BASE_SHA': base, 'PR_HEAD_SHA': head, 'PR_BASE_OWNER': 'owner',
+        'PR_BASE_REF': 'main', 'PR_HEAD_REF': 'topic', 'PR_BASE_REPO': 'owner/repo',
+        'PR_HEAD_REPO': 'owner/repo', 'STACK_BASE_REF': 'main',
     }
-    # The workflow explicitly sets PYTHONPATH=src; point it at the actual planner.
-    (tmp_path / 'src').symlink_to(ROOT / 'src', target_is_directory=True)
     result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', policy], cwd=tmp_path,
                             env=environment, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     summary = json.loads(result.stdout)
-    health = expected_calls == 4
-    plan = validate_execution_tree(tmp_path, plan_exact(tmp_path, base, head), head)
+    health = expected_calls >= 4
+    plan = validate_execution_tree(tmp_path, plan_exact(tmp_path, base, execution), execution)
     expected = foreground_authority(plan, subject_verified=True, selector_health_clear=health)
     assert summary['authority'] == expected.mode
     assert summary['authority_reasons'] == list(expected.reasons)
     assert summary['planner'] == {key: value for key, value in json.loads(
         (tmp_path / 'exact-quality-plan.json').read_text(),
     ).items() if key != 'reasons_by_test' and key != 'basis_kind'}
-    assert summary['planner']['head'] == head
+    assert summary['planner']['head'] == execution
+    if event == 'pull_request':
+        assert summary['planner']['selected_tests'] == [
+            'tests/test_base_consumer.py', 'tests/test_example.py',
+        ]
+        assert summary['authority'] == 'PROMOTE_AFFECTED_INPUTS_V1'
     calls = tmp_path / 'gh-calls'
     assert (len(calls.read_text().splitlines()) if calls.exists() else 0) == expected_calls
     if expected_calls == 0:
