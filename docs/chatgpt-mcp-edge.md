@@ -1,5 +1,13 @@
 # ChatGPT MCP edge
 
+`project_create(api_version="1", operation_id, name)` creates one empty flat canonical project
+under current authenticated workspace admission. Trimmed names require 1–500 non-NUL characters;
+names may repeat deliberately. Retain the returned `project_id` for existing placement tools and
+retain `operation_id` plus name: identical retries return the same receipt, while a fresh operation
+creates another project. The atomic PostgreSQL receipt contains no invented work/task identity.
+An uncertain commit returns UNKNOWN/reconcile; retry only the retained identity and request.
+No work or membership is created, and an unavailable canonical runtime never falls back to a provider.
+
 This is Switchstand's authenticated HTTP/OAuth edge for ordinary ChatGPT and
 Codex clients. It is distinct from the launcher-bound managed Codex STDIO
 surface and from the local development MCP. Landing edge code or documentation

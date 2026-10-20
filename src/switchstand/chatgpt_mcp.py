@@ -52,6 +52,7 @@ from .grants import (
     GuardOutcome,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedProjectCreate,
     ProtectedRelation,
     ProtectedUpdate,
     RelationPatch,
@@ -244,6 +245,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
+    "project_create",
     "work_append",
     "work_create",
     "human_trajectory_record",
@@ -655,6 +657,26 @@ def build_ordinary_tools(
             confirm_cancels_review=confirm_cancels_review,
         ))
         audited("work_append", f"{work_id}:purpose={purpose}", result.status)
+        return result
+
+    async def project_create(
+        api_version: Literal["1"], operation_id: UUID, name: str,
+    ) -> GuardOutcome:
+        """Create an empty flat project. Names may repeat; retain project_id and operation_id.
+
+        An exact retained operation/name retry returns the same receipt. A fresh operation
+        deliberately creates another project, even with the same name. Use existing placement
+        tools with the returned project_id; no work or membership is created here.
+        """
+        correlate(None)
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("project_create", None, operation_id)
+        result = await service.project_create(ProtectedProjectCreate(
+            api_version=api_version, operation_id=operation_id, name=name,
+            grant_version=grant_version or 1,
+        ))
+        audited("project_create", None, result.status)
         return result
 
     async def work_create(
@@ -1746,6 +1768,7 @@ def build_ordinary_tools(
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
+        ("project_create", project_create),
         ("file_bug", file_bug),
         ("file_feature", file_feature),
         ("file_process", file_process),
