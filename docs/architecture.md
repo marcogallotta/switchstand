@@ -115,6 +115,14 @@ Direct `package_work_id` Human Review rows add prepared/decided point evidence a
 waits. The report clips validated aware intervals to the admission-to-capture wall window and unions
 overlaps; GitHub subjects feed that same union rather than being summed. The remaining wall time is
 explicitly unobserved, not idle time or a critical path, and unsafe clocks or intervals fail closed.
+The additive `delivery_timing` projection locates complement gaps and shows ordered source-identified
+clipped intervals, their cost sum, and the largest interval and unexplained gap. Its 30-minute filter
+is diagnostic, not an SLA or liveness claim. Request-to-bound, bound-run and current exact-review
+request/receipt/verdict envelopes include waits; they are not active effort. Managed/review intervals
+require both recorded boundaries; unbound/open receipts do not fill gaps. Existing open Human Review
+waits end at capture explicitly. Resolved failure-open envelopes stay distinct from queue waits. Source limits and
+missing history remain in coverage; this projection is always partial, even when interval arithmetic
+is known. MCP service cohorts stay separate and do not explain a gap. No new persistence is introduced.
 When the inert Human Review store is not installed, the report keeps that source explicitly
 `UNKNOWN / SOURCE_TABLE_UNAVAILABLE` and continues the same read-only snapshot without fabricating
 review evidence.

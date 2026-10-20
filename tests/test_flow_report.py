@@ -212,6 +212,11 @@ async def test_exact_managed_run_receipts_are_bounded_private_attempt_evidence(
         "private objective", "private", "contract", "private summary", "private evidence",
     ))
     assert result["elapsed"]["observed_interval_union_ms"] == 20_000
+    intervals = result["delivery_timing"]["intervals"]
+    assert [(row["kind"], row["duration_ms"]) for row in intervals] == [
+        ("REQUEST_TO_BOUND", 5_000), ("BOUND_RUN_ENVELOPE", 15_000),
+    ]
+    assert all(row["source_id"] == str(request_id) for row in intervals)
     assert result["aggregate_learning"] == {
         "status": "UNKNOWN",
         "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
@@ -487,6 +492,15 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     server = build_chatgpt_server(subject)
     default = await server.call_tool("observability_get", {"work_id": str(target)})
     assert default.structured_content["failures"] == result["failures"]
+    timing = default.structured_content["delivery_timing"]
+    assert timing["intervals"][0]["source_id"] == str(target_failure.attempt_id)
+    assert timing["intervals"][0]["kind"] == "RECORDED_FAILURE_OPEN"
+    concise = flow_report.render(default.structured_content, "concise")
+    assert f"delivery_interval source=failure_journal source_id={target_failure.attempt_id}" in concise
+    assert "unexplained_gap start=" in concise
+    assert "delivery_largest_gap=" in concise
+    assert "diagnostic_filter_ms=1800000" in concise
+    assert "NOT_ACTIVE_EFFORT_OR_CAUSE" in concise
     detailed = await server.call_tool("observability_get", {
         "work_id": str(target), "include_failure_detail": True,
     })
