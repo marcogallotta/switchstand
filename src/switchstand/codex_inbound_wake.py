@@ -175,22 +175,27 @@ class InboundWake:
 
     async def _run(self, recipient: UUID, event: asyncio.Event):
         try:
-            result = await self.mailboxes.by_endpoint_id(recipient)
-            if result.mailbox is None:
-                raise RuntimeError("UNKNOWN: recipient binding unavailable")
-            binding = result.mailbox
             for attempt in range(2):
                 try:
                     async with DaemonConnection(self.socket, event.set) as rpc:
-                        identity = await resolve_thread(rpc, binding)
-                        rpc.thread_id = identity
-                        # Attach before the decisive read, preserving all current configuration.
-                        await rpc.call("thread/resume", {"threadId": identity, "excludeTurns": True})
+                        binding = None
+                        identity = ""
                         event.set()  # Reconnection also reconciles arrivals during downtime.
                         while True:
                             await event.wait()
                             event.clear()  # Later arrivals remain dirty throughout this pass.
-                            await self._reconcile(rpc, binding, identity)
+                            result = await self.mailboxes.by_endpoint_id(recipient)
+                            if result.mailbox is None:
+                                raise RuntimeError("UNKNOWN: recipient binding unavailable")
+                            if result.mailbox != binding:
+                                binding = result.mailbox
+                                identity = await resolve_thread(rpc, binding)
+                                rpc.thread_id = identity
+                                # Attach the current generation before its decisive status read.
+                                await rpc.call("thread/resume", {
+                                    "threadId": identity, "excludeTurns": True,
+                                })
+                            await self._reconcile(rpc, result.mailbox, identity)
                 except (ConnectionError, OSError, TimeoutError, ConnectionClosed):
                     if attempt:
                         raise
@@ -260,6 +265,9 @@ class InboundWake:
             }))["thread"]["status"]["type"]
             if status != "idle":
                 self.outcomes[recipient] = f"BUSY:{status}"
+                return
+            if not self.enabled():
+                self.outcomes[recipient] = "STOP"
                 return
             text = MARKER + json.dumps([str(delivery) for delivery in remaining]) + (
                 "\nInbound durable Switchstand mailbox message. Preserve your original objective "

@@ -54,6 +54,88 @@ async def test_idle_uses_delivery_marker_and_preserves_config(subject):
     assert starts[0]["input"][0]["text"].startswith(MARKER + json.dumps([str(delivery)]))
 
 
+async def test_disable_during_final_status_read_never_starts(subject):
+    wake, rpc, binding, identity, _delivery = subject
+    original = rpc.call.side_effect
+    reads = 0
+    async def call(method, params):
+        nonlocal reads
+        if method == "thread/read":
+            reads += 1
+            if reads == 2:
+                wake.control.write_text('{"enabled":false,"socket":"/unused"}')
+        return await original(method, params)
+    rpc.call.side_effect = call
+    await wake._reconcile(rpc, binding, identity)
+    assert reads == 2 and wake.outcomes[binding.endpoint_id] == "STOP"
+    assert not any(call.args[0] == "turn/start" for call in rpc.call.call_args_list)
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+async def test_later_generation_rebinds_without_retrying_uncertain_start(
+    subject, monkeypatch, uncertain,
+):
+    import switchstand.codex_inbound_wake as module
+    wake, rpc, old, identity, delivery = subject
+    next_identity = str(uuid4())
+    current = old
+    new = old.model_copy(update={"generation": 2,
+        "session_key": chat_session_key(f"codex:{next_identity}")})
+    first_pass = asyncio.Event()
+    started = asyncio.Event()
+    async def load(_recipient):
+        return SimpleNamespace(mailbox=current)
+    wake.mailboxes = SimpleNamespace(by_endpoint_id=AsyncMock(side_effect=load))
+    original = rpc.call.side_effect
+    async def call(method, params):
+        if method == "thread/resume":
+            return {}
+        if method == "thread/read" and params["threadId"] == identity and not uncertain:
+            first_pass.set()
+            return {"thread": {"status": {"type": "active"}}}
+        if method == "turn/start":
+            started.set()
+            if uncertain:
+                raise ConnectionError("response lost after send")
+        return await original(method, params)
+    rpc.call.side_effect = call
+    class Connection:
+        def __init__(self, *_args):
+            pass
+        async def __aenter__(self):
+            return rpc
+        async def __aexit__(self, *_args):
+            return None
+    monkeypatch.setattr(module, "DaemonConnection", Connection)
+    resolver = AsyncMock(side_effect=lambda _rpc, binding:
+                         identity if binding == old else next_identity)
+    monkeypatch.setattr(module, "resolve_thread", resolver)
+    notification = SimpleNamespace(delivery_id=delivery, recipient_work_id=old.endpoint_id)
+    wake.signal(notification, True)
+    task = wake.tasks[old.endpoint_id]
+    if uncertain:
+        await asyncio.wait_for(task, 1)
+        assert wake.outcomes[old.endpoint_id].startswith("UNKNOWN:")
+    else:
+        await asyncio.wait_for(first_pass.wait(), 1)
+    current = new
+    next_delivery = uuid4()
+    wake.messages.pending_delivery_ids.return_value = (next_delivery,)
+    notification = SimpleNamespace(delivery_id=next_delivery, recipient_work_id=old.endpoint_id)
+    wake.signal(notification, True)
+    if uncertain:
+        await asyncio.sleep(0)
+        assert wake.tasks[old.endpoint_id] is task and task.done()
+        assert resolver.await_count == 1
+    else:
+        await asyncio.wait_for(started.wait(), 1)
+        assert resolver.await_args.args[1] == new
+    starts = [call.args[1]["threadId"] for call in rpc.call.call_args_list
+              if call.args[0] == "turn/start"]
+    assert starts == [identity if uncertain else next_identity]
+    await wake.close()
+
+
 @pytest.mark.parametrize("boundary", ["busy", "stop", "stale", "wait", "old_delivery"])
 async def test_dispatch_boundaries_never_start(subject, boundary):
     wake, rpc, binding, identity, _delivery = subject
