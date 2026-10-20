@@ -31,10 +31,11 @@ append/create/update/relation operations; registered-name `agent_message_*` mess
 required-result persistence; and repository bundle transport. Provider-era effects receive any
 provider readback through the exact pre-cutover deployment while its provider is still configured.
 Fixed reporting tools route bugs, missing features, process complaints, avoidable performance
-latency, Human Review feedback, and the all-event Fork Management trial to separate
-server-selected canonical projects. Fork Management reuses this reporting path for assignments,
-timestamped checks (including no findings), and outcomes under the
-[supervision contract](coordinator-tracker-contract.md#fork-management-feedback-trial).
+latency, Human Review feedback, and Fork Management to separate server-selected canonical
+projects. Fork Management reuses this reporting path for one concise assignment checkpoint
+plus material exceptions/interventions and outcomes under the
+[supervision contract](coordinator-tracker-contract.md#fork-management-checkpoints-and-exceptions).
+Routine checks do not each create a report; a logging receipt does not prove supervision.
 They share one
 private create path with explicit public-argument forwarding (audit callbacks stay local)
 and a narrow `file_issue` grant operation; callers cannot select projects or

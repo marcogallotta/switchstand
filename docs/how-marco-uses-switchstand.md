@@ -68,9 +68,11 @@ does not require launching another fork to admit its own launch. Missing evidenc
 Do not claim a repository instruction overrides a higher-priority mandatory main-agent
 operation, disables host compaction, or supplies an unavailable native capability.
 
-The initial Fork Management trial logs all assignments/checks/outcomes through the existing
-fixed `file_fork_management` feedback adapter. Its category is `FORK_MANAGEMENT`; ordinary
-edge and managed profiles read `SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
+Fork Management records one concise checkpoint per bounded assignment plus material exceptions
+and outcomes through the existing fixed `file_fork_management` feedback adapter; routine checks
+do not each create a report. A logging receipt does not prove actual supervision. Its category
+is `FORK_MANAGEMENT`; ordinary edge and managed profiles read
+`SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
 canonical project destination. Provisioning/configuring that destination and activating a
 runtime are separate effects. Missing configuration truthfully denies reporting; source
 landing does not establish collection. The later ticker is not part of this implementation.

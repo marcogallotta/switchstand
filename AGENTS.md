@@ -80,8 +80,8 @@ reads, Tracker/mailbox/feedback operations, investigation, design, implementatio
 review, and integration belong in forks; requirements elsewhere to read or act are fulfilled
 there. Workers execute their bounded assignments directly; recursive forks are not required.
 Dispatch includes existing required resource admission, returning only GO/WAIT. Follow
-[active supervision and the all-event Fork Management trial](docs/coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence)
-for periodic checks, intervention, and timestamped assignment/check/outcome feedback. Reviews
+[active supervision and concise Fork Management checkpoints](docs/coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence)
+for periodic checks, intervention, and checkpoint/exception/outcome feedback. Reviews
 use fresh independent native forks; never the `review_*` tools. Keep parent context and
 Marco's screen small.
 
