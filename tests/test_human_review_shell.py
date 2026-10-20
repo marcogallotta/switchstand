@@ -134,12 +134,14 @@ def test_shell_is_password_authenticated_and_renders_server_owned_consequence(sh
     client.cookies.clear()
     locked = client.get(path)
     assert locked.status_code == 401
+    assert locked.headers["referrer-policy"] == "same-origin"
     assert 'type="password"' in locked.text and "username" not in locked.text
     assert client.get(path, headers={"Authorization": "Bearer irrelevant"}).status_code == 401
     client.cookies.update(session)
     response = client.get(path, headers=auth)
 
     assert response.status_code == 200
+    assert response.headers["referrer-policy"] == "same-origin"
     assert "land &lt;reviewed&gt; code" in response.text
     assert "READY_FOR_IMPLEMENTATION_ONLY" in response.text
     assert response.text.count('<button name="decision"') == 2
@@ -174,6 +176,8 @@ def test_exact_origin_and_bound_fields_fail_closed_before_decision(shell):
     assert client.post("/human-review/submit", headers=auth, data=form).status_code == 403
     wrong_origin = {**auth, "Origin": "https://lookalike.example.test"}
     assert client.post("/human-review/submit", headers=wrong_origin, data=form).status_code == 403
+    assert client.post("/human-review/submit", headers={"Origin": "null"},
+        data=form).status_code == 403
     exact = {**auth, "Origin": ORIGIN}
     changed = {**form, "consequence_digest": "0" * 64}
     response = client.post("/human-review/submit", headers=exact, data=changed)
@@ -232,6 +236,17 @@ def test_wrong_or_oversized_password_fails_closed(shell, password):
     response = client.post(f"/human-review/{WORK}?revision={REVISION}",
         headers={"Origin": ORIGIN}, data={"password": password})
     assert response.status_code == 401
+    assert not client.cookies
+    assert state.submissions == []
+
+
+@pytest.mark.parametrize("origin", [None, "null", "https://lookalike.example.test"])
+def test_password_login_rejects_missing_null_and_foreign_origin(shell, origin):
+    client, state, _ = shell
+    client.cookies.clear()
+    response = client.post(f"/human-review/{WORK}?revision={REVISION}",
+        headers={} if origin is None else {"Origin": origin}, data={"password": PASSWORD})
+    assert response.status_code == 403
     assert not client.cookies
     assert state.submissions == []
 

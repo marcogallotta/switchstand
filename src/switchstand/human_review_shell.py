@@ -66,7 +66,8 @@ def _page(body: str, *, status: int = 200) -> HTMLResponse:
                 "default-src 'none'; style-src 'unsafe-inline'; "
                 "form-action 'self'; frame-ancestors 'none'"
             ),
-            "Referrer-Policy": "no-referrer",
+            # no-referrer makes browser form POSTs send Origin: null.
+            "Referrer-Policy": "same-origin",
             "X-Content-Type-Options": "nosniff",
             "X-Frame-Options": "DENY",
         },
