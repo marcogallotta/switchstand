@@ -519,7 +519,15 @@ async def _failures(
             }}
     items.reverse()
     truncated = total > len(items)
+    capture_coverage = {"capture_coverage": {
+        "status": "UNKNOWN",
+        "reason": "NO_DURABLE_ESCAPE_EVIDENCE" if total == 0 else "CAPTURE_COVERAGE_UNPROVEN",
+        "supported": ["STABLE_AUTH_ACTIVATION_UNTIL_DURABLE_PASS"],
+        "uncovered": ["RUNTIME_AFTER_PASS", "OTHER_DEPLOYMENT_PATHS", "UNAVAILABLE_STORAGE",
+                      "NO_FOLLOWUP_INVOCATION"],
+    }} if include_failure_detail else {}
     return {
+        **capture_coverage,
         "status": "PARTIAL" if truncated else "KNOWN",
         "reason": "MOST_RECENT_RECORDS_ONLY" if truncated else None,
         "correlation": "DIRECT_OWNER_WORK_ID", "items": items,

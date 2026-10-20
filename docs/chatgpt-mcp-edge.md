@@ -590,3 +590,17 @@ refresh, or fresh chat without reinstall is insufficient. After reinstalling,
 start a fresh chat and verify the exact schema exposed to that client and the
 affected behavior before claiming the change is active. This is a standing
 requirement for all future ChatGPT MCP work, not only initial launch.
+
+Stable-auth deployment escape evidence requires `activate --work-id <exact WorkId>` alongside the
+existing activation arguments. Identity and a private pointer are durable before service effects;
+the exposure marker precedes candidate ungating and survives rollback. Before another activation,
+`switchstand-stable-auth-deploy reconcile-existing-attempt` reconciles that pointer under the same
+lock without service, route, gate or OAuth effects. The next activation also performs this step.
+Pre-boundary aborts do not become escapes; a failed marker write never invokes candidate ungating.
+Uncertain exposure freezes sanitized receipt evidence and an exact retry payload in the existing
+failure queue. Failed handoff preserves the pointer and blocks new activation effects. PENDING_SYNC
+is not canonical until existing journal synchronization/readback succeeds. Responsible-owner
+investigation/action and verified clearing belong in append-only failure resolutions, visible in
+the existing opt-in failure detail view. This path neither wakes itself nor proves candidate cause,
+continuous health, or outage duration. Runtime failures after durable PASS, other deployment paths
+and unavailable storage remain uncovered. Disposable tests are qualification, not production acceptance.
