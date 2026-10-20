@@ -36,6 +36,71 @@ do not establish that an external effect occurred.
 
 ## Durable messaging and feedback
 
+### Feedback capture and triage
+
+Capture concrete failures encountered doing assigned work, including author-observed code
+smells/overengineering, incomplete or wrong specs, alarming review findings, serious corrected
+near misses, deployment/resource failures, blocked workarounds, and avoidable process/test delay.
+Try to notice hidden friction without waiting for a reprimand: repeated rereading, squeezing
+updates to fit, reconstructing current commitments, or bookkeeping displacing execution. Record
+the actual obstruction; task length or legitimate difficult implementation/review alone is not
+a failure. A harmless corrected typo stays local. No compulsory audit or RCA before reporting.
+
+Capture the underlying issue once. Reuse a known issue through authorized work/results and the
+existing parent/owner handoff; add useful recurrence evidence instead of filing the same issue
+for every exchange. Keep the known-ID check bounded. Use the applicable existing Tracker Issues
+V1-A `file_*` surface for a distinct issue, inspecting the full result and definitive receipt.
+Those filing tools create before suggesting duplicates: their suggestions do not prevent a new
+record. Do not build a parallel register or turn every observation into a new task.
+
+Briefly give expected versus observed behavior, affected reference, consequence, approximate time
+lost, workaround, and smallest clearing action/owner pickup needed. Even two avoidable minutes
+matter. Label time as measured, estimated/range, or UNKNOWN; missing timing or root cause does not
+block useful evidence. Separate human effort, agent effort, and critical-path elapsed time. Count
+recurrence/cumulative cost when supported; overlapping waits are not added as wall time. Distinguish
+observation from hypothesis. Do not delay assigned work to reconstruct an exhaustive timeline.
+
+During the bounded trial, rate every captured report on two independent LOW/MEDIUM/HIGH axes,
+with brief reasons in the existing notes/result:
+
+- **Information quality:** usefulness and support for understanding/correction. HIGH is concrete
+  and supported; MEDIUM has useful information with material gaps; LOW lacks usable supporting
+  information. Severity, polished prose, duplication, and missing precise timing do not determine
+  quality. A recurrence can add valuable evidence.
+- **Advisory priority:** urgency/importance from consequences, blocked work, recurrence and
+  cumulative time. HIGH needs prompt attention; MEDIUM is actionable without urgent impact;
+  LOW has limited current impact. Preserve human-set priority; no automatic numeric mapping.
+  Weakly described credible human blockers still need immediate attention and evidence gathering.
+
+Preserve original attributable ratings alongside later assessment. Retain all trial reports;
+no automatic cull, deletion, or ignoring LOW/MEDIUM. Bound cohort and review effort before a
+trial. Independently assess underlying evidence before seeing reporter ratings, across bands
+and sources; compare later outcomes where available. Check bounded ordinary-work episodes that
+produced NO report too, to find evidenced missed signals. Count misses, unsupported reports,
+disagreement, missing evidence, and reporting/review overhead. Agent agreement is not ground
+truth; consequential disagreement returns to Marco. A small synthetic test proves neither
+natural adoption nor rare-failure safety. Filtering, deferral, and prospective non-reporting
+remain separate later human decisions; captured reports alone cannot validate unseen failures.
+
+Use affected authorized work/result and the existing parent handoff. The accepting parent obtains
+correction-owner disposition. For a foreign known issue, send evidence to its owner rather than
+editing it without authority. Missing pickup/route remains an explicit unavailable obligation.
+An active human-work blocker, serious live damage, or credible severe near miss gets immediate
+attention through the existing Codex Coordinator route, with impact and needed action; tell Marco
+if his work is blocked or pickup fails. Continue unaffected authorized work. Existing incident
+rules still apply; reporting grants no repair, deployment, or takeover authority.
+
+Triage must produce an evidenced closure, proven same-cause duplicate, accepting owner with next
+action, reasoned deferral with revisit condition, or exact blocker and clearing condition.
+NEW/RELATED classification or promotion alone does not prove exit from TRIAGE, priority assignment,
+owner pickup, or repair. Distinguish recorded, sent, accepted, corrected, and verified outcomes.
+
+Preserve actual Human Review decisions on their affected work. A separate feedback issue needs
+a concrete failure or reusable lesson; approval, frustration, apologies, and status alone are
+not new issues. Respect STOP and explicit no-logging direction. No random exchange sampling or
+mandatory per-reprimand/per-Human-Review issue. Higher-priority active session instructions remain
+binding until corrected at their source; editing this document does not retroactively waive them.
+
 Durable message tools are the current agent-to-agent messaging surface.
 Ordinary interactive agents use only the `agent_message_*` family and address
 an immutable registered agent name. Managed task-bound runtimes retain the
