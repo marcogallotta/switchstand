@@ -713,7 +713,7 @@ The retained continuity hook gates opted-in PILOT runs on a dedicated final repl
 exactly one permitted yield marker. ASSIGNMENT accepts ASSIGNMENT_COMPLETE, REAL_BLOCKER,
 HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. Ordinary prose remains blocked;
 this hook does not inspect work obligations or use `stop_hook_active` as an escape. The separate
-mailbox hook honors that escape after one continuation and passes explicit USER_STOP. Neither
+mailbox hook honors that escape after one continuation; it does not inspect yield markers. Neither
 hook mutates obligations or certifies completion or recipient pickup. The optional obligations
 projection above is read-only capability, not enforcement by these retained hooks. This is not
 a scheduler or an autonomous wake mechanism.
