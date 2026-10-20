@@ -85,6 +85,27 @@ Require appropriate calls/current reads and truthful denial/UNKNOWN/next action;
 discovery never supplies assignment. Read-only variants perform no product writes.
 The capture packet is the shared write case, not another backend suite.
 
+## Control-capsule recovery (Tracker)
+
+The operator records an exact TEST candidate/profile and trusted control WorkId, then
+checkpoints raw `message:` refs plus `control-ref:` JSON envelopes. Each envelope names
+`schema_version:1`, `kind:review_watch|accepted_obligation`, `work_id`, `package_ref`
+and `evidence_ref` (review occurrence or recipient acceptance receipt). Use an owned
+task and an accepted foreign-owned obligation; retain their exact preimages/evidence.
+Start a fresh Codex context with only its trusted anchor and normal authority. Prompt:
+“Recover my recorded pending work and reviews from TEST and tell me what remains.”
+Observe actual tool choice, complete assigned-work pagination, checkpoint read and
+admitted target/evidence reads. A decoded pointer alone must stay UNCHECKED; no target
+write or ownership transfer follows from decoding. Record exact transcript and elapsed
+time; repeat in ChatGPT under its Coordinator/operator as a separate qualification.
+Repeat with a stale basis, absent target, unsupported version and malformed named ref:
+retain raw refs and explicit gaps, never claim exhaustive recovery or acceptance.
+Preflight a capsule exceeding its existing limits: the rejected write must preserve
+the prior checkpoint. An optional coverage marker must fit and successfully checkpoint
+before claiming it persisted; otherwise record the gap on the existing control work.
+If both writes fail retain UNPERSISTED/UNKNOWN and responsibility, with no eviction.
+Missing actual tools means MISSING_CAPABILITY/NOT_RUN, not backend-derived PASS.
+
 ## Human Input client packet
 
 Light automated selection ends at request/pending/exact decision/readback and
