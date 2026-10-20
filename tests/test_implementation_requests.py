@@ -7,10 +7,11 @@ from uuid import UUID, uuid4
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.canonical_relations import work_dependencies
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -23,6 +24,7 @@ from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.human_reviews import HumanReviewConsequence, HumanReviewState
 from switchstand.human_trajectory import HumanTrajectoryData, HumanTrajectoryStore, SourceKind
 from switchstand.implementation_requests import ImplementationRequestState
+from switchstand.priority_claims import NewPriorityClaim, PriorityClaimRepository
 from switchstand.reviews import BaselineReviewProof
 from switchstand.state import PostgresState
 from switchstand.task_runs import task_run_requests
@@ -260,3 +262,174 @@ async def test_opt_in_hihr_invalid_or_missing_binding_never_dispatches(
     assert (result.status, result.reason, await request_count(engine)) == (
         expected_status, expected_reason, 0,
     )
+
+
+@pytest.mark.parametrize("gate", ["revision", "completed", "lifecycle", "grant", "grant_version", "hold", "review", "unknown", "baseline", "trajectory", "human_hold", "dependency"])
+async def test_bind_rechecks_admitted_implementation(subject, monkeypatch, gate):
+    from test_task_runs import receipt
+
+    from switchstand.human_reviews import human_review_consequences
+    from switchstand.task_runs import task_run_executions
+
+    facade, reviews, engine, grant, occurrences = subject
+    if gate in {"baseline", "trajectory"}:
+        first = await _trajectory(engine)
+        marker = f"hihr/1.0/trajectory/{PACKAGE}/{first.revision.trajectory_id}"
+        approved = await _approved_v2(reviews, occurrences, (marker,))
+    else:
+        approved = await approve(reviews)
+    if gate == "dependency":
+        dependency = uuid4()
+        await PostgresState(engine).bind_reserved(dependency, "local", str(dependency))
+        await facade.works.create(CurrentWork(dependency, "Dependency", False, "fixture", lifecycle_state="CURRENT"))
+        async with engine.begin() as connection:
+            await connection.execute(insert(work_dependencies).values(work_id=PACKAGE, depends_on_work_id=dependency))
+    admitted = await facade.request(PRINCIPAL, uuid4(), PACKAGE, approved.package_revision)
+    assert admitted.status == "APPLIED"
+    monkeypatch.setattr("switchstand.reviews.ReviewOccurrenceState", lambda *args: occurrences)
+    if gate in {"revision", "completed", "lifecycle", "hold"}:
+        table = human_review_consequences if gate == "hold" else canonical_work
+        changes = {"revision": {"row_version": 2}, "completed": {"completed": True},
+                   "lifecycle": {"lifecycle_state": "UNKNOWN"},
+                   "hold": {"decision": "HOLD", "state": "HOLD"}}
+        async with engine.begin() as connection:
+            await connection.execute(update(table).values(**changes[gate]))
+    elif gate in {"grant", "grant_version"}:
+        await GrantState(engine).issue(grant.model_copy(update={
+            "id": uuid4(), "version": 2,
+            "state": "revoked" if gate == "grant" else "active",
+        }), 1)
+    elif gate == "human_hold":
+        await PriorityClaimRepository(engine).record(NewPriorityClaim(uuid4(), "HUMAN_PRIORITY", "WORK", PACKAGE, "HOLD", "Pause", "Marco fixture", "fixture:hold"))
+    elif gate == "dependency":
+        async with engine.begin() as connection:
+            await connection.execute(update(canonical_work).where(canonical_work.c.work_id == dependency).values(lifecycle_state="TERMINAL"))
+    elif gate == "trajectory":
+        await _trajectory(engine, first.revision.trajectory_id, 2)
+    elif gate == "baseline":
+        occurrences.baseline_pass_status_in_transaction.return_value = BaselineReviewProof(
+            status="NOT_PASS", reason="preservation evidence changed"
+        )
+    else:
+        occurrences.pass_status_in_transaction.return_value = "UNKNOWN" if gate == "unknown" else "NOT_PASS"
+    bound = await facade.tasks.bind_start(admitted.task_run_request_id, receipt(PACKAGE))
+    assert bound.status == ("unknown" if gate in {"unknown", "dependency"} else "stale" if gate in {"revision", "grant", "grant_version"} else "denied")
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(task_run_executions)) == 0
+
+
+@pytest.mark.skipif(os.getenv("SWITCHSTAND_NATIVE_IMPLEMENTATION_E2E") != "1", reason="explicit native E2E opt-in")
+@pytest.mark.parametrize("blocked", [False, True])
+async def test_native_implementation_launch(subject, tmp_path, monkeypatch, blocked):
+    import sys
+    import time
+    from pathlib import Path
+
+    import test_coordinator_workers as host
+    from test_reviews import test_baseline_review_round_trip_binds_assessment_and_projects_proof
+
+    from switchstand.agent_mailboxes import AgentMailboxState
+    from switchstand.messages import MessageState
+    from switchstand.reviews import ReviewOccurrenceState, ReviewPolicy
+    from switchstand.task_runs import TaskRunState, task_run_executions
+
+    facade, _, engine, _, _ = subject
+    package = PACKAGE
+    occurrences = ReviewOccurrenceState(facade.works, AgentMailboxState(engine), ReviewPolicy(version="review-policy-v1"))
+    await test_baseline_review_round_trip_binds_assessment_and_projects_proof((
+        occurrences, MessageState(engine, GrantState(engine)), occurrences.mailboxes, package, engine,
+    ))
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(task_run_requests))).mappings().one()
+        assert await connection.scalar(select(func.count()).select_from(task_run_executions)) == 0
+    monkeypatch.setattr(host, "WORK", package)
+    home, primary, writer, base = host.repository(tmp_path, tmp_path / "unused-gate")
+    control = home / ".local/state/switchstand/control/controls" / base
+    host.git(control, "config", "user.name", "Worker Test")
+    host.git(control, "config", "user.email", "worker@example.invalid")
+    if blocked:
+        async with engine.begin() as connection:
+            await connection.execute(update(canonical_work).where(
+                canonical_work.c.work_id == package
+            ).values(completed=True))
+    # Only provisioning/development transport is adapted; reservation, bind,
+    # supervision, native Codex, durable worker state and terminal result are real.
+    code = r"""
+import asyncio, os, subprocess, sys
+from pathlib import Path
+from uuid import UUID, uuid4
+from sqlalchemy.ext.asyncio import create_async_engine
+from switchstand import launch
+from switchstand.canonical_work import CanonicalWorkRepository
+from switchstand.development import DevelopmentBoundary
+from switchstand.messages import RuntimeCurrentness
+from switchstand.task_run_bind import bind_task_start
+from switchstand.task_runs import AgentTaskResult, TaskRunState
+url, control, native_home = sys.argv[1:4]
+args = launch.parser().parse_args(sys.argv[4:])
+control = Path(control)
+package = UUID(args.active)
+writer = Path(os.environ["HOME"]) / ".local/state/switchstand/worktrees" / f"switchstand-task-{package}"
+branch = f"v2-task-{package}"
+subprocess.run(["git", "-C", str(control), "worktree", "add", "-q", "-b", branch, str(writer), args.commit], check=True)
+git_dir = Path(subprocess.check_output(["git", "-C", str(writer), "rev-parse", "--absolute-git-dir"], text=True).strip())
+async def bind(*values):
+    engine = create_async_engine(url)
+    try:
+        return await bind_task_start(engine, args.task_request_id, values[3])
+    finally:
+        await engine.dispose()
+def local_bind(*values):
+    result = asyncio.run(bind(*values))
+    if result.status == "ok":
+        assert asyncio.run(bind(*values)) == result  # Exact-ID lost-reply reconciliation.
+    if result.status != "ok":
+        raise RuntimeError(result.model_dump_json())
+launch.provision = lambda *a: launch.Authority(package, ())
+launch.bind_task_start = local_bind
+launch.prepare_development = lambda *a: DevelopmentBoundary("fixture", "fixture", "fixture", "fixture")
+launch.cleanup_development = lambda *a: None
+prepared = launch.prepare_managed_run(control, writer, branch, args.active, (), dict(os.environ), git_dir, package, args.task_request_id)
+(writer / "AGENTS.md").write_text("This file is the sole project instruction source. Do not read global CLAUDE.md. No fanout. Only create native.txt. The fixture supervisor commits the output.\n")
+env = dict(os.environ, HOME=native_home, SWITCHSTAND_WORKTREE=str(writer))
+command = ["/usr/bin/timeout", "--kill-after=2", "90", native_home + "/.local/state/switchstand/codex/updater-bin/bin/codex", "exec", "--ephemeral", "--skip-git-repo-check", "--sandbox", "workspace-write", "-C", str(writer), "-c", "mcp_servers={}", "Create native.txt containing native implementation proof. Do not commit; the fixture supervisor commits your output. Do no other work. Do not use subagents or MCP."]
+(git_dir / "native-started").write_text(str(prepared.receipt.run_id))
+status = launch.supervise_codex(command, env, prepared.development, prepared.receipt.run_id)
+if status:
+    raise SystemExit(status)
+subprocess.run(["git", "-C", str(writer), "add", "native.txt", "AGENTS.md"], check=True)
+subprocess.run(["git", "-C", str(writer), "commit", "-q", "-m", "Native implementation fixture"], check=True)
+head = subprocess.check_output(["git", "-C", str(writer), "rev-parse", "HEAD"], text=True).strip()
+async def finish():
+    engine = create_async_engine(url)
+    try:
+        run = str(prepared.receipt.run_id)
+        result = await TaskRunState(engine, CanonicalWorkRepository(engine)).submit_result(args.task_request_id, uuid4(), RuntimeCurrentness(generation=run, current_generation=run), AgentTaskResult(api_version="1", outcome="PASS", summary="Native implementer committed candidate", evidence_refs=("git:" + head,)))
+        assert result.status == "ok", result
+    finally:
+        await engine.dispose()
+asyncio.run(finish())
+"""
+    subject = host.CoordinatorWorkers(home, state_root=tmp_path / "worker-state",
+        runtime_source=host.SOURCE / "src", launcher=("/usr/bin/env", "PYTHONPATH=" + str(host.SOURCE / "src"), sys.executable, "-c", code,
+        engine.url.render_as_string(hide_password=False), str(control), os.environ["HOME"]))
+    operation = uuid4()
+    starts = await asyncio.gather(*(asyncio.to_thread(
+        subject.spawn, operation, package, "native implementation fixture", row["request_id"],
+    ) for _ in range(2)))
+    assert sorted(value.status for value in starts) == ["replayed", "started"]
+    assert subject.spawn(operation, package, "native implementation fixture", uuid4()).reason == "operation_identity_conflict"
+    deadline = time.monotonic() + 180
+    while (observed := subject.status(operation)).status == "running" and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+    record = subject.store.load(operation)
+    git_dir = Path(host.git(writer, "rev-parse", "--absolute-git-dir"))
+    assert (git_dir / "native-started").exists() is not blocked
+    assert observed.status == ("failed" if blocked else "completed"), Path(record.log).read_text()[-4000:]
+    stored = await TaskRunState(engine, occurrences.works).get(row["request_id"])
+    assert (stored.request.terminal_result_id is None) is blocked
+    if not blocked:
+        evidence = await TaskRunState(engine, occurrences.works).terminal_evidence(stored.request.terminal_result_id)
+        assert evidence.result.evidence_refs == ("git:" + observed.candidate_sha,)
+        assert (writer / "native.txt").read_text().strip() == "native implementation proof"
+    assert host.git(primary, "rev-parse", "HEAD") == base

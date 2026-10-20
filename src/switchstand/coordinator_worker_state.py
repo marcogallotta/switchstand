@@ -58,6 +58,7 @@ class WorkerRecord(ClosedModel):
     spawn_id: UUID
     work_id: UUID
     objective: str
+    task_request_id: UUID | None = None
     writer: str
     branch: str
     base_sha: str

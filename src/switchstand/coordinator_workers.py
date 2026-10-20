@@ -45,19 +45,25 @@ class CoordinatorWorkers:
         self.host = host
         self.runtime_source = runtime_source or self.repo / "src"
 
-    def spawn(self, operation_id: UUID, work_id: UUID, objective: str) -> WorkerSpawnResult:
+    def spawn(
+        self, operation_id: UUID, work_id: UUID, objective: str,
+        task_request_id: UUID | None = None,
+    ) -> WorkerSpawnResult:
         if not objective.strip() or len(objective.encode()) > MAX_OBJECTIVE_BYTES:
             return WorkerSpawnResult(status="denied", work_id=work_id, reason="objective_invalid")
         try:
             with self.store.locked():
-                return self._spawn_locked(operation_id, work_id, objective)
+                return self._spawn_locked(operation_id, work_id, objective, task_request_id)
         except (OSError, subprocess.SubprocessError, ValueError) as error:
             return WorkerSpawnResult(status="unknown", work_id=work_id, reason=type(error).__name__)
 
-    def _spawn_locked(self, operation_id: UUID, work_id: UUID, objective: str) -> WorkerSpawnResult:
+    def _spawn_locked(
+        self, operation_id: UUID, work_id: UUID, objective: str, task_request_id: UUID | None,
+    ) -> WorkerSpawnResult:
         existing = self.store.load(operation_id)
         if existing is not None:
-            if existing.work_id != work_id or existing.objective != objective:
+            if (existing.work_id != work_id or existing.objective != objective
+                    or existing.task_request_id != task_request_id):
                 return WorkerSpawnResult(
                     status="denied", work_id=work_id, reason="operation_identity_conflict"
                 )
@@ -74,6 +80,7 @@ class CoordinatorWorkers:
             spawn_id=operation_id,
             work_id=work_id,
             objective=objective,
+            task_request_id=task_request_id,
             writer=str(writer),
             branch=branch,
             base_sha=base,
@@ -87,6 +94,7 @@ class CoordinatorWorkers:
                 str(work_id),
                 "--commit",
                 base,
+                *(("--task-request-id", str(task_request_id)) if task_request_id else ()),
                 "--noninteractive",
                 self._prompt(work_id, objective),
             ),

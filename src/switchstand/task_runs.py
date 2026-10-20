@@ -209,16 +209,9 @@ class TaskRunExecution(ClosedModel):
 
 
 class TaskRunBindResult(ClosedModel):
-    status: Literal["ok", "denied", "conflict", "unknown"]
+    status: Literal["ok", "stale", "denied", "conflict", "unknown"]
     execution: TaskRunExecution | None = None
-    reason: Literal[
-        "request_not_found",
-        "execution_work_mismatch",
-        "continuation_not_bound",
-        "execution_already_bound",
-        "run_already_bound",
-        "state_unavailable",
-    ] | None = None
+    reason: str | None = None
 
     @model_validator(mode="after")
     def exact_shape(self) -> Self:
@@ -573,11 +566,42 @@ class TaskRunState:
                         task_run_executions.c.request_id == request_id
                     )
                 )).mappings().one_or_none()
-                if current is not None:
-                    if current["run_id"] != receipt.run_id:
+                if current is not None and current["run_id"] != receipt.run_id:
+                    return TaskRunBindResult(
+                        status="denied", reason="execution_already_bound"
+                    )
+                if verified.task_kind == "IMPLEMENTATION":
+                    from .agent_mailboxes import AgentMailboxState
+                    from .grant_state import work_grants
+                    from .grants import WorkGrant
+                    from .implementation_requests import ImplementationRequestState
+                    from .review_config_loader import load_review_config_from_environment
+                    from .reviews import ReviewOccurrenceState, ReviewPolicy
+
+                    principal_key = str(verified.send_authority_ref).rsplit("/", 1)[-1]
+                    raw_grant = await connection.scalar(select(work_grants.c.document).where(
+                        work_grants.c.principal_key == principal_key
+                    ))
+                    if raw_grant is None:
+                        return TaskRunBindResult(status="denied", reason="no_send_authority")
+                    config = load_review_config_from_environment()
+                    occurrences = ReviewOccurrenceState(
+                        self.works, AgentMailboxState(self.engine),
+                        config.policy if config else ReviewPolicy(version="review-policy-v1"),
+                    )
+                    eligibility = await ImplementationRequestState(
+                        self.engine, self.works, occurrences
+                    ).request(
+                        WorkGrant.model_validate(raw_grant).principal, request["operation_id"],
+                        verified.execution_work_id, verified.observed_revision,
+                        transaction=connection, current_request=verified,
+                    )
+                    if eligibility.status != "REPLAYED":
                         return TaskRunBindResult(
-                            status="denied", reason="execution_already_bound"
+                            status=cast(Literal["stale", "denied", "unknown", "conflict"],
+                                        eligibility.status.lower()), reason=eligibility.reason,
                         )
+                if current is not None:
                     return TaskRunBindResult(
                         status="ok",
                         execution=TaskRunExecution(
@@ -598,7 +622,7 @@ class TaskRunState:
                         request_id=request_id, run_id=receipt.run_id
                     ),
                 )
-        except (SQLAlchemyError, TypeError, ValueError):
+        except (SQLAlchemyError, OSError, TypeError, ValueError, KeyError):
             return TaskRunBindResult(status="unknown", reason="state_unavailable")
 
     async def submit_result(
