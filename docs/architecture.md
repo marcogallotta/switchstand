@@ -166,7 +166,14 @@ operationally ambiguous or post-exposure failure stays gated and never rewinds O
 After positive public readiness, terminal receipt persistence uncertainty returns UNKNOWN without
 changing the verified runtime. It does not own the
 future split edge-only replacement transaction, candidate preparation, live qualification, or
-activation authority.
+activation authority. Each invocation requires an exact WorkId and publishes one private interrupted
+attempt pointer beside the deployment lock before effects. A durable monotonic marker precedes
+candidate ungating. The same lock protects evidence-only `reconcile-existing-attempt`, also run
+before the next activation. It disposes pre-boundary attempts, retains unresolved/corrupt evidence,
+and freezes sanitized receipt/FailureRecord arguments before durable PendingFailureQueue handoff.
+Existing queue sync/readback/ack and append-only failure resolutions own subsequent recovery.
+Coverage ends at durable activation PASS: later runtime failures, other deployment paths, lost
+storage and the gap without another invocation remain unknown. Qualification is not live acceptance.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
