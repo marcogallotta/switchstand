@@ -31,12 +31,11 @@ def cases(path: Path) -> set[tuple[str | None, str | None]]:
             for case in ElementTree.parse(path).iter("testcase")}
 
 
-def test_duration_partition_balances_cost_and_is_order_independent():
+def test_duration_partition_balances_cost():
     assign = runpy.run_path(str(ROOT / "scripts/pytest-shard"))["module_shards"]
     weights = json.loads((ROOT / "scripts/pytest-shard-weights.json").read_text())
     modules = set(weights["module_seconds"]) | {"new/test_unknown.py"}
     assignments = assign(modules, 4)
-    assert assignments == assign(set(reversed(sorted(modules))), 4)
     assert set(assignments) == modules
     assert set(assignments.values()) == set(range(4))
     loads = [0.0, 0.0, 0.0, weights["static_seconds"]]
@@ -50,7 +49,6 @@ def test_unknown_modules_use_all_shards_and_stable_default():
     assign = runpy.run_path(str(ROOT / "scripts/pytest-shard"))["module_shards"]
     modules = {f"new/test_{index}.py" for index in range(17)}
     assignments = assign(modules, 4)
-    assert assignments == assign(set(reversed(sorted(modules))), 4)
     assert set(assignments) == modules
     assert set(assignments.values()) == set(range(4))
 
@@ -96,6 +94,15 @@ def test_real_shards_preserve_collection_union_and_whole_modules(tmp_path: Path)
     original = (tmp_path / "shard-0.json").read_text()
     assert run_shard(tmp_path, 0, 4).returncode == 0
     assert (tmp_path / "shard-0.json").read_text() == original
+    reversed_files = tuple(sorted(
+        (str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*.py")), reverse=True,
+    ))
+    result = run_shard(tmp_path, 0, 4, reversed_files)
+    assert result.returncode == 0, result.stdout + result.stderr
+    reordered = json.loads((tmp_path / "shard-0.json").read_text())
+    assert reordered["collected_nodeids"] != collected
+    assert set(reordered["collected_nodeids"]) == set(collected or [])
+    assert set(reordered["assigned_nodeids"]) == set(json.loads(original)["assigned_nodeids"])
 
 
 def test_selected_single_shard_keeps_exact_subset(tmp_path: Path):
