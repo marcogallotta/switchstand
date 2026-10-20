@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
+from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import Field, ValidationError
@@ -53,9 +53,9 @@ def project_references(target_refs: tuple[str, ...]) -> ReferenceProjection:
         if not value.startswith(PREFIX):
             continue
         try:
-            payload = json.loads(value[len(PREFIX):])
+            payload: object = json.loads(value[len(PREFIX):])
             if isinstance(payload, dict) and (
-                type(payload.get("schema_version")) is not int
+                type(cast(dict[str, object], payload).get("schema_version")) is not int
                 or payload["schema_version"] != 1
             ):
                 gaps.append(ReferenceGap(target_index=index, reason="unsupported_version"))
