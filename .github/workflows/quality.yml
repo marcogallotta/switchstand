@@ -18,11 +18,15 @@ jobs:
       selected_tests: ${{ steps.policy.outputs.selected_tests }}
       planner_json: ${{ steps.policy.outputs.planner_json }}
       adaptive_json: ${{ steps.policy.outputs.adaptive_json }}
+      shards: ${{ steps.policy.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+          ref: ${{ github.sha }}
           fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.14'
       - name: Bind exact subject and select fail-closed foreground policy
         id: policy
         env:
@@ -83,14 +87,38 @@ jobs:
           fi
           test "$stack_top" != unknown || subject_verified=false
 
-          selector_health_clear=false
+          plan_file="$RUNNER_TEMP/exact-quality-plan.json"
+          health_needed="$(PYTHONPATH=src python3 - \
+            "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
+            "$subject_verified" "$stack_top" "$EVENT_KIND" "$REF_NAME" \
+            "$DEFAULT_BRANCH" "$SELECTIVE_FOREGROUND_ENABLED" "$plan_file" <<'PY'
+          import json
+          import sys
+          from dataclasses import asdict
+          from pathlib import Path
+          from switchstand.affected_tests import (
+              broad_backstop_required, foreground_authority, plan_exact, validate_execution_tree,
+          )
+          (base, head, execution, verified, stack_top, event_kind, ref_name,
+           default_branch, selective_enabled, plan_file) = sys.argv[1:]
+          plan = validate_execution_tree(Path('.'), plan_exact(Path('.'), base, head), execution)
+          Path(plan_file).write_text(json.dumps(asdict(plan)))
+          eligible = foreground_authority(
+              plan, subject_verified=verified == 'true', selector_health_clear=True,
+              cumulative_stack_top=stack_top == 'true',
+          ).mode == 'PROMOTE_TEST_MODULE_ONLY_V1'
+          print(str(eligible and selective_enabled == 'true' and not broad_backstop_required(
+              event_kind, ref_name, default_branch,
+          )).lower())
+          PY
+          )"
           current_blob="$(git rev-parse "$execution_sha:.github/workflows/quality.yml")"
           default_sha="$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || true)"
           main_blob="$(git rev-parse "origin/$DEFAULT_BRANCH:.github/workflows/quality.yml" 2>/dev/null || true)"
           history_file="$RUNNER_TEMP/broad-quality-history.tsv"
           : > "$history_file"
           history_complete=false
-          if test "$current_blob" = "$main_blob"; then
+          if test "$health_needed" = true && test "$current_blob" = "$main_blob"; then
             if push_count="$(gh api \
                 "repos/$GITHUB_REPOSITORY/actions/workflows/quality.yml/runs" \
                 --method GET -f branch="$DEFAULT_BRANCH" -f event=push \
@@ -152,7 +180,8 @@ jobs:
             "$planner_base_sha" "$planner_head_sha" "$execution_sha" \
             "$subject_verified" "$history_complete" "$current_blob" "$default_sha" \
             "$history_file" "$stack_top" "$EVENT_KIND" "$REF_NAME" \
-            "$DEFAULT_BRANCH" "$SELECTIVE_FOREGROUND_ENABLED" "$GITHUB_OUTPUT" <<'PY'
+            "$DEFAULT_BRANCH" "$SELECTIVE_FOREGROUND_ENABLED" "$GITHUB_OUTPUT" \
+            "$plan_file" "$health_needed" <<'PY'
           import json
           import subprocess
           import sys
@@ -160,8 +189,8 @@ jobs:
           from datetime import UTC, datetime
           from pathlib import Path
           from switchstand.affected_tests import (
-              BroadQualityRun, broad_backstop_required, foreground_authority, plan_exact,
-              selector_health_clear, validate_execution_tree,
+              BroadQualityRun, Plan, broad_backstop_required, foreground_authority,
+              selector_health_clear,
           )
           from switchstand.full_suite_due import (
               FullSuiteDecision, FullSuiteInputs, FullSuitePolicy, evaluate_full_suite_due,
@@ -169,7 +198,7 @@ jobs:
 
           (base, head, execution, verified, history_complete, current_blob,
            default_sha, history_file, stack_top, event_kind, ref_name,
-           default_branch, selective_enabled, output) = sys.argv[1:]
+           default_branch, selective_enabled, output, plan_file, health_needed) = sys.argv[1:]
           rows = tuple(line.rstrip('\n').split('\t')
                        for line in Path(history_file).read_text().splitlines())
           runs = tuple(BroadQualityRun(
@@ -182,7 +211,7 @@ jobs:
               default_sha=default_sha,
               runs=runs,
           )
-          plan = validate_execution_tree(Path('.'), plan_exact(Path('.'), base, head), execution)
+          plan = Plan(**json.loads(Path(plan_file).read_text()))
           decision = foreground_authority(
               plan,
               subject_verified=verified == 'true',
@@ -190,6 +219,8 @@ jobs:
               cumulative_stack_top=stack_top == 'true',
           )
           try:
+              if health_needed != 'true':
+                  raise ValueError('optional observations cannot affect full fallback')
               candidates = tuple(row for row in rows if (
                   row[2] == 'success' and row[3] == current_blob and row[1] != head and row[4]
               ))
@@ -240,10 +271,14 @@ jobs:
                   current_truth_known=history_complete == 'true',
               ), FullSuitePolicy(20, 24 * 60 * 60, 100, 2_000, 50, 0.5))
           except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-              adaptive = FullSuiteDecision('UNKNOWN', ('observation-unavailable',), None)
+              reason = 'observations-skipped-full-fallback' if health_needed != 'true' \
+                  else 'observation-unavailable'
+              adaptive = FullSuiteDecision('UNKNOWN', (reason,), None)
           summary = {
               'authority': decision.mode,
               'authority_reasons': decision.reasons,
+              'selector_health_observation': 'UNKNOWN' if history_complete != 'true' \
+                  else ('CLEAR' if health else 'NOT_CLEAR'),
               'adaptive_full_suite_shadow': asdict(adaptive),
               'planner': {
                   'planner_revision': plan.planner_revision,
@@ -258,6 +293,7 @@ jobs:
           }
           with open(output, 'a') as sink:
               print(f'mode={decision.mode}', file=sink)
+              print('shards=' + ('[0]' if decision.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' else '[0,1,2,3]'), file=sink)
               print('reasons=' + json.dumps(decision.reasons, separators=(',', ':')), file=sink)
               print('selected_tests=' + json.dumps(plan.selected_tests, separators=(',', ':')), file=sink)
               print('planner_json=' + json.dumps(summary['planner'], separators=(',', ':')), file=sink)
@@ -267,7 +303,11 @@ jobs:
 
   quality_execution:
     needs: plan
-    name: Quality execution / ${{ needs.plan.outputs.mode }}
+    name: Quality execution / ${{ needs.plan.outputs.mode }} / shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -280,11 +320,13 @@ jobs:
     env:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/not_switchstand_test
       TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/switchstand_test
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_COUNT: ${{ needs.plan.outputs.mode == 'PROMOTE_TEST_MODULE_ONLY_V1' && 1 || 4 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          fetch-depth: ${{ github.event.pull_request.stack == null && 1 || 0 }}
       - name: Record immutable Quality subject
         id: quality_subject
         env:
@@ -299,7 +341,7 @@ jobs:
           if test "$QUALITY_SUBJECT_KIND" = composition; then
             scripts/verify-quality-composition \
               "$QUALITY_COMPOSITION_SHA" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" \
-              "$(git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
+              "$(test -z "$STACK_POSITION" || git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
           else
@@ -325,13 +367,22 @@ jobs:
           )
           test "$QUALITY_MODE" != PROMOTE_TEST_MODULE_ONLY_V1 || test "${#selected_tests[@]}" -gt 0
           quality=(
-            docker run --rm --network host -e TEST_DATABASE_URL
+            docker run --rm --network host -e TEST_DATABASE_URL -e SHARD_INDEX -e SHARD_COUNT
             -v "$RUNNER_TEMP/test-metrics:/metrics"
             -v "$PWD:/workspace:ro" -w /workspace switchstand-quality
-            sh -c 'PYTHONPATH=/workspace/src /app/.venv/bin/ruff check --no-cache . &&
-              PYTHONPATH=/workspace/src /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python &&
-              shift 1 && PYTHONPATH=/workspace/src /app/.venv/bin/pytest -ra -p no:cacheprovider \
-              --junitxml=/metrics/junit.xml "$@"' sh "$QUALITY_MODE"
+            sh -ec 'export PYTHONPATH=/workspace/src
+              if test "$SHARD_INDEX" = 0; then
+                /app/.venv/bin/ruff check --no-cache .
+                /app/.venv/bin/pyright --pythonpath /app/.venv/bin/python
+              fi
+              mode="$1"; shift 1
+              if test "$mode" = PROMOTE_TEST_MODULE_ONLY_V1; then
+                exec /app/.venv/bin/pytest -ra --durations=50 -p no:cacheprovider \
+                  --junitxml=/metrics/junit.xml "$@"
+              fi
+              exec /app/.venv/bin/python scripts/pytest-shard \
+                --index "$SHARD_INDEX" --count "$SHARD_COUNT" --membership /metrics/shard.json -- \
+                -ra --durations=50 -p no:cacheprovider --junitxml=/metrics/junit.xml' sh "$QUALITY_MODE"
           )
           if test "$QUALITY_MODE" = PROMOTE_TEST_MODULE_ONLY_V1; then
             "${quality[@]}" "${selected_tests[@]}"
@@ -373,7 +424,8 @@ jobs:
               "base_sha": e["BASE_SHA"] or None,
               "composition_sha": e["COMPOSITION_SHA"] if e["SUBJECT_KIND"] == "composition" else None,
               "github": {"run_id": e["GITHUB_RUN_ID"], "run_attempt": e["GITHUB_RUN_ATTEMPT"],
-                         "job": e["GITHUB_JOB"], "workflow": e["GITHUB_WORKFLOW"], "repository": e["GITHUB_REPOSITORY"]},
+                         "job": e["GITHUB_JOB"] + "-shard-" + e["SHARD_INDEX"], "workflow": e["GITHUB_WORKFLOW"], "repository": e["GITHUB_REPOSITORY"]},
+              "shard": {"index": int(e["SHARD_INDEX"]), "count": int(e["SHARD_COUNT"])},
               "candidate_image": e["QUALITY_IMAGE"] or None,
               "started_at": Path(e["METRICS_DIR"], "started-at").read_text().strip() if Path(e["METRICS_DIR"], "started-at").exists() else None,
               "completed_at": Path(e["METRICS_DIR"], "completed-at").read_text().strip() if Path(e["METRICS_DIR"], "completed-at").exists() else None,
@@ -390,10 +442,11 @@ jobs:
           }
           Path(e["METRICS_DIR"], "identity.json").write_text(json.dumps(identity))
           PY
-          execution_kind=full
+          execution_kind=full-shard
           test '${{ needs.plan.outputs.mode }}' != PROMOTE_TEST_MODULE_ONLY_V1 || execution_kind=selected
-          python3 src/switchstand/test_metrics.py --execution-kind "$execution_kind" \
+          PYTHONPATH=src python3 -m switchstand.test_metrics --execution-kind "$execution_kind" \
             --identity "$METRICS_DIR/identity.json" --planner "$METRICS_DIR/planner.json" \
+            --shard-membership "$METRICS_DIR/shard.json" \
             --junit "$METRICS_DIR/junit.xml" \
             --output "$METRICS_DIR/metrics.json"
       - name: Retain original metrics attempt
@@ -401,7 +454,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: test-metrics-${{ github.run_id }}-${{ github.run_attempt }}-quality
+          name: test-metrics-${{ github.run_id }}-${{ github.run_attempt }}-quality-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/test-metrics/
           retention-days: 90
           if-no-files-found: warn
@@ -413,8 +466,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          fetch-depth: ${{ github.event.pull_request.stack == null && 1 || 0 }}
       - name: Record immutable Docker lifecycle subject
         env:
           QUALITY_SUBJECT_KIND: ${{ github.event_name == 'pull_request' && 'composition' || 'exact-head' }}
@@ -428,7 +481,7 @@ jobs:
           if test "$QUALITY_SUBJECT_KIND" = composition; then
             scripts/verify-quality-composition \
               "$QUALITY_COMPOSITION_SHA" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" \
-              "$(git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
+              "$(test -z "$STACK_POSITION" || git rev-parse "origin/$STACK_BASE_REF")" "$STACK_POSITION"
             printf 'QUALITY_SUBJECT_KIND=%s\nQUALITY_SUBJECT_SHA=%s\nQUALITY_BASE_SHA=%s\nQUALITY_COMPOSITION_SHA=%s\n' \
               "$QUALITY_SUBJECT_KIND" "$QUALITY_SUBJECT_SHA" "$QUALITY_BASE_SHA" "$checked_out_sha"
           else

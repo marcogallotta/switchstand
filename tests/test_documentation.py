@@ -374,7 +374,7 @@ def test_root_delegation_detail_lives_in_tracker_owner():
     tracker = normalized("docs/coordinator-tracker-contract.md")
 
     assert "Root coordination, delegation, child challenge/disposition, scheduling" in agents
-    assert "Delegate substantial research, design, implementation, testing, and eligible review" in tracker
+    assert "All execution belongs in context-free native forks" in tracker
     assert "use safe available slots without filler" in tracker
     assert "serialize heavy shared writers" in tracker
     assert "The child may answer `ACCEPT_FIX`" in tracker
