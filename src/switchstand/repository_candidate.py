@@ -186,21 +186,29 @@ def _policy_evidence(
         "Exact-head Docker lifecycle" if kind == "exact_head"
         else "PR composition Docker lifecycle"
     )
-    by_name = {
-        str(check.get("name")): check for check in checks
+    relevant = [
+        check for check in checks
         if same_run(check) and (
             check.get("name") in {"Quality policy", docker_name}
             or str(check.get("name") or "").startswith("Quality execution / ")
         )
-    }
+    ]
+    by_name = {str(check["name"]): check for check in relevant}
+    if len(by_name) != len(relevant):
+        return [], "policy-evidence-conflicting"
     executions = [value for name, value in by_name.items()
                   if name.startswith("Quality execution / ")]
-    if len(by_name) != 3 or len(executions) != 1:
+    if not {"Quality policy", docker_name} <= by_name.keys() or not executions:
         return [], "policy-evidence-missing"
     policy, docker = by_name["Quality policy"], by_name[docker_name]
-    execution = executions[0]
-    execution_name = str(execution["name"])
-    raw_mode = execution_name.removeprefix("Quality execution / ")
+    execution_names = {str(check["name"]) for check in executions}
+    full_shards = {f"Quality execution / FULL_FALLBACK / shard {shard}" for shard in range(4)}
+    if execution_names == full_shards:
+        raw_mode = "FULL_FALLBACK"
+    elif len(executions) == 1:
+        raw_mode = str(executions[0]["name"]).removeprefix("Quality execution / ")
+    else:
+        return [], "policy-evidence-missing"
     if raw_mode in {
         "PROMOTE_TEST_MODULE_ONLY_V1 / shard 0", "PROMOTE_AFFECTED_INPUTS_V1 / shard 0",
     }:
@@ -209,9 +217,9 @@ def _policy_evidence(
         "PROMOTE_TEST_MODULE_ONLY_V1", "PROMOTE_AFFECTED_INPUTS_V1", "FULL_FALLBACK",
     }:
         return [], "policy-evidence-unknown"
-    if any(check.get("status") != "completed" for check in (policy, execution, docker)):
+    if any(check.get("status") != "completed" for check in (policy, *executions, docker)):
         return [], "policy-evidence-running"
-    if policy.get("conclusion") != "success" or execution.get("conclusion") != "success":
+    if any(check.get("conclusion") != "success" for check in (policy, *executions)):
         return [], "policy-evidence-failed"
     expected_docker = "skipped" if raw_mode == "PROMOTE_TEST_MODULE_ONLY_V1" else "success"
     if docker.get("conclusion") != expected_docker:
