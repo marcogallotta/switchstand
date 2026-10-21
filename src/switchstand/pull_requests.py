@@ -204,7 +204,11 @@ async def project(
             work_pull_requests.c.number == row["number"],
         ).order_by(work_pull_requests.c.work_id))).all()
         link_basis.append([str(link) for link in links])
-        visible = tuple(link for link in links if await can_read(link))
+        visible_links = []
+        for link in links:
+            if await can_read(link):
+                visible_links.append(link)
+        visible = tuple(visible_links)
         views.append(PullRequestView(
             **dict(row), work_ids=visible,
             visibility="FULL" if len(visible) == len(links) else "PARTIAL",
