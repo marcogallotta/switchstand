@@ -249,10 +249,22 @@ def _validate_launch_mapping(config: Config) -> None:
         expected = current.replace(old_runtime, os.fsencode(config.candidate_runtime), 1)
         if candidate == expected:
             return
-    elif _normalized_launcher(current, config.current_runtime) == _normalized_launcher(
-        candidate, config.candidate_runtime
-    ):
-        return
+    else:
+        normalized = _normalized_launcher(current, config.current_runtime)
+        if normalized is not None and normalized == _normalized_launcher(
+            candidate, config.candidate_runtime,
+        ):
+            return
+    from .edge_deploy import candidate_launcher
+
+    try:
+        selected, rendered = candidate_launcher(
+            current.decode("ascii"), config.candidate_runtime, config.candidate_sha,
+        )
+        if selected == config.current_runtime and candidate == rendered.encode("ascii"):
+            return
+    except (RuntimeError, SyntaxError, UnicodeError, ValueError):
+        pass
     raise Failed("candidate launcher is not the exact runtime retarget")
 
 

@@ -1314,6 +1314,33 @@ def test_rollback_doctor_uses_candidate_tool_for_old_runtime_without_venv(
     ]]
 
 
+@pytest.mark.parametrize("fault", [None, "sha", "extra", "runtime"])
+def test_launch_mapping_accepts_only_canonical_currentness_retarget(tmp_path: Path, fault):
+    from switchstand.edge_deploy import candidate_launcher
+
+    subject = config(tmp_path)
+    current = (
+        "from pathlib import Path\nimport os\n"
+        f"RUNTIME = Path({str(subject.current_runtime)!r})\n"
+        "def run():\n    oauth = {}\n    os.environ.update(oauth)\n"
+        '    os.environ.update({"SWITCHSTAND_OUTCOME_STATE_ACTIONS": "1"})\n'
+    )
+    subject.launcher.write_text(current)
+    _, rendered = candidate_launcher(current, subject.candidate_runtime, subject.candidate_sha)
+    if fault == "sha":
+        rendered = rendered.replace(subject.candidate_sha, "e" * 40)
+    elif fault == "extra":
+        rendered += "# unrelated edit\n"
+    elif fault == "runtime":
+        subject = replace(subject, current_runtime=tmp_path / "wrong-runtime")
+    subject.candidate_launcher.write_text(rendered)
+    if fault:
+        with pytest.raises(Failed, match="exact runtime retarget"):
+            _validate_launch_mapping(subject)
+    else:
+        _validate_launch_mapping(subject)
+
+
 def test_launch_mapping_rejects_wrong_runtime_or_oauth_store(tmp_path: Path):
     subject = config(tmp_path)
     subject.launcher.write_text(f"runtime = {subject.current_runtime}\n")

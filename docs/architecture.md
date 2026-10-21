@@ -857,7 +857,7 @@ coordination limitation rather than a technical freeze. Its terminal receipt bin
 systemd process/listener proof and PostgreSQL database, user, backend, timeout, held-lock, and
 waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 
-The pre-status recovery artifact retains schema `0028_agent_status` and its report data while serving the older tool surface. Its schema guard, stateful prerequisite and maintenance no-effect revision remain bound to that retained schema; recovery never downgrades or restores over later database writes.
+The pre-status recovery artifact retains schema `0028_agent_status` and its report data while serving the older tool surface. Its schema guard, stateful prerequisite and maintenance no-effect revision remain bound to that retained schema. Maintenance accepts the exact `edge_deploy.candidate_launcher` runtime/currentness retarget so the recovery identity changes together; recovery never downgrades or restores over later database writes.
 
 ## Where to edit
 
