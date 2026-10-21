@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def invoke(
         text=True,
         capture_output=True,
         check=True,
+        env=os.environ | {"XDG_STATE_HOME": str(tmp_path)},
     )
     events = [json.loads(line) for line in telemetry.read_text().splitlines()] \
         if telemetry.exists() else []
@@ -43,10 +45,11 @@ def stop(message: object, *, active: bool = False) -> dict[str, object]:
 def test_root_prompt_adds_resume_context_but_subagent_payload_does_not(tmp_path: Path) -> None:
     root, events = invoke(tmp_path, {
         "hook_event_name": "UserPromptSubmit", "prompt": "status?", "session_id": "root",
+        "turn_id": "turn",
     })
     child, child_events = invoke(tmp_path, {
         "hook_event_name": "UserPromptSubmit", "prompt": "work", "session_id": "root",
-        "agent_id": "child",
+        "turn_id": "turn", "agent_id": "child",
     })
 
     output = root["hookSpecificOutput"]
@@ -54,6 +57,42 @@ def test_root_prompt_adds_resume_context_but_subagent_payload_does_not(tmp_path:
     assert "resume" in output["additionalContext"]
     assert child == {}
     assert events == child_events == []
+
+
+@pytest.mark.parametrize("command", ["STOP", "stop", "kill", "cancel", "pause", "  StOp!  "])
+def test_current_turn_explicit_user_stop_allows_markerless_end(
+    tmp_path: Path, command: str,
+) -> None:
+    invoke(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "session",
+                      "turn_id": "turn", "prompt": command})
+    output, events = invoke(tmp_path, stop("Understood."), lifetime="STANDING")
+    assert output == {}
+    assert events[-1]["blocked"] == 0
+    assert events[-1]["user_stop"] is True
+
+
+def test_stop_intent_cannot_escape_its_top_level_turn(tmp_path: Path) -> None:
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "session",
+              "turn_id": "turn", "prompt": "STOP"}
+    invoke(tmp_path, prompt)
+    other_turn, _ = invoke(tmp_path, stop("Understood.") | {"turn_id": "later"})
+    assert other_turn["decision"] == "block"
+    invoke(tmp_path, prompt | {"turn_id": "later", "prompt": "continue"})
+    replaced, _ = invoke(tmp_path, stop("Working." ) | {"turn_id": "later"})
+    assert replaced["decision"] == "block"
+    invoke(tmp_path, prompt | {"prompt": "please STOP"})
+    quoted, _ = invoke(tmp_path, stop("Working."))
+    assert quoted["decision"] == "block"
+    invoke(tmp_path, prompt | {"prompt": "STOP", "agent_id": "child"})
+    after_child, _ = invoke(tmp_path, stop("Working."))
+    assert after_child["decision"] == "block"
+
+
+def test_missing_turn_id_cannot_release_stop(tmp_path: Path) -> None:
+    invoke(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "session",
+                      "turn_id": "turn", "prompt": "STOP"})
+    output, _ = invoke(tmp_path, stop("Understood.") | {"turn_id": None})
+    assert output["decision"] == "block"
 
 
 @pytest.mark.parametrize("active", [False, True])

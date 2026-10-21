@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 HOOK = ROOT / "scripts/codex-stop-mailbox"
+PROMPT_HOOK = ROOT / "scripts/codex-continuity-hook"
 
 
 class MailboxServer:
@@ -55,14 +56,17 @@ class MailboxServer:
         return f"http://127.0.0.1:{self.server.server_port}/pending"
 
 
-def invoke(payload: object, endpoint: str, *, raw: str | None = None) -> dict[str, Any]:
+def invoke(payload: object, endpoint: str, *, raw: str | None = None,
+           state_home: Path | None = None) -> dict[str, Any]:
     result = subprocess.run(
         [HOOK],
         input=json.dumps(payload) if raw is None else raw,
         text=True,
         capture_output=True,
         check=True,
-        env=os.environ | {"SWITCHSTAND_CODEX_STOP_ENDPOINT": endpoint},
+        env=os.environ | {"SWITCHSTAND_CODEX_STOP_ENDPOINT": endpoint,
+                          "XDG_STATE_HOME": str(state_home) if state_home else os.environ.get(
+                              "XDG_STATE_HOME", str(Path.home() / ".local/state"))},
     )
     return json.loads(result.stdout)
 
@@ -133,3 +137,18 @@ def test_malformed_hook_input_fails_open_without_read() -> None:
         result = invoke({}, server.endpoint)
     assert result["continue"] is True
     assert not server.requests
+
+
+def test_explicit_user_stop_skips_pending_mailbox(tmp_path: Path) -> None:
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "session-1",
+              "turn_id": "turn", "prompt": "STOP"}
+    subprocess.run(
+        [PROMPT_HOOK, "--mode", "PILOT", "--lifetime", "STANDING",
+         "--telemetry", str(tmp_path / "telemetry.jsonl")],
+        input=json.dumps(prompt), text=True, capture_output=True, check=True,
+        env=os.environ | {"XDG_STATE_HOME": str(tmp_path)},
+    )
+    with MailboxServer([]) as server:
+        assert invoke(stop() | {"turn_id": "turn"}, server.endpoint,
+                      state_home=tmp_path) == {}
+        assert server.requests == []
