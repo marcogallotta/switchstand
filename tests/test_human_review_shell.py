@@ -150,7 +150,7 @@ def test_shell_is_password_authenticated_and_renders_server_owned_consequence(sh
     assert response.headers["x-frame-options"] == "DENY"
 
 
-def test_v2_shell_renders_escaped_four_line_opening_first(shell):
+def test_v2_review_keeps_decision_visible_and_audit_details_collapsed(shell):
     client, state, auth = shell
     state.record = _v2_record()
     consequence = state.record.consequence.model_copy(update={"task_text": "Still unfinished <Task>"})
@@ -160,18 +160,27 @@ def test_v2_shell_renders_escaped_four_line_opening_first(shell):
     response = client.get(f"/human-review/{WORK}?revision={REVISION}", headers=auth)
 
     assert response.status_code == 200
-    labels = ["WHAT YOU ASKED —", "WHAT THIS DOES —",
-        "WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU —",
-        "SIZE —"]
-    positions = [response.text.index(label) for label in labels]
-    assert positions == sorted(positions)
-    assert positions[-1] < response.text.index("Human Review: PREPARED")
-    assert "Ship &lt;this&gt;" in response.text
-    assert "Still unfinished &lt;Task&gt;" in response.text
-    assert str(consequence.consequence_id) in response.text
-    assert "Small &amp; bounded" in response.text
-    assert "No second Human Review for matching code" in response.text
-    assert "IMPLEMENT" in response.text and "LAND" in response.text
+    visible, audit = response.text.split("<details>", 1)
+    assert "Awaiting your decision" in visible
+    assert "Ship &lt;this&gt;" in visible and "Small &amp; bounded" in visible
+    assert "What Approve means" in visible and "land &lt;reviewed&gt; code" in visible
+    assert 'name="decision" value="APPROVED"' in visible
+    assert "Human sources" not in visible and "CLEAR_HUMAN_REVIEW" not in visible
+    assert "Human Review: PREPARED" not in response.text
+    assert "Still unfinished &lt;Task&gt;" in audit
+    assert str(consequence.consequence_id) in audit
+    assert "No second Human Review for matching code" in audit
+    assert "IMPLEMENT" in audit and "LAND" in audit
+
+
+def test_replayed_request_does_not_look_like_a_human_decision(shell):
+    client, state, auth = shell
+    async def replay(package_work_id, package_revision):
+        return HumanReviewResult(status="REPLAYED", record=state.record)
+    state.prepare = replay
+    response = client.get(f"/human-review/{WORK}?revision={REVISION}", headers=auth)
+    assert "Awaiting your decision" in response.text
+    assert "REPLAYED" not in response.text
 
 
 def test_exact_origin_and_bound_fields_fail_closed_before_decision(shell):
