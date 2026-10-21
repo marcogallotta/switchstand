@@ -11,6 +11,9 @@ arguments or readable provider records, define its work boundary.
 Call `work_get(api_version="1")` for the launch-bound assignment, or pass an
 admitted WorkId where the ordinary tool schema permits it. `item.id` is the
 opaque WorkId. Its notes are the canonical ordinary current state. Use
+`include_notes=true` on the ordinary `work_get` to retrieve full current notes;
+long notes are marked as a preview by default. Read full notes before a
+consequential action or a claim that depends on their complete contents. Use
 `work_update(notes=...)` for current intent, progress, findings, verdicts, and
 final/current results; update the controlling meaning rather than appending a
 chronology.

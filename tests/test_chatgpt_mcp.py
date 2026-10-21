@@ -46,6 +46,24 @@ from switchstand.repository_candidate import QualificationGate, RepositoryCandid
 from switchstand.reviews import ReviewBasis, ReviewBundleAccess
 
 
+async def test_ordinary_work_get_previews_long_notes_and_explicitly_recovers_full_notes():
+    subject = service()
+    full_notes = "Current decision. " + "detail " * 120 + "HOLD: current control fact"
+    subject.providers["asana"].notes = full_notes
+    read = dict(build_ordinary_tools(subject))["work_get"]
+
+    preview = await read(api_version="1", work_id=ACTIVE)
+    full = await read(api_version="1", work_id=ACTIVE, include_notes=True)
+
+    assert preview.status == full.status == "ok"
+    assert preview.item is not None and full.item is not None
+    assert preview.item.revision == full.item.revision
+    assert preview.item.notes.startswith("[PREVIEW ONLY: request work_get(include_notes=true)")
+    assert "HOLD: current control fact" not in preview.item.notes
+    assert full.item.notes == full_notes
+    assert preview.item.model_dump(exclude={"notes"}) == full.item.model_dump(exclude={"notes"})
+
+
 def test_agent_trajectory_surface_cannot_supply_authentication_or_extra_authority():
     tools = dict(build_ordinary_tools(service()))
     read = signature(tools["human_trajectory_get"]).parameters
