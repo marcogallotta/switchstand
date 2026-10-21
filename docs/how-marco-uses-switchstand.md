@@ -4,6 +4,20 @@ Switchstand coordinates bounded engineering work across ordinary Codex, task-bou
 
 ## Start from current truth
 
+When agent reporting is deployed, use `agent_status_get` and page its exact-owner `work_search`
+instruction across projects, reconciling actual assignments and known obligations. Report via
+`agent_status_update`: finished with evidence, current, waiting-and-why/unblock, next authorized
+action, priority/scope concerns and forgotten requests (capture grants no execution authority).
+Use PARTIAL/UNKNOWN honestly; exhausted owner search is not complete remit. Named workspace
+agents can read reports; only the current bound agent writes its own. No sensitive logs/secrets.
+Check on entry/re-entry, material changes and before handoff/no-runnable claims. These are agent
+responsibilities: server cues occur only on work_get, review_request/get and fresh mailbox polls,
+when missing/old-binding or15 wall-clock minutes old. No offline wake or active-time monitor.
+DEFER requires a concrete competing duty/recovery checkpoint and at most900 seconds; it preserves
+report age. Fresh unchanged review polls need no repeated report. Continue authorized runnable
+work while retaining the exact review watch; otherwise bounded same-review polling continues.
+Replacement reads the preserved report AND current work. Status freshness never proves completion.
+
 Use the repository's current `main`, executable contracts, and canonical owner documents for implementation truth. For assigned work, use the exact current task, its current governing references, and the exact candidate/control revision. Superseded specs, old candidate branches, historical comments, and `marcogallotta/switchstandold` are evidence only unless a current route explicitly selects them.
 
 Authority is separate from technical truth. It comes only from Marco's direct active assignment or an explicit CURRENT grant bound to the exact identity, surface, and effect. Code, documentation, project placement, role, and tool access cannot manufacture it.

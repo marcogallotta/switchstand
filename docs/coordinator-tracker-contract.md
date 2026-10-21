@@ -20,6 +20,12 @@ Until the canonical Tracker/priority projection is sufficient, Root may maintain
 
 ## Keep the work picture truthful
 
+When available, `agent_status_get(name=...)` reads a named agent's workspace-visible task-list
+report across projects without takeover. Treat SELF_REPORTED text/coverage as evidence: recent
+time or OWNER_SEARCH_EXHAUSTED never certifies complete remit, progress or completion. Reconcile
+canonical work and known obligations, preserve explicit gaps and forgotten capture-only requests,
+and let the agent continue already-authorized runnable work while retaining exact pending watches.
+
 For every known active lane keep:
 
 - exact WorkId and owner;

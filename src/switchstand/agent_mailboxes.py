@@ -18,8 +18,8 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.dialects.postgresql import JSONB, insert
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -39,6 +39,7 @@ agent_mailboxes = Table(
     Column("principal_key", Text, nullable=False),
     Column("session_key", Text, nullable=False),
     Column("generation", Integer, nullable=False),
+    Column("agent_status", JSONB),
     UniqueConstraint("endpoint_id"),
     UniqueConstraint("principal_key", "session_key"),
     CheckConstraint("generation >= 1"),

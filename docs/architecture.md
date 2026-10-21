@@ -7,6 +7,13 @@ implemented in one surface does not make it available or authorized in another.
 
 ## Semantic owners and request flow
 
+`agent_status.py` owns one latest SELF_REPORTED cross-project task-list report in the optional
+`agent_mailboxes.agent_status` JSONB column. Ordinary workspace admission permits named reads
+and current-session self-only writes, with mailbox fencing and status-generation CAS/replay.
+Task facts, priorities, authority and reviews remain canonical elsewhere. Selected ordinary MCP
+results carry advisory age/missing/binding cues; this is no scheduler, hard gate or task registry.
+The additive schema migration and runtime rollout require separate operational authority.
+
 The ordinary authenticated flow is:
 
 1. `chatgpt_edge.py` authenticates the HTTP caller, creates the runtime dependencies, and registers

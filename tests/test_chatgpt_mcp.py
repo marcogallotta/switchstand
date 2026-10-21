@@ -831,6 +831,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "file_review_feedback", "file_fork_management",
             "task_control_get", "task_control_checkpoint", "work_hygiene_check",
             "agent_register", "agent_takeover", "agent_transfer_request",
+            "agent_status_get", "agent_status_update",
             "agent_message_send", "agent_message_pending",
             "agent_message_receive", "agent_message_recover",
             "agent_message_acknowledge",

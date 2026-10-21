@@ -54,7 +54,13 @@ async def test_review_request_delegates_exact_baseline_check(monkeypatch):
         evidence_refs=("git:plan",),
     )
     tool = dict(build_ordinary_tools(subject, agent_identity=lambda: "chat"))["review_request"]
-    assert await tool("1", work_id, "r1", "CODE", baseline_check=check) == expected
+    result = await tool("1", work_id, "r1", "CODE", baseline_check=check)
+    assert result.model_dump(exclude={"next_action", "agent_status_checkpoint"}) == \
+        expected.model_dump(exclude={"next_action"})
+    assert result.agent_status_checkpoint is None
+    assert result.next_action.endswith(expected.next_action)
+    assert "safe checkpoint" in result.next_action
+    assert "already-authorized runnable work" in result.next_action
     subject.reviews.request.assert_awaited_once_with(ReviewRequest(
         subject_work_id=work_id, observed_revision="r1", review_kind="CODE",
         baseline_check=check,
@@ -113,9 +119,14 @@ async def test_review_poll_and_recovery_derive_mailbox_and_distinct_received_gui
     polled = await tools["review_get"]("1", review_id)
     recovered = await tools["review_recover"]("1", review_id)
 
-    assert polled == expected
-    assert "bounded active polling" in polled.next_action
-    assert f"review_get(review_id='{review_id}')" in polled.next_action
+    assert polled.model_dump(exclude={"next_action", "agent_status_checkpoint"}) == \
+        expected.model_dump(exclude={"next_action"})
+    assert polled.agent_status_checkpoint is None
+    assert "safe checkpoint" in polled.next_action
+    assert "already-authorized runnable work" in polled.next_action
+    assert str(review_id) in polled.next_action
+    assert "bounded sleep 20 then review_get on this same review repeatedly" in polled.next_action
+    assert "pending is not completion" in polled.next_action
     assert (recovered.status, recovered.review_id, recovered.delivery_id) == (
         expected.status, expected.review_id, expected.delivery_id,
     )

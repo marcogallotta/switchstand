@@ -1,3 +1,4 @@
+import asyncio
 import re
 from collections.abc import Callable
 from typing import Annotated, Any, Literal, Self
@@ -29,6 +30,7 @@ from .agent_messages import (
     AgentTransferRequestResult,
     public_message,
 )
+from .agent_status import AgentStatusState, StatusResult, StatusWrite
 from .chatgpt import (
     ChatGPTService,
     HumanTrajectoryGetResponse,
@@ -113,6 +115,7 @@ class OrdinaryWorkResult(ClosedModel):
     status: Status
     item: PublicWorkItem | None = None
     guard: PublicReadGuard | None = None
+    agent_status_checkpoint: str | None = Field(default=None, exclude_if=lambda v: v is None)
     pull_requests: PullRequestPage | None = None
 
 
@@ -159,6 +162,7 @@ class StatefulOrdinaryWorkResult(ClosedModel):
     item: PublicWorkItem | None = None
     status: Status
     guard: PublicReadGuard | None = None
+    agent_status_checkpoint: str | None = Field(default=None, exclude_if=lambda v: v is None)
     pull_requests: PullRequestPage | None = None
 
 
@@ -236,6 +240,7 @@ class OrdinaryRelationPatch(ClosedModel):
 
 
 ORDINARY_GENUINE_READ_TOOLS = frozenset({
+    "agent_status_get",
     "repository_bundle_get",
     "repository_candidate_qualification_get",
     "work_get",
@@ -251,6 +256,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
 })
 
 ORDINARY_EFFECT_TOOLS = frozenset({
+    "agent_status_update",
     "project_create",
     "work_append",
     "work_create",
@@ -338,6 +344,14 @@ def _takeover_message_confirms(
         rf"(?:take\s+over|takeover)\s+(?:as\s+)?{target}(?=$|[.!])",
         normalized[directives[0].start():],
     ) is not None
+
+
+class OrdinaryReviewResult(ReviewResult):
+    agent_status_checkpoint: str | None = Field(default=None, exclude_if=lambda v: v is None)
+
+
+class OrdinaryPendingResult(AgentMessagePendingResult):
+    agent_status_checkpoint: str | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 def build_ordinary_tools(
@@ -491,7 +505,9 @@ def build_ordinary_tools(
         correlate(work_id)
         result = await service.get(work_id, pr_cursor=pr_cursor, pr_link_cursor=pr_link_cursor)
         audited("work_get", None if work_id is None else str(work_id), result.status)
-        return project_ordinary_work(result)
+        return project_ordinary_work(result).model_copy(update={
+            "agent_status_checkpoint": await status_checkpoint(),
+        })
 
     async def human_trajectory_get(
         api_version: Literal["1"], work_id: UUID,
@@ -584,6 +600,7 @@ def build_ordinary_tools(
             open_failures=failures, item=result.item,
             pull_requests=result.pull_requests,
             status=result.status, guard=result.guard,
+            agent_status_checkpoint=result.agent_status_checkpoint,
         )
 
     async def work_search(
@@ -937,12 +954,12 @@ def build_ordinary_tools(
         mode: ReviewMode = "FULL", prior_review_id: UUID | None = None,
         finding_ids: tuple[str, ...] = (),
         baseline_check: BaselineCheck | None = None,
-    ) -> ReviewResult:
+    ) -> OrdinaryReviewResult:
         """Request one review as this registered caller at an exact subject revision.
 
         Record the concrete authorized post-PASS step in the subject's review_next_action
-        before requesting review. Sleep 20 seconds before each review_get, including
-        the first; on a verdict perform the returned next_action in this turn.
+        before requesting review. Continue authorized runnable work while preserving
+        the exact review watch; otherwise use bounded sleep/poll. Act on a verdict.
         Review verdicts go through review_submit; agent_message_* is not review submission.
         """
         del api_version
@@ -963,7 +980,7 @@ def build_ordinary_tools(
                 baseline_check=baseline_check,
             ), context.mailbox)
         audited("review_request", str(subject_work_id), result.status)
-        return result
+        return await ordinary_review(result)
 
     async def review_bundle_get(
         api_version: Literal["1"], review_id: UUID,
@@ -1093,7 +1110,7 @@ def build_ordinary_tools(
         audited("review_submit", str(review_id), result.status)
         return result
 
-    async def review_get(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
+    async def review_get(api_version: Literal["1"], review_id: UUID) -> OrdinaryReviewResult:
         """Poll one exact review as its current registered requester.
 
         Review verdicts go through review_submit; agent_message_* is not review submission.
@@ -1112,7 +1129,7 @@ def build_ordinary_tools(
             assert service.reviews is not None
             result = await service.reviews.get(review_id, context.mailbox)
         audited("review_get", str(review_id), result.status)
-        return result
+        return await ordinary_review(result)
 
     async def review_recover(api_version: Literal["1"], review_id: UUID) -> ReviewResult:
         """Recover one received review after same-principal mailbox takeover.
@@ -1288,6 +1305,73 @@ def build_ordinary_tools(
         "agent_takeover first; if confirmation is required, ask Marco and retry with his "
         "full confirmation message."
     )
+
+    async def status_access(operation: str) -> AgentMessageContext | StatusResult:
+        admission = await service.admission_get()
+        grant = admission.grant
+        if admission.status != "ok" or grant is None or grant.scope != "workspace" or operation not in grant.operations:
+            return StatusResult(status="UNKNOWN" if admission.status == "unknown" else "DENIED")
+        context = await agent_context()
+        return StatusResult(status="DENIED" if context[0] == "denied" else "UNKNOWN") if isinstance(context, tuple) else context
+
+    async def agent_status_get(api_version: Literal["1"], name: str | None = None) -> StatusResult:
+        """Read a workspace-visible SELF_REPORTED task-list report; never assignment or completion proof."""
+        del api_version
+        try:
+            context = await status_access("work_search")
+            if isinstance(context, StatusResult):
+                return context
+            assert mailboxes is not None and message_engine is not None
+            target = await mailboxes.by_name(name) if name else AgentMailboxResult(status="ok", mailbox=context.mailbox)
+            if target.mailbox is None:
+                return StatusResult(status="UNKNOWN")
+            return await AgentStatusState(message_engine).get(context.mailbox, target.mailbox)
+        except (SQLAlchemyError, ValueError, KeyError, TypeError):
+            return StatusResult(status="UNKNOWN")
+
+    async def agent_status_update(
+        api_version: Literal["1"], operation_id: UUID, expected_generation: Annotated[int, Field(ge=0)],
+        report: Annotated[str | None, Field(min_length=1, max_length=6000)] = None,
+        coverage: Literal["OWNER_SEARCH_EXHAUSTED", "PARTIAL", "UNKNOWN"] | None = None,
+        defer_reason: Annotated[str | None, Field(min_length=1, max_length=1000)] = None,
+        recheck: Annotated[str | None, Field(min_length=1, max_length=1000)] = None,
+        defer_seconds: Annotated[int | None, Field(ge=1, le=900)] = None,
+    ) -> StatusResult:
+        """Replace only this agent's report, or concretely defer. Replay uncertain writes with identical ID/arguments."""
+        del api_version
+        request = StatusWrite(operation_id=operation_id, expected_generation=expected_generation, report=report,
+                              coverage=coverage, defer_reason=defer_reason, recheck=recheck, defer_seconds=defer_seconds)
+        try:
+            context = await status_access("work_update")
+            if isinstance(context, StatusResult):
+                return context
+            assert message_engine is not None
+            return await AgentStatusState(message_engine).write(context.mailbox, request)
+        except (SQLAlchemyError, ValueError, KeyError, TypeError):
+            return StatusResult(status="UNKNOWN")
+
+    async def status_checkpoint() -> str | None:
+        try:
+            async with asyncio.timeout(0.25):
+                result = await agent_status_get("1")
+            if result.status == "DENIED":
+                return None
+            if result.status == "UNKNOWN":
+                return "Task-list status UNKNOWN; reconcile capability while continuing unaffected authorized work."
+            if result.due:
+                return f"Task-list status due (generation {result.generation}). At a safe checkpoint call agent_status_get, read your cross-project list, report finished/current/waiting-and-why/next and priority/scope/forgotten obligations, or defer concretely. Existing authority governs."
+        except Exception:  # noqa: BLE001 -- advisory failures must preserve primary receipts; BaseException propagates.
+            return "Task-list status UNKNOWN; primary result unchanged."
+        return None
+
+    async def ordinary_review(result: ReviewResult) -> OrdinaryReviewResult:
+        value = OrdinaryReviewResult.model_validate(result.model_dump())
+        if result.status == "WAITING_REVIEWER":
+            value.next_action = "At a safe checkpoint do any due task-list check; continue already-authorized runnable work. " + result.next_action
+        elif result.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"}:
+            value.next_action = f"At a safe checkpoint do any due task-list check. Continue already-authorized runnable work while retaining review {result.review_id} and its watch. If none remains, use bounded sleep 20 then review_get on this same review repeatedly; pending is not completion. Preserve the exact watch at a real host limit."
+        value.agent_status_checkpoint = await status_checkpoint()
+        return value
 
     def agent_transition_failure(
         failure: tuple[
@@ -1593,7 +1677,7 @@ def build_ordinary_tools(
             "as a since/new-arrivals checkpoint."
         ))] = None,
         limit: Annotated[int, Field(ge=1, le=10)] = 10,
-    ) -> AgentMessagePendingResult:
+    ) -> OrdinaryPendingResult:
         """List this registered agent's durable pending deliveries without WorkId addressing.
 
         Omit cursor for every fresh mailbox poll. A returned next_cursor is only for paging
@@ -1603,7 +1687,7 @@ def build_ordinary_tools(
         """
         context = await agent_context()
         if isinstance(context, tuple):
-            return AgentMessagePendingResult(
+            return OrdinaryPendingResult(
                 status=context[0], reason=context[1],
                 next_action=(
                     unregistered_agent_next_action
@@ -1623,18 +1707,19 @@ def build_ordinary_tools(
             agent_binding=mailbox,
         )
         if result.status != "ok":
-            return AgentMessagePendingResult(status=result.status, reason=result.reason)
+            return OrdinaryPendingResult(status=result.status, reason=result.reason)
         views: list[AgentPendingMessage] = []
         for item in result.messages:
             view = await public_message(mailboxes, item)
             if view is None:
-                return AgentMessagePendingResult(
+                return OrdinaryPendingResult(
                     status="recovery_required", reason="state_unavailable"
                 )
             views.append(view)
-        return AgentMessagePendingResult(
+        return OrdinaryPendingResult(
             status="ok", messages=tuple(views),
             next_cursor=result.next_cursor, has_more=result.has_more,
+            agent_status_checkpoint=await status_checkpoint() if cursor is None else None,
         )
 
     async def agent_message_receive(
@@ -1820,6 +1905,8 @@ def build_ordinary_tools(
         ("work_relate", work_relate),
         ("required_result_save", required_result_save),
         ("agent_register", agent_register),
+        ("agent_status_get", agent_status_get),
+        ("agent_status_update", agent_status_update),
         ("agent_takeover", agent_takeover),
         ("agent_transfer_request", agent_transfer_request),
         ("agent_message_send", agent_message_send),

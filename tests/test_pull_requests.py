@@ -254,7 +254,7 @@ def test_populated_migration_refuses_to_discard_pr_ownership(database_prerequisi
             for table in inspect(connection).get_table_names():
                 name = connection.dialect.identifier_preparer.quote(table)
                 connection.exec_driver_sql(f"DROP TABLE IF EXISTS {name} CASCADE")
-        command.upgrade(config, "head")
+        command.upgrade(config, "0027_pull_requests")
         with engine.begin() as connection:
             connection.execute(pull_requests.insert().values(
                 repository="owner/repository", number=1, owner_key="author", row_version=1,
@@ -267,6 +267,7 @@ def test_populated_migration_refuses_to_discard_pr_ownership(database_prerequisi
                 == "0027_pull_requests"
             record = connection.execute(select(pull_requests)).mappings().one()
             assert record["owner_key"] == "author" and record["row_version"] == 1
+        command.upgrade(config, "head")
     finally:
         engine.dispose()
 
