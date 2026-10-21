@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
@@ -15,14 +16,26 @@ from fastmcp.server.dependencies import get_context
 from starlette.responses import JSONResponse
 from switchstand.chatgpt_edge import resource_service, runtime_identity_from_meta
 from switchstand.chatgpt_mcp import build_ordinary_tools
+from switchstand.canonical_work import CurrentWork, canonical_revision
 from switchstand.grants import PrincipalContext
+from switchstand.review_config_loader import ReviewEdgeConfig
+from switchstand.reviews import ReviewGuidelines, ReviewPolicy
 
 
 async def run(control, state, port):
     with disposable_postgres() as (environment, directory):
         os.environ["DATABASE_URL"] = environment["DATABASE_URL"]
         os.environ["SWITCHSTAND_CODEX_WAKE_CONTROL"] = str(control)
-        async with resource_service() as (service, _runtime):
+        review = ReviewEdgeConfig(ReviewPolicy(version="disposable-v1"),
+                                  ReviewGuidelines("synthetic-fixture", "0" * 64))
+        async with resource_service(review_config=review) as (service, _runtime):
+            subject_id = uuid4()
+            await service.state.bind_reserved(subject_id, "postgres", str(subject_id))
+            assert service.canonical_work is not None
+            await service.canonical_work.works.create(CurrentWork(
+                subject_id, "Synthetic review wake fixture", False,
+                "Protocol exercise only; no production authority or independent code review.",
+                lifecycle_state="CURRENT", review_next_action="Record synthetic protocol result only."))
             async def principal():
                 return PrincipalContext(issuer="prototype-loopback", subject="disposable",
                                         client_id="prototype", assurance="test")
@@ -43,6 +56,7 @@ async def run(control, state, port):
                 return JSONResponse(await service.messages.on_delivery.__self__.check_route(
                     payload["wake_route_token"], payload["session_id"]))
             state.write_text(json.dumps({"pid": os.getpid(), "directory": str(directory),
+                "subject_id": str(subject_id), "subject_revision": canonical_revision(subject_id, 1),
                 "database_pid": int((directory / "data/postmaster.pid").read_text().splitlines()[0])}))
             await server.run_http_async(host="127.0.0.1", port=port, path="/mcp", show_banner=False)
 
