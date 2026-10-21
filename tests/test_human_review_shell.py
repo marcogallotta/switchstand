@@ -153,6 +153,9 @@ def test_shell_is_password_authenticated_and_renders_server_owned_consequence(sh
 def test_v2_shell_renders_escaped_four_line_opening_first(shell):
     client, state, auth = shell
     state.record = _v2_record()
+    consequence = state.record.consequence.model_copy(update={"task_text": "Still unfinished <Task>"})
+    state.record = state.record.model_copy(update={"consequence": consequence,
+        "consequence_id": consequence.consequence_id, "consequence_digest": consequence.digest})
 
     response = client.get(f"/human-review/{WORK}?revision={REVISION}", headers=auth)
 
@@ -164,6 +167,8 @@ def test_v2_shell_renders_escaped_four_line_opening_first(shell):
     assert positions == sorted(positions)
     assert positions[-1] < response.text.index("Human Review: PREPARED")
     assert "Ship &lt;this&gt;" in response.text
+    assert "Still unfinished &lt;Task&gt;" in response.text
+    assert str(consequence.consequence_id) in response.text
     assert "Small &amp; bounded" in response.text
     assert "No second Human Review for matching code" in response.text
     assert "IMPLEMENT" in response.text and "LAND" in response.text

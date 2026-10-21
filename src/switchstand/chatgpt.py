@@ -27,6 +27,7 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkItem,
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
@@ -1089,6 +1090,10 @@ class ChatGPTService:
                     )
                 try:
                     notes = _required_result_notes(current_work.notes, request.text)
+                    if (self.canonical_work_active and isinstance(current_work, WorkItem)
+                            and current_work.task_text is not None
+                            and len(notes.encode("utf-8")) > 2048):
+                        raise ValueError("approved Task Agent notes capacity exceeded")
                 except ValueError:
                     return GuardOutcome(
                         status="not_applied", operation="required_result_save",

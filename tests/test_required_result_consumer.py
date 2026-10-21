@@ -117,8 +117,9 @@ async def test_save_closes_and_restart_replays_without_duplicate(
     assert conflict.reason == "lifecycle_result_identity_conflict" and provider.revision == "r2"
 
 
+@pytest.mark.parametrize("enrolled", [False, True])
 async def test_canonical_save_updates_postgres_notes_and_replays_without_provider(
-    result_engine: AsyncEngine,
+    result_engine: AsyncEngine, enrolled: bool,
 ) -> None:
     state, grants = PostgresState(result_engine), GrantState(result_engine)
     handle = await state.bind("asana", "123")
@@ -149,12 +150,27 @@ async def test_canonical_save_updates_postgres_notes_and_replays_without_provide
         required_results=RequiredResultPersistence(LifecycleRepository(result_engine)),
         canonical_work=runtime, canonical_work_active=True,
     )
+    if enrolled:
+        from test_human_reviews import v2_consequence
+
+        from switchstand.human_reviews import HumanReviewState
+
+        approval = v2_consequence((await runtime.get(handle.id)).item.revision).model_copy(update={
+            "package_work_id": handle.id, "task_text": "Deliver the unfinished result",
+        })
+        state = HumanReviewState(result_engine, works)
+        assert (await state.propose(approval)).status == "PREPARED"
+        assert (await state.submit(approval.consequence_id, handle.id,
+                                  approval.package_revision, "APPROVED")).status == "RECORDED"
     action = RequiredResultSaveRequest(
         api_version="1", work_id=handle.id, grant_version=1,
         observed_revision=(await runtime.get(handle.id)).item.revision,  # type: ignore[union-attr]
         text="final result",
     )
 
+    if enrolled:
+        rejected = await service.required_result_save(action.model_copy(update={"text": "é" * 1024}))
+        assert rejected.reason == "required_result_exceeds_notes_capacity"
     first = await service.required_result_save(action)
     replay = await service.required_result_save(action)
     stored = await runtime.get(handle.id)

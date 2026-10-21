@@ -118,6 +118,9 @@ def feedback_report_tool(
 
 class PublicWorkItem(WorkSearchItem):
     notes: str
+    task_text: str | None = None
+    task_approval_id: UUID | None = None
+    task_approval_digest: str | None = None
 
 
 class PublicReadGuard(ClosedModel):
@@ -145,6 +148,8 @@ def project_work(result: WorkResult | GrantedWorkResult) -> PublicWorkResult:
     if result.item is not None:
         item = result.item
         public.item = PublicWorkItem(id=item.id, title=item.title, notes=item.notes,
+                                     task_text=item.task_text, task_approval_id=item.task_approval_id,
+                                     task_approval_digest=item.task_approval_digest,
                                      completed=item.completed, revision=item.revision,
                                      routing=item.routing, context=item.context,
                                      admitted_at=item.admitted_at)

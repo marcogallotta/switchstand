@@ -25,6 +25,11 @@ def _relations() -> WorkRelations:
     )
 
 
+@pytest.fixture(autouse=True)
+def no_approval_in_projection_unit_fakes(monkeypatch):
+    monkeypatch.setattr(CanonicalWorkRuntime, "_task_approval", AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
 async def test_get_projects_only_postgres_state() -> None:
     work_id = uuid4()

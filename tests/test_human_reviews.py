@@ -284,3 +284,23 @@ def test_v2_closed_shape_rejects_effect_exclusion():
     revision = canonical_revision(PACKAGE, 1)
     with pytest.raises(ValueError, match="also excluded"):
         v2_consequence(revision, effects=("IMPLEMENT", "ACTIVATE"))
+
+
+async def test_task_enrollment_utf8_limit_and_legacy_digest(subject):
+    store, _, engine = subject
+    legacy = v2_consequence(canonical_revision(PACKAGE, 1))
+    assert legacy.digest == "696090832a34674142e1f04f070356363c40dab422b6abb2b8da670228154c2c"
+    task = legacy.model_copy(update={"task_text": "Finish the still unfinished Task"})
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(notes="é" * 1024 + "x"))
+    assert (await store.propose(task)).status == "PREPARED"
+    assert (await store.submit(task.consequence_id, PACKAGE, task.package_revision,
+                               "APPROVED")).reason == "agent_notes_overflow"
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(notes="é" * 1024, row_version=2))
+    assert (await store.submit(task.consequence_id, PACKAGE, task.package_revision,
+                               "APPROVED")).status == "STALE"
+    task = task.model_copy(update={"package_revision": canonical_revision(PACKAGE, 2)})
+    assert (await store.propose(task)).status == "PREPARED"
+    assert (await store.submit(task.consequence_id, PACKAGE, task.package_revision,
+                               "APPROVED")).status == "RECORDED"

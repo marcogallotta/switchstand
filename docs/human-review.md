@@ -1,5 +1,9 @@
 # Human Review
 
+An approved consequence may enroll exact `task_text`. Work reads then expose that immutable Task
+and approval identity separately from editable Agent notes, limited to 2048 UTF-8 bytes.
+Only exact human-approved supersession replaces the Task; legacy records keep existing semantics.
+
 Human Review is the final decision conversation when the governing procedure requires it.
 
 Before committing to a new material solution, involve Marco if its consequences or tradeoffs are his choice. Approval of a roadmap or goal is not approval of an invented solution. An unchanged solution already covered by Marco's approval needs no second Human Review merely because implementation or landing is ready. Other work follows its governing Human Review procedure.
