@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import event, insert, text
+from sqlalchemy import create_engine, event, insert, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
@@ -33,6 +33,7 @@ from switchstand.messages import (
     MessageState,
     MessageSubmitRequest,
     RuntimeCurrentness,
+    message_deliveries,
 )
 from switchstand.reviews import (
     BaselineAssessment,
@@ -230,6 +231,25 @@ async def register_coordinator(
     return await mailboxes.register_agent("Coordinator", principal, session)
 
 
+@pytest.fixture
+def observe_deliveries():
+    engines = []
+    def observe(messages):
+        engine = create_engine(messages.engine.url)
+        engines.append(engine)
+        seen = []
+        def notify(message, fresh):
+            with engine.connect() as connection:
+                committed = connection.scalar(select(message_deliveries.c.delivery_id).where(
+                    message_deliveries.c.delivery_id == message.delivery_id))
+            seen.append((message.recipient_work_id, message.delivery_id, fresh, committed))
+        messages.on_delivery = notify
+        return seen
+    yield observe
+    for engine in engines:
+        engine.dispose()
+
+
 async def test_occurrence_store_accepts_only_authenticated_direct_request(occurrence_runtime):
     occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
     requester_result = await mailboxes.register_agent("Requester", "principal-a", "chat-a")
@@ -282,10 +302,19 @@ async def test_occurrence_store_accepts_only_authenticated_direct_request(occurr
     assert deliveries[0][0].sender_work_id == requester.endpoint_id
 
 
+@pytest.mark.parametrize("publication", ["ok", "rollback", "commit_failure", "callback_failure"])
 async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
-    occurrence_runtime,
+    occurrence_runtime, observe_deliveries, publication,
 ):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    notices = observe_deliveries(messages)
+    notify = messages.on_delivery
+    def failed_callback(message, fresh):
+        assert notify is not None
+        notify(message, fresh)
+        raise RuntimeError("wake transport unavailable")
+    if publication == "callback_failure":
+        messages.on_delivery = failed_callback
     requester_result = await mailboxes.register_agent("Requester", "principal-a", "chat-a")
     reviewer_result = await register_coordinator(mailboxes, "principal-b", "chat-b")
     requester, reviewer = requester_result.mailbox, reviewer_result.mailbox
@@ -301,8 +330,41 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
         subject_work_id=subject_id, observed_revision=revision,
         review_kind="CODE", candidate_ref="git:exact",
     )
-    sent = await service.request(request, requester)
+    if publication == "rollback":
+        async with messages.review_transaction(engine) as connection:
+            stored = await messages.submit_review_internal(
+                connection, requester, MessageRoute(
+                    recipient_work_id=reviewer.endpoint_id, recipient_grant_version=reviewer.generation,
+                ), MessageSubmitRequest(
+                    api_version="1", message_id=uuid4(), grant_version=requester.generation,
+                    route_ref="review.request", kind="request", payload={"text": "rollback probe"},
+                ),
+            )
+            assert stored.status == "ok" and notices == []
+            await connection.rollback()
+        async with engine.connect() as connection:
+            assert await connection.scalar(select(message_deliveries.c.delivery_id)) is None
+        assert notices == []
+        return
+    def fail_commit(connection):
+        if connection.scalar(select(message_deliveries.c.delivery_id).where(
+            message_deliveries.c.recipient_work_id == reviewer.endpoint_id,
+        )) is not None:
+            raise ValueError("database commit rejected")
+    if publication == "commit_failure":
+        event.listen(engine.sync_engine, "commit", fail_commit)
+    try:
+        sent = await service.request(request, requester)
+    finally:
+        if publication == "commit_failure":
+            event.remove(engine.sync_engine, "commit", fail_commit)
+    if publication == "commit_failure":
+        assert sent.status == "UNKNOWN" and notices == []
+        async with engine.connect() as connection:
+            assert await connection.scalar(select(message_deliveries.c.delivery_id)) is None
+        return
     assert sent.status == "SENT" and sent.delivery_id is not None
+    assert notices == [(reviewer.endpoint_id, sent.delivery_id, True, sent.delivery_id)]
     assert await service.request(request, requester) == sent
     delivery, envelope = (await occurrences.request_deliveries(sent.review_id))[0]
     assert delivery.delivery_id == sent.delivery_id
@@ -325,9 +387,10 @@ async def test_direct_request_is_server_briefed_idempotent_and_revision_bound(
     ("BLOCKED", None),
 ])
 async def test_same_principal_distinct_endpoints_complete_review(
-    occurrence_runtime, verdict, continuation,
+    occurrence_runtime, verdict, continuation, observe_deliveries,
 ):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    notices = observe_deliveries(messages)
     async with engine.begin() as connection:
         await connection.execute(text(
             "UPDATE canonical_work SET review_next_action = :action WHERE work_id = :id"
@@ -354,7 +417,9 @@ async def test_same_principal_distinct_endpoints_complete_review(
     sent = await service.request(request, requester)
     assert sent.status == "SENT" and sent.review_id is not None
     assert sent.delivery_id is not None
+    assert notices == [(reviewer.endpoint_id, sent.delivery_id, True, sent.delivery_id)]
     assert await service.request(request, requester) == sent
+    assert len(notices) == 1  # Replayed review identity cannot initiate another wake.
     assert len(await occurrences.request_sources(sent.review_id)) == 1
 
     received = await messages.receive_admitted(
@@ -381,6 +446,7 @@ async def test_same_principal_distinct_endpoints_complete_review(
         evidence_refs=("work:actual-blocker-evidence",) if verdict == "BLOCKED" else (),
     ), reviewer)
     assert submitted.status == "SUBMITTED"
+    assert notices[-1] == (requester.endpoint_id, submitted.delivery_id, True, submitted.delivery_id)
     result = await service.get(sent.review_id, requester)
     assert result.status == verdict
     assert "Continue in this turn" in result.next_action
@@ -409,8 +475,11 @@ async def test_same_principal_distinct_endpoints_complete_review(
     assert "Superseded action" not in stale.next_action
 
 
-async def test_same_endpoint_reviewer_denial_leaves_no_review_state(occurrence_runtime):
+async def test_same_endpoint_reviewer_denial_leaves_no_review_state(
+    occurrence_runtime, observe_deliveries,
+):
     occurrences, messages, mailboxes, subject_id, _engine = occurrence_runtime
+    notices = observe_deliveries(messages)
     requester = (await register_coordinator(
         mailboxes, "principal-shared", "chat-requester",
     )).mailbox
@@ -436,6 +505,7 @@ async def test_same_endpoint_reviewer_denial_leaves_no_review_state(occurrence_r
     assert await occurrences.works.get(basis.review_id) is None
     assert await occurrences.basis_sources(basis.review_id) == ()
     assert await occurrences.stored_request_sources(basis.review_id) == ()
+    assert notices == []
 
 
 async def test_baseline_review_round_trip_binds_assessment_and_projects_proof(
@@ -1171,8 +1241,12 @@ async def test_review_pickup_rejects_multiple_current_occurrences(occurrence_run
     assert result["reason"] == "MULTIPLE_CURRENT_OCCURRENCES"
 
 
-async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
+@pytest.mark.parametrize("legacy_acquisition", [False, True])
+async def test_owner_polling_acquires_independent_reviewer(
+    occurrence_runtime, observe_deliveries, legacy_acquisition,
+):
     occurrences, messages, mailboxes, subject_id, engine = occurrence_runtime
+    notices = observe_deliveries(messages)
     requester = (await mailboxes.register_agent(
         "Requester", "principal-a", "chat-a"
     )).mailbox
@@ -1195,16 +1269,39 @@ async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
     )).mailbox
     assert reviewer is not None
     service.policy = ReviewPolicy(version="policy-v1")
-    sent = await service.get(waiting.review_id, requester)
-    assert sent.status == "REQUEST_UNPICKED" and sent.delivery_id is not None, sent
+    if legacy_acquisition:
+        (_record, basis), = await occurrences.basis_sources(waiting.review_id)
+        acquisition = await messages.submit_admitted(
+            requester.endpoint_id, MessageRoute(
+                recipient_work_id=reviewer.endpoint_id, recipient_grant_version=reviewer.generation,
+            ), MessageSubmitRequest(
+                api_version="1", message_id=_stable(
+                    "acquisition", waiting.review_id, basis.brief.basis.subject_revision,
+                ), grant_version=requester.generation, route_ref="review.acquisition",
+                kind="request", payload=basis.model_dump(mode="json"),
+            ), agent_binding=requester,
+        )
+        assert acquisition.message is not None
+        await messages.receive_admitted(
+            reviewer.endpoint_id, reviewer.generation,
+            RuntimeCurrentness(generation="1", current_generation="1"),
+            MessageReceiveRequest(api_version="1", delivery_id=acquisition.message.delivery_id,
+                                  grant_version=reviewer.generation), agent_binding=reviewer,
+        )
+        sent = await service.continue_acquisition(waiting.review_id, reviewer)
+        assert notices[-1][0] == requester.endpoint_id  # Committed acquisition acknowledgement.
+    else:
+        sent = await service.get(waiting.review_id, requester)
+    assert sent.status == ("SENT" if legacy_acquisition else "REQUEST_UNPICKED"), sent
+    assert sent.delivery_id is not None
     requested = (await report(engine, subject_id, occurrences))["review_pickup"]
     assert requested["phase"] == "REQUEST_UNPICKED"
     assert requested["unpicked"] is True
     sources = await occurrences.request_sources(waiting.review_id)
     assert len(sources) == 1
     record, _envelope, bound = sources[0]
-    assert record.delivery.sender_work_id == requester.endpoint_id
-    assert bound is None
+    assert record.delivery.sender_work_id == (reviewer if legacy_acquisition else requester).endpoint_id
+    assert (bound is not None) == legacy_acquisition
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
@@ -1223,6 +1320,8 @@ async def test_owner_polling_acquires_independent_reviewer(occurrence_runtime):
         review_id=waiting.review_id, verdict="PASS", context_provenance="UNSEEDED",
     ), reviewer)
     assert submitted.status == "SUBMITTED"
+    assert notices[-1] == (requester.endpoint_id, submitted.delivery_id, True, submitted.delivery_id)
+    assert all(fresh and delivery == committed for _recipient, delivery, fresh, committed in notices)
     assert (await service.get(waiting.review_id, requester)).status == "PASS"
     async with engine.begin() as connection:
         subject = await occurrences.works.get(subject_id)

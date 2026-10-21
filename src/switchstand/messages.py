@@ -721,12 +721,31 @@ class MessageState:
                 if failure is not None:
                     raise _AtomicResultFailure(failure)
         result = MessageSubmitResult(status="ok", message=_view(dict(row)))
-        if self.on_delivery is not None and result.message is not None:
+        if result.message is not None:
+            self._notify_delivery(result.message, inserted is not None)
+        return result
+
+    def _notify_delivery(self, message: PendingMessage, fresh: bool) -> None:
+        if self.on_delivery is not None:
             try:
-                self.on_delivery(result.message, inserted is not None)
+                self.on_delivery(message, fresh)
             except Exception:
                 logging.getLogger(__name__).exception("post-commit wake signal unavailable")
-        return result
+
+    @asynccontextmanager
+    async def review_transaction(self, engine: AsyncEngine) -> AsyncGenerator[AsyncConnection]:
+        """Publish fresh review deliveries only after their enclosing commit."""
+        pending: list[PendingMessage] = []
+        async with engine.begin() as connection:
+            connection.info["switchstand_review_wake"] = pending
+            try:
+                yield connection
+                committed = connection.in_transaction()
+            finally:
+                connection.info.pop("switchstand_review_wake", None)
+        if committed:
+            for message in pending:
+                self._notify_delivery(message, True)
 
     async def _disposition_result(
         self, connection: AsyncConnection, delivery_id: UUID, sender_work_id: UUID,
@@ -762,7 +781,7 @@ class MessageState:
     async def submit_review_internal(
         self, connection: AsyncConnection, sender: AgentMailbox, route: MessageRoute,
         request: MessageSubmitRequest,
-        received_binding: tuple[int, str] | None = None,
+        received_binding: tuple[int, str] | None = None, *, wake: bool = True,
     ) -> MessageSubmitResult:
         """Store one typed review message inside the occurrence serialization fence."""
         if not await self._current_agent_binding(connection, sender):
@@ -799,15 +818,19 @@ class MessageState:
         ))
         if current != digest:
             return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
-        await connection.execute(insert(message_deliveries).values(
+        inserted = await connection.scalar(insert(message_deliveries).values(
             delivery_id=delivery_id, sender_work_id=sender.endpoint_id,
             message_id=request.message_id, recipient_work_id=route.recipient_work_id,
             recipient_grant_version=route.recipient_grant_version,
-        ).on_conflict_do_nothing())
+        ).on_conflict_do_nothing().returning(message_deliveries.c.delivery_id))
         row = (await connection.execute(self._pending_query().where(
             message_deliveries.c.delivery_id == delivery_id
         ))).mappings().one()
-        return MessageSubmitResult(status="ok", message=_view(dict(row)))
+        message = _view(dict(row))
+        pending = connection.info.get("switchstand_review_wake")
+        if inserted is not None and wake and pending is not None:
+            pending.append(message)
+        return MessageSubmitResult(status="ok", message=message)
 
     async def submit_admitted(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,

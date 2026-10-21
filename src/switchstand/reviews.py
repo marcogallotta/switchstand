@@ -1064,7 +1064,7 @@ class ReviewService:
                 api_version="1", message_id=_basis_message_id(basis),
                 grant_version=requester.generation, route_ref="review.acquisition",
                 kind="request", payload=cast(JsonValue, envelope.model_dump(mode="json")),
-            ))
+            ), wake=False)
         return submitted.message if submitted.status == "ok" else None
 
     async def _record_basis(
@@ -1073,7 +1073,7 @@ class ReviewService:
     ) -> PendingMessage | None:
         if connection is not None:
             return await self._record_basis_in_transaction(connection, brief, requester)
-        async with self.occurrences.engine.begin() as owned:
+        async with self.messages.review_transaction(self.occurrences.engine) as owned:
             return await self._record_basis_in_transaction(owned, brief, requester)
 
     async def _advance_in_transaction(
@@ -1217,7 +1217,7 @@ class ReviewService:
 
     async def _advance(self, review_id: UUID, requester: AgentMailbox) -> ReviewResult:
         try:
-            async with self.occurrences.engine.begin() as connection:
+            async with self.messages.review_transaction(self.occurrences.engine) as connection:
                 return await self._advance_in_transaction(connection, review_id, requester)
         except (SQLAlchemyError, TypeError, ValueError):
             return ReviewResult(status="UNKNOWN", review_id=review_id,
@@ -1287,7 +1287,7 @@ class ReviewService:
                 return ReviewResult(status="DENIED", reason="prior_review_not_found")
         brief = self._brief(basis, subject, focused_from)
         try:
-            async with self.occurrences.engine.begin() as connection:
+            async with self.messages.review_transaction(self.occurrences.engine) as connection:
                 if basis.baseline_check is not None and await approved_baseline_in_transaction(
                     connection, basis.baseline_check.baseline_id, basis.subject_work_id,
                 ) is None:
@@ -1528,7 +1528,7 @@ class ReviewService:
             return ReviewResult(status="STALE", review_id=review_id,
                                 reason="review_basis_changed")
         try:
-            async with self.occurrences.engine.begin() as connection:
+            async with self.messages.review_transaction(self.occurrences.engine) as connection:
                 return await self._advance_in_transaction(
                     connection, review_id, requester, coordinator=coordinator,
                     acquisition=incoming,
@@ -1688,7 +1688,7 @@ class ReviewService:
                 payload=cast(JsonValue, outcome_envelope.model_dump(mode="json")),
                 in_reply_to_delivery_id=delivery.delivery_id,
         )
-        async with self.occurrences.engine.begin() as connection:
+        async with self.messages.review_transaction(self.occurrences.engine) as connection:
             submitted = await self.messages.submit_review_internal(
                 connection, reviewer, route, outcome_request,
                 (reviewer.generation, str(reviewer.generation)),
@@ -1706,7 +1706,7 @@ class ReviewService:
                 grant_version=reviewer.generation, route_ref="review.outcome", kind="request",
                 payload=cast(JsonValue, outcome_envelope.model_dump(mode="json")),
             )
-            async with self.occurrences.engine.begin() as connection:
+            async with self.messages.review_transaction(self.occurrences.engine) as connection:
                 notified = await self.messages.submit_review_internal(
                     connection, reviewer,
                     MessageRoute(
