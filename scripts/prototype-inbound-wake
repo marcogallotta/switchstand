@@ -14,9 +14,10 @@ from disposable_postgres import disposable_postgres
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from starlette.responses import JSONResponse
+
+from switchstand.canonical_work import CurrentWork, canonical_revision
 from switchstand.chatgpt_edge import resource_service, runtime_identity_from_meta
 from switchstand.chatgpt_mcp import build_ordinary_tools
-from switchstand.canonical_work import CurrentWork, canonical_revision
 from switchstand.grants import PrincipalContext
 from switchstand.review_config_loader import ReviewEdgeConfig
 from switchstand.reviews import ReviewGuidelines, ReviewPolicy
