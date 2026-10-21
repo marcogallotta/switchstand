@@ -217,9 +217,9 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "WHAT YOU ASKED —" not in human_review
     assert "CONFORMS_TO_APPROVED_BASELINE" in human_review
     assert "does not become a portfolio hold" in human_review
-    assert "Check whether Marco already approved the exact solution" in agents
-    assert "unchanged approved work and routine status need no new decision" in agents
-    assert "These triggers do not grant authority" in agents
+    assert "does not require repeat review solely because implementation or landing is ready" in agents
+    assert "current authority separately authorizes it" in agents
+    assert "Report completed work as status, not another permission request" in agents
     assert "Approved-baseline conformance" in quality
 
 
@@ -249,8 +249,8 @@ def test_human_and_incident_triggers_remain_always_loaded():
     incident = section(agents, "### Live incidents")
 
     assert markdown_links(triggers) >= {"docs/human-input.md", "docs/human-review.md"}
-    assert "before that commitment when Marco's judgment could change the choice" in triggers
-    assert "before that action. Check whether Marco already approved the exact solution" in triggers
+    assert "Before a new material solution hardens" in triggers
+    assert "an unchanged already-approved solution does not require repeat review" in triggers
     assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
     assert markdown_links(incident) >= {
         "docs/operations-live-incident.md",
@@ -425,10 +425,8 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
     assert "Prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
     assert "do not delay mitigation for repository synchronization" in incident
-    assert "commit to a new choice about user behavior, scope, architecture, scale, cost, risk, or lasting agent policy" in triggers
-    assert "[Human Input](docs/human-input.md) before that commitment" in triggers
-    assert "commit to, implement, dispatch, request approval for, or hand off a new solution or material change" in triggers
-    assert "[Human Review](docs/human-review.md) before that action" in triggers
+    assert "Before a new material solution hardens, follow [Human Input]" in triggers
+    assert "and [Human Review](docs/human-review.md) for any still-open human-owned choice" in triggers
     assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
     assert "agent resource admission" in agents
     assert "Shared canonical `main` is read-only" in agents
