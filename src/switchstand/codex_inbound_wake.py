@@ -330,7 +330,7 @@ class InboundWake:
                     basis = brief.get("basis") if isinstance(brief, dict) else None
                     try:
                         if not isinstance(basis, dict):
-                            raise ValueError("missing review basis")
+                            raise TypeError("missing review basis")
                         review_id = str(UUID(str(basis["review_id"])))
                     except (KeyError, TypeError, ValueError) as error:
                         raise RuntimeError("UNKNOWN: typed review identity unavailable") from error
