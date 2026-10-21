@@ -33,6 +33,26 @@ def deny(reason: str, event: str) -> dict[str, object]:
 
 
 def segments(command: str) -> list[list[str]]:
+    # Here-document bodies are data, not shell syntax. Keep the header and all
+    # commands after the delimiter visible to the existing classifier.
+    lines = command.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        match = re.search(r"(?:^|[ \t])<<-?(['\"]?)([A-Za-z_][A-Za-z_0-9]*)\1[ \t]*(?:#.*)?$",
+                          line.rstrip("\r\n"))
+        if not match:
+            continue
+        delimiter = match.group(2)
+        strip_tabs = "<<-" in match.group(0)
+        end = index + 1
+        while end < len(lines) and (lines[end].lstrip("\t") if strip_tabs else lines[end]).strip("\r\n") != delimiter:
+            if not match.group(1) and ("$(" in lines[end] or "`" in lines[end]):
+                raise ValueError("unquoted here-document command substitution is denied")
+            lines[end] = "\n"
+            end += 1
+        if end == len(lines):
+            raise ValueError("unterminated here-document")
+        lines[end] = ";\n"
+    command = "".join(lines)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
     lexer.commenters = ""

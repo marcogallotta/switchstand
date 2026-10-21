@@ -1052,6 +1052,17 @@ def test_unscoped_hook_denies_malformed_shell_and_allows_balanced_read(tmp_path)
     assert hook(tmp_path, "echo 'balanced'", environment) == {}
 
 
+def test_hook_allows_apostrophe_in_heredoc_but_checks_following_command(tmp_path):
+    environment = dict(os.environ)
+    body = "cat <<'EOF'\nit's data; git reset --hard\nEOF\n"
+    assert hook(tmp_path, body, environment) == {}
+    denied = hook(tmp_path, body + "rm -rf /\n", environment)
+    assert "recursive rm" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert hook(tmp_path, "cat <<EOF\nit's data\nEOF\n", environment) == {}
+    denied = hook(tmp_path, "cat <<EOF\n$(rm -rf /)\nEOF\n", environment)
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):
     primary = tmp_path / "primary"
     writer = tmp_path / "writer"
