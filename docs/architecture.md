@@ -362,9 +362,11 @@ messaging, and required continuation:
   values, `0015_work_admission_time` adds nullable admission time, and `0017_priority_claims`
   adds inert, occurrence-based priority provenance without replacing the legacy scalar. Native PostgreSQL creates
   set it from the server clock; preexisting and source-imported rows retain explicit `NULL` unless
-  the import carries a trustworthy timestamp. `work_policy.py` alone validates resultant root, owner, wait, lifecycle, and next-action
-  state for semantic writes; legacy incomplete rows remain editable through title/notes-only
-  changes. The repositories remain outside shared
+  the import carries a trustworthy timestamp. `work_policy.py` validates affected invariant
+  groups for protected scalar updates, preserving unrelated legacy metadata. One-field FINISH
+  atomically couples completion/TERMINAL and clears waits/actions; explicit contradictions and
+  implicit reopening are denied. Other semantic writes retain strict resultant-state validation.
+  The repositories remain outside shared
   `state.metadata` and are registered explicitly by the edge. Migration
   `0025_task_control_checkpoints` adds only the durable checkpoint table; schema migration,
   service deployment, grant issuance, client refresh, and live reliance remain separate effects.
