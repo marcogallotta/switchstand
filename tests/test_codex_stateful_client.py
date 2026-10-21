@@ -1,10 +1,15 @@
 import asyncio
 import json
 import os
+import queue
+import signal
 import socket
 import subprocess
+import threading
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -88,25 +93,49 @@ def test_runtime_identity_requires_exact_claude_client() -> None:
 class AppServerClient:
     def __init__(self, binary: Path, workspace: Path, env: dict[str, str]) -> None:
         self.next_id = 1
+        self.messages: queue.Queue[dict[str, object] | None] = queue.Queue()
+        self.pending: list[dict[str, object]] = []
         self.process = subprocess.Popen(
             [str(binary), "app-server"],
             cwd=workspace,
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
+        self.reader = threading.Thread(target=self._read, daemon=True)
+        self.reader.start()
+
+    def _read(self) -> None:
+        assert self.process.stdout is not None
+        try:
+            for line in self.process.stdout:
+                self.messages.put(json.loads(line))
+        finally:
+            self.messages.put(None)
 
     def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
+        # This fresh session belongs only to this disposable proof client.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=3)
+                os.killpg(self.process.pid, sig)
+            except ProcessLookupError:
+                pass
+            if sig == signal.SIGTERM:
+                try:
+                    self.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+        self.process.wait(timeout=3)
+        self.reader.join(timeout=3)
+        # A pipe held by an escaped descendant must not make cleanup unbounded.
+        if not self.reader.is_alive():
+            for pipe in (self.process.stdin, self.process.stdout):
+                if pipe is not None:
+                    pipe.close()
 
     def send(self, message: dict[str, object]) -> None:
         assert self.process.stdin is not None
@@ -116,31 +145,61 @@ class AppServerClient:
     def notify(self, method: str) -> None:
         self.send({"method": method})
 
-    def request(self, method: str, params: dict[str, object] | None) -> dict[str, object]:
+    def receive(
+        self, predicate: Callable[[dict[str, Any]], bool], timeout: float = 20,
+    ) -> dict[str, Any]:
+        """Retain unrelated replies/events and honor a real nonblocking deadline."""
+        for index, message in enumerate(self.pending):
+            if predicate(message):
+                return self.pending.pop(index)
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Codex app-server response deadline expired")
+            try:
+                message = self.messages.get(timeout=remaining)
+            except queue.Empty as error:
+                raise TimeoutError("Codex app-server response deadline expired") from error
+            if message is None:
+                raise EOFError("Codex app-server closed stdout")
+            if "id" in message and isinstance(message.get("method"), str):
+                self.send({
+                    "id": message["id"],
+                    "error": {"code": -32601, "message": "proof client does not handle server requests"},
+                })
+                self.pending.append(message)
+                raise RuntimeError(f"Unsupported server request: {message['method']}")
+            if predicate(message):
+                return message
+            self.pending.append(message)
+
+    def request(
+        self, method: str, params: dict[str, object] | None, timeout: float = 20,
+    ) -> dict[str, object]:
         request_id = self.next_id
         self.next_id += 1
         request: dict[str, object] = {"id": request_id, "method": method}
         if params is not None:
             request["params"] = params
         self.send(request)
-        assert self.process.stdout is not None
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            line = self.process.stdout.readline()
-            if not line:
-                break
-            message = json.loads(line)
-            if message.get("id") == request_id and "method" not in message:
-                return message
-            if "id" in message and isinstance(message.get("method"), str):
-                self.send({
-                    "id": message["id"],
-                    "error": {"code": -32601, "message": "proof client does not handle server requests"},
-                })
-        stderr = ""
-        if self.process.stderr is not None and self.process.poll() is not None:
-            stderr = self.process.stderr.read()
-        raise AssertionError(f"Codex app-server did not answer {method}: {stderr[-4000:]}")
+        return self.receive(
+            lambda message: message.get("id") == request_id and "method" not in message,
+            timeout,
+        )
+
+    def event(
+        self, method: str, thread_id: str, turn_id: str, timeout: float = 20,
+    ) -> dict[str, Any]:
+        def matches(message: dict[str, Any]) -> bool:
+            params = message.get("params", {})
+            turn = params.get("turn", {})
+            return (
+                message.get("method") == method
+                and params.get("threadId") == thread_id
+                and (params.get("turnId") == turn_id or turn.get("id") == turn_id)
+            )
+        return self.receive(matches, timeout)
 
 
 def response_result(response: dict[str, object]) -> dict[str, object]:
