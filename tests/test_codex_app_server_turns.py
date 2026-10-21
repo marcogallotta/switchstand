@@ -68,12 +68,24 @@ def test_actual_native_turn_artifact_and_stop(tmp_path: Path):
         assert any(m.get("method") == "item/completed" and m.get("params", {}).get("item", {}).get("type") == "commandExecution" for m in client.pending)
         stop_turn = response_result(client.request("turn/start", {
             "threadId": thread,
-            "input": [{"type": "text", "text": "Run a shell command sleep 30; do not change files.", "text_elements": []}],
+            "input": [{"type": "text", "text": "Run this exact shell command: echo $$ > command.pid; touch entered; while [ ! -e release ]; do sleep 0.05; done; touch continued. Do not launch background processes. It waits for the observer to release it.", "text_elements": []}],
         }))["turn"]["id"]
         client.receive(lambda m: m.get("method") == "item/started" and m.get("params", {}).get("turnId") == stop_turn and m.get("params", {}).get("item", {}).get("type") == "commandExecution", timeout=60)
+        deadline = time.monotonic() + 10
+        while not (tmp_path / "entered").exists():
+            assert time.monotonic() < deadline, "command never entered"
+            time.sleep(0.05)
         response_result(client.request("turn/interrupt", {"threadId": thread, "turnId": stop_turn}))
         stopped = client.event("turn/completed", thread, stop_turn, timeout=20)
         assert stopped["params"]["turn"]["status"] == "interrupted", stopped
+        pid = int((tmp_path / "command.pid").read_text())
+        process_stat = Path(f"/proc/{pid}/stat")
+        assert not process_stat.exists() or process_stat.read_text().split()[2] == "Z", "command process survived STOP"
+        (tmp_path / "release").touch()
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            assert not (tmp_path / "continued").exists(), "command mutated workspace after STOP"
+            time.sleep(0.05)
     finally:
         client.close()
 
@@ -97,3 +109,22 @@ def test_unsupported_server_request_fails_closed_and_retains_evidence(tmp_path: 
         assert client.process.wait(timeout=2) == 0
     finally:
         client.close()
+
+
+def test_close_reaps_owned_descendant_holding_stdout(tmp_path: Path):
+    binary = tmp_path / "peer"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json,subprocess,time\n"
+        "child=subprocess.Popen(['sleep','60'])\n"
+        "print(json.dumps({'child':child.pid}),flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    binary.chmod(0o700)
+    client = AppServerClient(binary, tmp_path, dict(os.environ))
+    client.receive(lambda m: "child" in m)
+    started = time.monotonic()
+    client.close()
+    assert time.monotonic() - started < 4
+    assert client.process.poll() is not None
+    assert not client.reader.is_alive()

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import queue
+import signal
 import socket
 import subprocess
 import threading
@@ -103,6 +104,7 @@ class AppServerClient:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -116,17 +118,24 @@ class AppServerClient:
             self.messages.put(None)
 
     def close(self) -> None:
-        if self.process.poll() is None:
-            self.process.terminate()
+        # This fresh session belongs only to this disposable proof client.
+        for sig in (signal.SIGTERM, signal.SIGKILL):
             try:
-                self.process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait(timeout=3)
+                os.killpg(self.process.pid, sig)
+            except ProcessLookupError:
+                pass
+            if sig == signal.SIGTERM:
+                try:
+                    self.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    pass
+        self.process.wait(timeout=3)
         self.reader.join(timeout=3)
-        for pipe in (self.process.stdin, self.process.stdout):
-            if pipe is not None:
-                pipe.close()
+        # A pipe held by an escaped descendant must not make cleanup unbounded.
+        if not self.reader.is_alive():
+            for pipe in (self.process.stdin, self.process.stdout):
+                if pipe is not None:
+                    pipe.close()
 
     def send(self, message: dict[str, object]) -> None:
         assert self.process.stdin is not None
