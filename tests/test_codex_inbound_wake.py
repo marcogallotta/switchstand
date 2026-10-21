@@ -35,9 +35,11 @@ def subject(tmp_path):
     return wake, rpc, binding, identity, delivery
 
 
-@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "receipt", "routed", "unknown"])
+@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "receipt", "routed", "unknown"])
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
+    if boundary == "oldnew":
+        wake.messages.pending_delivery_ids.return_value = (uuid4(), delivery)
     original = rpc.call.side_effect
     async def call(method, params):
         if method == "thread/read" and boundary == "stop_after_read" and rpc.call.await_count == 3:
@@ -57,13 +59,17 @@ async def test_dispatch_boundaries(subject, boundary):
         wake.messages.pending_delivery_ids.return_value = None
     if boundary == "old":
         wake.fresh.clear()
-    if boundary in {"old", "unknown"}:
+    if boundary == "unknown":
         with pytest.raises(RuntimeError):
             await wake._reconcile(rpc, binding, identity)
     else:
         await wake._reconcile(rpc, binding, identity, path="/root/head" if boundary == "routed" else None)
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
-    assert len(starts) == (1 if boundary in {"idle", "unknown"} else 0)
+    assert len(starts) == (1 if boundary in {"idle", "oldnew", "unknown"} else 0)
+    if boundary == "oldnew":
+        assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(module.MARKER):]) == [str(delivery)]
+    if boundary == "old":
+        assert wake.outcomes[binding.endpoint_id] == "OLDER_UNCERTAIN"
     if boundary == "idle":
         assert set(starts[0]) == {"threadId", "input"} and starts[0]["threadId"] == identity
     if boundary == "routed":
@@ -104,8 +110,8 @@ async def test_receipts_ignore_nonuser_text_and_follow_pages(subject):
     assert rpc.call.call_args.kwargs == {} and rpc.call.call_args.args[1]["cursor"] == "next"
 
 
-@pytest.mark.parametrize("uncertain", [False, True])
-async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatch, uncertain):
+@pytest.mark.parametrize("failure", [None, "uncertain", "rejected"])
+async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatch, failure):
     wake, rpc, binding, identity, delivery = subject
     other = binding.model_copy(update={"endpoint_id": uuid4()})
     owner = binding.model_copy(update={"endpoint_id": uuid4()})
@@ -123,16 +129,19 @@ async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatc
         yield rpc
     monkeypatch.setattr(module, "DaemonConnection", connection)
     monkeypatch.setattr(module, "resolve_thread", AsyncMock(return_value=identity))
-    active, peak, seen = 0, 0, set()
+    active, peak, seen, attempts = 0, 0, set(), 0
     async def reconcile(_rpc, b, *_args):
-        nonlocal active, peak
+        nonlocal active, peak, attempts
+        attempts += 1
         active += 1
         peak = max(peak, active)
         await asyncio.sleep(.01)
         seen.add(b.endpoint_id)
         active -= 1
-        if uncertain:
+        if failure == "uncertain":
             raise module.UncertainTurn("acceptance unknown")
+        if failure == "rejected":
+            raise module.DaemonRejected("no effect accepted")
     wake._reconcile = reconcile
     for b in (binding, other):
         wake.signal(NS(delivery_id=delivery, recipient_work_id=b.endpoint_id), True)
@@ -142,8 +151,10 @@ async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatc
         await asyncio.sleep(.005)
     for b in (binding, other):
         wake.signal(NS(delivery_id=delivery, recipient_work_id=b.endpoint_id), True)
-    await asyncio.sleep(0)
-    assert all(task.done() for task in wake.tasks.values()) == uncertain
+    await asyncio.sleep(.03)
+    assert all(task.done() for task in wake.tasks.values()) == (failure == "uncertain")
+    if failure == "rejected":
+        assert attempts >= 4
     await wake.close()
     assert seen == set(bindings) and peak == 1
     assert sum(c.args[0] == "thread/resume" for c in rpc.call.call_args_list) == 2

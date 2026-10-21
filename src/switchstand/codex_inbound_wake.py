@@ -246,7 +246,10 @@ class InboundWake:
                         if attached != root:
                             await rpc.call("thread/resume", {"threadId": root, "excludeTurns": True})
                             attached = root
-                        await self._reconcile(rpc, binding, identity, root, root_binding, path)
+                        try:
+                            await self._reconcile(rpc, binding, identity, root, root_binding, path)
+                        except DaemonRejected as error:
+                            self.outcomes[recipient] = f"DENIED: {error}"
         except asyncio.CancelledError:
             raise
         except DaemonRejected as error:
@@ -281,8 +284,10 @@ class InboundWake:
         if not remaining:
             self.outcomes[recipient] = ("ROUTED_PENDING" if path else "RECEIPT") if pending else "EMPTY"
             return
-        if any(delivery not in self.fresh for delivery in remaining):
-            raise RuntimeError("pre-start delivery has no proven receipt; recovery unavailable")
+        remaining = [delivery for delivery in remaining if delivery in self.fresh]
+        if not remaining:
+            self.outcomes[recipient] = "OLDER_UNCERTAIN"
+            return
         status = (await rpc.call("thread/read", {
             "threadId": root, "includeTurns": False,
         }))["thread"]["status"]["type"]
@@ -352,3 +357,4 @@ class InboundWake:
             except Exception as error:
                 raise UncertainTurn("turn acceptance UNKNOWN; no replay") from error
             self.outcomes[recipient] = "ACCEPTED:" + result["turn"]["id"]
+            self.fresh.difference_update(remaining)
