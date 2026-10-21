@@ -524,7 +524,7 @@ messaging, and required continuation:
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. After durable commit, optional default-off `codex_inbound_wake.py` observes the owning daemon, serializes registered standalone Roots by actual thread, and wakes Root to handle its own mailbox; native Heads and nested actors remain UNKNOWN. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
+  checks. After an ordinary `agent_message_send` commits, optional default-off `codex_inbound_wake.py` observes the owning daemon, serializes registered standalone Roots by actual thread, and wakes Root to handle its own mailbox; review-service deliveries do not signal wake, and native Heads and nested actors remain UNKNOWN. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
