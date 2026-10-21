@@ -68,7 +68,7 @@ def test_actual_native_turn_artifact_and_stop(tmp_path: Path):
         assert any(m.get("method") == "item/completed" and m.get("params", {}).get("item", {}).get("type") == "commandExecution" for m in client.pending)
         stop_turn = response_result(client.request("turn/start", {
             "threadId": thread,
-            "input": [{"type": "text", "text": "Run this exact shell command: echo $$ > command.pid; touch entered; while [ ! -e release ]; do sleep 0.05; done; touch continued. Do not launch background processes. It waits for the observer to release it.", "text_elements": []}],
+            "input": [{"type": "text", "text": "Run this exact shell command: echo $$ > command.pid; touch entered; i=0; while [ ! -e release ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; touch continued. Do not launch background processes. It waits for the observer to release it.", "text_elements": []}],
         }))["turn"]["id"]
         client.receive(lambda m: m.get("method") == "item/started" and m.get("params", {}).get("turnId") == stop_turn and m.get("params", {}).get("item", {}).get("type") == "commandExecution", timeout=60)
         deadline = time.monotonic() + 10
