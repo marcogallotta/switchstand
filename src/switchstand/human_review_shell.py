@@ -83,6 +83,9 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
     details = "".join(f"<li>{escape(item)}</li>" for item in consequence.implementation_scope)
     excluded = "".join(f"<li>{escape(item)}</li>" for item in consequence.excluded_effects)
     baseline_content = ""
+    if consequence.task_text is not None:
+        baseline_content = (f"<h2>Task</h2><p>{escape(consequence.task_text)}</p>"
+                            f"<p>Task approval: {record.consequence_id} · {record.consequence_digest}</p>")
     opening = ""
     if consequence.baseline is not None:
         baseline = consequence.baseline
@@ -99,7 +102,7 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
             return "".join(f"<li>{escape(value)}</li>" for value in values)
 
         context = baseline.decision_context
-        baseline_content = (
+        baseline_content += (
             f"<h2>Human sources</h2><ul>{listed(baseline.human_source_refs)}</ul>"
             f"<h2>Approved meaning</h2><ul>{listed(baseline.approved_meaning)}</ul>"
             f"<h2>Protected requirements</h2><ul>{listed(baseline.protected_requirements)}</ul>"

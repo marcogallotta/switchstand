@@ -14,17 +14,16 @@ from typing import Any
 
 
 CONTEXT = (
-    "FEEDBACK V1. Respond to Marco immediately. Follow AGENTS.md and the concrete-failure "
-    "guidance in docs/source-history-feedback.md. Notice failures and hidden friction during "
-    "assigned work; frustration or a Human Review outcome alone does not require an issue. "
-    "Reuse the underlying issue, capture approximate time impact and separate quality/priority "
-    "ratings, and seek accepting correction ownership. Active human blockers need immediate "
-    "existing Codex Coordinator attention; continue unaffected authorized work. Respect STOP "
-    "and explicit no-logging direction. Retain all trial reports; no culling or ignoring. "
-    "Inspect the complete result of any applicable mcp__switchstand__file_* call; use "
-    "F:logged <WorkId> only after confirmed readback. F:unavailable requires inspecting "
-    "ALL_TOOLS and finding no applicable capability or no confirmed required result. "
-    "Sent is not pickup or repair. Do not create another reporting path."
+    "FEEDBACK V1. Respond to Marco immediately. During assigned work, notice concrete failures "
+    "and hidden friction, including bad code/specs, missed findings, blockers and avoidable delay. "
+    "Once observed, finish one existing Tracker report or attributable reuse with definitive "
+    "receipt before unrelated work; preserve this obligation across interruption. Frustration "
+    "or a routine Human Review decision alone is not a report trigger; no random sampling. "
+    "Respect STOP and explicit no-logging. Record approximate time, separate quality/priority "
+    "and correction owner; missing exact time or RCA does not excuse silence. Escalate active "
+    "human blockers. Route process/review burden via file_process; inspect complete file_* "
+    "results. F:– is false while capture is owed; "
+    "F:logged needs confirmed readback. Inspect ALL_TOOLS before F:unavailable. No parallel path."
 )
 
 RECOVERY = (

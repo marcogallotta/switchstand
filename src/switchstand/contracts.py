@@ -60,6 +60,9 @@ class WorkItem(ClosedModel):
     id: UUID
     title: str
     notes: str
+    task_text: str | None = None
+    task_approval_id: UUID | None = None
+    task_approval_digest: str | None = None
     completed: bool
     revision: str
     routing: Routing

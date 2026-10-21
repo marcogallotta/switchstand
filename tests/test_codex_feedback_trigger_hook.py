@@ -37,18 +37,20 @@ def test_each_turn_and_compaction_restore_the_feedback_obligation(
 
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "Respond to Marco immediately" in context
-    assert "frustration or a Human Review outcome alone does not require an issue" in context
-    assert "Reuse the underlying issue" in context
-    assert "Respect STOP" in context and "explicit no-logging direction" in context
-    assert "Retain all trial reports; no culling or ignoring" in context
-    assert "mcp__switchstand__file_*" in context
-    assert "complete result" in context and "confirmed readback" in context
-    assert "F:unavailable requires inspecting" in context and "ALL_TOOLS" in context
-    assert "Do not create another reporting path" in context
+    assert "Once observed, finish one existing Tracker report or attributable reuse" in context
+    assert "before unrelated work" in context
+    assert "preserve this obligation across interruption" in context
+    assert "Frustration or a routine Human Review decision alone is not a report trigger" in context
+    assert "Respect STOP and explicit no-logging" in context
+    assert "Route process/review burden via file_process" in context
+    assert "F:– is false while capture is owed" in context
+    assert "F:logged needs confirmed readback" in context
+    assert "Inspect ALL_TOOLS before F:unavailable" in context
+    assert "No parallel path" in context
     assert len(context) < (2600 if payload["hook_event_name"] == "SessionStart" else 1200)
 
 
-def test_only_compaction_prepends_recovery_to_the_same_feedback_context() -> None:
+def test_only_compaction_prepends_recovery_to_the_unchanged_turn_gate() -> None:
     prompt = invoke({"hook_event_name": "UserPromptSubmit", "prompt": "Continue."})
     compact = invoke({"hook_event_name": "SessionStart", "source": "compact"})
 
