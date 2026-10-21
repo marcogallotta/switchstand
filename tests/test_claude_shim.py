@@ -12,6 +12,25 @@ ROOT = Path(__file__).parents[1]
 INSTALLER = ROOT / "scripts" / "install-claude-shim"
 
 
+@pytest.mark.parametrize("launcher_name", ["claude-shim", "claude-dispatch"])
+def test_launcher_skips_incomplete_newer_version(tmp_path: Path, launcher_name: str) -> None:
+    home = tmp_path / "home"
+    versions = home / ".local/share/claude/versions"
+    executable(versions / "2.1.302", '#!/bin/sh\nprintf "working version\\n"\n')
+    (versions / "2.1.999").write_text("incomplete update\n")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    result = subprocess.run(
+        [ROOT / "scripts" / launcher_name], cwd=outside,
+        env=os.environ | {"HOME": str(home)},
+        text=True, capture_output=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "working version\n"
+
+
 def executable(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
