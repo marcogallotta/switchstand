@@ -78,12 +78,12 @@ def _child_server() -> None:
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
     original_get = edge.ChatGPTService.get
 
-    async def delayed_get(service, work_id=None):
+    async def delayed_get(service, work_id=None, **cursors):
         marker = os.getenv("SLOW_GET_STARTED_FILE")
         if marker:
             Path(marker).write_text("started\n")
             await asyncio.sleep(float(os.environ["SLOW_GET_SECONDS"]))
-        return await original_get(service, work_id)
+        return await original_get(service, work_id, **cursors)
 
     edge.ChatGPTService.get = delayed_get
     edge.main()
