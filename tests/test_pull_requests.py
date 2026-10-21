@@ -14,7 +14,7 @@ from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState
 from switchstand.canonical_work import CurrentWork, canonical_revision
 from switchstand.chatgpt_mcp import OrdinaryRelationPatch, build_ordinary_tools
 from switchstand.grants import RelationPatch, RelationReceipt
-from switchstand.messages import MessageState
+from switchstand.messages import MessageRoute, MessageState, MessageSubmitRequest
 from switchstand.pull_requests import (
     PullRequestChange,
     StaleVersion,
@@ -24,6 +24,15 @@ from switchstand.pull_requests import (
 )
 
 canonical_subject = service_subject_fixture
+
+
+async def readable(work_id):
+    return True
+
+
+async def task_page(connection, work_id, principal, revision, cursor):
+    return await project(connection, work_id, principal, revision, readable, cursor, None)
+
 
 
 def test_pr_identity_normalizes_and_rejects_unrelated_relation_fields() -> None:
@@ -66,7 +75,7 @@ async def test_links_preserve_first_owner_and_retain_orphan(subject) -> None:
         assert row.owner_key == first.name_key and row.row_version == 1
 
     async with engine.connect() as connection:
-        page = await project(connection, work_ids[0], principal,
+        page = await task_page(connection, work_ids[0], principal,
                              canonical_revision(work_ids[0], 1), None)
         assert page.status == "ok" and len(page.records) == 1
         assert page.records[0].owner_key == first.name_key
@@ -108,15 +117,15 @@ async def test_task_pr_pagination_binds_principal_and_source_revision(subject) -
 
     async with engine.connect() as connection:
         revision = canonical_revision(work_ids[0], 1)
-        page = await project(connection, work_ids[0], principal, revision, None)
+        page = await task_page(connection, work_ids[0], principal, revision, None)
         assert page.has_more and len(page.records) == 10
-        rest = await project(connection, work_ids[0], principal, revision, page.next_cursor)
+        rest = await task_page(connection, work_ids[0], principal, revision, page.next_cursor)
         assert not rest.has_more
         assert [row.number for row in page.records + rest.records] == list(range(1, 13))
-        wrong_principal = await project(connection, work_ids[0], "another-principal", revision,
+        wrong_principal = await task_page(connection, work_ids[0], "another-principal", revision,
                                         page.next_cursor)
         assert wrong_principal.status == "stale" and not wrong_principal.records
-        stale_source = await project(connection, work_ids[0], principal,
+        stale_source = await task_page(connection, work_ids[0], principal,
                                      canonical_revision(work_ids[0], 2), None)
         assert stale_source.status == "stale" and not stale_source.records
 
@@ -149,10 +158,10 @@ async def test_unlinked_remove_cannot_read_or_change_pr_metadata(subject) -> Non
         async with engine.begin() as connection:
             await change(connection, work_ids[1], "remove", patch, second, principal, uuid4())
     async with engine.connect() as connection:
-        page = await project(connection, work_ids[0], principal,
+        page = await task_page(connection, work_ids[0], principal,
                              canonical_revision(work_ids[0], 1), None)
-        assert page.records == (registered,)
-        unrelated = await project(connection, work_ids[1], principal,
+        assert page.records[0].owner_key == registered.owner_key
+        unrelated = await task_page(connection, work_ids[1], principal,
                                   canonical_revision(work_ids[1], 1), None)
         assert not unrelated.records
 
@@ -260,3 +269,128 @@ def test_populated_migration_refuses_to_discard_pr_ownership(database_prerequisi
             assert record["owner_key"] == "author" and record["row_version"] == 1
     finally:
         engine.dispose()
+
+
+async def test_backlink_cursor_invalidates_on_foreign_link_and_visibility_change(subject) -> None:
+    engine, _, work_ids, principal, first, _, patch = subject
+    hidden = set()
+
+    async def readable(work_id):
+        return work_id not in hidden
+
+    for work_id in work_ids:
+        async with engine.begin() as connection:
+            await change(connection, work_id, "add", patch, first, principal, uuid4())
+    revision = canonical_revision(work_ids[0], 1)
+    async with engine.connect() as connection:
+        initial = await project(connection, work_ids[0], principal, revision, readable, None, None)
+        cursor = initial.records[0].link_next_cursor
+        assert cursor is not None
+        hidden.add(work_ids[-1])
+        stale = await project(connection, work_ids[0], principal, revision, readable, None, cursor)
+        assert stale.status == "stale" and not stale.records
+        filtered = await project(connection, work_ids[0], principal, revision, readable, None, None)
+        assert filtered.records[0].visibility == "PARTIAL"
+        assert str(work_ids[-1]) not in filtered.model_dump_json()
+        cursor = filtered.records[0].link_next_cursor
+        assert cursor is not None
+    async with engine.begin() as connection:
+        await change(connection, work_ids[1], "remove", patch, first, principal, uuid4())
+    async with engine.connect() as connection:
+        stale = await project(connection, work_ids[0], principal, revision, readable, None, cursor)
+        assert stale.status == "stale" and not stale.records
+
+
+
+async def test_backlinks_page_without_disclosing_unreadable_work(subject) -> None:
+    engine, _, work_ids, principal, first, _, patch = subject
+    for work_id in work_ids:
+        async with engine.begin() as connection:
+            await change(connection, work_id, "add", patch, first, principal, uuid4())
+    revision = canonical_revision(work_ids[0], 1)
+    async with engine.connect() as connection:
+        initial = await project(connection, work_ids[0], principal, revision, readable, None, None)
+        view = initial.records[0]
+        assert view.visibility == "FULL" and view.link_has_more and len(view.work_ids) == 10
+        rest = await project(connection, work_ids[0], principal, revision, readable,
+                             None, view.link_next_cursor)
+        assert set(view.work_ids + rest.records[0].work_ids) == set(work_ids)
+        assert not rest.records[0].link_has_more
+        mixed = await project(connection, work_ids[0], principal, revision, readable,
+                              view.link_next_cursor, None)
+        assert mixed.status == "stale"
+
+
+async def test_accepted_transfer_requires_exact_current_recipient_evidence(subject, canonical_subject):
+    engine, _, work_ids, principal, first, second, patch = subject
+    async with engine.begin() as connection:
+        await change(connection, work_ids[0], "add", patch, first, principal, uuid4())
+    transfer = patch.model_copy(update={
+        "expected_version": 1, "recipient_key": second.name_key,
+    })
+    with pytest.raises(ValueError, match="acceptance"):
+        async with engine.begin() as connection:
+            await change(connection, work_ids[0], "set", transfer, first, principal, uuid4())
+    payload = {
+        "kind": "pr_owner_acceptance", "repository": patch.repository,
+        "number": patch.number, "previous_owner": first.name_key,
+        "expected_version": 1, "package_ref": patch.package_ref,
+        "recipient_key": second.name_key, "recipient_generation": second.generation,
+        "previous_owner_generation": first.generation,
+    }
+    messages = MessageState(engine, canonical_subject.grants)
+    acceptance = await messages.submit_admitted(
+        second.endpoint_id, MessageRoute(recipient_work_id=first.endpoint_id,
+                                        recipient_grant_version=first.generation),
+        MessageSubmitRequest(api_version="1", message_id=uuid4(), grant_version=second.generation,
+                             route_ref="pr.owner.acceptance", kind="request", payload=payload),
+        agent_binding=second,
+    )
+    assert acceptance.status == "ok" and acceptance.message is not None
+    transfer = transfer.model_copy(update={"acceptance_delivery_id": acceptance.message.delivery_id})
+    for work_id, actor, proposed in (
+        (work_ids[1], first, transfer),
+        (work_ids[0], second, transfer),
+        (work_ids[0], first, transfer.model_copy(update={"package_ref": "wrong"})),
+    ):
+        with pytest.raises(ValueError):
+            async with engine.begin() as connection:
+                await change(connection, work_id, "set", proposed, actor, principal, uuid4())
+    replacement = await AgentMailboxState(engine).takeover(second.name, principal, "replacement")
+    assert replacement.status == "ok" and replacement.mailbox is not None
+    with pytest.raises(ValueError, match="acceptance"):
+        async with engine.begin() as connection:
+            await change(connection, work_ids[0], "set", transfer, first, principal, uuid4())
+    second = replacement.mailbox
+    payload["recipient_generation"] = second.generation
+    acceptance = await messages.submit_admitted(
+        second.endpoint_id, MessageRoute(recipient_work_id=first.endpoint_id,
+                                        recipient_grant_version=first.generation),
+        MessageSubmitRequest(api_version="1", message_id=uuid4(), grant_version=second.generation,
+                             route_ref="pr.owner.acceptance", kind="request", payload=payload),
+        agent_binding=second,
+    )
+    assert acceptance.status == "ok" and acceptance.message is not None
+    transfer = transfer.model_copy(update={"acceptance_delivery_id": acceptance.message.delivery_id})
+
+    async def attempt():
+        try:
+            async with engine.begin() as connection:
+                return await change(connection, work_ids[0], "set", transfer,
+                                    first, principal, uuid4())
+        except StaleVersion:
+            return None
+
+    contenders = await asyncio.gather(attempt(), attempt())
+    assert sum(row is not None for row in contenders) == 1
+    changed = next(row for row in contenders if row is not None)
+    assert changed.owner_key == second.name_key and changed.row_version == 2
+    assert changed.acceptance_ref == f"delivery:{acceptance.message.delivery_id}"
+    with pytest.raises(StaleVersion):
+        async with engine.begin() as connection:
+            await change(connection, work_ids[0], "set", transfer, first, principal, uuid4())
+    async with engine.connect() as connection:
+        recovered = await task_page(connection, work_ids[0], principal,
+                                    canonical_revision(work_ids[0], 1), None)
+        assert recovered.records[0].owner_key == second.name_key
+        assert recovered.records[0].acceptance_ref == changed.acceptance_ref

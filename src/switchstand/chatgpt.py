@@ -535,6 +535,7 @@ class ChatGPTService:
 
     async def get(
         self, work_id: UUID | None = None, *, pr_cursor: str | None = None,
+        pr_link_cursor: str | None = None,
     ) -> GrantedWorkResult:
         principal = await self.principal()
         if principal is None:
@@ -574,9 +575,16 @@ class ChatGPTService:
                         async with self.canonical_work.works.engine.connect() as connection:
                             await connection.execution_options(isolation_level="REPEATABLE READ")
                             async with connection.begin():
+                                async def can_read(linked_work_id: UUID) -> bool:
+                                    readable, _ = await self._read_authority(
+                                        principal, grant, operations=frozenset({"work_get"}),
+                                        work_id=linked_work_id, explicit_target=True,
+                                    )
+                                    return readable is not None
+
                                 page = await pull_requests.project(
                                     connection, target, principal.key, result.item.revision,
-                                    pr_cursor,
+                                    can_read, pr_cursor, pr_link_cursor,
                                 )
                         return GrantedWorkResult(
                             status=page.status, item=result.item if page.status == "ok" else None,

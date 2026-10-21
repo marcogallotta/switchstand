@@ -130,9 +130,16 @@ omissions. Caller, source revision or PR metadata changes invalidate continuatio
 Removal from an unrelated task must deny without exposing PR metadata.
 An uncoached fresh client must recover the recorded identity/owner from an admitted
 linked WorkId. Missing tool/schema/runtime leaves this claim NOT_RUN, not PASS.
-Authorized PR-to-task backlinks and accepted ownership transfer are stage2 deliveries;
-their earlier cases are retained at bd7478 for restoration and qualification. Do not
-imply either works from registration/link proof. Record the exact candidate, receipts and cleanup below.
+Link one PR to more than ten tasks and exhaust pr_link_cursor. Omit unreadable task
+IDs with PARTIAL visibility; changing links or read permissions invalidates continuation.
+Have the recipient send a durable pr_owner_acceptance payload bound to repository,
+number, previous_owner, expected_version, package_ref, recipient_key,
+recipient_generation and previous_owner_generation. The owner transfers with relation
+set, recipient_key, acceptance_delivery_id and expected_version. Missing/wrong evidence,
+unlinked source, wrong owner or stale mailbox/PR version must leave ownership unchanged.
+After accepted transfer, re-entry must recover the recipient and incremented version;
+replaying the exact operation must return its original receipt. Record exact candidate,
+receipts and cleanup below. These client claims remain NOT_RUN until actually exercised.
 
 Before any client launch the owner sets a finite deadline/tool-turn budget for cost
 control, prepares fixtures, results delivery and cleanup, and coordinates the one
