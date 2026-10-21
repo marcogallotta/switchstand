@@ -334,15 +334,14 @@ async def test_native_implementation_launch(subject, tmp_path, monkeypatch, bloc
     from switchstand.task_runs import TaskRunState, task_run_executions
 
     facade, _, engine, _, _ = subject
-    package = PACKAGE
     occurrences = ReviewOccurrenceState(facade.works, AgentMailboxState(engine), ReviewPolicy(version="review-policy-v1"))
     await test_baseline_review_round_trip_binds_assessment_and_projects_proof((
-        occurrences, MessageState(engine, GrantState(engine)), occurrences.mailboxes, package, engine,
+        occurrences, MessageState(engine, GrantState(engine)), occurrences.mailboxes, PACKAGE, engine,
     ))
     async with engine.connect() as connection:
         row = (await connection.execute(select(task_run_requests))).mappings().one()
         assert await connection.scalar(select(func.count()).select_from(task_run_executions)) == 0
-    monkeypatch.setattr(host, "WORK", package)
+    monkeypatch.setattr(host, "WORK", PACKAGE)
     home, primary, writer, base = host.repository(tmp_path, tmp_path / "unused-gate")
     control = home / ".local/state/switchstand/control/controls" / base
     host.git(control, "config", "user.name", "Worker Test")
@@ -350,7 +349,7 @@ async def test_native_implementation_launch(subject, tmp_path, monkeypatch, bloc
     if blocked:
         async with engine.begin() as connection:
             await connection.execute(update(canonical_work).where(
-                canonical_work.c.work_id == package
+                canonical_work.c.work_id == PACKAGE
             ).values(completed=True))
     # Only provisioning/development transport is adapted; reservation, bind,
     # supervision, native Codex, durable worker state and terminal result are real.
@@ -358,11 +357,10 @@ async def test_native_implementation_launch(subject, tmp_path, monkeypatch, bloc
 import asyncio, os, subprocess, sys
 from pathlib import Path
 from uuid import UUID, uuid4
-from sqlalchemy.ext.asyncio import create_async_engine
 from switchstand import launch, provision
 from switchstand.development import DevelopmentBoundary
 from switchstand.mcp import server_from_env
-from switchstand.task_run_bind import bind_task_start
+from switchstand.task_run_bind import _bind
 url, control, native_home = sys.argv[1:4]
 args = launch.parser().parse_args(sys.argv[4:])
 control = Path(control)
@@ -371,16 +369,10 @@ writer = Path(os.environ["HOME"]) / ".local/state/switchstand/worktrees" / f"swi
 branch = f"v2-task-{package}"
 subprocess.run(["git", "-C", str(control), "worktree", "add", "-q", "-b", branch, str(writer), args.commit], check=True)
 git_dir = Path(subprocess.check_output(["git", "-C", str(writer), "rev-parse", "--absolute-git-dir"], text=True).strip())
-async def bind(*values):
-    engine = create_async_engine(url)
-    try:
-        return await bind_task_start(engine, args.task_request_id, values[3])
-    finally:
-        await engine.dispose()
 def local_bind(*values):
-    result = asyncio.run(bind(*values))
+    result = asyncio.run(_bind(args.task_request_id, values[3]))
     if result.status == "ok":
-        assert asyncio.run(bind(*values)) == result  # Exact-ID lost-reply reconciliation.
+        assert asyncio.run(_bind(args.task_request_id, values[3])) == result  # Exact-ID lost-reply reconciliation.
     if result.status != "ok":
         raise RuntimeError(result.model_dump_json())
 os.environ.update(DATABASE_URL=url, SWITCHSTAND_MANAGED="1", ACTIVE_WORK_ID=str(package))
@@ -414,10 +406,10 @@ asyncio.run(finish())
         engine.url.render_as_string(hide_password=False), str(control), os.environ["HOME"]))
     operation = uuid4()
     starts = await asyncio.gather(*(asyncio.to_thread(
-        subject.spawn, operation, package, "native implementation fixture", row["request_id"],
+        subject.spawn, operation, PACKAGE, "native implementation fixture", row["request_id"],
     ) for _ in range(2)))
     assert sorted(value.status for value in starts) == ["replayed", "started"]
-    assert subject.spawn(operation, package, "native implementation fixture", uuid4()).reason == "operation_identity_conflict"
+    assert subject.spawn(operation, PACKAGE, "native implementation fixture", uuid4()).reason == "operation_identity_conflict"
     deadline = time.monotonic() + 180
     while (observed := subject.status(operation)).status == "running" and time.monotonic() < deadline:
         await asyncio.sleep(0.2)
@@ -431,4 +423,15 @@ asyncio.run(finish())
         evidence = await TaskRunState(engine, occurrences.works).terminal_evidence(stored.request.terminal_result_id)
         assert evidence.result.evidence_refs == ("git:" + observed.candidate_sha,)
         assert (writer / "native.txt").read_text().strip() == "native implementation proof"
+    for revision in ("44d59bd1f6de96c6a05b39402a5d763694fd774e", "5dc19e230fa03619325595c8c6ad6d692d365299"):
+        legacy: dict = {"__name__": "switchstand.coordinator_worker_state", "__package__": "switchstand"}
+        exec(host.git(host.SOURCE, "show", revision + ":src/switchstand/coordinator_worker_state.py"), legacy)  # noqa: S102 - exact pinned local source
+        assert legacy["WorkerStore"](home, subject.store.root).load(operation) is not None
+        exec(host.git(host.SOURCE, "show", revision + ":src/switchstand/coordinator_workers.py"), legacy)  # noqa: S102 - exact pinned local source
+        previous = legacy["CoordinatorWorkers"](home, state_root=subject.store.root)
+        assert previous.spawn(operation, PACKAGE, "native implementation fixture").status == "replayed"
+        previous.store.write(previous.store.load(operation).model_copy(update={"phase": "PREPARED", "cancelled": False}), replace=True)
+        assert previous.cancel(operation).status == "cancelled"
+        assert subject.store.load(operation).command == record.command
+        assert subject.spawn(operation, PACKAGE, "native implementation fixture", row["request_id"]).status == "replayed"
     assert host.git(primary, "rev-parse", "HEAD") == base
