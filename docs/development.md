@@ -10,6 +10,11 @@ defined in [Code quality: governed implementation packages](code-quality.md#gove
 Keep its package base fixed across delivery branches and use its solution disposition
 before revising PR decomposition; routine implementation remains worker-owned.
 
+Marco's explicit fasttrack follows [Code quality: explicit human fasttrack](code-quality.md#explicit-human-fasttrack):
+current CI and required E2E pass, review deferred through landing/deployment, and Coordinator-owned
+post-deployment review. The exception changes review timing, with exact effect authority and
+candidate/composition qualification preserved. It also applies to the stack review waits below.
+
 ## Normal local workflow
 
 Prepare the shared tools once from the primary checkout, create a task-owned linked

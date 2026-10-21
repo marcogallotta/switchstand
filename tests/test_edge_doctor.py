@@ -96,7 +96,9 @@ def test_probe_retries_transient_non_json_response(edge, tmp_path, capsys):
     assert "PASS local_http" in capsys.readouterr().out
 
 
-def test_probe_fails_after_bounded_non_json_responses(edge, tmp_path, capsys):
+def test_probe_fails_after_bounded_non_json_responses(edge, tmp_path, capsys, monkeypatch):
+    # Exhaust attempts independently of the separately tested wall-clock deadline.
+    monkeypatch.setattr("switchstand.edge_doctor.PROBE_RETRY_DELAY_SECONDS", 0)
     _, port = edge
     EdgeHandler.invalid_json_remaining = PROBE_ATTEMPTS
 

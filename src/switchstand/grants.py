@@ -33,7 +33,7 @@ class WorkGrant(ClosedModel):
     operations: frozenset[Literal[
         "work_get", "work_search", "work_append", "work_create", "work_update",
         "work_relate", "priority_claim", "message", "agent_task", "implementation_request",
-        "activation_continuity", "task_control", "file_issue"
+        "activation_continuity", "task_control", "file_issue", "project_create"
     ]]
     issuer: str = Field(min_length=1)
     provenance: str = Field(min_length=1)
@@ -68,6 +68,13 @@ class ProtectedAppend(ClosedModel):
     observed_revision: str = Field(min_length=1)
     text: str = Field(min_length=1, max_length=8000)
     confirm_cancels_review: bool = False
+
+
+class ProtectedProjectCreate(ClosedModel):
+    api_version: Literal["1"]
+    operation_id: UUID
+    grant_version: int = Field(ge=1)
+    name: str
 
 
 class ProtectedCreate(ClosedModel):
@@ -285,6 +292,17 @@ class CreateReceipt(ClosedModel):
     qualification: str
 
 
+class ProjectCreateReceipt(ClosedModel):
+    operation_id: UUID
+    principal: PrincipalContext
+    grant_id: UUID
+    grant_version: int
+    provider: Literal["postgres"] = "postgres"
+    project_id: UUID
+    name: str
+    qualification: str
+
+
 class RelationReceipt(ClosedModel):
     operation_id: UUID
     principal: PrincipalContext
@@ -375,7 +393,7 @@ class GuardOutcome(ClosedModel):
     next_action: str
     receipt: (
         EffectReceipt | CreateReceipt | RelationReceipt | UpdateReceipt
-        | FeedbackClassificationReceipt | PriorityClaimReceipt | None
+        | FeedbackClassificationReceipt | PriorityClaimReceipt | ProjectCreateReceipt | None
     ) = None
     blocked_by: EffectBlocker | None = None
 

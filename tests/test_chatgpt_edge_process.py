@@ -1,6 +1,7 @@
 """Real process/socket/PostgreSQL replay with fixture token verification."""
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
+from sqlalchemy import update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -39,6 +41,7 @@ from switchstand.edge_semantic_probe import MCP
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
+from switchstand.messages import messages
 from switchstand.state import PostgresState, metadata
 from switchstand.work_events import WorkEventRepository
 from switchstand.workspace_admission import WorkspaceAdmissionState
@@ -48,7 +51,7 @@ TOOLS = {
     "work_get", "human_trajectory_get", "human_trajectory_record",
     "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append", "capability_preflight_get",
-    "work_create", "work_update", "work_relate",
+    "work_create", "work_update", "work_relate", "project_create",
     "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
     "file_fork_management",
     "task_control_get", "task_control_checkpoint", "work_hygiene_check",
@@ -421,14 +424,198 @@ async def _exercise(endpoint, selected, operation_id, observed_revision):
         return result.structured_content
 
 
-async def _agent_call(endpoint, chat_session, tool, arguments):
+async def _agent_call(endpoint, chat_session, tool, arguments, *, full_result=False):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         result = await client.call_tool(
             tool, arguments,
             meta={} if chat_session is None else {"openai/session": chat_session},
         )
-        return result.structured_content
+        return result if full_result else result.structured_content
+
+
+async def test_notification_attention_process_and_returned_review_over_real_http(
+    tmp_path: Path, database_prerequisite,
+):
+    """Scripted protocol journey; does not establish ChatGPT rendering or agent choices."""
+    url = os.environ["TEST_DATABASE_URL"]
+    selected, _ = await _provision(url, str(uuid4().int))
+    work_id = str(selected.authority.active_work_id)
+    policy = tmp_path / "review.json"
+    policy.touch(mode=0o600)
+    policy.write_text(json.dumps({
+        "schema_version": 1, "policy_version": "test-v1",
+        "guidelines_version": "test-v1", "guidelines_digest": "a" * 64,
+    }))
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "SWITCHSTAND_REVIEW_CONFIG_PATH": str(policy),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": selected.principal.subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    suffix = str(uuid4())
+    receiver, alice, bob = (f"{name} {suffix}" for name in ("Receiver", "Alice", "Bob"))
+    with _server(env, port) as endpoint:
+        for session, name in (("receiver", receiver), ("alice", alice), ("bob", bob),
+                              ("reviewer", "Coordinator")):
+            assert (await _agent_call(endpoint, session, "agent_register", {
+                "api_version": "1", "name": name,
+            }))["status"] == "ok"
+        observed = await _agent_call(endpoint, "receiver", "work_get", {
+            "api_version": "1", "work_id": work_id,
+        })
+        requested = await _agent_call(endpoint, "receiver", "review_request", {
+            "api_version": "1", "subject_work_id": work_id,
+            "observed_revision": observed["item"]["revision"], "review_kind": "CODE",
+        })
+        assert requested["status"] == "SENT"
+        review_id = requested["review_id"]
+        received_request = await _agent_call(endpoint, "reviewer", "agent_message_receive", {
+            "api_version": "1", "delivery_id": requested["delivery_id"],
+        })
+        assert received_request["status"] == "ok" and received_request["state"] == "RECEIVED"
+        submitted = await _agent_call(endpoint, "reviewer", "review_submit", {
+            "api_version": "1", "review_id": review_id, "verdict": "PASS",
+            "context_provenance": "UNSEEDED", "findings": [],
+            "evidence_refs": ["test:synthetic-protocol-review"],
+        })
+        assert submitted["status"] == "SUBMITTED" and submitted["review_id"] == review_id
+        expected = {}
+        for index in range(11):
+            message_id = str(uuid4())
+            expected[message_id] = {"notice": index}
+            assert (await _agent_call(
+                endpoint, "alice" if index < 6 else "bob", "agent_message_send", {
+                    "api_version": "1", "recipient_name": receiver,
+                    "message_id": message_id, "payload": expected[message_id],
+                },
+            ))["status"] == "ok"
+        # Age the oldest notice in the isolated fixture; no sleeps or clock substitution.
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(update(messages).where(
+                    messages.c.message_id == next(iter(expected)),
+                ).values(created_at=datetime.now(UTC) - timedelta(minutes=75)))
+        finally:
+            await engine.dispose()
+        result = await _agent_call(endpoint, "receiver", "work_get", {
+            "api_version": "1", "work_id": work_id,
+        }, full_result=True)
+        assert not result.is_error and result.structured_content == observed
+        footer = result.content[-1].text
+        assert f"6 {alice}" in footer and f"5 {bob}" in footer and "1 more" in footer
+        age_minutes = int(footer.split("; oldest ", 1)[1].split("m.", 1)[0])
+        assert age_minutes >= 75 and "Process now or record reason + next recheck" in footer
+        assert "page while has_more" in footer and "fresh poll without cursor" in footer
+        assert f"Review returned: {review_id}; review_get." in footer
+        # Collect every page before processing, so removal cannot change the paging basis.
+        pending, cursor, pages = [], None, 0
+        while True:
+            args = {"api_version": "1"}
+            if cursor is not None:
+                args["cursor"] = cursor
+            page = await _agent_call(endpoint, "receiver", "agent_message_pending", args)
+            assert page["status"] == "ok"
+            pending.extend(page["messages"])
+            pages += 1
+            if not page["has_more"]:
+                break
+            cursor = page["next_cursor"]
+            assert cursor is not None
+        assert pages == 2
+        handled = set()
+        for delivery in pending:
+            if delivery["message_id"] not in expected:
+                continue  # Review outcomes use review_get, not ordinary acknowledgement.
+            received = await _agent_call(endpoint, "receiver", "agent_message_receive", {
+                "api_version": "1", "delivery_id": delivery["delivery_id"],
+            })
+            assert received["state"] == "RECEIVED"
+            assert delivery["payload"] == expected[delivery["message_id"]]
+            handled.add(delivery["message_id"])
+            acknowledged = await _agent_call(endpoint, "receiver", "agent_message_acknowledge", {
+                "api_version": "1", "delivery_ids": [delivery["delivery_id"]],
+            })
+            assert acknowledged["results"][0]["state"] == "ACKNOWLEDGED"
+        assert handled == set(expected)
+        reviewed = await _agent_call(endpoint, "receiver", "review_get", {
+            "api_version": "1", "review_id": review_id,
+        }, full_result=True)
+        assert not reviewed.is_error and reviewed.structured_content["status"] == "PASS"
+        assert reviewed.structured_content["review_id"] == review_id
+        assert reviewed.structured_content["evidence_refs"] == ["test:synthetic-protocol-review"]
+        assert alice not in reviewed.content[-1].text and bob not in reviewed.content[-1].text
+
+
+async def test_project_create_replay_placement_read_remove_over_real_http(database_prerequisite):
+    """Ordinary HTTP protocol with synthetic identity; not real ChatGPT acceptance."""
+    url = os.environ["TEST_DATABASE_URL"]
+    selected, _ = await _provision(url, str(uuid4().int))
+    work_id = str(selected.authority.active_work_id)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": selected.principal.subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    with _server(env, port) as endpoint:
+        transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+        async with Client(transport) as client:
+            listed = {tool.name: tool for tool in await client.list_tools()}
+            assert set(listed["project_create"].inputSchema["properties"]) == {
+                "api_version", "operation_id", "name",
+            }
+
+            async def call(tool, arguments):
+                result = await client.call_tool(tool, arguments)
+                assert not result.is_error and result.content and result.structured_content is not None
+                return result.structured_content
+
+            read_args = {"api_version": "1", "work_id": work_id}
+            before = await call("work_get", read_args)
+            assert before["status"] == "ok" and not before["item"]["context"]["placements"]
+            create_args = {"api_version": "1", "operation_id": str(uuid4()),
+                           "name": f"HTTP test project {uuid4()}"}
+            created = await call("project_create", create_args)
+            assert created["status"] == "ok" and created["effect"] == "applied"
+            receipt = created["receipt"]
+            assert receipt["name"] == create_args["name"]
+            assert receipt["operation_id"] == create_args["operation_id"]
+            assert receipt["project_id"] and "work_id" not in receipt
+            # Preserve the exact original operation/name for replay through a fresh HTTP client.
+            async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as replay:
+                repeated = await replay.call_tool("project_create", create_args)
+                assert not repeated.is_error and repeated.structured_content == created
+            assert await call("work_get", read_args) == before
+            placement = {"api_version": "1", "work_id": work_id,
+                         "observed_revision": before["item"]["revision"],
+                         "operation_id": str(uuid4()), "patch": {
+                             "kind": "placement", "action": "add", "project_id": receipt["project_id"],
+                         }}
+            added = await call("work_relate", placement)
+            assert added["status"] == "ok" and added["effect"] == "applied"
+            assert added["receipt"]["patch"]["project_id"] == receipt["project_id"]
+            placed = await call("work_get", read_args)
+            assert placed["status"] == "ok" and placed["item"]["revision"] != before["item"]["revision"]
+            # Public placement reads expose the project name; identity is in the mutation receipt.
+            placements = placed["item"]["context"]["placements"]
+            assert len(placements) == 1 and placements[0]["area"] == create_args["name"]
+            assert placements[0].get("stage") is None
+            placement.update(operation_id=str(uuid4()), observed_revision=placed["item"]["revision"])
+            placement["patch"]["action"] = "remove"
+            removed = await call("work_relate", placement)
+            assert removed["status"] == "ok" and removed["effect"] == "applied"
+            assert removed["receipt"]["patch"]["project_id"] == receipt["project_id"]
+            after = await call("work_get", read_args)
+            assert after["status"] == "ok" and not after["item"]["context"]["placements"]
+            assert after["item"]["revision"] != placed["item"]["revision"]
 
 
 async def test_sigterm_drains_an_inflight_mcp_call(

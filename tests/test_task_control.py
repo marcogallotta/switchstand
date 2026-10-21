@@ -17,6 +17,7 @@ from switchstand.canonical_work import (
 from switchstand.contracts import LaunchAuthority
 from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.task_control import DurableControlCapsule, TaskControlState
+from switchstand.task_control_refs import ControlReference
 
 
 @pytest.fixture
@@ -105,6 +106,32 @@ async def test_checkpoint_replay_cas_and_selective_currentness(subject) -> None:
     assert stale_replay.receipt == first.receipt
     assert stale_replay.currentness == "STALE"
     assert stale_replay.reason == "replayed_checkpoint_stale"
+
+
+async def test_fresh_reader_recovers_recorded_refs_without_verifying_targets(subject) -> None:
+    engine, works, state, work_id, principal, grant = subject
+    foreign_work = uuid4()  # Deliberately absent: decoding must not assert it exists.
+    reference = ControlReference(
+        kind="accepted_obligation", work_id=foreign_work,
+        package_ref="git:foreign-head", evidence_ref="message:acceptance",
+    )
+    raw = ("message:acceptance", reference.encode(), "control-ref:{broken")
+    saved = await state.checkpoint(
+        principal, grant, uuid4(), work_id, canonical_revision(work_id, 1), None,
+        capsule(target_refs=raw),
+    )
+    assert saved.status == "ok"
+    recovered = await TaskControlState(engine, works).read(work_id)
+    assert recovered.currentness == "CURRENT"
+    assert recovered.checkpoint is not None
+    assert recovered.checkpoint.capsule.target_refs == raw
+    projection = recovered.reference_projection
+    assert projection is not None and projection.references == (reference,)
+    assert projection.evidence_status == "UNCHECKED" and projection.coverage == "PARTIAL"
+    assert recovered.model_dump(mode="json")["reference_projection"]["gaps"][0][
+        "target_index"
+    ] == 2
+    assert await works.get(foreign_work) is None
 
 
 async def test_checkpoint_rejects_stale_generation_revision_and_authority(subject) -> None:

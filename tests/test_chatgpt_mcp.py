@@ -826,7 +826,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
             "human_trajectory_get", "human_trajectory_record",
             "work_history", "work_event", "work_append", "capability_preflight_get",
-            "work_create", "work_update", "work_relate",
+            "work_create", "work_update", "work_relate", "project_create",
             "file_bug", "file_feature", "file_process", "file_performance",
             "file_review_feedback", "file_fork_management",
             "task_control_get", "task_control_checkpoint", "work_hygiene_check",

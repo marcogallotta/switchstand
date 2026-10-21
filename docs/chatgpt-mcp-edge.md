@@ -1,5 +1,13 @@
 # ChatGPT MCP edge
 
+`project_create(api_version="1", operation_id, name)` creates one empty flat canonical project
+under current authenticated workspace admission. Trimmed names require 1–500 non-NUL characters;
+names may repeat deliberately. Retain the returned `project_id` for existing placement tools and
+retain `operation_id` plus name: identical retries return the same receipt, while a fresh operation
+creates another project. The atomic PostgreSQL receipt contains no invented work/task identity.
+An uncertain commit returns UNKNOWN/reconcile; retry only the retained identity and request.
+No work or membership is created, and an unavailable canonical runtime never falls back to a provider.
+
 This is Switchstand's authenticated HTTP/OAuth edge for ordinary ChatGPT and
 Codex clients. It is distinct from the launcher-bound managed Codex STDIO
 surface and from the local development MCP. Landing edge code or documentation
@@ -22,6 +30,16 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 
 Canonical work reads expose nullable server admission time. Existing and source-imported rows may
 truthfully remain `null`; landing this schema change does not activate or prove the live client path.
+
+Each ordinary HTTP tool result includes a compact mailbox attention footer: full current-mailbox
+sender counts, oldest message age, and an actionable returned-review ID when available. It does
+not consume messages or grant assignments. More than ten deliveries requires paging
+`agent_message_pending` while `has_more`; omit cursor for every fresh poll. Free agents process
+their inbox; strictly older than one hour means process now or record the competing obligation
+and next recheck on existing assigned work. No reason enforcement or inactive wake is implemented.
+UNKNOWN, unavailable identity/state, unregistered and stale bindings are distinct from zero.
+Hints have a 250ms lookup deadline; even on hint failure the original receipt/error survives.
+Actual ChatGPT/Codex rendering and agent handling require separate runtime acceptance.
 
 The priority-claim and bounded priority-context tools remain default-off unless the resource edge
 starts with `SWITCHSTAND_PRIORITY_CLAIMS=1`. Enabling that flag constructs both projections over

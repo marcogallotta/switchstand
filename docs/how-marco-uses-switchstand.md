@@ -74,6 +74,13 @@ does not require launching another fork to admit its own launch. Missing evidenc
 Do not claim a repository instruction overrides a higher-priority mandatory main-agent
 operation, disables host compaction, or supplies an unavailable native capability.
 
+If an OOM or measured memory admission prevents a fork, the parent may perform basic bounded
+checks directly: resource/admission checks, exact work or mailbox reads, and status inspection.
+State the memory condition and keep these checks small. This exception permits neither
+implementation, substantive investigation/testing nor independent review in the parent; it does
+not authorize memory-heavy work, a host/cgroup change or bypassing admission for another fork.
+Resume the normal fork route when memory allows it.
+
 Fork Management records one concise checkpoint per bounded assignment plus material exceptions
 and outcomes through the existing fixed `file_fork_management` feedback adapter; routine checks
 do not each create a report. A logging receipt does not prove actual supervision. Its category

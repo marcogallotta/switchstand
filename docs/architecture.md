@@ -128,6 +128,14 @@ Direct `package_work_id` Human Review rows add prepared/decided point evidence a
 waits. The report clips validated aware intervals to the admission-to-capture wall window and unions
 overlaps; GitHub subjects feed that same union rather than being summed. The remaining wall time is
 explicitly unobserved, not idle time or a critical path, and unsafe clocks or intervals fail closed.
+The additive `delivery_timing` projection locates complement gaps and shows ordered source-identified
+clipped intervals, their cost sum, and the largest interval and unexplained gap. Its 30-minute filter
+is diagnostic, not an SLA or liveness claim. Request-to-bound, bound-run and current exact-review
+request/receipt/verdict envelopes include waits; they are not active effort. Managed/review intervals
+require both recorded boundaries; unbound/open receipts do not fill gaps. Existing open Human Review
+waits end at capture explicitly. Resolved failure-open envelopes stay distinct from queue waits. Source limits and
+missing history remain in coverage; this projection is always partial, even when interval arithmetic
+is known. MCP service cohorts stay separate and do not explain a gap. No new persistence is introduced.
 When the inert Human Review store is not installed, the report keeps that source explicitly
 `UNKNOWN / SOURCE_TABLE_UNAVAILABLE` and continues the same read-only snapshot without fabricating
 review evidence.
@@ -193,7 +201,15 @@ metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.
-Ordinary creation accepts one admitted parent WorkId or canonical project ID. Native canonical
+`project_create(api_version, operation_id, name)` creates an empty flat canonical project through
+authenticated workspace admission and the existing canonical runtime. Names are trimmed, require
+1–500 non-NUL characters, and may repeat: the project ID is identity. One transaction persists the
+project and its applied `effect_intents` receipt; exact principal/operation/canonical-name replay
+returns that receipt, including after admission refresh. A changed identity conflicts. The legacy
+journal target is namespaced `project:<UUID>` and confers no work access. No work, membership,
+provider fallback, new table or migration is involved; canonical-disabled service is unavailable.
+
+Ordinary work creation accepts one admitted parent WorkId or canonical project ID. Native canonical
 creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
 `SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
 parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary
@@ -328,6 +344,12 @@ messaging, and required continuation:
   relation and receipt. `task_control.py` owns append-only owner checkpoints whose server-computed
   control basis excludes notes but includes reviewed routing and structural relations; missing or
   unreadable checkpoints remain `UNKNOWN`, and intended effect labels never grant authority.
+  `task_control_refs.py` decodes only versioned `control-ref:` navigation hints in those
+  capsules. Reads project recorded review watches and accepted-obligation pointers with
+  `UNCHECKED` evidence status and explicit malformed/unsupported-format gaps; raw references,
+  including hygiene's literal `message:` pointers, remain unchanged. Complete decoding never
+  proves complete inventory, target currentness, existence or recipient acceptance. No new
+  storage, grant, write path or scheduler is introduced.
   `work_hygiene.py` derives deterministic readiness from canonical work, that checkpoint API,
   reviews, messages, typed finding capture, and unresolved effects. It creates no persistence,
   scheduler, scanner, ownership registry, repair, or automatic work. The repository's ordinary
@@ -492,6 +514,7 @@ messaging, and required continuation:
   currentness preserves evidence nonterminal for later reconciliation. The managed launcher can
   bind one explicitly supplied exact START request to its durable RunReceipt before
   development setup; omission performs no selection or binding, and uncertain binding aborts launch.
+  IMPLEMENTATION bind rechecks current approval, grant, revision and lifecycle; current HUMAN WORK HOLD denies, and dependency edges return UNKNOWN until eligibility is authoritative.
   The managed client allowlist and default grant exclude `agent_task`. An explicit trusted
   `--agent-task` launch opt-in atomically adds that operation to the newly rotated launch grant and
   exposes only the existing request/result adapters to that launched client. It selects no request
@@ -555,6 +578,18 @@ record a verdict/effect, or close a sender watch. Typed-review routes reject ACK
 may reply from ACK and atomically stores the result plus exact-evidence disposition; replay
 converges both records. Recipient pending reads show only AVAILABLE/RECEIVED deliveries, while
 open request watches and proposed-owner references include ACKNOWLEDGED until disposition.
+
+Ordinary HTTP tool results append one attention text block after SDK error conversion, preserving
+the original content, metadata, structured receipt and error state. `MessageState.attention_admitted`
+reads full AVAILABLE/RECEIVED counts and oldest creation time in one generation-fenced snapshot;
+it validates existing returned-review envelopes and directs `review_get`, without interpreting a
+verdict. The footer shows two largest public sender groups plus remaining deliveries. Exactly one
+hour permits processing when free; older attention directs processing now or recording a competing
+obligation and recheck on existing assigned work. This is instructional, without an access lock or
+server verification of reasons. Identity/state failures remain distinct; a failed or timed-out
+250ms hint lookup yields UNKNOWN without replacing or retrying the primary tool result. The sole
+FastMCP `_mcp_server` handle accesses public SDK middleware; a changed SDK seam requires replan.
+No inactive wake or actual client acceptance is implied by repository landing.
 
 Message receipt is fenced twice. The mailbox generation fences trusted principal takeover;
 `RuntimeCurrentness` fences replacement MCP sessions or managed runs. Recovery is an explicit
@@ -680,6 +715,9 @@ inert/runtime proof, and requires fresh exact-top cumulative review and quality 
 landing. `scripts/verify-quality-composition` binds an Actions checkout either to the
 ordinary PR merge parents or to the exact native-stack first-parent composition chain.
 Stack discovery, CI execution, review storage, and merge effects remain outside it.
+These predicates describe ordinary reviewed delivery. [Explicit human fasttrack](code-quality.md#explicit-human-fasttrack)
+records review as deferred on the existing work; it never manufactures a predicate PASS for
+review that has not occurred.
 
 ## Launch, candidate, and host control
 
@@ -767,7 +805,8 @@ Their frozen compact/currentness checks and `switchstand-worktree-lifecycle` rem
 and retire those exact generations. Stock Codex creates none of this state and does not use the
 legacy launcher selectors, profiles, hooks, repair units, or dispatcher.
 
-The Coordinator-control MCP also owns the narrow asynchronous implementation handoff. An exact
+The Coordinator-control MCP also owns the narrow asynchronous implementation handoff.
+An optional exact `task_request_id` is forwarded with `--agent-task` and result instructions; omission preserves ordinary launch semantics. An exact
 WorkId, caller-chosen operation identity, and bounded objective start the existing trusted
 `switchstand --isolated` path, which binds a managed Worker to that WorkId and its durable
 task-private linked writer. Spawn returns immediately so Root remains available for coordination;
