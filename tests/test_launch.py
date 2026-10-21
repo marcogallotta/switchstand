@@ -172,6 +172,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
         "file_fork_management",
     }
     switchstand_managed = servers["switchstand_managed"]
+    assert switchstand_managed["enabled"] is False
     assert switchstand_managed["required"] is False
     assert set(switchstand_managed["enabled_tools"]) == managed
     assert switchstand_managed["default_tools_approval_mode"] == "approve"
@@ -184,6 +185,7 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
         "run_status",
     }
     switchstand_development = servers["switchstand_development"]
+    assert switchstand_development["enabled"] is False
     assert switchstand_development["required"] is False
     assert set(switchstand_development["enabled_tools"]) == development
     assert switchstand_development["default_tools_approval_mode"] == "approve"

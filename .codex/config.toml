@@ -115,6 +115,7 @@ enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_ge
 
 
 [mcp_servers.switchstand_managed]
+enabled = false
 command = "scripts/switchstand-controller-mcp"
 env_vars = ["HOME", "SWITCHSTAND_MANAGED", "ACTIVE_WORK_ID", "REFERENCE_WORK_IDS",
             "SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_DIR",
@@ -129,6 +130,7 @@ enabled_tools = ["work_get", "work_history", "work_event", "work_append", "work_
 default_tools_approval_mode = "approve"
 
 [mcp_servers.switchstand_development]
+enabled = false
 command = "scripts/switchstand-development-mcp"
 default_tools_approval_mode = "approve"
 env_vars = ["SWITCHSTAND_WORKTREE", "SWITCHSTAND_BRANCH", "SWITCHSTAND_GIT_COMMON",
