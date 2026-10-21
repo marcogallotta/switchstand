@@ -8,6 +8,56 @@ import pytest
 from test_codex_stateful_client import AppServerClient, response_result
 
 
+def verify_trace(workspace, evidence, work):
+    """Independent actual server receipts and ordering, never agent claims alone."""
+    calls = []
+    for index, event in enumerate(evidence):
+        item = event.get("params", {}).get("item", {})
+        if item.get("type") == "mcpToolCall" and item.get("status") == "completed":
+            assert not item.get("error"), item
+            result = item["result"]
+            assert not result.get("isError"), result
+            data = json.loads(result["content"][0]["text"])
+            calls.append((index, event["params"]["threadId"], item, data))
+    reads = [c for c in calls if c[2]["tool"] == "work_get" and c[3].get("status") == "ok"]
+    parent = [c for c in reads if c[3]["item"]["id"] == work]
+    prefix = parent[0][3]["item"]["notes"].split("NATIVE ACTIVE LOOP TRIAL")[0]
+    ids = {"a3269670-9f74-52bc-ad85-585059bee766", "96b74135-0018-54b8-b6b5-a086047c177f",
+           "b7948ccd-fa2f-5a55-8447-670df7abc9cc", "3b7fc7d2-b811-5eae-ad11-1dc7a4356a5e",
+           "a3d94830-f5b0-5321-95ed-15e21723fa3d"}
+    rows = json.loads((workspace / "status.json").read_text())
+    assert {r["work_id"] for r in rows} == ids
+    for row in rows:
+        source = next(c[3]["item"] for c in reads if c[3]["item"]["id"] == row["work_id"])
+        assert row["title"] == source["title"] and "DEFERRED" in source["notes"]
+        assert row["next_action"].strip() and "NOT_RUN" in source["notes"]
+    writes = [c for c in calls if c[2]["tool"] == "work_update"]
+    assert len(writes) == 3, writes
+    for position, call in enumerate(writes):
+        data, args = call[3], call[2]["arguments"]
+        assert args["work_id"] == work and data["status"] == "ok" and data["effect"] == "applied"
+        receipt = data["receipt"]
+        assert receipt["work_id"] == work and receipt["operation_id"] == args["operation_id"]
+        notes = receipt["patch"]["notes"]
+        assert notes.split("NATIVE ACTIVE LOOP TRIAL")[0] == prefix
+        compact = notes.replace(" ", "")
+        assert '"A":"COMPLETE"' in compact
+        assert ('"B":"PENDING"' if position < 2 else '"B":"COMPLETE"') in compact
+        if position: assert '"F":"COMPLETE"' in compact
+    fresh = [c for c in parent if c[1] != writes[0][1]]
+    assert fresh and fresh[0][0] < writes[2][0] and '"B":"PENDING"' in fresh[0][3]["item"]["notes"].replace(" ", "")
+    commands = [(n, e["params"]["item"]) for n, e in enumerate(evidence)
+                if e.get("params", {}).get("threadId") == fresh[0][1]
+                and e.get("params", {}).get("item", {}).get("type") == "commandExecution"]
+    assert any(n > fresh[0][0] and "handoff.txt" in i["command"] for n, i in commands)
+    inventory = json.loads((workspace / "runtime-inventory.json").read_text())
+    assert not any("task_control_checkpoint" in s.get("tools", {}) for s in inventory["data"])
+    compatibility = (workspace / "compatibility.txt").read_text().lower()
+    assert "task_control_checkpoint" in compatibility and any(x in compatibility for x in ("absent", "missing", "unavailable"))
+    handoff = (workspace / "handoff.txt").read_text()
+    assert work in handoff and ("13:25" in handoff or "deadline" in handoff.lower())
+
+
 @pytest.mark.skipif(not os.environ.get("CODEX_NATIVE_TURN_PROOF"), reason="native admission required")
 def test_actual_active_coordinator_loop_and_recovery(tmp_path: Path):
     binary = shutil.which("codex")
@@ -59,6 +109,7 @@ def test_actual_active_coordinator_loop_and_recovery(tmp_path: Path):
         (workspace / "runtime-inventory.json").write_text(json.dumps(inventory))
         servers = {item["name"]: item for item in inventory["data"]}
         assert "switchstand" in servers and servers["switchstand"].get("tools"), inventory
+        assert {"work_get", "work_update"} <= servers["switchstand"]["tools"].keys()
         for name in ("switchstand_managed", "switchstand_development"):
             assert not servers.get(name, {}).get("tools"), servers.get(name)
         first = thread()
@@ -76,7 +127,7 @@ def test_actual_active_coordinator_loop_and_recovery(tmp_path: Path):
         ))
         status = json.loads((workspace / "status.json").read_text())
         assert len(status) == 5 and len({row["work_id"] for row in status}) == 5
-        assert all(row["status"] == "DEFERRED" for row in status), status
+        assert all(row["status"].startswith("DEFERRED") for row in status), status
         assert (workspace / "receipt-a.txt").read_text().strip()
         turn(first, (
             "New current-chat fire: pulled guidance requires task_control_checkpoint. "
@@ -105,6 +156,7 @@ def test_actual_active_coordinator_loop_and_recovery(tmp_path: Path):
         calls = [m.get("params", {}).get("item", {}) for m in evidence]
         assert any(x.get("type") == "mcpToolCall" and x.get("tool") == "work_get" for x in calls)
         assert any(x.get("type") == "mcpToolCall" and x.get("tool") == "work_update" for x in calls)
+        verify_trace(workspace, evidence, work)
     finally:
         (workspace / "native-events.json").write_text(json.dumps(evidence + client.pending))
         client.close()
