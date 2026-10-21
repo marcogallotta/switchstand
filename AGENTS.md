@@ -81,9 +81,8 @@ authority or require Marco to repeat an approval already given.
 | When this happens | Open this document before... |
 | --- | --- |
 | Marco asks for status, attention, a decision, or a completion update | [human interaction](docs/human-interaction.md) before answering. |
-| You are about to write a spec or start a build that fixes a new choice about user behavior, scope, architecture, scale, cost, risk, or lasting agent policy that Marco has not decided | [Human Input](docs/human-input.md) before fixing that choice. |
-| You are about to ask Marco to choose or approve a proposed solution that changes user behavior, scope, architecture, scale, cost, risk, or lasting policy | [Human Review](docs/human-review.md) before preparing or sending the request. First check whether he already approved this exact choice; status and unchanged approved work need no new decision. |
-| You are about to hand off a material proposal for Marco's decision | [Human Review](docs/human-review.md) before the handoff; include the concrete decision explanation in the review. |
+| You are about to commit to a new choice about user behavior, scope, architecture, scale, cost, risk, or lasting agent policy in a task, plan, design, spec, or build | [Human Input](docs/human-input.md) before that commitment when Marco's judgment could change the choice. |
+| You are about to commit to, implement, dispatch, request approval for, or hand off a new solution or material change whose consequences or tradeoffs belong to Marco | [Human Review](docs/human-review.md) before that action. Check whether Marco already approved the exact solution; unchanged approved work and routine status need no new decision. |
 | A credible live-user failure appears | [live-incident operations](docs/operations-live-incident.md) after the immediate incident steps above, before the detailed response. |
 | Marco asks for meaningful root-cause analysis | [root-cause analysis](docs/root-cause-analysis.md) before starting the analysis. |
 | You are about to launch/resume a dispatch-capable head or start a memory-heavy local step | [agent resource admission](docs/agent-resource-admission.md) before that exact action. |
