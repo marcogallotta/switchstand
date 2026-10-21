@@ -12,6 +12,8 @@ import urllib.request
 from typing import Any
 from uuid import UUID
 
+from codex_stop_intent import requested as user_stop_requested
+
 DEFAULT_ENDPOINT = "http://127.0.0.1:8790/internal/codex-stop-mailbox"
 TIMEOUT_SECONDS = 2.0
 
@@ -85,6 +87,9 @@ def main() -> None:
         if not isinstance(active, bool):
             raise TypeError("missing stop_hook_active")
         if active:
+            _emit({})
+            return
+        if user_stop_requested(payload):
             _emit({})
             return
         session_id = payload.get("session_id")

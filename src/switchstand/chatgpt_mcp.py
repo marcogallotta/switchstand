@@ -308,8 +308,10 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     )
 
 
-def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
-    projected = project_work(result)
+def project_ordinary_work(
+    result: GrantedWorkResult, *, include_notes: bool = True,
+) -> OrdinaryWorkResult:
+    projected = project_work(result, include_notes=include_notes)
     return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
         pull_requests=result.pull_requests,
@@ -478,20 +480,23 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID | None = None,
         pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
         pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        include_notes: bool = False,
     ) -> OrdinaryWorkResult:
         """Read an exact WorkId's current notes, routing and placement context.
 
         Use the assigned WorkId directly; use work_search for discovery or
         work_resolve_reference for a legacy task ID/URL. Omit work_id only in a
-        trusted task-bound launch. Current notes supersede stale summaries;
-        follow their procedure references before Human Review or another phase.
+        trusted task-bound launch. Long notes are previewed by default;
+        set include_notes=true for full current notes before consequential action.
+        Current notes supersede stale summaries; follow their procedure references
+        before Human Review or another phase.
         If no route is known, resolve START HERE (1218327002478382).
         Reading work or a procedure does not grant assignment or effect authority.
         """
         correlate(work_id)
         result = await service.get(work_id, pr_cursor=pr_cursor, pr_link_cursor=pr_link_cursor)
         audited("work_get", None if work_id is None else str(work_id), result.status)
-        return project_ordinary_work(result)
+        return project_ordinary_work(result, include_notes=include_notes)
 
     async def human_trajectory_get(
         api_version: Literal["1"], work_id: UUID,
@@ -557,9 +562,12 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID | None = None,
         pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
         pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        include_notes: bool = False,
     ) -> StatefulOrdinaryWorkResult:
         """Read exact work with its owner-local action summary when available."""
-        result = await work_get(api_version, work_id, pr_cursor, pr_link_cursor)
+        result = await work_get(
+            api_version, work_id, pr_cursor, pr_link_cursor, include_notes,
+        )
         summary = None
         failures = None
         activation = None
@@ -695,17 +703,18 @@ def build_ordinary_tools(
         api_version: Literal["1"], operation_id: UUID,
         title: str, parent_work_id: UUID | None = None, project_id: UUID | None = None,
         notes: str = "", priority: str = "UNSET",
-        work_type: str = "UNKNOWN", lifecycle_state: Literal[
+        work_type: str = "Task", lifecycle_state: Literal[
             "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
-        ] = "UNKNOWN", canonical_root: str | None = None, owner_key: str = "UNKNOWN",
-        wait_kind: str = "UNKNOWN", unblock_condition: str = "UNKNOWN",
-        next_due: str = "UNKNOWN", next_action_class: str = "UNKNOWN",
-        next_action_ref: str = "UNKNOWN",
+        ] = "WAITING", canonical_root: str | None = None, owner_key: str = "NONE",
+        wait_kind: str = "TRIAGE", unblock_condition: str = "ASSIGNMENT_REQUIRED",
+        next_due: str = "UNSCHEDULED", next_action_class: str = "NONE",
+        next_action_ref: str = "NONE",
     ) -> GuardOutcome:
-        """Create canonical work under one admitted provider-neutral parent or project.
+        """Capture a title-only unassigned Task; capture grants no execution authority.
 
-        The sanctioned rootless START HERE Context supplies placement only for the
-        documented direct-assignment Task shape, which starts a new exact canonical tree.
+        Omit semantic fields for inert WAITING capture, optionally under an admitted
+        parent or project. Assigned work requires explicit SELF and legal state/action.
+        Explicit UNKNOWN or incompatible partial state is denied, never defaulted.
         """
         correlate(parent_work_id)
         grant_version, admission = await current_grant_version()
@@ -713,17 +722,24 @@ def build_ordinary_tools(
             return admission_unknown("work_create", parent_work_id or project_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
+        capture = (
+            work_type, lifecycle_state, owner_key, wait_kind, unblock_condition,
+            next_due, next_action_class, next_action_ref,
+        ) == (
+            "Task", "WAITING", "NONE", "TRIAGE", "ASSIGNMENT_REQUIRED",
+            "UNSCHEDULED", "NONE", "NONE",
+        )
         if service.canonical_work_active:
             evidence = (
                 parent_work_id is not None
                 and work_type == "Evidence"
                 and owner_key == "NONE"
             )
-            if not evidence:
+            if not evidence and not capture:
                 if owner_key != "SELF":
                     return service.denied(
                         "work_create", "canonical_owner_must_be_self",
-                        "Use SELF for substantive work; ownership never grants create authority.",
+                        "For capture omit semantic fields; assigned work requires SELF and a complete legal state.",
                     )
                 context = await agent_context()
                 if isinstance(context, tuple):

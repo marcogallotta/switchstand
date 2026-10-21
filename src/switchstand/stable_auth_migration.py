@@ -87,7 +87,7 @@ def _path_digest(records: list[tuple[str, int, int, str]]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def state_manifest(root: Path) -> StateManifest:
+def state_manifest(root: Path, *, _metadata_root: Path | None = None) -> StateManifest:
     """Hash exact relative paths, modes, sizes, and bytes without exposing contents."""
     _owned_directory(root, "state root")
     records: list[tuple[str, int, int, str]] = []
@@ -111,7 +111,7 @@ def state_manifest(root: Path) -> StateManifest:
         digest = _file_digest(path)
         record = (relative, stat.S_IMODE(metadata.st_mode), metadata.st_size, digest)
         records.append(record)
-        logical_digest, logical_size = _logical_file_digest(path, root)
+        logical_digest, logical_size = _logical_file_digest(path, root, _metadata_root)
         logical_record = (
             relative,
             stat.S_IMODE(metadata.st_mode),
@@ -150,7 +150,9 @@ def _file_digest(path: Path) -> str:
         return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
-def _filetree_info(path: Path, root: Path) -> tuple[dict[str, object], Path] | None:
+def _filetree_info(
+    path: Path, root: Path, metadata_root: Path | None = None,
+) -> tuple[dict[str, object], Path] | None:
     if not (path.name.startswith("S_mcp_") and path.name.endswith("-info.json")):
         return None
     try:
@@ -176,14 +178,17 @@ def _filetree_info(path: Path, root: Path) -> tuple[dict[str, object], Path] | N
         expected.relative_to(root)
     except ValueError as exc:
         raise MigrationFailure("FastMCP FileTree directory escapes the state root") from exc
-    if payload["directory"] != str(expected):
+    metadata_directory = (metadata_root or root) / expected.relative_to(root)
+    if payload["directory"] != str(metadata_directory):
         raise MigrationFailure("FastMCP FileTree directory does not match its state root")
     _owned_directory(expected, "FastMCP FileTree collection directory")
     return payload, expected
 
 
-def _logical_file_digest(path: Path, root: Path) -> tuple[str, int]:
-    info = _filetree_info(path, root)
+def _logical_file_digest(
+    path: Path, root: Path, metadata_root: Path | None = None,
+) -> tuple[str, int]:
+    info = _filetree_info(path, root, metadata_root)
     if info is None:
         return _file_digest(path), path.stat().st_size
     payload, expected = info
@@ -192,11 +197,13 @@ def _logical_file_digest(path: Path, root: Path) -> tuple[str, int]:
     return hashlib.sha256(encoded).hexdigest(), len(encoded)
 
 
-def _relocate_filetree_info(source: Path, target: Path) -> None:
+def _relocate_filetree_info(
+    source: Path, target: Path, *, metadata_root: Path | None = None,
+) -> None:
     for path in sorted(target.rglob("S_mcp_*-info.json"), key=lambda item: item.as_posix()):
         relative = path.relative_to(target)
         source_path = source / relative
-        source_info = _filetree_info(source_path, source)
+        source_info = _filetree_info(source_path, source, metadata_root)
         if source_info is None:  # pragma: no cover - selected by the filename glob
             raise MigrationFailure("expected FastMCP FileTree metadata")
         payload, _source_directory = source_info
@@ -222,6 +229,25 @@ def _relocate_filetree_info(source: Path, target: Path) -> None:
             raise MigrationFailure(
                 "FastMCP FileTree relocation failed; preserve the partial target as evidence"
             ) from exc
+
+
+def relocate_snapshot_state(root: Path, original_root: Path) -> StateManifest:
+    """Relocate a private extraction whose origin the caller proved from its receipt.
+
+    Validate physical collections only inside root; never open original_root.
+    Preserve the normalized auth digest and all non-metadata bytes.
+    """
+    if not original_root.is_absolute() or ".." in original_root.parts:
+        raise MigrationFailure("snapshot origin must be an exact absolute root")
+    before = state_manifest(root, _metadata_root=original_root)
+    _relocate_filetree_info(root, root, metadata_root=original_root)
+    after = state_manifest(root)
+    if (
+        before.logical_tree_sha256 != after.logical_tree_sha256
+        or before.logical_category_sha256 != after.logical_category_sha256
+    ):
+        raise MigrationFailure("snapshot relocation changed logical auth state")
+    return after
 
 
 def _owned_directory(path: Path, label: str) -> None:

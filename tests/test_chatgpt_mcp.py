@@ -46,6 +46,24 @@ from switchstand.repository_candidate import QualificationGate, RepositoryCandid
 from switchstand.reviews import ReviewBasis, ReviewBundleAccess
 
 
+async def test_ordinary_work_get_previews_long_notes_and_explicitly_recovers_full_notes():
+    subject = service()
+    full_notes = "Current decision. " + "detail " * 120 + "HOLD: current control fact"
+    subject.providers["asana"].notes = full_notes
+    read = dict(build_ordinary_tools(subject))["work_get"]
+
+    preview = await read(api_version="1", work_id=ACTIVE)
+    full = await read(api_version="1", work_id=ACTIVE, include_notes=True)
+
+    assert preview.status == full.status == "ok"
+    assert preview.item is not None and full.item is not None
+    assert preview.item.revision == full.item.revision
+    assert preview.item.notes.startswith("[PREVIEW ONLY: request work_get(include_notes=true)")
+    assert "HOLD: current control fact" not in preview.item.notes
+    assert full.item.notes == full_notes
+    assert preview.item.model_dump(exclude={"notes"}) == full.item.model_dump(exclude={"notes"})
+
+
 def test_agent_trajectory_surface_cannot_supply_authentication_or_extra_authority():
     tools = dict(build_ordinary_tools(service()))
     read = signature(tools["human_trajectory_get"]).parameters
@@ -366,6 +384,25 @@ async def test_issue_wrappers_fix_category_and_preserve_evidence(tool_name, cate
     classified = subject.file_issue.await_args.kwargs
     assert classified["source_work_id"] == source_id
     assert classified["classification"] == "NEW" and classified["mode"] == "CLASSIFY"
+
+
+async def test_title_only_capture_needs_no_registered_owner(monkeypatch):
+    subject = service()
+    subject.canonical_work_active = True
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    tool = dict(build_ordinary_tools(subject))["work_create"]
+    assert (await tool(api_version="1", operation_id=uuid4(), title="Remember")).reason == "probe"
+    request = create.await_args.args[0]
+    assert request.is_capture and request.parent_work_id is request.project_id is None
+    assert request.canonical_root is None
+    create.reset_mock()
+    for malformed in ({"work_type": "UNKNOWN"}, {"owner_key": "agent:foreign"},
+                      {"next_action_class": "OWNER_CAN_DO"}, {"wait_kind": "UNKNOWN"}):
+        denied = await tool(api_version="1", operation_id=uuid4(), title="Bad", **malformed)
+        assert denied.effect == "not_sent" and denied.status == "denied"
+    create.assert_not_awaited()
 
 
 async def test_canonical_create_derives_self_owner_from_registered_mailbox(monkeypatch):

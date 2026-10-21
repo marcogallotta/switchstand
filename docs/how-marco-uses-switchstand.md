@@ -332,6 +332,28 @@ name the coverage boundary without exposing hidden links. An empty page never pr
 empty queue. Refresh current sources before consequential action. The overview grants no landing
 permission, writes nothing and never advances reviews, requests pickup or transfers ownership.
 
+### Testing / Deploying report
+
+Produce a dated report from that same assigned set and source revisions. Keep a common PR row
+with owner/version/acceptance, every readable linked obligation, exact review head/reviewer,
+candidate head/base/composition, separate gate evidence, next actor/action and actual pickup.
+Use two views over those rows; a PR can occur in both:
+
+- **Testing:** outstanding qualification, exact subject/environment, observed result and evidence
+  reference. Preserve `NOT_RUN`, `SKIP`, `MISSING_CAPABILITY`, stale subjects and coverage gaps.
+  Scripted HTTP/PG or CI PASS never establishes actual ChatGPT/OAuth qualification.
+- **Deploying:** target environment/runtime, exact effect authority/operator, observed attempt
+  state, retained recovery handles and semantic readback. Retain verified releases even while
+  linked tasks remain incomplete; distinguish pending, applied-unverified, verified and
+  failed/unknown observations without adding persisted lifecycle states.
+
+Label recorded receipts versus independently refreshed evidence. Keep raw qualifier `UNKNOWN`
+separate from any diagnostic GitHub results; never substitute wrong-head green checks. End with
+the next permitted action and responsible actor, or the exact missing capability/pickup. A report
+is an evidence snapshot, not a work selector or permission gate. Refresh before consequential
+action. Use the [demonstrated report and operator check](e2e-qualification.md#testing--deploying-report)
+as the minimal example; no status cache, new runtime or service restart is needed to publish it.
+
 ## Repository delivery
 
 Ordinary source work happens in an owned linked writer based on an accepted exact green SHA; the shared primary checkout stays read-only apart from fetching and writer creation. Managed workers use the trusted task-private writer supplied by launch.

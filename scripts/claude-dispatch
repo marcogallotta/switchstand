@@ -2,8 +2,12 @@
 set -eu
 
 : "${HOME:?HOME is required for Claude launch}"
-real_claude=$(ls -d "$HOME"/.local/share/claude/versions/* 2>/dev/null | sort -V | tail -1)
-if [ -z "$real_claude" ] || [ ! -x "$real_claude" ]; then
+real_claude=$(
+    for candidate in "$HOME"/.local/share/claude/versions/*; do
+        [ -f "$candidate" ] && [ -x "$candidate" ] && printf '%s\n' "$candidate"
+    done | sort -V | tail -1
+)
+if [ -z "$real_claude" ]; then
     echo "Claude Code executable is unavailable" >&2
     exit 1
 fi

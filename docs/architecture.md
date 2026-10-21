@@ -177,7 +177,8 @@ delegated edge; it has no public match for private introspection. The host layer
 apply, start, migrate, or activate those assets.
 `stable_auth_migration.py` owns offline exclusive-writer copy/checksum and immutable receipts for
 backup, relocation, explicit restore, and preserve-current-state rollback evidence. It never
-controls services or automatically restores OAuth state.
+controls services or automatically restores OAuth state. Its validated FileTree relocation and
+normalized digest helpers also serve private rehearsal extraction without opening the original root.
 `stable_auth_deployment.py` owns the inert, first combined-to-split activation transaction. It
 serializes with ordinary edge maintenance, retains a publicly verified Caddy gate across the
 service/state/route transition, binds both split processes to one exact candidate source tree, and
@@ -209,10 +210,13 @@ returns that receipt, including after admission refresh. A changed identity conf
 journal target is namespaced `project:<UUID>` and confers no work access. No work, membership,
 provider fallback, new table or migration is involved; canonical-disabled service is unavailable.
 
-Ordinary work creation accepts one admitted parent WorkId or canonical project ID. Native canonical
-creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
-`SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
-parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary
+Title-only ordinary work creation captures an unassigned Task: owner NONE, WAITING/TRIAGE,
+ASSIGNMENT_REQUIRED, UNSCHEDULED, no action, incomplete and self-rooted without placement.
+Capture confers no execution authority; existing owner/lifecycle/type search filters find it.
+An admitted parent or project is optional; a supplied nonexact-root parent is denied, never dropped.
+Explicit incompatible semantic fields are denied. Assigned creates retain mailbox-derived SELF,
+complete action-or-wait state and exact parent/project admission; inert parented Evidence and
+categorized reports retain their existing semantics. Mailbox identity grants no creation or assignment authority. Ordinary
 relation changes accept parent/dependency WorkIds or canonical project-membership add/remove;
 provider project/section/assignee identifiers and placement moves stay behind trusted internal
 and provider boundaries.
@@ -359,9 +363,11 @@ messaging, and required continuation:
   values, `0015_work_admission_time` adds nullable admission time, and `0017_priority_claims`
   adds inert, occurrence-based priority provenance without replacing the legacy scalar. Native PostgreSQL creates
   set it from the server clock; preexisting and source-imported rows retain explicit `NULL` unless
-  the import carries a trustworthy timestamp. `work_policy.py` alone validates resultant root, owner, wait, lifecycle, and next-action
-  state for semantic writes; legacy incomplete rows remain editable through title/notes-only
-  changes. The repositories remain outside shared
+  the import carries a trustworthy timestamp. `work_policy.py` validates affected invariant
+  groups for protected scalar updates, preserving unrelated legacy metadata. One-field FINISH
+  atomically couples completion/TERMINAL and clears waits/actions; explicit contradictions and
+  implicit reopening are denied. Other semantic writes retain strict resultant-state validation.
+  The repositories remain outside shared
   `state.metadata` and are registered explicitly by the edge. Migration
   `0025_task_control_checkpoints` adds only the durable checkpoint table; schema migration,
   service deployment, grant issuance, client refresh, and live reliance remain separate effects.
@@ -764,9 +770,11 @@ The same file may set the explicit boolean `test_prefix: true` to enable TEST-pr
 removing that flag disables the prefix trial while preserving any exact-session opt-in.
 The retained continuity hook gates opted-in PILOT runs on a dedicated final reply containing
 exactly one permitted yield marker. ASSIGNMENT accepts ASSIGNMENT_COMPLETE, REAL_BLOCKER,
-HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. Ordinary prose remains blocked;
-this hook does not inspect work obligations or use `stop_hook_active` as an escape. The separate
-mailbox hook honors that escape after one continuation; it does not inspect yield markers. Neither
+HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. An explicit top-level STOP, kill,
+cancel, or pause also allows an ordinary reply to end that same turn. Other ordinary prose remains
+blocked; this hook does not inspect work obligations or use `stop_hook_active` as an escape. The
+separate mailbox hook honors that escape after one continuation and lets the same-turn explicit
+user stop bypass pending mail; it does not inspect yield markers. Neither
 hook mutates obligations or certifies completion or recipient pickup. The optional obligations
 projection above is read-only capability, not enforcement by these retained hooks. This is not
 a scheduler or an autonomous wake mechanism.
@@ -850,7 +858,9 @@ Compose labels before removing that namespace. Its default network is pre-create
 deterministic development `/24`, and the descriptor binds the exact subnet and Docker IPAM.
 Provisioning failures are durable and bounded;
 their exact `FAILED` descriptor is also the fail-closed cleanup authority for zero or one proven
-namespaced resources. It never selects or changes production state.
+namespaced resources. It never selects or changes production state. FileTree snapshots require a private maintenance
+receipt binding the exact sibling archive digest and original root; relocation changes only
+private collection metadata and verifies normalized auth digests before Docker starts.
 
 `zero_asana_hold.py` owns the transition-only integrated production hold: exact host edge gate and
 stop, create-new FastMCP snapshot, and one PostgreSQL transaction whose SHARE locks span source

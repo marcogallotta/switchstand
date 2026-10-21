@@ -138,7 +138,9 @@ class PublicWorkResult(ClosedModel):
     guard: PublicReadGuard | None = None
 
 
-def project_work(result: WorkResult | GrantedWorkResult) -> PublicWorkResult:
+def project_work(
+    result: WorkResult | GrantedWorkResult, *, include_notes: bool = True,
+) -> PublicWorkResult:
     """Present already-authorized work; never retrieve, authorize, or invent identities."""
     public = PublicWorkResult(status=result.status)
     if isinstance(result, GrantedWorkResult) and result.guard is not None:
@@ -147,7 +149,13 @@ def project_work(result: WorkResult | GrantedWorkResult) -> PublicWorkResult:
         return public
     if result.item is not None:
         item = result.item
-        public.item = PublicWorkItem(id=item.id, title=item.title, notes=item.notes,
+        notes = item.notes
+        if not include_notes and len(notes) > 600:
+            notes = (
+                "[PREVIEW ONLY: request work_get(include_notes=true) for full current "
+                "notes before a consequential action.]\n" + notes[:600]
+            )
+        public.item = PublicWorkItem(id=item.id, title=item.title, notes=notes,
                                      task_text=item.task_text, task_approval_id=item.task_approval_id,
                                      task_approval_digest=item.task_approval_digest,
                                      completed=item.completed, revision=item.revision,

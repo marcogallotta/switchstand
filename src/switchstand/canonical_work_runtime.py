@@ -55,6 +55,7 @@ from .grants import (
     ProtectedRelation,
     ProtectedUpdate,
     RelationReceipt,
+    ScalarPatch,
     UpdateReceipt,
 )
 from .human_reviews import (
@@ -138,13 +139,16 @@ def _routing(work: CurrentWork) -> Routing:
     )
 
 
-def _validate_semantic_write(work: CurrentWork, fields: set[str] | frozenset[str]) -> None:
+def _validate_semantic_write(
+    work: CurrentWork, fields: set[str] | frozenset[str], *, field_local: bool = False,
+) -> None:
     if fields & SEMANTIC_FIELDS:
         validate_resultant_state(
             lifecycle_state=work.lifecycle_state, canonical_root=work.canonical_root,
             owner_key=work.owner_key, wait_kind=work.wait_kind,
             unblock_condition=work.unblock_condition, next_due=work.next_due,
             next_action_class=work.next_action_class, next_action_ref=work.next_action_ref,
+            completed=work.completed, affected=fields if field_local else SEMANTIC_FIELDS,
         )
 
 
@@ -544,14 +548,56 @@ class CanonicalWorkRuntime:
                     if not fields <= _SCALAR_FIELDS:
                         return self._guard(request, "denied", "invalid_database_metadata")
                     values = {field: getattr(request.patch, field) for field in fields}
+                    transition_fields = fields & {"completed", "lifecycle_state"}
+                    # Normalize one-field FINISH only; preserve explicitly supplied intent.
+                    if len(transition_fields) == 1 and (
+                        values.get("completed") is True
+                        or values.get("lifecycle_state") == "TERMINAL"
+                    ):
+                        terminal = {"completed": True, "lifecycle_state": "TERMINAL",
+                                    "wait_kind": "NONE", "unblock_condition": "NONE",
+                                    "next_due": "NONE", "next_action_class": "NONE",
+                                    "next_action_ref": "NONE"}
+                        if any(key in values and values[key] != value
+                               for key, value in terminal.items()):
+                            return self._guard(request, "denied", "invalid_resultant_state").model_copy(
+                                update={"next_action": (
+                                    "FINISH requires cleared wait/action fields; "
+                                    "use completed=true alone."
+                                )}
+                            )
+                        values.update(terminal)
                     candidate = replace(current, **values)
                     if not await agent_notes_fit(connection, candidate.work_id, candidate.notes):
                         return self._guard(request, "denied", "agent_notes_overflow")
                     try:
-                        _validate_semantic_write(candidate, fields)
-                    except ValueError:
-                        return self._guard(request, "denied", "invalid_resultant_state")
-                    root_id = _exact_root(candidate.canonical_root)
+                        if (
+                            transition_fields
+                            and (current.completed or current.lifecycle_state == "TERMINAL")
+                            and not candidate.completed
+                            and not (
+                                values.get("completed") is False
+                                and values.get("lifecycle_state") == "CURRENT"
+                                and all(values.get(key) not in {None, "NONE", "UNKNOWN"}
+                                        for key in ("next_action_class", "next_action_ref"))
+                                and all(values.get(key) == "NONE" for key in
+                                        ("wait_kind", "unblock_condition", "next_due"))
+                            )
+                        ):
+                            raise ValueError(
+                                "reopen requires explicit completed=false, CURRENT, exact "
+                                "next_action_class/next_action_ref and NONE "
+                                "wait_kind/unblock_condition/next_due"
+                            )
+                        _validate_semantic_write(candidate, set(values), field_local=True)
+                    except ValueError as error:
+                        return self._guard(request, "denied", "invalid_resultant_state").model_copy(
+                            update={"next_action": str(error)}
+                        )
+                    root_id = (
+                        _exact_root(candidate.canonical_root)
+                        if "canonical_root" in fields else None
+                    )
                     if root_id is not None and await self.works.get_locked(
                         connection, root_id
                     ) is None:
@@ -567,7 +613,7 @@ class CanonicalWorkRuntime:
                         observed_revision=request.observed_revision,
                         resulting_revision=canonical_revision(
                             request.work_id, changed.row_version
-                        ), patch=request.patch, qualification=qualification,
+                        ), patch=ScalarPatch(**values), qualification=qualification,
                     )
                     outcome = GuardOutcome(
                         status="ok", operation="work_update", work_id=request.work_id,
@@ -657,11 +703,15 @@ class CanonicalWorkRuntime:
                             except ValueError:
                                 return CreateGateway.guard(
                                     request, "denied", "parent_root_not_exact"
-                                )
+                                ).model_copy(update={"next_action": (
+                                    "Omit parent_work_id to capture independently; retain the intended relation in notes."
+                                )})
                             if inherited_root is not None and inherited != str(inherited_root):
                                 return CreateGateway.guard(
                                     request, "denied", "parent_root_not_exact"
-                                )
+                                ).model_copy(update={"next_action": (
+                                    "Omit parent_work_id to capture independently; retain the intended relation in notes."
+                                )})
                             if inherited_root is None:
                                 start_here = await connection.scalar(select(
                                     work_handles.c.id
@@ -679,7 +729,9 @@ class CanonicalWorkRuntime:
                                 ):
                                     return CreateGateway.guard(
                                         request, "denied", "parent_root_not_exact"
-                                    )
+                                    ).model_copy(update={"next_action": (
+                                        "Omit parent_work_id to capture independently; retain the intended relation in notes."
+                                    )})
                                 # The sanctioned imported START HERE route is placement-only;
                                 # its direct-assignment child starts an exact canonical tree.
                                 root = str(work_id)
@@ -694,11 +746,13 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "workspace_create_required"
                                 )
-                            if project_id is None:
+                            if project_id is None and request.project_gid is not None:
                                 project_id = await connection.scalar(select(
                                     projects.c.project_id
                                 ).where(projects.c.asana_project_gid == request.project_gid))
-                            if project_id is None:
+                            if project_id is None and (
+                                not request.is_capture or request.project_gid is not None
+                            ):
                                 return CreateGateway.guard(
                                     request, "denied", "project_not_admitted"
                                 )
@@ -757,7 +811,7 @@ class CanonicalWorkRuntime:
                             await connection.execute(insert(work_parents).values(
                                 child_work_id=work_id, parent_work_id=parent
                             ))
-                        else:
+                        elif project_id is not None:
                             await connection.execute(insert(project_memberships).values(
                                 project_id=project_id, work_id=work_id, section_name=None
                             ))
@@ -790,7 +844,10 @@ class CanonicalWorkRuntime:
                             status="ok", operation="work_create", work_id=work_id,
                             operation_id=request.operation_id, reason="exact_create_verified",
                             effect="applied", retry="none",
-                            next_action="Use the recorded create receipt.", receipt=receipt,
+                            next_action=(
+                                "Captured unassigned work; this is not an executable assignment."
+                                if request.is_capture else "Use the recorded create receipt."
+                            ), receipt=receipt,
                         )
                         await connection.execute(insert(effect_intents).values(
                             operation_id=str(request.operation_id), fingerprint=fingerprint,

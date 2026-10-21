@@ -49,14 +49,20 @@ when its host behavior matters. The TEST operator must verify the exact runtime,
 tools/schema/profile, current slot and isolated actor/authority before launch.
 An ambient connector or inherited context cannot certify a different candidate.
 
-Prepare a unique title, exact note, allowed owner/project placement and unrelated
-distractor preimage. Capture permission and a supported navigation/assigned root
-must already exist. The observer retains IDs and expected state, but withholds the
-successful tool sequence, previous answers and tool names from the fresh agent.
-Keep normal authority/bootstrap instructions. The agent receives only:
+Prepare a unique title and unrelated distractor preimage. Workspace capture permission
+must already exist; no owner, project or assigned root is required. The observer
+retains IDs and expected state, withholding successful tool sequences and tool names.
+Keep normal authority/bootstrap instructions. A fresh actual ChatGPT actor receives:
 
-> On TEST, capture a task named `<unique title>` with the exact note `<note>`
-> under my assigned context and give me its WorkId.
+> On TEST, capture a task named `<unique title>` and give me its WorkId.
+> I have not assigned it to anyone or selected a project.
+
+Read and search must show owner NONE, WAITING/TRIAGE, ASSIGNMENT_REQUIRED,
+UNSCHEDULED, no action, incomplete, self-root and no placement. This is a capture,
+not an executable assignment. Separately exercise explicitly assigned/parented work,
+admitted-project capture, malformed fields, supplied UNKNOWN-root parent denial,
+and exact operation replay after server restart. Synthetic HTTP token-verifier
+process tests prove the boundary; they do not establish actual ChatGPT/OAuth acceptance.
 
 The observer checks exactly one intended durable task, exact requested content,
 correct identity/owner/placement, unchanged distractor and no unrelated mutations.
@@ -136,6 +142,33 @@ C3: “Read absent TEST X and report the actual error.” Then repeat C1; requir
 error, no private payload, subsequent valid success and unchanged business state.
 
 ## Execution truth and cleanup
+
+### Testing / Deploying report
+
+Example snapshot, 2026-10-21 11:15 UTC: assigned WorkId
+`4789a5ab-573d-5ed4-a01a-24051ff0631c`, revision `pg_9e83da4e7822bdf3c82d957720c5bb67934b7ca84d08e398287a6c859b3b1546`.
+Live task-to-PR and backlink pages exhausted, both FULL, each linked to that task; no global
+portfolio claim. Both PRs have accountable owner `pr-tracking-release`, version1.
+
+| PR / linked obligation | Testing | Deploying / next action |
+| --- | --- | --- |
+| [1053](https://github.com/marcogallotta/switchstand/pull/1053): PR identity, links and ownership | Recorded native `pr_tracking_postland_review` PASS merged `a41207a711abc4105358ffb56d914e102da763d8`; [exact CI](https://github.com/marcogallotta/switchstand/actions/runs/39576229667) / [composition CI](https://github.com/marcogallotta/switchstand/actions/runs/39576239640) success. Actual ChatGPT/OAuth NOT_RUN. | Historical release superseded by1058; first failed apply rolled back, cause UNKNOWN. No repeat deployment needed. |
+| [1058](https://github.com/marcogallotta/switchstand/pull/1058): production read-wrapper correction | Recorded independent `/root/review_1058_current` PASS head `9c2f67abd0de0fdc1b4ffedd78a9d25770368240`; [exact CI](https://github.com/marcogallotta/switchstand/actions/runs/39583962775) / [composition CI](https://github.com/marcogallotta/switchstand/actions/runs/39583968556) success. Complete real HTTP/PG/restart flag0/1 cases PASS/no skip. Actual ChatGPT/OAuth NOT_RUN. | Verified deployed `daa4ef72673580f6814a5b386ab2f66d823574f1`, schema0027; sole release operator `finish_pr_tracking_override`, exact4789 human deploy authority. No deployment pending; parent coordinates remaining actual-client qualification. |
+
+Recorded acceptance operations:1053 `314eaf86-2b25-46e1-8155-546f9f879963`,1058
+`99a80c84-75ec-4ff1-b9d9-cf138ff56d61`. Report refresh independently checked both merged
+head/base identities, four CI conclusions, clean runtime/schema and authenticated MCP health.
+Review and JUnit details remain attributed recorded evidence, not a fresh review/test execution.
+Preferred candidate qualifier returned UNKNOWN/provider-unavailable for both; diagnostic GitHub
+success did not change that result to READY. Full deployment receipt/readback and retained backup
+`hourly/switchstand-20261021T102643Z.dump` are referenced by exact4789 notes. Original task remains
+incomplete; live MCP readback is not actual ChatGPT/OAuth proof.
+
+Operator check: give a fresh independent reader only the report and its admitted source anchors.
+Ask which PRs need testing, whether a deployment is pending, and the next permitted actor/action.
+Require correct subject/coverage, deployed-versus-unqualified distinction and truthful missing
+pickup/capability, with no inferred effect authority. Record the reader's source-backed answer.
+The example's first fresh operator read passed; refresh sources for a later operational decision.
 
 ### PR links and accountable ownership
 
