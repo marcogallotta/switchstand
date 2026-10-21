@@ -272,6 +272,7 @@ async def test_pr_accountability_over_real_http_and_restart(
         client = MCP(endpoint + "/mcp", "fixed-bearer")
         client.initialize()
         inventory = client.call("tools/list", {}, 2)
+        assert isinstance(inventory, dict)
         read_tool = next(tool for tool in inventory["tools"] if tool["name"] == "work_get")
         assert {"pr_cursor", "pr_link_cursor"} <= read_tool["inputSchema"]["properties"].keys()
 
