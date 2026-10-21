@@ -11,7 +11,7 @@ case "$*" in
 esac
 umask 077
 
-EXPECTED_NEW=0027_pull_requests
+EXPECTED_NEW=0028_agent_status
 PROJECT=switchstand
 SERVICE=postgres
 VOLUME=switchstand_postgres-data
