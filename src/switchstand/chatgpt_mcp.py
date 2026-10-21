@@ -147,7 +147,6 @@ class ActivationContinuityResult(ClosedModel):
 
 class StatefulOrdinaryWorkResult(ClosedModel):
     """Exact ordinary work read enriched with owner-local actionable state."""
-    pull_requests: PullRequestPage | None = None
     action_summary: ActionSummary | ActionSummaryUnavailable | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
@@ -160,6 +159,7 @@ class StatefulOrdinaryWorkResult(ClosedModel):
     item: PublicWorkItem | None = None
     status: Status
     guard: PublicReadGuard | None = None
+    pull_requests: PullRequestPage | None = None
 
 
 class OrdinaryUpdateResult(GuardOutcome):
