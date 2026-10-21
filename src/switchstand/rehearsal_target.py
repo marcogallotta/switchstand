@@ -20,6 +20,7 @@ from typing import Any, cast
 from .development import development_subnet
 from .edge_maintenance import Failed, Unknown, exclusive_lock
 from .secure_file import PrivateFileOpenError, create_new_private_bytes, read_private_bytes
+from .stable_auth_migration import MigrationFailure, relocate_snapshot_state
 
 REHEARSALS = Path("/home/marco/.local/state/switchstand/rehearsals")
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
@@ -130,6 +131,24 @@ def _extract(snapshot: Path, destination: Path) -> None:
         raise Failed("FastMCP snapshot cannot be copied") from error
 
 
+def _snapshot_origin(snapshot: Path, digest: str, receipt: Path) -> tuple[Path, str]:
+    data = _read_private(receipt, "FastMCP maintenance receipt")
+    try:
+        value = json.loads(data)
+        origin = Path(value["fastmcp_state"])
+        if (
+            type(value["schema"]) is not int or value["schema"] != 1
+            or value["fastmcp_snapshot"] != digest
+            or snapshot != receipt.absolute().parent / "fastmcp.before.tar"
+            or not origin.is_absolute() or origin.name != "fastmcp"
+            or ".." in origin.parts or str(origin) != value["fastmcp_state"]
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError) as error:
+        raise Failed("FastMCP maintenance receipt does not bind this archive and origin") from error
+    return origin, hashlib.sha256(data).hexdigest()
+
+
 def _tree_digest(root: Path) -> str:
     digest = hashlib.sha256()
     try:
@@ -195,7 +214,8 @@ def _failure(step: str, error: BaseException) -> dict[str, object]:
 
 
 def provision(
-    name: str, candidate_sha: str, runtime: Path, backup: Path, snapshot: Path, *, run: Runner = _run
+    name: str, candidate_sha: str, runtime: Path, backup: Path, snapshot: Path, *,
+    fastmcp_receipt: Path | None = None, run: Runner = _run,
 ) -> Path:
     """Create one private target and populate it from exact source artifacts."""
     identity = _identity(name)
@@ -211,6 +231,10 @@ def provision(
         raise Failed("candidate runtime does not match the exact candidate")
     backup, backup_data, backup_digest = _source(backup, "source database backup")
     snapshot, snapshot_data, snapshot_digest = _source(snapshot, "source FastMCP snapshot")
+    provenance = (
+        _snapshot_origin(snapshot, snapshot_digest, fastmcp_receipt)
+        if fastmcp_receipt is not None else None
+    )
     _private_directory(REHEARSALS, create=True)
     root = REHEARSALS / name
     _private_directory(root, create=True)
@@ -243,8 +267,24 @@ def provision(
     sources.mkdir(mode=0o700)
     create_new_private_bytes(frozen_backup, backup_data)
     create_new_private_bytes(frozen_snapshot, snapshot_data)
-    _extract(frozen_snapshot, root / "copied-state")
-    descriptor["fastmcp_tree_sha256"] = _tree_digest(root / "copied-state" / "fastmcp")
+    try:
+        _extract(frozen_snapshot, root / "copied-state")
+        if provenance is None and any((root / "copied-state").rglob("S_mcp_*-info.json")):
+            raise Failed("FastMCP FileTree snapshot requires its private maintenance receipt")
+        if provenance is not None:
+            try:
+                manifest = relocate_snapshot_state(root / "copied-state" / "fastmcp", provenance[0])
+            except MigrationFailure as error:
+                raise Failed("copied FastMCP relocation failed; preserve private evidence") from error
+            descriptor["fastmcp_origin"] = str(provenance[0])
+            descriptor["fastmcp_receipt_sha256"] = provenance[1]
+            descriptor["fastmcp_logical_sha256"] = manifest.logical_tree_sha256
+        descriptor["fastmcp_tree_sha256"] = _tree_digest(root / "copied-state" / "fastmcp")
+    except (Failed, OSError) as error:
+        descriptor["status"] = "FAILED"
+        descriptor["failure"] = _failure("auth_copy", error)
+        _write(path, descriptor, replace=True)
+        raise Failed("copied FastMCP receipt/relocation failed; use descriptor to teardown") from error
     compose = [
         "docker", "compose", "-p", identity["project"], "--project-directory", str(runtime),
         "-f", str(runtime / "compose.state.yaml"),
@@ -490,13 +530,15 @@ def main() -> None:
     create.add_argument("--runtime", required=True, type=Path)
     create.add_argument("--database-backup", required=True, type=Path)
     create.add_argument("--fastmcp-snapshot", required=True, type=Path)
+    create.add_argument("--fastmcp-receipt", type=Path)
     remove = subparsers.add_parser("teardown")
     remove.add_argument("name")
     arguments = parser.parse_args()
     try:
         if arguments.operation == "provision":
             print(provision(arguments.name, arguments.candidate, arguments.runtime,
-                            arguments.database_backup, arguments.fastmcp_snapshot))
+                            arguments.database_backup, arguments.fastmcp_snapshot,
+                            fastmcp_receipt=arguments.fastmcp_receipt))
         else:
             teardown(arguments.name)
     except Failed as error:
