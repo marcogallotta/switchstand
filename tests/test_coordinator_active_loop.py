@@ -51,9 +51,11 @@ def verify_trace(workspace, evidence, work):
                 and e.get("params", {}).get("item", {}).get("type") == "commandExecution"]
     assert any(n > fresh[0][0] and "handoff.txt" in i["command"] for n, i in commands)
     inventory = json.loads((workspace / "runtime-inventory.json").read_text())
-    assert not any("task_control_checkpoint" in s.get("tools", {}) for s in inventory["data"])
+    advertised = any("task_control_checkpoint" in s.get("tools", {}) for s in inventory["data"])
     compatibility = (workspace / "compatibility.txt").read_text().lower()
     assert "task_control_checkpoint" in compatibility and any(x in compatibility for x in ("absent", "missing", "unavailable"))
+    assert ("lists `task_control_checkpoint`" in compatibility) == advertised
+    assert not any(c[2]["tool"] == "task_control_checkpoint" for c in calls)
     handoff = (workspace / "handoff.txt").read_text()
     assert work in handoff and ("13:25" in handoff or "deadline" in handoff.lower())
 
