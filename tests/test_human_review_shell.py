@@ -370,7 +370,7 @@ async def test_persistent_shell_factory_records_decision_in_real_state(database_
 
         assert shown.status_code == 200
         assert decided.status_code == 200
-        assert "Saved: APPROVED" in saved.text
+        assert "<p>Approved</p>" in saved.text.split("<details>", 1)[0]
         assert '<button name="decision"' not in saved.text
         async with engine.connect() as connection:
             row = (await connection.execute(
