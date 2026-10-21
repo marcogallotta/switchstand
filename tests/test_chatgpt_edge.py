@@ -1025,6 +1025,13 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
             "parent_work_id": str(ACTIVE),
             "title": "Qualified child",
             "notes": "edge route proof",
+            "work_type": "UNKNOWN", "lifecycle_state": "UNKNOWN", "owner_key": "UNKNOWN",
+            "wait_kind": "UNKNOWN", "unblock_condition": "UNKNOWN", "next_due": "UNKNOWN",
+            "next_action_class": "UNKNOWN", "next_action_ref": "UNKNOWN",
+        })
+        capture = await client.call_tool("work_create", {
+            "api_version": "1", "operation_id": str(uuid4()),
+            "parent_work_id": str(ACTIVE), "title": "Unassigned capture",
         })
         updated = await client.call_tool("work_update", {
             "api_version": "1", "operation_id": str(uuid4()), "work_id": str(ACTIVE),
@@ -1040,5 +1047,7 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
     assert replay.structured_content == append.structured_content
     assert create.structured_content["status"] == "denied"
     assert create.structured_content["reason"] == "provider_create_not_supported"
+    assert capture.structured_content["reason"] == "semantic_create_requires_canonical_runtime"
+    assert capture.structured_content["effect"] == "not_sent"
     assert updated.structured_content["status"] == "ok"
     assert subject.providers["asana"].sends == 1

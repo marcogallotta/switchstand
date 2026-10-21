@@ -695,17 +695,18 @@ def build_ordinary_tools(
         api_version: Literal["1"], operation_id: UUID,
         title: str, parent_work_id: UUID | None = None, project_id: UUID | None = None,
         notes: str = "", priority: str = "UNSET",
-        work_type: str = "UNKNOWN", lifecycle_state: Literal[
+        work_type: str = "Task", lifecycle_state: Literal[
             "CURRENT", "WAITING", "DEFERRED", "TERMINAL", "UNKNOWN"
-        ] = "UNKNOWN", canonical_root: str | None = None, owner_key: str = "UNKNOWN",
-        wait_kind: str = "UNKNOWN", unblock_condition: str = "UNKNOWN",
-        next_due: str = "UNKNOWN", next_action_class: str = "UNKNOWN",
-        next_action_ref: str = "UNKNOWN",
+        ] = "WAITING", canonical_root: str | None = None, owner_key: str = "NONE",
+        wait_kind: str = "TRIAGE", unblock_condition: str = "ASSIGNMENT_REQUIRED",
+        next_due: str = "UNSCHEDULED", next_action_class: str = "NONE",
+        next_action_ref: str = "NONE",
     ) -> GuardOutcome:
-        """Create canonical work under one admitted provider-neutral parent or project.
+        """Capture a title-only unassigned Task; capture grants no execution authority.
 
-        The sanctioned rootless START HERE Context supplies placement only for the
-        documented direct-assignment Task shape, which starts a new exact canonical tree.
+        Omit semantic fields for inert WAITING capture, optionally under an admitted
+        parent or project. Assigned work requires explicit SELF and legal state/action.
+        Explicit UNKNOWN or incompatible partial state is denied, never defaulted.
         """
         correlate(parent_work_id)
         grant_version, admission = await current_grant_version()
@@ -713,17 +714,24 @@ def build_ordinary_tools(
             return admission_unknown("work_create", parent_work_id or project_id, operation_id)
         if grant_version is None:
             return service.denied("work_create", "no_current_grant")
+        capture = (
+            work_type, lifecycle_state, owner_key, wait_kind, unblock_condition,
+            next_due, next_action_class, next_action_ref,
+        ) == (
+            "Task", "WAITING", "NONE", "TRIAGE", "ASSIGNMENT_REQUIRED",
+            "UNSCHEDULED", "NONE", "NONE",
+        )
         if service.canonical_work_active:
             evidence = (
                 parent_work_id is not None
                 and work_type == "Evidence"
                 and owner_key == "NONE"
             )
-            if not evidence:
+            if not evidence and not capture:
                 if owner_key != "SELF":
                     return service.denied(
                         "work_create", "canonical_owner_must_be_self",
-                        "Use SELF for substantive work; ownership never grants create authority.",
+                        "For capture omit semantic fields; assigned work requires SELF and a complete legal state.",
                     )
                 context = await agent_context()
                 if isinstance(context, tuple):

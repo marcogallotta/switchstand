@@ -99,11 +99,23 @@ class ProtectedCreate(ClosedModel):
     project_id: UUID | None = None
     project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
 
+    @property
+    def is_capture(self) -> bool:
+        return (
+            self.work_type, self.lifecycle_state, self.owner_key,
+            self.wait_kind, self.unblock_condition, self.next_due,
+            self.next_action_class, self.next_action_ref,
+        ) == (
+            "Task", "WAITING", "NONE", "TRIAGE", "ASSIGNMENT_REQUIRED",
+            "UNSCHEDULED", "NONE", "NONE",
+        )
+
     @model_validator(mode="after")
     def one_target(self) -> Self:
-        if sum(value is not None for value in (
+        targets = sum(value is not None for value in (
             self.parent_work_id, self.project_id, self.project_gid,
-        )) != 1:
+        ))
+        if targets != 1 and not (targets == 0 and self.is_capture):
             raise ValueError("create requires exactly one parent or project target")
         return self
 
