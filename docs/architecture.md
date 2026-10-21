@@ -209,10 +209,13 @@ returns that receipt, including after admission refresh. A changed identity conf
 journal target is namespaced `project:<UUID>` and confers no work access. No work, membership,
 provider fallback, new table or migration is involved; canonical-disabled service is unavailable.
 
-Ordinary work creation accepts one admitted parent WorkId or canonical project ID. Native canonical
-creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
-`SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
-parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary
+Title-only ordinary work creation captures an unassigned Task: owner NONE, WAITING/TRIAGE,
+ASSIGNMENT_REQUIRED, UNSCHEDULED, no action, incomplete and self-rooted without placement.
+Capture confers no execution authority; existing owner/lifecycle/type search filters find it.
+An admitted parent or project is optional; a supplied nonexact-root parent is denied, never dropped.
+Explicit incompatible semantic fields are denied. Assigned creates retain mailbox-derived SELF,
+complete action-or-wait state and exact parent/project admission; inert parented Evidence and
+categorized reports retain their existing semantics. Mailbox identity grants no creation or assignment authority. Ordinary
 relation changes accept parent/dependency WorkIds or canonical project-membership add/remove;
 provider project/section/assignee identifiers and placement moves stay behind trusted internal
 and provider boundaries.

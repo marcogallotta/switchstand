@@ -657,11 +657,15 @@ class CanonicalWorkRuntime:
                             except ValueError:
                                 return CreateGateway.guard(
                                     request, "denied", "parent_root_not_exact"
-                                )
+                                ).model_copy(update={"next_action": (
+                                    "Omit parent_work_id to capture independently; retain the intended relation in notes."
+                                )})
                             if inherited_root is not None and inherited != str(inherited_root):
                                 return CreateGateway.guard(
                                     request, "denied", "parent_root_not_exact"
-                                )
+                                ).model_copy(update={"next_action": (
+                                    "Omit parent_work_id to capture independently; retain the intended relation in notes."
+                                )})
                             if inherited_root is None:
                                 start_here = await connection.scalar(select(
                                     work_handles.c.id
@@ -679,7 +683,9 @@ class CanonicalWorkRuntime:
                                 ):
                                     return CreateGateway.guard(
                                         request, "denied", "parent_root_not_exact"
-                                    )
+                                    ).model_copy(update={"next_action": (
+                                        "Omit parent_work_id to capture independently; retain the intended relation in notes."
+                                    )})
                                 # The sanctioned imported START HERE route is placement-only;
                                 # its direct-assignment child starts an exact canonical tree.
                                 root = str(work_id)
@@ -694,11 +700,13 @@ class CanonicalWorkRuntime:
                                 return CreateGateway.guard(
                                     request, "denied", "workspace_create_required"
                                 )
-                            if project_id is None:
+                            if project_id is None and request.project_gid is not None:
                                 project_id = await connection.scalar(select(
                                     projects.c.project_id
                                 ).where(projects.c.asana_project_gid == request.project_gid))
-                            if project_id is None:
+                            if project_id is None and (
+                                not request.is_capture or request.project_gid is not None
+                            ):
                                 return CreateGateway.guard(
                                     request, "denied", "project_not_admitted"
                                 )
@@ -757,7 +765,7 @@ class CanonicalWorkRuntime:
                             await connection.execute(insert(work_parents).values(
                                 child_work_id=work_id, parent_work_id=parent
                             ))
-                        else:
+                        elif project_id is not None:
                             await connection.execute(insert(project_memberships).values(
                                 project_id=project_id, work_id=work_id, section_name=None
                             ))
@@ -790,7 +798,10 @@ class CanonicalWorkRuntime:
                             status="ok", operation="work_create", work_id=work_id,
                             operation_id=request.operation_id, reason="exact_create_verified",
                             effect="applied", retry="none",
-                            next_action="Use the recorded create receipt.", receipt=receipt,
+                            next_action=(
+                                "Captured unassigned work; this is not an executable assignment."
+                                if request.is_capture else "Use the recorded create receipt."
+                            ), receipt=receipt,
                         )
                         await connection.execute(insert(effect_intents).values(
                             operation_id=str(request.operation_id), fingerprint=fingerprint,

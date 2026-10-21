@@ -49,14 +49,20 @@ when its host behavior matters. The TEST operator must verify the exact runtime,
 tools/schema/profile, current slot and isolated actor/authority before launch.
 An ambient connector or inherited context cannot certify a different candidate.
 
-Prepare a unique title, exact note, allowed owner/project placement and unrelated
-distractor preimage. Capture permission and a supported navigation/assigned root
-must already exist. The observer retains IDs and expected state, but withholds the
-successful tool sequence, previous answers and tool names from the fresh agent.
-Keep normal authority/bootstrap instructions. The agent receives only:
+Prepare a unique title and unrelated distractor preimage. Workspace capture permission
+must already exist; no owner, project or assigned root is required. The observer
+retains IDs and expected state, withholding successful tool sequences and tool names.
+Keep normal authority/bootstrap instructions. A fresh actual ChatGPT actor receives:
 
-> On TEST, capture a task named `<unique title>` with the exact note `<note>`
-> under my assigned context and give me its WorkId.
+> On TEST, capture a task named `<unique title>` and give me its WorkId.
+> I have not assigned it to anyone or selected a project.
+
+Read and search must show owner NONE, WAITING/TRIAGE, ASSIGNMENT_REQUIRED,
+UNSCHEDULED, no action, incomplete, self-root and no placement. This is a capture,
+not an executable assignment. Separately exercise explicitly assigned/parented work,
+admitted-project capture, malformed fields, supplied UNKNOWN-root parent denial,
+and exact operation replay after server restart. Synthetic HTTP token-verifier
+process tests prove the boundary; they do not establish actual ChatGPT/OAuth acceptance.
 
 The observer checks exactly one intended durable task, exact requested content,
 correct identity/owner/placement, unchanged distractor and no unrelated mutations.

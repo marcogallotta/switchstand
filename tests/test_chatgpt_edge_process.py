@@ -26,10 +26,11 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.canonical_relations import project_memberships, work_parents
 from switchstand.canonical_work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -883,6 +884,70 @@ async def test_agent_identity_survives_http_transport_and_process_churn(
             "result_message_id": self_result_id,
         })
         assert self_disposed["state"] == "DISPOSITIONED"
+
+
+async def test_title_only_capture_over_http_and_restart(database_prerequisite, tmp_path):
+    url = os.environ["TEST_DATABASE_URL"]
+    subject = str(uuid4().int)
+    selected, _ = await _provision(url, subject)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    args = {"api_version": "1", "operation_id": str(uuid4()), "title": "Capture idea"}
+    for restart in range(2):
+        with _server(env, port) as endpoint:
+            async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
+                async def call(tool, values):
+                    result = await client.call_tool(tool, {"api_version": "1", **values})
+                    assert not result.is_error and result.structured_content is not None
+                    return result.structured_content
+                captured = await call("work_create", args)
+                assert captured["status"] == "ok" and captured["effect"] == "applied"
+                if restart == 0:
+                    first = captured
+                else:
+                    assert captured == first
+                if restart == 0:
+                    project = await call("project_create", {"operation_id": str(uuid4()), "name": "Capture project"})
+                    placed = await call("work_create", args | {
+                        "operation_id": str(uuid4()), "project_id": project["receipt"]["project_id"],
+                    })
+                    assert placed["status"] == "ok" and placed["effect"] == "applied"
+                    placed_read = await call("work_get", {"work_id": placed["work_id"]})
+                    assert placed_read["item"]["context"]["placements"]
+                work_id = captured["work_id"]
+                got = (await call("work_get", {"work_id": work_id}))["item"]
+                assert not got["completed"] and got["context"]["placements"] == []
+                assert {key: got["routing"][key] for key in (
+                    "canonical_root", "owner_key", "lifecycle_state", "wait_kind",
+                    "unblock_condition", "next_due", "next_action_class", "next_action_ref",
+                )} == {
+                    "canonical_root": work_id, "owner_key": "NONE", "lifecycle_state": "WAITING",
+                    "wait_kind": "TRIAGE", "unblock_condition": "ASSIGNMENT_REQUIRED",
+                    "next_due": "UNSCHEDULED", "next_action_class": "NONE", "next_action_ref": "NONE",
+                }
+                found = await call("work_search", {"owner_key": "NONE", "lifecycle_state": "WAITING", "work_type": "Task"})
+                assert work_id in [item["id"] for item in found["items"]]
+                assert (await call("work_create", args | {"title": "Changed"}))["reason"] == "operation_identity_conflict"
+                denied = await call("work_create", args | {
+                    "operation_id": str(uuid4()), "parent_work_id": str(selected.authority.active_work_id),
+                })
+                assert (denied["effect"], denied["reason"]) == ("not_sent", "parent_root_not_exact")
+    engine = create_async_engine(url)
+    try:
+        async with engine.connect() as connection:
+            for table, column in ((project_memberships, project_memberships.c.work_id),
+                                  (work_parents, work_parents.c.child_work_id)):
+                assert await connection.scalar(select(func.count()).select_from(table).where(column == work_id)) == 0
+    finally:
+        await engine.dispose()
 
 
 async def test_process_replays_durable_database_append_after_restart(

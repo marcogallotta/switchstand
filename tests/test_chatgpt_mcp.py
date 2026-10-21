@@ -368,6 +368,25 @@ async def test_issue_wrappers_fix_category_and_preserve_evidence(tool_name, cate
     assert classified["classification"] == "NEW" and classified["mode"] == "CLASSIFY"
 
 
+async def test_title_only_capture_needs_no_registered_owner(monkeypatch):
+    subject = service()
+    subject.canonical_work_active = True
+    subject.admission_grants.grant = grant(operations=frozenset({"work_create"}))
+    create = AsyncMock(return_value=subject.denied("work_create", "probe"))
+    monkeypatch.setattr(subject, "create", create)
+    tool = dict(build_ordinary_tools(subject))["work_create"]
+    assert (await tool(api_version="1", operation_id=uuid4(), title="Remember")).reason == "probe"
+    request = create.await_args.args[0]
+    assert request.is_capture and request.parent_work_id is request.project_id is None
+    assert request.canonical_root is None
+    create.reset_mock()
+    for malformed in ({"work_type": "UNKNOWN"}, {"owner_key": "agent:foreign"},
+                      {"next_action_class": "OWNER_CAN_DO"}, {"wait_kind": "UNKNOWN"}):
+        denied = await tool(api_version="1", operation_id=uuid4(), title="Bad", **malformed)
+        assert denied.effect == "not_sent" and denied.status == "denied"
+    create.assert_not_awaited()
+
+
 async def test_canonical_create_derives_self_owner_from_registered_mailbox(monkeypatch):
     subject = service()
     subject.canonical_work_active = True

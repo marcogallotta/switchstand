@@ -82,6 +82,15 @@ def validate_create_state(
     if canonical_root in {None, "NONE", "UNKNOWN"}:
         raise ValueError("created work requires an exact root")
 
+    if (
+        work_type, lifecycle_state, owner_key, wait_kind, unblock_condition,
+        next_due, next_action_class, next_action_ref,
+    ) == (
+        "Task", "WAITING", "NONE", "TRIAGE", "ASSIGNMENT_REQUIRED",
+        "UNSCHEDULED", "NONE", "NONE",
+    ):
+        return
+
     report = not parented and work_type in {
         "BUG", "PRODUCT_FEATURE", "PROCESS", "PERFORMANCE", "HUMAN_REVIEW_FEEDBACK",
         "FORK_MANAGEMENT",
