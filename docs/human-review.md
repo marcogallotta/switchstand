@@ -43,6 +43,10 @@ options or recommend a cut merely because it meets a cap. A reasoned same-task e
 within Coordinator authority follows that route; an unchanged approved solution needs status,
 not another permission request.
 
+Use plain environment terms: prod or test. Name the exact service/effect, for example "the agent
+launch service is deployed in prod" only when verified; internal labels such as CONTROL do not
+explain that or imply that every service advanced. Quoted deployment logs alone are not readback.
+
 ## The conversation
 
 Match context to what the human already knows. If the trajectory is current, give the delta only. If context has been lost, briefly restore the outcome and settled direction, then give the delta.
