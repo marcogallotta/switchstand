@@ -1061,6 +1061,12 @@ def test_hook_allows_apostrophe_in_heredoc_but_checks_following_command(tmp_path
     assert hook(tmp_path, "cat <<EOF\nit's data\nEOF\n", environment) == {}
     denied = hook(tmp_path, "cat <<EOF\n$(rm -rf /)\nEOF\n", environment)
     assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert hook(tmp_path, "cat <<'EOF'; echo done\nit's data\nEOF\n", environment) == {}
+    denied = hook(tmp_path, "# <<EOF\nrm -rf /\nEOF\n", environment)
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    denied = hook(tmp_path, "echo '<<' EOF\nrm -rf /\nEOF\n", environment)
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    assert hook(tmp_path, "cat <<< 'plain data'", environment) == {}
 
 
 def test_coordinator_hook_allows_only_friction_patch_in_primary(tmp_path):

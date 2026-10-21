@@ -37,16 +37,42 @@ def segments(command: str) -> list[list[str]]:
     # commands after the delimiter visible to the existing classifier.
     lines = command.splitlines(keepends=True)
     for index, line in enumerate(lines):
-        match = re.search(r"(?:^|[ \t])<<-?(['\"]?)([A-Za-z_][A-Za-z_0-9]*)\1[ \t]*(?:#.*)?$",
-                          line.rstrip("\r\n"))
-        if not match:
+        if "<<" not in line:
             continue
-        delimiter = match.group(2)
-        strip_tabs = "<<-" in match.group(0)
+        openers: list[tuple[str, bool]] = []
+        quote = ""
+        escaped = False
+        for position, char in enumerate(line):
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = ""
+            elif char in "'\"":
+                quote = char
+            elif char == "#":
+                break
+            elif line.startswith("<<", position) and not (
+                line.startswith("<<<", position) or (position > 0 and line[position - 1] == "<")
+            ):
+                marker = re.match(r"<<(-?)(?:'([A-Za-z_][A-Za-z_0-9]*)'|\"([A-Za-z_][A-Za-z_0-9]*)\"|([A-Za-z_][A-Za-z_0-9]*))", line[position:])
+                if not marker:
+                    raise ValueError("unsupported here-document delimiter")
+                openers.append((next(value for value in marker.groups()[1:] if value),
+                                bool(marker.group(1))))
+        if not openers:
+            if "\n" in command:
+                raise ValueError("ambiguous here-document marker is denied")
+            continue
+        if len(openers) != 1:
+            raise ValueError("multiple here-documents are denied")
+        delimiter, strip_tabs = openers[0]
         end = index + 1
         while end < len(lines) and (lines[end].lstrip("\t") if strip_tabs else lines[end]).strip("\r\n") != delimiter:
-            if not match.group(1) and ("$(" in lines[end] or "`" in lines[end]):
-                raise ValueError("unquoted here-document command substitution is denied")
+            if "$(" in lines[end] or "`" in lines[end]:
+                raise ValueError("here-document command substitution is denied")
             lines[end] = "\n"
             end += 1
         if end == len(lines):
