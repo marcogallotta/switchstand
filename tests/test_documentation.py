@@ -346,7 +346,9 @@ def test_performance_feedback_and_definitive_receipt_rules_stay_bounded():
     interaction = normalized("docs/human-interaction.md")
     source = normalized("docs/source-history-feedback.md")
 
-    assert "file_performance" in agents
+    assert "docs/source-history-feedback.md#feedback-capture-and-triage" in agents
+    assert "before unrelated work" in agents
+    assert "Sample ordinary work that produced no report" in source
     assert "four `mcp__switchstand__file_*`" not in agents
     assert "definitive semantic receipt is the readback" in agents
     assert "Stop once the requested postcondition is established" in interaction

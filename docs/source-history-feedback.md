@@ -36,6 +36,40 @@ do not establish that an external effect occurred.
 
 ## Durable messaging and feedback
 
+### Feedback capture and triage
+
+While doing assigned work, notice concrete failures and hidden friction that delay or
+endanger delivery: bad code or incomplete specs discovered by the author, serious review
+findings, failures escaping earlier tests, deployment/resource faults, repeated work,
+blockers, and avoidable process or test time. A routine decision, frustration alone, or
+legitimate difficult work is not itself an issue. A corrected harmless typo can stay local.
+
+Once a credible concrete failure is observed, respond to Marco first, then capture it before
+unrelated work. Use the existing Tracker Issues V1-A `file_*` surface, or reuse a known exact
+issue with recurrence evidence and definitive receipt. Preserve an unfinished capture across
+interruption. Do not file again for every exchange, and do not create a parallel register.
+Respect STOP and explicit no-logging. Missing exact timing or a complete RCA does not excuse
+silence: label approximate time as measured, estimated/range, or UNKNOWN. Distinguish human
+effort, agent effort, and critical-path delay; avoid counting overlapping waits twice.
+Use `file_process` for procedure or review-burden failures, `file_performance` for avoidable
+time loss, and `file_bug` for software defects. Name the actual failure, not its setting:
+a Human Review document that wastes human review time can be a process failure without being
+a routine Human Review outcome.
+
+Record briefly what failed, its source, consequence, time impact, workaround, and proposed
+clearing action. Give separate LOW/MEDIUM/HIGH information quality and advisory priority with
+reasons. Preserve human priority. Retain all trial reports; no automatic culling or ignoring.
+Active human blockers or serious live damage need prompt attention through the existing
+Coordinator route and an accepting correction owner. A sent message is not pickup or repair.
+For issues outside your authority, route evidence to the current owner without editing it.
+
+Triage closes only with evidenced resolution, proven same-cause duplicate, accepting owner and
+next action, reasoned deferral with revisit condition, or exact blocker and clearing condition.
+NEW/RELATED classification or promotion alone does not establish exit from TRIAGE or a fix.
+Sample ordinary work that produced no report when evaluating this rule; review captured reports
+alone cannot reveal missed failures. A synthetic classification test does not prove real filing,
+owner pickup, or adoption. Record those as NOT_RUN until observed.
+
 Durable message tools are the current agent-to-agent messaging surface.
 Ordinary interactive agents use only the `agent_message_*` family and address
 an immutable registered agent name. Managed task-bound runtimes retain the
