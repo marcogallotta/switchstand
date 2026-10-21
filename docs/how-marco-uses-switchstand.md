@@ -308,6 +308,47 @@ Shared semantics do not imply identical host storage, tools, roles, or orchestra
 The [root-cause analysis procedure](root-cause-analysis.md) applies this same boundary to
 evidence lanes, checkpoints, correction watches, and matching-event validation.
 
+## Shared PR overview
+
+Coordinators and implementers build the same permitted overview from existing PR links and
+current Work records. Each uses their own read admission; role, login, a link or a named next
+actor supplies no assignment, pickup or effect authority. This is a read recipe, not stored status.
+
+1. Start with the exact WorkIds in the explicitly assigned portfolio. When discovery is needed,
+   use admitted `work_search` with the applicable filters and follow every `next_cursor`;
+   search matches are navigation and do not expand the portfolio. Read exact candidates with
+   `work_get(api_version="1", work_id=...)` before including their current state.
+2. Read each portfolio Work's `pull_requests` page. Follow its `next_cursor` as `pr_cursor` on
+   that same `work_get`; separately follow each row's `link_next_cursor` as `pr_link_cursor`
+   until exhausted. Send only one cursor type per call. A `stale` page requires a fresh first
+   page and reconciliation of that Work's collected pages; never combine incompatible pages.
+3. Deduplicate PRs by normalized lowercase `repository` and numeric `number`. Retain the PR
+   row's `owner_key`, `row_version`, `acceptance_ref` and all readable linked Work obligations.
+   Different observed versions require refresh, not an arbitrary winner. A linked Work outside
+   the assigned portfolio remains an explicit coverage boundary, not a new assignment.
+4. Read each admitted linked workflow Work's current revision, lifecycle, status, owner and next
+   action. Preserve each obligation and its source; never choose the first/latest linked Work
+   as the PR's controlling workflow. Keep accountable PR owner, next-action actor and actual
+   attributable pickup evidence distinct. Missing or conflicting workflow direction is `UNKNOWN`.
+5. Read the attributed code-review evidence referenced by those current records through existing
+   admission. Retain verdict, reviewer/provenance, exact reviewed head and evidence/source
+   revision and the actual assurance of independent native evidence. Missing or unreadable
+   evidence is `UNKNOWN`; self-report/PR prose never becomes validated independent evidence.
+6. Refresh the PR's GitHub head with the existing `repository_candidate_qualification_get`
+   capability only for its supported repository; require matching returned repository/PR identity.
+   Compare its `head_sha` to the reviewed head: mismatch or a later
+   observed head change is `STALE`; absent/failed provider or head evidence is `UNKNOWN`.
+   Preserve the raw qualification status and exact-head/composition gates separately from
+   code-review status. CI `NOT_READY` can coexist with attributed exact-head review PASS.
+
+Present one row per PR: repository/number, PR owner/version, linked Work obligations and source
+revisions, lifecycle/status, attributed review verdict/head/currentness, raw qualification, next
+actor/action and pickup evidence. Mark the overview `PARTIAL` for unlinked portfolio work,
+unreadable sources, links outside the portfolio, `visibility="PARTIAL"` or incomplete pagination;
+name the coverage boundary without exposing hidden links. An empty page never proves a global
+empty queue. Refresh current sources before consequential action. The overview grants no landing
+permission, writes nothing and never advances reviews, requests pickup or transfers ownership.
+
 ## Repository delivery
 
 Ordinary source work happens in an owned linked writer based on an accepted exact green SHA; the shared primary checkout stays read-only apart from fetching and writer creation. Managed workers use the trusted task-private writer supplied by launch.
