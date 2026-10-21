@@ -51,7 +51,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
         ))
     with pytest.raises(
         RuntimeError,
-        match="shared CONTROL schema mismatch: expected 0027_pull_requests; actual <none>",
+        match="shared CONTROL schema mismatch: expected 0028_agent_status; actual <none>",
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
@@ -61,7 +61,8 @@ def test_activation_continuity_downgrade_preserves_durable_truth(database_prereq
     url = disposable_url()
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
@@ -74,7 +75,7 @@ def test_activation_continuity_downgrade_preserves_durable_truth(database_prereq
         command.downgrade(config, "0022_implementation_requests")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
         assert connection.scalar(text(
             "SELECT count(*) FROM activation_obligation_revisions"
         )) == 1
@@ -84,7 +85,8 @@ def test_timing_downgrade_preserves_durable_evidence(database_prerequisite):
     url = disposable_url()
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     engine = create_engine(url)
     with engine.begin() as connection:
         connection.execute(text(
@@ -97,7 +99,7 @@ def test_timing_downgrade_preserves_durable_evidence(database_prerequisite):
         command.downgrade(config, "0023_activation_continuity")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
         assert connection.scalar(text("SELECT count(*) FROM mcp_operation_timings")) == 1
 
 
@@ -125,7 +127,8 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
             "result_contract, content_digest) VALUES (:id, :operation, :work, :work, "
             "'pg_existing', 'VALIDATION', 'START', 'existing request', '{}'::jsonb, :digest)"
         ), {"id": request_id, "operation": uuid4(), "work": work_id, "digest": "a" * 64})
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     with engine.connect() as connection:
         assert connection.execute(text(
             "SELECT task_kind, authorization_ref, send_authority_ref FROM task_run_requests"
@@ -133,7 +136,8 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
     command.downgrade(config, "0021_human_reviews")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT task_kind FROM task_run_requests")) == "VALIDATION"
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     with engine.begin() as connection:
         connection.execute(text(
             "UPDATE task_run_requests SET task_kind = 'IMPLEMENTATION', "
@@ -151,8 +155,7 @@ def test_empty_database_migrates_to_lifecycle_head(monkeypatch, database_prerequ
         "work_migration_receipts", "failure_records", "failure_resolutions",
         "task_run_requests", "task_run_executions", "task_run_results",
             "human_review_consequences", "activation_obligation_revisions",
-            "mcp_operation_timings", "task_control_checkpoints", "pull_requests",
-            "work_pull_requests",
+            "mcp_operation_timings", "task_control_checkpoints",
         }
     assert {column["name"] for column in inspect(engine).get_columns("work_handles")} == {"id", "provider", "provider_work_id"}
     database = inspect(engine)
@@ -208,7 +211,8 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
     engine = create_engine(url)
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     command.downgrade(config, "0013_failure_journal")
     work_id = uuid4()
     with engine.begin() as connection:
@@ -218,7 +222,8 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
             "VALUES (:work_id, 'Legacy', 'legacy', false, '', 1)"
         ), {"work_id": work_id})
 
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
 
     with engine.connect() as connection:
         assert connection.execute(text(
@@ -236,7 +241,7 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
         command.downgrade(config, "0013_failure_journal")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
         assert connection.scalar(text(
             "SELECT owner_key FROM canonical_work WHERE work_id = :work_id"
         ), {"work_id": work_id}) == "coordinator"
@@ -248,7 +253,7 @@ def test_routing_migration_preserves_legacy_nulls_and_refuses_destructive_downgr
         command.downgrade(config, "0014_canonical_routing")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
 
 
 def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequisite):
@@ -263,7 +268,8 @@ def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequ
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     with engine.begin() as connection:
         connection.execute(text(
             "INSERT INTO work_migration_receipts (name, source_digest) "
@@ -278,14 +284,15 @@ def test_migration_receipt_blocks_downgrade_and_preserves_fence(database_prerequ
     } <= set(inspect(engine).get_table_names())
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
         assert connection.execute(text(
             "SELECT name, source_digest FROM work_migration_receipts"
         )).one() == ("work-identity-migration-complete-v1", "a" * 64)
 
 
+@pytest.mark.parametrize("report", [None, '{"report": "Retain this task-list status"}'])
 def test_agent_identity_migration_preserves_endpoint_and_delivery(
-    monkeypatch, database_prerequisite,
+    monkeypatch, database_prerequisite, report,
 ):
     url = disposable_url()
     monkeypatch.setenv("DATABASE_URL", url)
@@ -320,6 +327,20 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "recipient_grant_version) VALUES (:delivery, :id, :message, :id, 1)"
         ), {"delivery": delivery_id, "id": endpoint_id, "message": message_id})
 
+    command.upgrade(config, "0027_pull_requests")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO canonical_work (work_id, title, normalized_title, completed, notes, row_version) "
+            "VALUES (:work, 'Linked work', 'linked work', false, '', 1)"
+        ), {"work": endpoint_id})
+        connection.execute(text(
+            "INSERT INTO pull_requests VALUES ('owner/repository', 1039, 'agent:legacy', 1, 'accepted:1039')"
+        ))
+        connection.execute(text(
+            "INSERT INTO work_pull_requests VALUES (:work, 'owner/repository', 1039)"
+        ), {"work": endpoint_id})
+        pr_before = connection.execute(text("SELECT * FROM pull_requests")).all()
+        links_before = connection.execute(text("SELECT * FROM work_pull_requests")).all()
     command.upgrade(config, "head")
     with engine.connect() as connection:
         endpoint = connection.execute(text(
@@ -334,8 +355,11 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "SELECT delivery_id, sender_work_id, message_id, recipient_work_id, "
             "recipient_grant_version, state FROM message_deliveries"
         )).one()
+        assert connection.execute(text("SELECT * FROM pull_requests")).all() == pr_before
+        assert connection.execute(text("SELECT * FROM work_pull_requests")).all() == links_before
+        assert connection.scalar(text("SELECT agent_status FROM agent_mailboxes")) is None
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0028_agent_status"
     assert endpoint == ("legacy", "Legacy", endpoint_id, "owner", "legacy:legacy", 1)
     assert message == (endpoint_id, message_id, "agent.legacy", "request", {}, "digest")
     assert delivery == (delivery_id, endpoint_id, message_id, endpoint_id, 1, "AVAILABLE")
@@ -348,6 +372,19 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
     assert ("endpoint_id",) in unique_columns
     assert ("principal_key", "session_key") in unique_columns
     assert ("principal_key",) not in unique_columns
+
+    with engine.begin() as connection:
+        connection.execute(text("UPDATE agent_mailboxes SET agent_status = CAST(:report AS jsonb)"),
+                           {"report": report})
+        before = connection.execute(text("SELECT * FROM agent_mailboxes")).all()
+    with pytest.raises(RuntimeError, match="Preserve agent reports"):
+        command.downgrade(config, "0026_agent_message_ack")
+    with engine.connect() as connection:
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
+            == "0028_agent_status"
+        assert connection.execute(text("SELECT * FROM agent_mailboxes")).all() == before
+        assert connection.execute(text("SELECT * FROM pull_requests")).all() == pr_before
+        assert connection.execute(text("SELECT * FROM work_pull_requests")).all() == links_before
 
 
 def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
@@ -364,7 +401,8 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     endpoint_id, message_id, delivery_id = uuid4(), uuid4(), uuid4()
     with engine.begin() as connection:
         connection.execute(text(
@@ -388,7 +426,7 @@ def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
         assert connection.execute(text(
             "SELECT endpoint_id, principal_key, session_key, generation FROM agent_mailboxes"
         )).one() == (endpoint_id, "owner", "session", 4)
@@ -415,7 +453,8 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
             "lifecycle_obligations, message_projection, message_deliveries, messages, "
             "effect_intents, work_grants, work_handles CASCADE"
         ))
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
 
     command.downgrade(config, "0006_agent_mailboxes")
     assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
@@ -424,7 +463,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0028_agent_status"
     assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
         >= {"endpoint_id", "principal_key", "session_key", "generation"}
 
@@ -442,7 +481,8 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
             "DROP TABLE IF EXISTS alembic_version, mcp_operation_timings, agent_mailbox_transfer_requests, outcome_state_revisions, human_trajectory_revisions, agent_mailboxes, work_event_handles, lifecycle_obligations, message_projection, "
             "message_deliveries, messages, effect_intents, work_grants, work_handles CASCADE"
         ))
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     with engine.begin() as connection:
         connection.execute(text(
             "INSERT INTO messages "
@@ -454,7 +494,7 @@ def test_message_downgrade_refuses_to_destroy_durable_truth(
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT count(*) FROM messages")) == 1
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
 
 
 def test_acknowledgement_migration_refuses_lossy_downgrade(database_prerequisite):
@@ -462,7 +502,8 @@ def test_acknowledgement_migration_refuses_lossy_downgrade(database_prerequisite
     engine = create_engine(url)
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     sender, message, delivery = uuid4(), uuid4(), uuid4()
     with engine.begin() as connection:
         connection.execute(text(
@@ -483,7 +524,7 @@ def test_acknowledgement_migration_refuses_lossy_downgrade(database_prerequisite
         command.downgrade(config, "0025_task_control_checkpoints")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_pull_requests"
+            == "0026_agent_message_ack"
         assert connection.scalar(text(
             "SELECT state FROM message_deliveries WHERE delivery_id = :delivery"
         ), {"delivery": delivery}) == "ACKNOWLEDGED"
@@ -499,7 +540,8 @@ def test_lifecycle_downgrade_refuses_to_discard_obligation(database_prerequisite
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     work_id, obligation_id = uuid4(), uuid4()
     with engine.begin() as connection:
         connection.execute(
@@ -536,7 +578,8 @@ def test_empty_lifecycle_downgrade_and_reupgrade_recovers_schema(database_prereq
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     command.downgrade(config, "0003_messages_and_deliveries")
     assert "lifecycle_obligations" not in inspect(engine).get_table_names()
     command.upgrade(config, "head")
@@ -554,7 +597,8 @@ def test_event_identity_downgrade_refuses_to_discard_mapping(database_prerequisi
         ))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
+    # Exercise this historical rollback guard before the later status rollback fence.
+    command.upgrade(config, "0026_agent_message_ack")
     work_id, event_id = uuid4(), uuid4()
     with engine.begin() as connection:
         connection.execute(text(
