@@ -216,8 +216,12 @@ provisioner. It creates only the canonical private rehearsal root, records a
 mode-`0600` descriptor binding the exact candidate, source database backup and
 FastMCP snapshot digests, namespaced Compose resources, copied-state paths, and
 three isolated loopback endpoints, then restores the backup into its disposable
-PostgreSQL service and extracts the bounded FastMCP tree. Before Compose starts, it
-creates that namespace's default network on the deterministic `/24` selected by the
+PostgreSQL service and extracts the bounded FastMCP tree. It
+requires `--fastmcp-receipt /path/to/attempt/receipt.json` for FileTree metadata.
+The private maintenance receipt must bind the supplied sibling `fastmcp.before.tar`
+digest and original FastMCP root. Only the private extraction's collection paths
+are relocated; normalized auth digests must remain equal. The original root is
+never opened by relocation. Before Compose starts, it creates that namespace's default network on the deterministic `/24` selected by the
 canonical development-subnet policy; the descriptor, provisioning readback, READY
 validation, and teardown bind both its exact Compose labels and IPAM subnet.
 `teardown NAME` first revalidates that descriptor and every Compose label, then

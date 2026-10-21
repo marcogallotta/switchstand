@@ -177,7 +177,8 @@ delegated edge; it has no public match for private introspection. The host layer
 apply, start, migrate, or activate those assets.
 `stable_auth_migration.py` owns offline exclusive-writer copy/checksum and immutable receipts for
 backup, relocation, explicit restore, and preserve-current-state rollback evidence. It never
-controls services or automatically restores OAuth state.
+controls services or automatically restores OAuth state. Its validated FileTree relocation and
+normalized digest helpers also serve private rehearsal extraction without opening the original root.
 `stable_auth_deployment.py` owns the inert, first combined-to-split activation transaction. It
 serializes with ordinary edge maintenance, retains a publicly verified Caddy gate across the
 service/state/route transition, binds both split processes to one exact candidate source tree, and
@@ -853,7 +854,9 @@ Compose labels before removing that namespace. Its default network is pre-create
 deterministic development `/24`, and the descriptor binds the exact subnet and Docker IPAM.
 Provisioning failures are durable and bounded;
 their exact `FAILED` descriptor is also the fail-closed cleanup authority for zero or one proven
-namespaced resources. It never selects or changes production state.
+namespaced resources. It never selects or changes production state. FileTree snapshots require a private maintenance
+receipt binding the exact sibling archive digest and original root; relocation changes only
+private collection metadata and verifies normalized auth digests before Docker starts.
 
 `zero_asana_hold.py` owns the transition-only integrated production hold: exact host edge gate and
 stop, create-new FastMCP snapshot, and one PostgreSQL transaction whose SHARE locks span source

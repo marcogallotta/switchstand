@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import stat
@@ -10,8 +11,95 @@ import pytest
 
 from switchstand import rehearsal_target as target
 from switchstand.edge_maintenance import Failed
+from switchstand.stable_auth_migration import MigrationFailure, state_manifest
 
 SHA = "a" * 40
+
+
+def auth_store(root, *, create=False):
+    from key_value.aio.stores.filetree import (
+        FileTreeStore,
+        FileTreeV1CollectionSanitizationStrategy,
+        FileTreeV1KeySanitizationStrategy,
+    )
+
+    return FileTreeStore(data_directory=root, auto_create=create,
+                         collection_sanitization_strategy=FileTreeV1CollectionSanitizationStrategy(root),
+                         key_sanitization_strategy=FileTreeV1KeySanitizationStrategy(root))
+
+
+async def auth_archive(tmp_path, monkeypatch):
+    runtime, backup, _ = artifacts(tmp_path, monkeypatch)
+    original = tmp_path / "original" / "fastmcp"
+    original.mkdir(mode=0o700, parents=True)
+    store = auth_store(original, create=True)
+    for collection in ("mcp-oauth-proxy-clients", "mcp-jti-mappings", "mcp-upstream-tokens"):
+        await store.put("key", {"encrypted": collection}, collection=collection)
+    for path in original.rglob("*"):
+        path.chmod(0o700 if path.is_dir() else 0o600)
+    before = state_manifest(original)
+    attempt = tmp_path / "attempt"
+    attempt.mkdir(mode=0o700)
+    snapshot = attempt / "fastmcp.before.tar"
+    with tarfile.open(snapshot, "w") as archive:
+        archive.add(original, arcname="fastmcp")
+    snapshot.chmod(0o600)
+    receipt = attempt / "receipt.json"
+    receipt.write_text(json.dumps({"schema": 1, "fastmcp_state": str(original),
+                                 "fastmcp_snapshot": hashlib.sha256(snapshot.read_bytes()).hexdigest()}))
+    receipt.chmod(0o600)
+    return runtime, backup, snapshot, receipt, original, before
+
+
+async def test_receipted_auth_copy_reads_private_paths_and_preserves_state(tmp_path, monkeypatch):
+    runtime, backup, snapshot, receipt, original, before = await auth_archive(tmp_path, monkeypatch)
+    frozen = snapshot.read_bytes(), receipt.read_bytes()
+    descriptor = target.provision("proof", SHA, runtime, backup, snapshot,
+                                  fastmcp_receipt=receipt, run=Docker(runtime))
+    value = json.loads(descriptor.read_text())
+    copied = Path(value["fastmcp_state"])
+    after = state_manifest(copied)
+    assert after.logical_tree_sha256 == before.logical_tree_sha256
+    assert after.logical_category_sha256 == before.logical_category_sha256
+    assert state_manifest(original) == before
+    assert (snapshot.read_bytes(), receipt.read_bytes()) == frozen
+    # Make the old root unavailable: successful reads must use only the copy.
+    original.rename(original.with_name("unavailable"))
+    store = auth_store(copied)
+    for collection in ("mcp-oauth-proxy-clients", "mcp-jti-mappings", "mcp-upstream-tokens"):
+        assert await store.get("key", collection=collection) == {"encrypted": collection}
+    assert state_manifest(copied) == after
+
+
+@pytest.mark.parametrize("fault", ["digest", "origin", "archive", "missing", "schema"])
+async def test_auth_snapshot_rejects_unproved_provenance_before_docker(tmp_path, monkeypatch, fault):
+    runtime, backup, snapshot, receipt, original, _ = await auth_archive(tmp_path, monkeypatch)
+    value = json.loads(receipt.read_text())
+    if fault == "digest": value["fastmcp_snapshot"] = "0" * 64
+    if fault == "schema": value["schema"] = True
+    if fault == "origin": value["fastmcp_state"] = str(original.parent / "other" / "fastmcp")
+    if fault == "archive":
+        other = snapshot.with_name("other.tar")
+        other.write_bytes(snapshot.read_bytes())
+        other.chmod(0o600)
+        snapshot = other
+    receipt.write_text(json.dumps(value))
+    docker = Docker(runtime)
+    with pytest.raises(Failed, match="receipt|relocation"):
+        target.provision("proof", SHA, runtime, backup, snapshot,
+                         fastmcp_receipt=None if fault == "missing" else receipt, run=docker)
+    assert not any(command[0] == "docker" for command in docker.commands)
+    if fault in {"origin", "missing"}:
+        _, failed = target._load("proof", failed=True)
+        assert failed["failure"]["step"] == "auth_copy"
+    # Default manifest path validation remains strict for unrelocated copies.
+    if fault == "missing":
+        copied = target.REHEARSALS / "proof/copied-state/fastmcp"
+        with pytest.raises(MigrationFailure, match="does not match its state root"):
+            state_manifest(copied)
+    if fault in {"origin", "missing"}:
+        target.teardown("proof", run=Docker(runtime, fault="absent"))
+        assert not (target.REHEARSALS / "proof").exists()
 
 
 class Docker:
