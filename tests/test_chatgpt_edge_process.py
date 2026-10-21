@@ -246,7 +246,10 @@ async def _discover(endpoint, selected):
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
 
 
-async def test_pr_accountability_over_real_http_and_restart(database_prerequisite):
+@pytest.mark.parametrize("outcome_state_enabled", ["0", "1"])
+async def test_pr_accountability_over_real_http_and_restart(
+    database_prerequisite, outcome_state_enabled,
+):
     """Exercise PR links, workspace backlinks and accepted transfer through real MCP/PG."""
     url = os.environ["TEST_DATABASE_URL"]
     subject = str(uuid4().int)
@@ -256,6 +259,7 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
     port = free_port()
     env = clean_environment() | {
         "DATABASE_URL": url, "EFFECT_FILE": os.devnull,
+        "SWITCHSTAND_OUTCOME_STATE_ACTIONS": outcome_state_enabled,
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
         "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
@@ -267,6 +271,9 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
     with _server(env, port) as endpoint:
         client = MCP(endpoint + "/mcp", "fixed-bearer")
         client.initialize()
+        inventory = client.call("tools/list", {}, 2)
+        read_tool = next(tool for tool in inventory["tools"] if tool["name"] == "work_get")
+        assert {"pr_cursor", "pr_link_cursor"} <= read_tool["inputSchema"]["properties"].keys()
 
         def call(actor, tool_name, **arguments):
             result = client.call("tools/call", {

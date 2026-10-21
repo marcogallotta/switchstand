@@ -554,9 +554,11 @@ def build_ordinary_tools(
 
     async def enriched_work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
+        pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
     ) -> StatefulOrdinaryWorkResult:
         """Read exact work with its owner-local action summary when available."""
-        result = await work_get(api_version, work_id)
+        result = await work_get(api_version, work_id, pr_cursor, pr_link_cursor)
         summary = None
         failures = None
         activation = None
@@ -579,6 +581,7 @@ def build_ordinary_tools(
         return StatefulOrdinaryWorkResult(
             action_summary=summary, activation_obligations=activation,
             open_failures=failures, item=result.item,
+            pull_requests=result.pull_requests,
             status=result.status, guard=result.guard,
         )
 
