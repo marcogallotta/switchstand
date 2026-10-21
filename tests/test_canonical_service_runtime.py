@@ -1546,3 +1546,70 @@ async def test_stop_test_prefix_requires_current_explicit_flag(
     assert result.get("actions", []) == ([f"{subject.work_id}: implement"] if case == "on" else [])
     if case == "revoked":
         assert result["reason"] == "head_opt_in_changed"
+
+
+@pytest.mark.parametrize("finish", [{"completed": True}, {"lifecycle_state": "TERMINAL"}])
+async def test_finish_normalizes_receipt_and_preserves_pending_review(subject: Subject, finish):
+    await pending_review(subject)
+    request = update(subject, **finish)
+    warned = await subject.service.update(request)
+    assert (warned.status, warned.effect) == ("CONFIRM_REQUIRED", "not_sent")
+    request = request.model_copy(update={"confirm_cancels_review": True})
+    applied = await subject.service.update(request)
+    assert applied.effect == "applied" and isinstance(applied.receipt, UpdateReceipt)
+    assert applied.receipt.patch.model_dump(exclude_unset=True) == {
+        "completed": True, "lifecycle_state": "TERMINAL", "wait_kind": "NONE",
+        "unblock_condition": "NONE", "next_due": "NONE",
+        "next_action_class": "NONE", "next_action_ref": "NONE",
+    }
+    assert await subject.service.update(request) == applied
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored.completed and stored.lifecycle_state == "TERMINAL"
+
+
+@pytest.mark.parametrize("patch", [
+    {"completed": True, "lifecycle_state": "CURRENT"},
+    {"completed": False, "lifecycle_state": "TERMINAL"},
+    {"completed": False},
+    {"lifecycle_state": "WAITING", "completed": False},
+])
+async def test_finish_contradictions_and_implicit_reopen_do_not_write(subject: Subject, patch):
+    current = await subject.runtime.works.get(subject.work_id)
+    current = await subject.runtime.works.replace(replace(
+        current, completed=True, lifecycle_state="TERMINAL",
+        next_action_class="NONE", next_action_ref="NONE",
+    ))
+    request = update(subject, **patch).model_copy(update={
+        "observed_revision": canonical_revision(subject.work_id, current.row_version),
+    })
+    result = await subject.service.update(request)
+    assert (result.status, result.effect, result.reason) == (
+        "denied", "not_sent", "invalid_resultant_state",
+    )
+    assert result.next_action != "Refresh work/grant or ask the trusted issuer."
+    assert await subject.runtime.works.get(subject.work_id) == current
+
+
+async def test_legacy_priority_update_preserves_unrelated_groups(subject: Subject):
+    current = await subject.runtime.works.get(subject.work_id)
+    legacy = await subject.runtime.works.replace(replace(
+        current, canonical_root=str(uuid4()), owner_key=None, wait_kind="old wait",
+        next_action_ref=None, lifecycle_state="TERMINAL", completed=False,
+    ))
+    request = update(subject, priority="P1").model_copy(update={
+        "observed_revision": canonical_revision(subject.work_id, legacy.row_version),
+    })
+    result = await subject.service.update(request)
+    assert result.effect == "applied"
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert replace(stored, row_version=legacy.row_version, priority=legacy.priority) == legacy
+    invalid = update(subject, next_action_ref="do something").model_copy(update={
+        "observed_revision": canonical_revision(subject.work_id, stored.row_version),
+    })
+    assert (await subject.service.update(invalid)).effect == "not_sent"
+    reopen = update(subject, completed=False, lifecycle_state="CURRENT",
+                    wait_kind="NONE", unblock_condition="NONE", next_due="NONE",
+                    next_action_class="OWNER_CAN_DO", next_action_ref="resume").model_copy(update={
+                        "observed_revision": canonical_revision(subject.work_id, stored.row_version),
+                    })
+    assert (await subject.service.update(reopen)).effect == "applied"

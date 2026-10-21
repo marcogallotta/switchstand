@@ -36,6 +36,7 @@ from switchstand.canonical_work import (
     CurrentWork,
     canonical_metadata,
     canonical_revision,
+    canonical_work,
 )
 from switchstand.contracts import LaunchAuthority
 from switchstand.edge_semantic_probe import MCP
@@ -948,6 +949,73 @@ async def test_title_only_capture_over_http_and_restart(database_prerequisite, t
                 assert await connection.scalar(select(func.count()).select_from(table).where(column == work_id)) == 0
     finally:
         await engine.dispose()
+
+
+async def test_simple_completion_over_http_and_restart(database_prerequisite, tmp_path):
+    url, subject = os.environ["TEST_DATABASE_URL"], str(uuid4().int)
+    selected, denied_id = await _provision(url, subject)
+    work_id = str(selected.authority.active_work_id)
+    engine = create_async_engine(url)
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).where(
+            canonical_work.c.work_id == work_id,
+        ).values(lifecycle_state="CURRENT", canonical_root=str(uuid4()),
+                 wait_kind="old wait", owner_key=None, next_action_ref=None))
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject, "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    for restart in range(2):
+        with _server(env, port) as endpoint:
+            async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as client:
+                async def call(tool, args):
+                    result = await client.call_tool(tool, {"api_version": "1", **args})
+                    assert not result.is_error and result.structured_content is not None
+                    return result.structured_content
+                if restart == 0:
+                    before = (await call("work_get", {"work_id": work_id}))["item"]
+                    args = {"operation_id": str(uuid4()), "work_id": work_id,
+                            "observed_revision": before["revision"], "patch": {"priority": "P1"}}
+                    priority = await call("work_update", args)
+                    assert priority["effect"] == "applied"
+                    changed = (await call("work_get", {"work_id": work_id}))["item"]
+                    assert changed["routing"] == before["routing"] | {"priority": "P1"}
+                    assert (await call("work_update", args | {"operation_id": str(uuid4())}))["status"] == "stale"
+                    args = args | {"operation_id": str(uuid4()), "observed_revision": changed["revision"]}
+                    for patch in ({"completed": True, "lifecycle_state": "CURRENT"},
+                                  {"next_action_ref": "repair pair"}):
+                        invalid = await call("work_update", args | {"patch": patch})
+                        assert invalid["effect"] == "not_sent"
+                    args = args | {"patch": {"completed": True}}
+                    finished = await call("work_update", args)
+                    assert finished["effect"] == "applied"
+                    assert finished["receipt"]["patch"]["lifecycle_state"] == "TERMINAL"
+                assert await call("work_update", args) == finished
+                conflict = await call("work_update", args | {"patch": {"completed": False}})
+                assert conflict["reason"] == "operation_identity_conflict"
+                got = (await call("work_get", {"work_id": work_id}))["item"]
+                assert got["completed"] and got["routing"]["lifecycle_state"] == "TERMINAL"
+                assert all(got["routing"][key] == "NONE" for key in (
+                    "wait_kind", "unblock_condition", "next_due", "next_action_class", "next_action_ref",
+                ))
+                for query in ({"completed": True}, {"lifecycle_state": "TERMINAL"}):
+                    found = await call("work_search", query)
+                    assert work_id in [item["id"] for item in found["items"]]
+                incomplete = await call("work_search", {"completed": False})
+                assert work_id not in [item["id"] for item in incomplete["items"]]
+                invalid = await call("work_update", args | {
+                    "operation_id": str(uuid4()), "observed_revision": got["revision"],
+                    "patch": {"completed": False},
+                })
+                assert invalid["effect"] == "not_sent"
+                denied = await call("work_update", args | {
+                    "operation_id": str(uuid4()), "work_id": str(denied_id),
+                })
+                assert denied["effect"] == "not_sent"
+    await engine.dispose()
 
 
 async def test_process_replays_durable_database_append_after_restart(

@@ -190,7 +190,7 @@ async def test_update_reports_current_row_when_replace_loses_race() -> None:
     result = await runtime.update(WorkUpdateRequest(
         api_version="1", work_id=work_id,
         observed_revision=canonical_revision(work_id, 1),
-        patch=WorkPatch(completed=True),
+        patch=WorkPatch(priority="P1"),
     ))
 
     assert result.status == "stale"

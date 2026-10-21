@@ -55,6 +55,7 @@ from .grants import (
     ProtectedRelation,
     ProtectedUpdate,
     RelationReceipt,
+    ScalarPatch,
     UpdateReceipt,
 )
 from .human_reviews import (
@@ -138,13 +139,16 @@ def _routing(work: CurrentWork) -> Routing:
     )
 
 
-def _validate_semantic_write(work: CurrentWork, fields: set[str] | frozenset[str]) -> None:
+def _validate_semantic_write(
+    work: CurrentWork, fields: set[str] | frozenset[str], *, field_local: bool = False,
+) -> None:
     if fields & SEMANTIC_FIELDS:
         validate_resultant_state(
             lifecycle_state=work.lifecycle_state, canonical_root=work.canonical_root,
             owner_key=work.owner_key, wait_kind=work.wait_kind,
             unblock_condition=work.unblock_condition, next_due=work.next_due,
             next_action_class=work.next_action_class, next_action_ref=work.next_action_ref,
+            completed=work.completed, affected=fields if field_local else SEMANTIC_FIELDS,
         )
 
 
@@ -544,14 +548,56 @@ class CanonicalWorkRuntime:
                     if not fields <= _SCALAR_FIELDS:
                         return self._guard(request, "denied", "invalid_database_metadata")
                     values = {field: getattr(request.patch, field) for field in fields}
+                    transition_fields = fields & {"completed", "lifecycle_state"}
+                    # Normalize one-field FINISH only; preserve explicitly supplied intent.
+                    if len(transition_fields) == 1 and (
+                        values.get("completed") is True
+                        or values.get("lifecycle_state") == "TERMINAL"
+                    ):
+                        terminal = {"completed": True, "lifecycle_state": "TERMINAL",
+                                    "wait_kind": "NONE", "unblock_condition": "NONE",
+                                    "next_due": "NONE", "next_action_class": "NONE",
+                                    "next_action_ref": "NONE"}
+                        if any(key in values and values[key] != value
+                               for key, value in terminal.items()):
+                            return self._guard(request, "denied", "invalid_resultant_state").model_copy(
+                                update={"next_action": (
+                                    "FINISH requires cleared wait/action fields; "
+                                    "use completed=true alone."
+                                )}
+                            )
+                        values.update(terminal)
                     candidate = replace(current, **values)
                     if not await agent_notes_fit(connection, candidate.work_id, candidate.notes):
                         return self._guard(request, "denied", "agent_notes_overflow")
                     try:
-                        _validate_semantic_write(candidate, fields)
-                    except ValueError:
-                        return self._guard(request, "denied", "invalid_resultant_state")
-                    root_id = _exact_root(candidate.canonical_root)
+                        if (
+                            transition_fields
+                            and (current.completed or current.lifecycle_state == "TERMINAL")
+                            and not candidate.completed
+                            and not (
+                                values.get("completed") is False
+                                and values.get("lifecycle_state") == "CURRENT"
+                                and all(values.get(key) not in {None, "NONE", "UNKNOWN"}
+                                        for key in ("next_action_class", "next_action_ref"))
+                                and all(values.get(key) == "NONE" for key in
+                                        ("wait_kind", "unblock_condition", "next_due"))
+                            )
+                        ):
+                            raise ValueError(
+                                "reopen requires explicit completed=false, CURRENT, exact "
+                                "next_action_class/next_action_ref and NONE "
+                                "wait_kind/unblock_condition/next_due"
+                            )
+                        _validate_semantic_write(candidate, set(values), field_local=True)
+                    except ValueError as error:
+                        return self._guard(request, "denied", "invalid_resultant_state").model_copy(
+                            update={"next_action": str(error)}
+                        )
+                    root_id = (
+                        _exact_root(candidate.canonical_root)
+                        if "canonical_root" in fields else None
+                    )
                     if root_id is not None and await self.works.get_locked(
                         connection, root_id
                     ) is None:
@@ -567,7 +613,7 @@ class CanonicalWorkRuntime:
                         observed_revision=request.observed_revision,
                         resulting_revision=canonical_revision(
                             request.work_id, changed.row_version
-                        ), patch=request.patch, qualification=qualification,
+                        ), patch=ScalarPatch(**values), qualification=qualification,
                     )
                     outcome = GuardOutcome(
                         status="ok", operation="work_update", work_id=request.work_id,
