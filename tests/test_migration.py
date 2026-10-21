@@ -51,7 +51,7 @@ def test_stale_schema_check_does_not_upgrade(monkeypatch, database_prerequisite)
         ))
     with pytest.raises(
         RuntimeError,
-        match="shared CONTROL schema mismatch: expected 0027_agent_status; actual <none>",
+        match="shared CONTROL schema mismatch: expected 0028_agent_status; actual <none>",
     ):
         require_current_schema()
     assert inspect(engine).get_table_names() == []
@@ -327,6 +327,20 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "recipient_grant_version) VALUES (:delivery, :id, :message, :id, 1)"
         ), {"delivery": delivery_id, "id": endpoint_id, "message": message_id})
 
+    command.upgrade(config, "0027_pull_requests")
+    with engine.begin() as connection:
+        connection.execute(text(
+            "INSERT INTO canonical_work (work_id, title, normalized_title, completed, notes, row_version) "
+            "VALUES (:work, 'Linked work', 'linked work', false, '', 1)"
+        ), {"work": endpoint_id})
+        connection.execute(text(
+            "INSERT INTO pull_requests VALUES ('owner/repository', 1039, 'agent:legacy', 1, 'accepted:1039')"
+        ))
+        connection.execute(text(
+            "INSERT INTO work_pull_requests VALUES (:work, 'owner/repository', 1039)"
+        ), {"work": endpoint_id})
+        pr_before = connection.execute(text("SELECT * FROM pull_requests")).all()
+        links_before = connection.execute(text("SELECT * FROM work_pull_requests")).all()
     command.upgrade(config, "head")
     with engine.connect() as connection:
         endpoint = connection.execute(text(
@@ -341,8 +355,11 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
             "SELECT delivery_id, sender_work_id, message_id, recipient_work_id, "
             "recipient_grant_version, state FROM message_deliveries"
         )).one()
+        assert connection.execute(text("SELECT * FROM pull_requests")).all() == pr_before
+        assert connection.execute(text("SELECT * FROM work_pull_requests")).all() == links_before
+        assert connection.scalar(text("SELECT agent_status FROM agent_mailboxes")) is None
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_agent_status"
+            == "0028_agent_status"
     assert endpoint == ("legacy", "Legacy", endpoint_id, "owner", "legacy:legacy", 1)
     assert message == (endpoint_id, message_id, "agent.legacy", "request", {}, "digest")
     assert delivery == (delivery_id, endpoint_id, message_id, endpoint_id, 1, "AVAILABLE")
@@ -364,8 +381,10 @@ def test_agent_identity_migration_preserves_endpoint_and_delivery(
         command.downgrade(config, "0026_agent_message_ack")
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_agent_status"
+            == "0028_agent_status"
         assert connection.execute(text("SELECT * FROM agent_mailboxes")).all() == before
+        assert connection.execute(text("SELECT * FROM pull_requests")).all() == pr_before
+        assert connection.execute(text("SELECT * FROM work_pull_requests")).all() == links_before
 
 
 def test_populated_agent_identity_downgrade_preserves_current_schema_and_data(
@@ -444,7 +463,7 @@ def test_empty_agent_identity_downgrade_and_reupgrade_reaches_exact_head(
 
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-            == "0027_agent_status"
+            == "0028_agent_status"
     assert {column["name"] for column in inspect(engine).get_columns("agent_mailboxes")} \
         >= {"endpoint_id", "principal_key", "session_key", "generation"}
 

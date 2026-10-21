@@ -5,7 +5,7 @@ import json
 import os
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal, Self
 from uuid import UUID, uuid5
 
@@ -44,6 +44,35 @@ REVIEW_CUTOFF_RECEIPT = "typed-review-v1-cutoff"
 REVIEW_ROUTE_REFS = frozenset({"review.request", "review.acquisition", "review.outcome"})
 AGENT_MESSAGE_PAYLOAD_LIMIT = 800
 OPEN_REQUEST_STATES = ("AVAILABLE", "RECEIVED", "ACKNOWLEDGED")
+
+
+class MailboxAttention(ClosedModel):
+    groups: tuple[tuple[str, int], ...]
+    oldest: datetime | None
+    now: datetime
+    reviews: tuple[UUID, ...] = ()
+
+    def text(self) -> str:
+        total = sum(count for _, count in self.groups)
+        parts = [f"{count} {name}" for name, count in self.groups[:2]]
+        remaining = sum(count for _, count in self.groups[2:])
+        if remaining:
+            parts.append(f"{remaining} more")
+        text = "Messages: " + (", ".join(parts) if parts else "0")
+        if self.oldest is not None:
+            age = self.now - self.oldest
+            text += f"; oldest {max(0, int(age.total_seconds() // 60))}m."
+            text += (" Process now or record reason + next recheck on existing assigned work."
+                     if age > timedelta(hours=1) else " Process when free.")
+        if total > 10:
+            text += " agent_message_pending; page while has_more; fresh poll without cursor."
+        if self.reviews:
+            text += f" Review returned: {self.reviews[0]}"
+            if len(self.reviews) > 1:
+                text += f" ({len(self.reviews)} returned)"
+            text += "; review_get."
+        return text
+
 
 messages = Table(
     "messages",
@@ -798,6 +827,51 @@ class MessageState:
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
+    async def attention_admitted(self, binding: AgentMailbox) -> MailboxAttention | None:
+        """Read full attention and valid returned reviews in one fenced snapshot."""
+        from .reviews import ReviewOutcomeEnvelope
+
+        pending = self._pending_query().add_columns(messages.c.created_at).where(
+            message_deliveries.c.recipient_work_id == binding.endpoint_id,
+            message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+        ).subquery()
+        count = func.count()
+        grouped = select(
+            agent_mailboxes.c.display_name, count, func.min(pending.c.created_at),
+        ).select_from(pending.outerjoin(
+            agent_mailboxes, agent_mailboxes.c.endpoint_id == pending.c.sender_work_id,
+        )).group_by(pending.c.sender_work_id, agent_mailboxes.c.display_name).order_by(
+            count.desc(), pending.c.sender_work_id,
+        )
+        returned = select(pending.c.payload).where(
+            ((pending.c.route_ref == "review.request") & (pending.c.kind == "result"))
+            | ((pending.c.route_ref == "review.outcome") & (pending.c.kind == "request")),
+        ).order_by(pending.c.created_at, pending.c.delivery_id)
+        async with self.engine.connect() as connection:
+            connection = await connection.execution_options(isolation_level="REPEATABLE READ")
+            async with connection.begin():
+                if not await self._current_agent_binding(connection, binding):
+                    return None
+                rows = (await connection.execute(grouped)).all()
+                payloads = (await connection.execute(returned)).scalars().all()
+                now = (await connection.execute(select(func.now()))).scalar_one()
+        reviews: list[UUID] = []
+        for payload in payloads:
+            try:
+                envelope = ReviewOutcomeEnvelope.model_validate(payload)
+            except ValueError:
+                continue
+            basis = envelope.brief.basis
+            if (basis.requester_endpoint_id == binding.endpoint_id
+                    and basis.review_id == envelope.outcome.review_id
+                    and basis.review_id not in reviews):
+                reviews.append(basis.review_id)
+        return MailboxAttention(
+            groups=tuple((name or "other sender", count) for name, count, _ in rows),
+            oldest=min((oldest for _, _, oldest in rows), default=None),
+            now=now, reviews=tuple(reviews),
+        )
+
     async def _pending(
         self, work_id: UUID, request: MessagePendingRequest,
         agent_binding: AgentMailbox | None = None,
@@ -1254,7 +1328,7 @@ class MessageState:
             return "effect_evidence_unknown"
         if outcome.effect == "not_sent":
             return "effect_not_applied"
-        if outcome.receipt is None or outcome.receipt.work_id != expected_work_id:
+        if outcome.receipt is None or getattr(outcome.receipt, "work_id", None) != expected_work_id:
             return "effect_evidence_mismatch"
         return None
 

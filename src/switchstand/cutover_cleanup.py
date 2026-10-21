@@ -192,7 +192,7 @@ async def apply_cleanup_connection(
                     or outcome.operation != operation
                     or outcome.work_id != UUID(cast(str, row["work_id"]))
                     or receipt is None or receipt.operation_id != outcome.operation_id
-                    or receipt.work_id != outcome.work_id
+                    or getattr(receipt, "work_id", None) != outcome.work_id
                     or receipt.grant_id != UUID(cast(str, row["grant_id"]))
                     or receipt.grant_version != row["grant_version"]
                     or receipt.principal.key != row["principal_key"]

@@ -37,10 +37,10 @@ class WorkspaceAdmissionState(GrantState):
         prefix = "test" if principal.assurance == "test" else "real"
         operations: set[Literal[
             "work_get", "work_search", "work_append", "work_create", "work_update",
-            "work_relate", "priority_claim", "task_control", "file_issue",
+            "work_relate", "priority_claim", "task_control", "file_issue", "project_create",
         ]] = {
             "work_get", "work_search", "work_append", "work_create", "work_update",
-            "work_relate", "priority_claim", "file_issue",
+            "work_relate", "priority_claim", "file_issue", "project_create",
         }
         if task_control_enabled:
             operations.add("task_control")

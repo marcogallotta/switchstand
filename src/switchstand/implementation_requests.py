@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from typing import Literal, cast
 from uuid import UUID
 
 from pydantic import model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from .canonical_relations import work_dependencies
 from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
 from .grant_state import work_grants
@@ -21,6 +23,7 @@ from .human_reviews import (
     human_review_record,
 )
 from .human_trajectory import HumanTrajectoryStore
+from .priority_claims import priority_claims
 from .reviews import ReviewOccurrenceState
 from .task_runs import ImplementationTaskRequest, TaskRunRequest, TaskRunState
 
@@ -101,11 +104,14 @@ class ImplementationRequestState:
         operation_id: UUID,
         package_work_id: UUID,
         observed_revision: str,
+        *,
+        transaction: AsyncConnection | None = None,
+        current_request: TaskRunRequest | None = None,
     ) -> ImplementationRequestResult:
         try:
-            async with self.engine.begin() as connection:
+            async with (self.engine.begin() if transaction is None else nullcontext(transaction)) as connection:
                 replay = await self.tasks.get_operation_in_transaction(connection, operation_id)
-                if replay.request is not None:
+                if replay.request is not None and current_request is None:
                     request = replay.request
                     exact = (
                         request.task_kind == "IMPLEMENTATION"
@@ -122,7 +128,7 @@ class ImplementationRequestState:
                             status="DENIED", reason="send_authority_mismatch"
                         )
                     return self._success("REPLAYED", request)
-                if replay.reason != "request_not_found":
+                if replay.request is None and replay.reason != "request_not_found":
                     return ImplementationRequestResult(
                         status="UNKNOWN", reason="task_run_replay_unavailable"
                     )
@@ -136,6 +142,24 @@ class ImplementationRequestState:
                     )
                 if package.completed or package.lifecycle_state != "CURRENT":
                     return ImplementationRequestResult(status="DENIED", reason="package_not_active")
+                if current_request is not None:
+                    # The package lock also serializes dependency and HUMAN WORK claim writes.
+                    held = await connection.scalar(select(priority_claims.c.claim_id).where(
+                        priority_claims.c.subject_kind == "WORK",
+                        priority_claims.c.subject_id == package_work_id,
+                        priority_claims.c.claim_kind == "HUMAN_PRIORITY",
+                        priority_claims.c.relation_kind == "HOLD",
+                        priority_claims.c.state == "CURRENT",
+                    ).limit(1))
+                    if held is not None:
+                        return ImplementationRequestResult(status="DENIED", reason="human_priority_hold")
+                    dependency = await connection.scalar(select(work_dependencies.c.depends_on_work_id).where(
+                        work_dependencies.c.work_id == package_work_id
+                    ).limit(1))
+                    if dependency is not None:
+                        return ImplementationRequestResult(
+                            status="UNKNOWN", reason="dependency_eligibility_unavailable"
+                        )
                 reviews = (
                     (
                         await connection.execute(
@@ -273,6 +297,14 @@ class ImplementationRequestState:
                         f"human-review-v2/{review.consequence_id}/{review.consequence_digest}"
                         f"/review/{baseline_proof.review_id}/{baseline_proof.verdict_digest}"
                     )
+                if current_request is not None and (
+                    current_request.authorization_ref != authorization_ref
+                    or current_request.send_authority_ref
+                    != f"grant/{grant.id}/{grant.version}/{principal.key}"
+                ):
+                    return ImplementationRequestResult(
+                        status="STALE", reason="implementation_authority_changed"
+                    )
                 milestone_for = {"IMPLEMENT": "IMPLEMENTED", "LAND": "MERGED",
                                  "ACTIVATE": "ACTIVATED"}
                 stable = await self.tasks.get_implementation_in_transaction(
@@ -287,6 +319,10 @@ class ImplementationRequestState:
                 if stable.reason != "request_not_found":
                     return ImplementationRequestResult(
                         status="UNKNOWN", reason="task_run_replay_unavailable"
+                    )
+                if current_request is not None:
+                    return ImplementationRequestResult(
+                        status="UNKNOWN", reason="implementation_request_unavailable"
                     )
                 intent = ImplementationTaskRequest(
                     execution_work_id=package_work_id,

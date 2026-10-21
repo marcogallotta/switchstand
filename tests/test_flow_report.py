@@ -212,6 +212,11 @@ async def test_exact_managed_run_receipts_are_bounded_private_attempt_evidence(
         "private objective", "private", "contract", "private summary", "private evidence",
     ))
     assert result["elapsed"]["observed_interval_union_ms"] == 20_000
+    intervals = result["delivery_timing"]["intervals"]
+    assert [(row["kind"], row["duration_ms"]) for row in intervals] == [
+        ("REQUEST_TO_BOUND", 5_000), ("BOUND_RUN_ENVELOPE", 15_000),
+    ]
+    assert all(row["source_id"] == str(request_id) for row in intervals)
     assert result["aggregate_learning"] == {
         "status": "UNKNOWN",
         "reason": "SUFFICIENTLY_COVERED_COMPLETED_TRACE_COHORT_UNAVAILABLE",
@@ -487,6 +492,15 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     server = build_chatgpt_server(subject)
     default = await server.call_tool("observability_get", {"work_id": str(target)})
     assert default.structured_content["failures"] == result["failures"]
+    timing = default.structured_content["delivery_timing"]
+    assert timing["intervals"][0]["source_id"] == str(target_failure.attempt_id)
+    assert timing["intervals"][0]["kind"] == "RECORDED_FAILURE_OPEN"
+    concise = flow_report.render(default.structured_content, "concise")
+    assert f"delivery_interval source=failure_journal source_id={target_failure.attempt_id}" in concise
+    assert "unexplained_gap start=" in concise
+    assert "delivery_largest_gap=" in concise
+    assert "diagnostic_filter_ms=1800000" in concise
+    assert "NOT_ACTIVE_EFFORT_OR_CAUSE" in concise
     detailed = await server.call_tool("observability_get", {
         "work_id": str(target), "include_failure_detail": True,
     })
@@ -1112,3 +1126,65 @@ async def test_trajectory_headers_are_bounded_private_exact_and_fail_closed(
     assert flow_report._trajectory_projection(
         [tuple(row) for row in unrelated_rows], target, datetime.now(UTC),
     )["reason"] == "CORRUPT_OR_MISMATCHED_CHAIN"
+
+
+async def test_disposable_deployment_escape_queue_to_owner_and_verified_resolution(
+    engine: AsyncEngine, tmp_path,
+) -> None:
+    from test_stable_auth_deployment import FakeOperations, config
+
+    from switchstand.pending_failures import PendingFailureQueue
+    from switchstand.stable_auth_deployment import activate
+
+    subject = config(tmp_path)
+    owner, followup = subject.work_id, uuid4()
+    await add_work(engine, owner)
+    await add_work(engine, followup)
+    queue = PendingFailureQueue(tmp_path / "pending")
+    empty = (await report(engine, owner, include_failure_detail=True))["failures"]
+    assert empty["capture_coverage"] == {
+        "status": "UNKNOWN", "reason": "NO_DURABLE_ESCAPE_EVIDENCE",
+        "supported": ["STABLE_AUTH_ACTIVATION_UNTIL_DURABLE_PASS"],
+        "uncovered": ["RUNTIME_AFTER_PASS", "OTHER_DEPLOYMENT_PATHS", "UNAVAILABLE_STORAGE",
+                      "NO_FOLLOWUP_INVOCATION"],
+    }
+    assert empty["total_records"] == 0
+    assert activate(subject, FakeOperations(public_ready=False), queue=queue) == "UNKNOWN"
+    record, = queue.pending()
+    journal = FailureJournal(engine)
+    # Canonical commit succeeded, but host acknowledgment was interrupted. Replay is exact.
+    assert (await journal.record(record)).status == "APPLIED"
+    assert (await journal.record(record)).status == "REPLAYED"
+    assert await queue.sync(journal) == (record.attempt_id,)
+    assert queue.pending() == () and await journal.get(record.attempt_id) == record
+    opened = (await report(engine, owner, include_failure_detail=True))["failures"]
+    assert opened["open_count"] == 1 and opened["total_records"] == 1
+    assert opened["capture_coverage"]["reason"] == "CAPTURE_COVERAGE_UNPROVEN"
+    assert opened["items"][0]["detail"]["evidence"] == list(record.evidence)
+    investigation = f"work:{followup}"
+    action = "https://qualification.example/actions/regate-and-verify"
+    clearing = "https://qualification.example/evidence/public-readback"
+    async with engine.begin() as connection:
+        await connection.execute(insert(work_parents).values(
+            child_work_id=followup, parent_work_id=owner,
+        ))
+        await connection.execute(update(canonical_work).where(
+            canonical_work.c.work_id == followup,
+        ).values(notes=f"Responsible owner {owner}; investigation of {record.attempt_id}; "
+                       f"action {action}; verified clearing {clearing}", completed=True))
+    resolution = FailureResolution(
+        resolution_id=uuid4(), operation_id=uuid4(), attempt_id=record.attempt_id,
+        resolved_at=datetime.now(UTC),
+        summary=f"Owner {owner} investigated via {investigation}; action and clearing verified",
+        evidence=(investigation, action, clearing),
+    )
+    assert (await journal.resolve(resolution)).status == "APPLIED"
+    closed = (await report(engine, owner, include_failure_detail=True))["failures"]
+    assert closed["open_count"] == 0 and closed["total_records"] == 1
+    item, = closed["items"]
+    assert item["attempt_id"] == str(record.attempt_id)
+    assert item["resolution_id"] == str(resolution.resolution_id)
+    assert item["resolution_latency_ms"] >= 0
+    assert item["detail"]["resolution"] == {
+        "summary": resolution.summary, "evidence": [investigation, action, clearing],
+    }

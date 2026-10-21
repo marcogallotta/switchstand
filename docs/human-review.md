@@ -22,6 +22,31 @@ The owner should know:
 
 If a load-bearing assumption, major scope question, or decision-changing size remains unknown, the work is not ready unless the decision is specifically whether to fund the investigation needed to determine it.
 
+## Prepare the actual decision
+
+Prepare before Marco arrives when a material exception, overrun, alternative, partial-test judgment
+or handoff leaves a human-owned choice. Continue unaffected authorized work while he is away; hold
+only the branch that would consume that choice, and do not implement a speculative larger solution.
+Use the existing task/plan and review, not another decision store or format-review gate.
+
+Have the concrete ordinary-use behavior/example and approved goal ready, with credible options
+including keeping the approved baseline. Explain WHY cost grew, what the extra engineering buys,
+what a cut would lose, and what has actually been built/tested versus proposed or NOT_RUN. Prepare
+primary evidence, measured engineering benefit where available (otherwise label the uncertainty),
+the strongest counterargument, recommendation and what evidence would change it, likely follow-up
+answers, and the exact scope/effects each decision would authorize. Let the fresh independent
+material judgment under [code quality](code-quality.md#independent-material-judgment) challenge the
+premise and arguments in the existing review. A head's preferred answer is a claim to check.
+
+Open with the short decision-bearing explanation backed by those ready facts. Do not manufacture
+options or recommend a cut merely because it meets a cap. A reasoned same-task extension already
+within Coordinator authority follows that route; an unchanged approved solution needs status,
+not another permission request.
+
+Use plain environment terms: prod or test. Name the exact service/effect, for example "the agent
+launch service is deployed in prod" only when verified; internal labels such as CONTROL do not
+explain that or imply that every service advanced. Quoted deployment logs alone are not readback.
+
 ## The conversation
 
 Match context to what the human already knows. If the trajectory is current, give the delta only. If context has been lost, briefly restore the outcome and settled direction, then give the delta.

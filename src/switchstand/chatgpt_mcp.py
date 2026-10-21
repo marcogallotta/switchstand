@@ -54,6 +54,7 @@ from .grants import (
     GuardOutcome,
     ProtectedAppend,
     ProtectedCreate,
+    ProtectedProjectCreate,
     ProtectedRelation,
     ProtectedUpdate,
     RelationPatch,
@@ -89,6 +90,7 @@ from .priority_claim_service import (
 from .priority_claims import PriorityBand, RelationKind, SubjectKind
 from .priority_context import PriorityContextResult
 from .product_currentness import ProductCurrentness
+from .pull_requests import PullRequestChange, PullRequestPage
 from .reviews import (
     BaselineAssessment,
     BaselineCheck,
@@ -114,6 +116,7 @@ class OrdinaryWorkResult(ClosedModel):
     item: PublicWorkItem | None = None
     guard: PublicReadGuard | None = None
     agent_status_checkpoint: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    pull_requests: PullRequestPage | None = None
 
 
 class ActionSummaryUnavailable(ClosedModel):
@@ -160,6 +163,7 @@ class StatefulOrdinaryWorkResult(ClosedModel):
     status: Status
     guard: PublicReadGuard | None = None
     agent_status_checkpoint: str | None = Field(default=None, exclude_if=lambda v: v is None)
+    pull_requests: PullRequestPage | None = None
 
 
 class OrdinaryUpdateResult(GuardOutcome):
@@ -197,13 +201,15 @@ def project_activation_continuity(result: ContinuityResult) -> ActivationContinu
 
 class OrdinaryRelationPatch(ClosedModel):
     """Provider-neutral relation shape for the ordinary surface."""
-    kind: Literal["parent", "dependency", "placement"]
+    kind: Literal["parent", "dependency", "placement", "pull_request"]
     action: Literal["set", "clear", "add", "remove"]
     target_work_id: UUID | None = None
     project_id: UUID | None = None
+    pull_request: PullRequestChange | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
+        self.internal()
         if self.kind == "parent":
             if self.action not in {"set", "clear"}:
                 raise ValueError("parent relation requires set or clear")
@@ -229,6 +235,7 @@ class OrdinaryRelationPatch(ClosedModel):
         return RelationPatch(
             kind=self.kind, action=self.action, target_work_id=self.target_work_id,
             project_id=self.project_id,
+            pull_request=self.pull_request,
         )
 
 
@@ -250,6 +257,7 @@ ORDINARY_GENUINE_READ_TOOLS = frozenset({
 
 ORDINARY_EFFECT_TOOLS = frozenset({
     "agent_status_update",
+    "project_create",
     "work_append",
     "work_create",
     "human_trajectory_record",
@@ -310,6 +318,7 @@ def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
     projected = project_work(result)
     return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
+        pull_requests=result.pull_requests,
     )
 
 
@@ -481,10 +490,20 @@ def build_ordinary_tools(
 
     async def work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
+        pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
     ) -> OrdinaryWorkResult:
-        """Read canonical current state, including current notes, routing, and placement context."""
+        """Read an exact WorkId's current notes, routing and placement context.
+
+        Use the assigned WorkId directly; use work_search for discovery or
+        work_resolve_reference for a legacy task ID/URL. Omit work_id only in a
+        trusted task-bound launch. Current notes supersede stale summaries;
+        follow their procedure references before Human Review or another phase.
+        If no route is known, resolve START HERE (1218327002478382).
+        Reading work or a procedure does not grant assignment or effect authority.
+        """
         correlate(work_id)
-        result = await service.get(work_id)
+        result = await service.get(work_id, pr_cursor=pr_cursor, pr_link_cursor=pr_link_cursor)
         audited("work_get", None if work_id is None else str(work_id), result.status)
         return project_ordinary_work(result).model_copy(update={
             "agent_status_checkpoint": await status_checkpoint(),
@@ -552,9 +571,11 @@ def build_ordinary_tools(
 
     async def enriched_work_get(
         api_version: Literal["1"], work_id: UUID | None = None,
+        pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
     ) -> StatefulOrdinaryWorkResult:
         """Read exact work with its owner-local action summary when available."""
-        result = await work_get(api_version, work_id)
+        result = await work_get(api_version, work_id, pr_cursor, pr_link_cursor)
         summary = None
         failures = None
         activation = None
@@ -577,6 +598,7 @@ def build_ordinary_tools(
         return StatefulOrdinaryWorkResult(
             action_summary=summary, activation_obligations=activation,
             open_failures=failures, item=result.item,
+            pull_requests=result.pull_requests,
             status=result.status, guard=result.guard,
             agent_status_checkpoint=result.agent_status_checkpoint,
         )
@@ -588,7 +610,13 @@ def build_ordinary_tools(
         work_type: str | None = None, canonical_root: str | None = None,
         cursor: str | None = None, limit: int = 50,
     ) -> WorkSearchResult:
-        """Search admitted workspace work and return only stable provider-neutral WorkIds."""
+        """Find admitted work by text or routing filters when its WorkId is unknown.
+
+        Use work_get for an exact WorkId or work_resolve_reference for a legacy
+        task ID/URL. Read a candidate's current notes with work_get before acting;
+        search results are navigation, not assignment or authority. Follow
+        next_cursor for more matches; an empty query result does not prove no work.
+        """
         result = await service.search(WorkSearchRequest(
             api_version=api_version, text=text, completed=completed,
             lifecycle_state=lifecycle_state, owner_key=owner_key, priority=priority,
@@ -602,7 +630,13 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         reference: Annotated[str, Field(min_length=1, max_length=2048)],
     ) -> OrdinaryWorkResult:
-        """Resolve one exact legacy task reference to current provider-neutral work."""
+        """Resolve one exact legacy task ID/URL to its WorkId and current notes.
+
+        Use work_get for a known WorkId; use work_search for a title or topic.
+        UNKNOWN or denied does not establish that the task does not exist:
+        check the exact reference or search the admitted workspace, without
+        guessing IDs or treating a discovered task as an assignment.
+        """
         result = await service.resolve_reference(WorkResolveReferenceRequest(
             api_version=api_version, reference=reference,
         ))
@@ -652,6 +686,26 @@ def build_ordinary_tools(
             confirm_cancels_review=confirm_cancels_review,
         ))
         audited("work_append", f"{work_id}:purpose={purpose}", result.status)
+        return result
+
+    async def project_create(
+        api_version: Literal["1"], operation_id: UUID, name: str,
+    ) -> GuardOutcome:
+        """Create an empty flat project. Names may repeat; retain project_id and operation_id.
+
+        An exact retained operation/name retry returns the same receipt. A fresh operation
+        deliberately creates another project, even with the same name. Use existing placement
+        tools with the returned project_id; no work or membership is created here.
+        """
+        correlate(None)
+        grant_version, admission = await current_grant_version()
+        if admission == "unknown":
+            return admission_unknown("project_create", None, operation_id)
+        result = await service.project_create(ProtectedProjectCreate(
+            api_version=api_version, operation_id=operation_id, name=name,
+            grant_version=grant_version or 1,
+        ))
+        audited("project_create", None, result.status)
         return result
 
     async def work_create(
@@ -1150,11 +1204,16 @@ def build_ordinary_tools(
             return admission_unknown("work_relate", work_id, operation_id)
         if grant_version is None:
             return service.denied("work_relate", "no_current_grant")
+        caller = await agent_context() if patch.kind == "pull_request" else None
+        if isinstance(caller, tuple):
+            if caller[0] == "recovery_required":
+                return admission_unknown("work_relate", work_id, operation_id)
+            return service.denied("work_relate", caller[1])
         result = await service.relate(ProtectedRelation(
             api_version=api_version, operation_id=operation_id, work_id=work_id,
             grant_version=grant_version, observed_revision=observed_revision,
             patch=patch.internal(),
-        ))
+        ), caller=None if caller is None else caller.mailbox)
         audited("work_relate", str(work_id), result.status)
         return result
 
@@ -1789,6 +1848,7 @@ def build_ordinary_tools(
     # FastMCP derives argument-schema titles from the callable name. Codex rejects a
     # tool whose registered name and generated argument title disagree.
     enriched_work_get.__name__ = "work_get"
+    enriched_work_get.__doc__ = work_get.__doc__
     enriched_work_update.__name__ = "work_update"
     _ = activation_obligation_transition  # Intentionally unavailable on this surface.
 
@@ -1810,6 +1870,7 @@ def build_ordinary_tools(
         ("work_event", work_event),
         ("work_append", work_append),
         ("work_create", work_create),
+        ("project_create", project_create),
         ("file_bug", file_bug),
         ("file_feature", file_feature),
         ("file_process", file_process),

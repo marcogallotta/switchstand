@@ -10,6 +10,7 @@ import subprocess
 import time
 from dataclasses import replace
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -71,6 +72,7 @@ def config(tmp_path: Path) -> ActivationConfig:
         migrated_state=tmp_path / "migrated-state",
         backup_state=tmp_path / "backup-state",
         unit_dir=tmp_path / "units",
+        work_id=UUID("cadfbe15-d9cc-5641-b81a-481935b90642"),
     )
 
 
@@ -617,6 +619,201 @@ def test_real_caddy_proxy_transition_preserves_intervening_unrelated_route(
         process.wait(timeout=5)
 
 
+@pytest.mark.parametrize("boundary", (
+    "before_marker", "marker_before_ungate", "ungate_before_receipt", "after_ungated",
+    "partial_ungate_regated", "pass_before_clear",
+))
+def test_sigkill_reconciles_exact_attempt_without_activation_effects(tmp_path, monkeypatch, boundary):
+    subject = config(tmp_path)
+    pointer = tmp_path / "activation-pending.json"
+    queue = deployment.PendingFailureQueue(tmp_path / "pending")
+    original = deployment._atomic_json
+
+    def kill():
+        os.kill(os.getpid(), 9)
+
+    def persist(path, value, **kwargs):
+        original(path, value, **kwargs)
+        if path.name != "activation-receipt.json":
+            return
+        phase = value["phase"]
+        if (
+            boundary == "marker_before_ungate" and value["exposure_attempted"]
+            or boundary == "after_ungated" and phase == "UNGATED"
+            or boundary == "partial_ungate_regated" and value["status"] == "UNKNOWN"
+            or boundary == "pass_before_clear" and value["status"] == "PASS"
+        ):
+            kill()
+
+    class InterruptedOperations(FakeOperations):
+        def route_split(self):
+            super().route_split()
+            if boundary == "before_marker":
+                kill()
+
+        def ungate(self):
+            super().ungate()
+            if boundary == "ungate_before_receipt":
+                kill()
+            if boundary == "partial_ungate_regated":
+                raise Failed("partial ungate")
+
+    child = os.fork()
+    if child == 0:
+        deployment._atomic_json = persist
+        activate(subject, InterruptedOperations(), pointer=pointer, queue=queue)
+        os._exit(1)
+    _, status = os.waitpid(child, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == 9
+    assert pointer.exists()
+    identity = json.loads(pointer.read_bytes())
+    outcome = deployment.reconcile_attempt(pointer, queue)
+    assert not pointer.exists()
+    if boundary in {"before_marker", "pass_before_clear"}:
+        assert outcome == ("PASS" if boundary == "pass_before_clear" else "PRE_BOUNDARY")
+        assert queue.pending() == ()
+    else:
+        assert outcome == "PENDING_SYNC"
+        record, = queue.pending()
+        assert str(record.attempt_id) == identity["attempt_id"]
+        assert str(record.operation_id) == identity["operation_id"]
+        assert record.owner == str(subject.work_id)
+        assert "PROVEN" in record.observed_result if boundary == "after_ungated" else (
+            "UNKNOWN" in record.observed_result
+        )
+        assert "sensitive" not in json.dumps(record.canonical())
+        assert (subject.attempt_dir / "activation-failure.json").stat().st_mode & 0o777 == 0o600
+    assert deployment.reconcile_attempt(pointer, queue) == "NONE"
+
+
+def test_handoff_retry_freezes_full_payload_and_confirms_queue_durability(tmp_path, monkeypatch):
+    subject = config(tmp_path)
+    queue = deployment.PendingFailureQueue(tmp_path / "pending")
+    pointer = tmp_path / "activation-pending.json"
+    original = queue.fsync_directory
+    calls = []
+
+    def unavailable():
+        raise OSError("queue rename visible, directory sync unknown")
+
+    monkeypatch.setattr(queue, "fsync_directory", unavailable)
+    assert activate(subject, FakeOperations(public_ready=False), pointer=pointer, queue=queue) == (
+        "UNKNOWN"
+    )
+    frozen = (subject.attempt_dir / "activation-failure.json").read_bytes()
+    record, = queue.pending()
+    assert pointer.exists()
+    # A second activation cannot replace the unresolved identity or run any effects.
+    operations = FakeOperations()
+    assert activate(subject, operations, pointer=pointer, queue=queue) == "UNKNOWN"
+    assert operations.events == []
+    assert pointer.exists() and queue.pending() == (record,)
+
+    def synchronized():
+        calls.append("directory")
+        original()
+
+    monkeypatch.setattr(queue, "fsync_directory", synchronized)
+    assert deployment.reconcile_attempt(pointer, queue) == "PENDING_SYNC"
+    assert calls == ["directory"]
+    assert queue.pending() == (record,)
+    assert (subject.attempt_dir / "activation-failure.json").read_bytes() == frozen
+    assert not pointer.exists()
+
+
+@pytest.mark.parametrize("corrupt", ("missing", "malformed", "identity", "frozen"))
+def test_corrupt_evidence_preserves_pointer_and_blocks_new_activation(tmp_path, monkeypatch, corrupt):
+    subject = config(tmp_path)
+    pointer = tmp_path / "activation-pending.json"
+    queue = deployment.PendingFailureQueue(tmp_path / "pending")
+    monkeypatch.setattr(queue, "enqueue", lambda _: "CONFLICT")
+    assert activate(subject, FakeOperations(public_ready=False), pointer=pointer, queue=queue) == (
+        "UNKNOWN"
+    )
+    path = subject.attempt_dir / "activation-receipt.json"
+    if corrupt == "missing":
+        path.unlink()
+    elif corrupt == "malformed":
+        path.write_text("{")
+    elif corrupt == "identity":
+        value = json.loads(path.read_text()) | {"candidate_sha": "a" * 40}
+        deployment._atomic_json(path, value)
+    else:
+        (subject.attempt_dir / "activation-failure.json").write_text("{}")
+    assert deployment.reconcile_attempt(pointer, queue) == "UNRECORDED"
+    assert pointer.exists()
+
+
+def test_initial_durability_failure_sends_no_activation_effects(tmp_path, monkeypatch):
+    subject = config(tmp_path)
+    operations = FakeOperations()
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(deployment, "_atomic_json", unavailable)
+    with pytest.raises(OSError):
+        activate(subject, operations)
+    assert operations.events == []
+
+
+@pytest.mark.parametrize("after_replace", (False, True))
+def test_boundary_storage_failure_never_ungates_candidate_and_allows_mitigation(
+    tmp_path, monkeypatch, after_replace,
+):
+    subject = config(tmp_path)
+    original = deployment._atomic_json
+
+    def unavailable(path, value, **kwargs):
+        if value.get("exposure_attempted") and not value.get("ungate_not_sent"):
+            if after_replace:
+                original(path, value, **kwargs)
+            raise OSError("boundary storage unavailable")
+        original(path, value, **kwargs)
+
+    monkeypatch.setattr(deployment, "_atomic_json", unavailable)
+    operations = FakeOperations()
+    assert activate(subject, operations) == "FAIL"
+    assert "ungate" not in operations.events
+    assert "rollback_pre_exposure" in operations.events
+    assert not (tmp_path / "activation-pending.json").exists()
+
+
+def test_postexposure_telemetry_failure_does_not_block_regating(tmp_path, monkeypatch):
+    subject = config(tmp_path)
+    original = deployment._atomic_json
+
+    def unavailable(path, value, **kwargs):
+        if value.get("exposure_confirmed"):
+            raise OSError("postexposure receipt unavailable")
+        original(path, value, **kwargs)
+
+    monkeypatch.setattr(deployment, "_atomic_json", unavailable)
+    operations = FakeOperations(rollback=True)
+    assert activate(subject, operations) == "UNKNOWN"
+    assert operations.gated
+    assert operations.events[-1] == "gate"
+    assert "rollback_pre_exposure" not in operations.events
+    record, = deployment.PendingFailureQueue(tmp_path / "pending").pending()
+    assert "exposure UNKNOWN" in record.observed_result
+
+
+def test_interrupted_legacy_rolled_back_receipt_retains_exposure_evidence(tmp_path):
+    # Explicit historical fixture; current post-exposure errors regate forward instead.
+    subject = config(tmp_path)
+    receipt = ActivationReceipt(subject)
+    receipt.value.update(exposure_attempted=True, exposure_confirmed=True,
+                         boundary_at="2026-10-20T10:00:00+00:00")
+    receipt.write("ROLLED_BACK", "FAIL")
+    pointer = tmp_path / "activation-pending.json"
+    deployment._atomic_json(pointer, deployment._identity(receipt.value).model_dump(mode="json"))
+    queue = deployment.PendingFailureQueue(tmp_path / "pending")
+    assert deployment.reconcile_attempt(pointer, queue) == "PENDING_SYNC"
+    record, = queue.pending()
+    assert "exposure PROVEN" in record.observed_result
+    assert not pointer.exists()
+
+
 @pytest.mark.parametrize("fault", ("before_replace", "parent_fsync"))
 def test_terminal_receipt_failure_retains_verified_runtime(tmp_path, monkeypatch, fault):
     subject = config(tmp_path)
@@ -648,6 +845,16 @@ def test_terminal_receipt_failure_retains_verified_runtime(tmp_path, monkeypatch
     assert not operations.gated
     assert "rollback_pre_exposure" not in operations.events
     assert receipt(subject)["status"] == ("PASS" if fault == "parent_fsync" else "RUNNING")
+    pointer = tmp_path / "activation-pending.json"
+    assert pointer.exists()
+    monkeypatch.setattr(deployment, "_atomic_json", original_json)
+    monkeypatch.setattr(os, "fsync", original_sync)
+    queue = deployment.PendingFailureQueue(tmp_path / "pending")
+    assert deployment.reconcile_attempt(pointer, queue) == (
+        "PASS" if fault == "parent_fsync" else "PENDING_SYNC"
+    )
+    assert not pointer.exists()
+    assert len(queue.pending()) == (0 if fault == "parent_fsync" else 1)
 
 
 @pytest.mark.parametrize("fault", ("partial_ungate", "ungated_receipt"))

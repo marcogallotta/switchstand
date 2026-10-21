@@ -961,7 +961,7 @@ def test_state_upgrade_rechecks_offline_systemd_and_public_gate_before_invocatio
             commands.append(command) or subprocess.CompletedProcess(
                 command, 0, PREPARED_IMAGE + "\n" if "prepare" in command else
                 "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
-                "revision=0026_agent_message_ack\n", "",
+                "revision=0028_agent_status\n", "",
             )
         ),
     )
@@ -1001,11 +1001,11 @@ def test_state_upgrade_nonzero_result_is_unknown_not_a_safe_rollback(
     "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT revision=0025",
     (
         "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
-        "revision=0026_agent_message_ack trailing=true"
+        "revision=0028_agent_status trailing=true"
     ),
     (
         "SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED from=0025_task_control_checkpoints "
-        "to=0026_agent_message_ack preserved_counts=1|2 backup=relative.dump"
+        "to=0028_agent_status preserved_counts=1|2 backup=relative.dump"
     ),
 ])
 def test_state_upgrade_rejects_truncated_trailing_or_unbound_result(
@@ -1029,7 +1029,7 @@ def test_state_upgrade_accepts_exact_applied_result_with_private_backup(
     backup.chmod(0o600)
     output = (
         "SWITCHSTAND_STATE_UPGRADE_RESULT=APPLIED "
-        "from=0025_task_control_checkpoints to=0026_agent_message_ack "
+        "from=0025_task_control_checkpoints to=0028_agent_status "
         f"preserved_counts=1|2 backup={backup}\n"
     )
     stub_upgrade(operations, monkeypatch, subprocess.CompletedProcess([], 0, output, ""))
@@ -1131,7 +1131,7 @@ def test_no_effect_proof_binds_old_runtime_and_exact_database_state(
 
 @pytest.mark.parametrize(
     "database", [
-        "0026_agent_message_ack|task_control_checkpoints",
+        "0028_agent_status|task_control_checkpoints",
         "0024_mcp_operation_timings|task_control_checkpoints",
         "0023_activation_continuity|ABSENT",
     ],
@@ -1190,7 +1190,7 @@ def test_state_upgrade_passes_exact_detached_candidate_selectors(
         else:
             output = (
                 "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
-                "revision=0026_agent_message_ack\n"
+                "revision=0028_agent_status\n"
             )
         return subprocess.CompletedProcess(command, 0, output, "")
 
@@ -1242,7 +1242,7 @@ def test_state_upgrade_overwrites_inherited_control_selectors(
             command_env = kwargs["env"]
             output = (
                 "SWITCHSTAND_STATE_UPGRADE_RESULT=NO_EFFECT "
-                "revision=0026_agent_message_ack\n"
+                "revision=0028_agent_status\n"
             )
         return subprocess.CompletedProcess(command, 0, output, "")
 

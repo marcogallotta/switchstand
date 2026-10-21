@@ -8,6 +8,7 @@ from uuid import UUID, uuid5
 from pydantic import Field
 from sqlalchemy.exc import SQLAlchemyError
 
+from . import pull_requests
 from .activation_continuity import (
     ContinuityResult,
     RuntimeBinding,
@@ -17,6 +18,7 @@ from .activation_continuity import (
     TransitionProof,
 )
 from .activation_continuity_store import ActivationContinuity
+from .agent_mailboxes import AgentMailbox
 from .canonical_event_reads import CanonicalEventReader
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .contracts import (
@@ -52,6 +54,7 @@ from .grants import (
     ProtectedAppend,
     ProtectedCreate,
     ProtectedFeedbackClassification,
+    ProtectedProjectCreate,
     ProtectedRelation,
     ProtectedUpdate,
     ScalarPatch,
@@ -531,7 +534,10 @@ class ChatGPTService:
         except (SQLAlchemyError, ValueError, KeyError):
             return GrantedWorkResult(status="unknown")
 
-    async def get(self, work_id: UUID | None = None) -> GrantedWorkResult:
+    async def get(
+        self, work_id: UUID | None = None, *, pr_cursor: str | None = None,
+        pr_link_cursor: str | None = None,
+    ) -> GrantedWorkResult:
         principal = await self.principal()
         if principal is None:
             return GrantedWorkResult(status="denied", guard=self.denied("work_get"))
@@ -550,12 +556,41 @@ class ChatGPTService:
                 if authority is None:
                     return GrantedWorkResult(
                         status="denied",
-                        guard=self.denied("work_get", reason or "work_not_granted"),
+                        guard=self.denied(
+                            "work_get", reason or "work_not_granted",
+                            "This WorkId is unavailable to this connection. This read changed "
+                            "nothing. Check the exact assigned WorkId; use work_search for "
+                            "admitted workspace discovery or work_resolve_reference for a "
+                            "legacy task ID/URL. Discovery does not grant authority."
+                            if reason == "work_not_granted" else
+                            "Supply the exact assigned work_id; this read changed nothing."
+                            if reason == "explicit_work_id_required" else
+                            "Use the authenticated connection and trusted work issuer.",
+                        ),
                     )
                 if self.canonical_work_active:
                     if self.canonical_work is None:
                         return GrantedWorkResult(status="unknown")
                     result = await self.canonical_work.get(target)
+                    if result.item is not None:
+                        async with self.canonical_work.works.engine.connect() as connection:
+                            await connection.execution_options(isolation_level="REPEATABLE READ")
+                            async with connection.begin():
+                                async def can_read(linked_work_id: UUID) -> bool:
+                                    readable, _ = await self._read_authority(
+                                        principal, grant, operations=frozenset({"work_get"}),
+                                        work_id=linked_work_id, explicit_target=True,
+                                    )
+                                    return readable is not None
+
+                                page = await pull_requests.project(
+                                    connection, target, principal.key, result.item.revision,
+                                    can_read, pr_cursor, pr_link_cursor,
+                                )
+                        return GrantedWorkResult(
+                            status=page.status, item=result.item if page.status == "ok" else None,
+                            pull_requests=page,
+                        )
                 else:
                     result = await Controller(authority, self.state, self.providers).get(
                         WorkGetRequest(api_version="1", work_id=target)
@@ -811,6 +846,20 @@ class ChatGPTService:
             return await self.canonical_append.append(principal, request)
         return await self.gateway.append(principal, request)
 
+    async def project_create(self, request: ProtectedProjectCreate) -> GuardOutcome:
+        principal = await self.principal()
+        if principal is None:
+            return self.denied("project_create", "authenticated_principal_required")
+        if not self.canonical_work_active or self.canonical_work is None:
+            return GuardOutcome(
+                status="unknown", operation="project_create", operation_id=request.operation_id,
+                reason="canonical_projects_unavailable", effect="not_sent",
+                next_action="Restore the canonical runtime; do not use a provider fallback.",
+            )
+        return await self.canonical_work.relations.protected_project_create(
+            self.admission_grants, principal, request,
+        )
+
     async def create(self, request: ProtectedCreate) -> GuardOutcome:
         principal = await self.principal()
         if principal is None:
@@ -920,7 +969,9 @@ class ChatGPTService:
             )
         return await self.update_gateway.update(principal, request)
 
-    async def relate(self, request: ProtectedRelation) -> GuardOutcome:
+    async def relate(
+        self, request: ProtectedRelation, *, caller: AgentMailbox | None = None,
+    ) -> GuardOutcome:
         principal = await self.principal()
         if principal is None:
             return self.relation_gateway.guard(
@@ -932,8 +983,10 @@ class ChatGPTService:
                     request, "unknown", "canonical_work_unavailable", possible_send=False,
                 )
             return await self.canonical_work.protected_relation(
-                self.admission_grants, principal, request
+                self.admission_grants, principal, request, caller=caller,
             )
+        if request.patch.kind == "pull_request":
+            return self.relation_gateway.guard(request, "denied", "canonical_work_required")
         return await self.relation_gateway.update(principal, request)
 
     @staticmethod

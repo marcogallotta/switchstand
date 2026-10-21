@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import UUID, uuid4
 
-from pydantic import Field, model_validator
+from pydantic import Field, computed_field, model_validator
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
@@ -38,6 +38,7 @@ from .canonical_work import (
 from .contracts import ClosedModel
 from .durable_capture import FindingCapture
 from .grants import PrincipalContext, WorkGrant
+from .task_control_refs import ReferenceProjection, project_references
 
 task_control_checkpoints = Table(
     "task_control_checkpoints", canonical_metadata,
@@ -149,6 +150,13 @@ class TaskControlReadResult(ClosedModel):
     reason: str
     checkpoint: TaskControlCheckpoint | None = None
     current_work_revision: str | None = None
+
+    @computed_field
+    @property
+    def reference_projection(self) -> ReferenceProjection | None:
+        if self.checkpoint is None:
+            return None
+        return project_references(self.checkpoint.capsule.target_refs)
 
 
 class TaskControlCheckpointResult(ClosedModel):

@@ -446,7 +446,7 @@ def _parser() -> argparse.ArgumentParser:
     qualify.add_argument("--expected-runtime-sha", required=True)
     qualify.add_argument("--expected-run-id", required=True)
     qualify.add_argument("--expected-tools-sha256", required=True)
-    qualify.add_argument("--expected-migration", default="0026_agent_message_ack")
+    qualify.add_argument("--expected-migration", default="0028_agent_status")
     qualify.add_argument("--key", required=True, type=Path)
     qualify.add_argument("--receipt", required=True, type=Path)
     qualify.add_argument("--repo", type=Path, default=Path.cwd())

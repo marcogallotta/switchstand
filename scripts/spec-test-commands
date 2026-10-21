@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Run all required noninteractive checks from an exact work_get spec export."""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import re
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+
+def git(repo, *args):
+    return subprocess.check_output(["git", "-C", str(repo), *args], text=True).strip()
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def commands(source, args, repo):
+    if not isinstance(source, dict):
+        raise TypeError("spec export must be a work_get object")
+    if "structuredContent" in source:
+        if source.get("isError") is not False:
+            raise ValueError("spec export isError must be false")
+        source = source["structuredContent"]
+    if not isinstance(source, dict) or source.get("status") != "ok":
+        raise ValueError("spec export requires successful work_get")
+    item = source.get("item")
+    if not isinstance(item, dict) or (item.get("id"), item.get("revision")) != (
+        args.work_id, args.revision,
+    ):
+        raise ValueError("spec WorkId/revision mismatch")
+    notes = item.get("notes")
+    if not isinstance(notes, str):
+        raise TypeError("spec notes missing")
+    blocks = re.findall(r"^```spec-test-commands\n(.*?)\n```[ \t]*$", notes, re.MULTILINE | re.DOTALL)
+    if len(blocks) != 1:
+        raise ValueError("spec requires exactly one spec-test-commands block")
+    checks = json.loads(blocks[0])
+    if not isinstance(checks, list) or not checks:
+        raise ValueError("required checks missing")
+    names = set()
+    result = []
+    for check in checks:
+        if not isinstance(check, dict) or set(check) != {
+            "name", "argv", "cwd", "timeout_seconds", "noninteractive",
+        }:
+            raise ValueError("each required check needs name/argv/cwd/timeout_seconds/noninteractive")
+        name, argv, cwd, limit = (check[k] for k in ("name", "argv", "cwd", "timeout_seconds"))
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise ValueError("check names must be nonblank and unique")
+        names.add(name)
+        if not isinstance(argv, list) or not argv or any(
+            not isinstance(arg, str) or "\0" in arg for arg in argv
+        ) or not argv[0]:
+            raise ValueError(f"{name}: required argv missing or invalid")
+        if not isinstance(cwd, str) or Path(cwd).is_absolute():
+            raise ValueError(f"{name}: cwd must be relative to candidate")
+        directory = (repo / cwd).resolve()
+        if not directory.is_relative_to(repo) or not directory.is_dir():
+            raise ValueError(f"{name}: cwd missing or outside candidate")
+        if type(limit) not in (int, float) or not math.isfinite(limit) or limit <= 0:
+            raise ValueError(f"{name}: timeout_seconds must be positive and finite")
+        if check["noninteractive"] is not True:
+            raise ValueError(f"{name}: noninteractive must be true")
+        result.append(check | {"cwd": str(directory), "status": "NOT_RUN", "exit_code": None,
+                               "stdout": "", "stderr": "", "duration_seconds": 0})
+    return result
+
+
+def execute(check, environment):
+    started = time.monotonic()
+    try:
+        with subprocess.Popen(
+            check["argv"], cwd=check["cwd"], env=environment, stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace",
+            start_new_session=True,
+        ) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=check["timeout_seconds"])
+                reason = "exit_zero" if process.returncode == 0 else "nonzero_exit"
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+                reason = "timeout"
+            check.update(exit_code=process.returncode, stdout=stdout, stderr=stderr,
+                         status="PASS" if reason == "exit_zero" else "FAIL", reason=reason)
+    except OSError as error:
+        check.update(status="NOT_RUN", reason=str(error))
+    finally:
+        check["duration_seconds"] = round(time.monotonic() - started, 6)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--spec", type=Path, required=True)
+    parser.add_argument("--work-id", required=True)
+    parser.add_argument("--revision", required=True)
+    parser.add_argument("--candidate", required=True)
+    parser.add_argument("--repo", type=Path, required=True)
+    args = parser.parse_args()
+    repo = args.repo.resolve()
+    result = {"status": "NOT_RUN", "reason": "validation incomplete", "checks": [],
+                  "spec_path": str(args.spec.resolve()), "spec_work_id": args.work_id,
+                  "spec_revision": args.revision, "candidate": args.candidate, "repo": str(repo),
+                  "next_owner": args.work_id, "next_action": "Diagnose evidence and repair spec/check/environment; "
+                  "request human input only for a real human-owned choice; independent review checks judgment"}
+    try:
+        result["spec_sha256"] = digest(args.spec)
+        result["checks"] = commands(json.loads(args.spec.read_text()), args, repo)
+        if git(repo, "rev-parse", "HEAD") != args.candidate:
+            raise ValueError("candidate HEAD mismatch")
+        if git(repo, "status", "--porcelain", "--untracked-files=all"):
+            raise ValueError("candidate must be clean")
+        environment = os.environ | {"CI": "1", "TERM": "dumb", "BROWSER": "false"}
+        for key in ("DISPLAY", "WAYLAND_DISPLAY"):
+            environment.pop(key, None)
+        for check in result["checks"]:
+            execute(check, environment)
+        if (digest(args.spec) != result["spec_sha256"]
+                or git(repo, "rev-parse", "HEAD") != args.candidate
+                or git(repo, "status", "--porcelain", "--untracked-files=all")):
+            result.update(status="STALE", reason="spec or candidate changed during checks")
+        elif all(check["status"] == "PASS" for check in result["checks"]):
+            result.update(status="PASS", reason="all required checks passed",
+                          next_action="Record exact result once on existing Tracker work; advance next owned action")
+        else:
+            status = "FAIL" if any(c["status"] == "FAIL" for c in result["checks"]) else "NOT_RUN"
+            result.update(status=status, reason="required checks failed or did not run")
+    except (OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        result.update(status="NOT_RUN", reason=str(error))
+    print(json.dumps(result, indent=2))
+    return 0 if result["status"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

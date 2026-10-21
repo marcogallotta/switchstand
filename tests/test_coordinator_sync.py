@@ -174,7 +174,7 @@ async def test_worker_tools_are_closed_and_explicit_when_enabled(tmp_path: Path)
     ].fn_metadata.arg_model.model_json_schema()
     assert schema["additionalProperties"] is False
     assert set(schema["properties"]) == {
-        "api_version", "operation_id", "work_id", "objective"
+        "api_version", "operation_id", "work_id", "objective", "task_request_id"
     }
 
 

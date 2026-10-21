@@ -758,6 +758,7 @@ class ReviewOccurrenceState:
             "oldest_request_age_ms": int(
                 (captured_at - record.created_at).total_seconds() * 1000
             ),
+            "review_id": str(review_id),
             "requested_at": record.created_at.isoformat(),
             "received_at": None if record.received_at is None else record.received_at.isoformat(),
             "verdict_at": None if verdict_at is None else verdict_at.isoformat(),

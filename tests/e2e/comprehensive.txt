@@ -1,0 +1,4 @@
+@tests/e2e/tracker.txt
+@tests/e2e/mcp.txt
+@tests/e2e/human-input.txt
+@tests/e2e/observability.txt

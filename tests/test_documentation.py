@@ -223,20 +223,24 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "Approved-baseline conformance" in quality
 
 
-def test_loc_exceptions_use_one_hard_challenge_and_rare_human_escalation():
+def test_aggregate_extension_and_per_pr_exception_have_distinct_authority():
+    document = read("docs/code-quality.md")
     quality = " ".join(
-        section(read("docs/code-quality.md"), "### Canonical exception challenge").split()
+        section(document, "### Canonical exception challenge").split()
     )
+    extension = " ".join(section(document, "### Coordinator extension review").split())
+    per_pr = " ".join(section(document, "### Exceptional LOC exemption gate").split())
 
     assert "do not quote, summarize, or rewrite it" in quality
-    assert "assume the exception should be rejected" in quality
     assert "without accepting candidate-created invariants as requirements" in quality
-    assert "at or below twice the original hard cap" in quality
-    assert "Growth beyond twice the original hard cap is a 1-in-100 exception" in quality
-    assert "strongest smaller route fail or cause concrete greater harm" in quality
-    assert "A `>=500` actual PR/diff is independently a 1-in-100 exception" in quality
-    assert "never demand serial review pairs" in quality
-    assert "it never grants either 1-in-100 exception" in quality
+    assert "review agreement does not grant it" in quality
+    assert "strictly below twice its corresponding ORIGINAL approved cap" in extension
+    assert "At 2x or above in ANY breached dimension" in extension
+    assert "original baseline, never the last extension" in extension
+    assert "Challenge scope creep at any multiplier" in extension
+    assert "An aggregate package above 500 lines is not itself a `>=500` PR exception" in per_pr
+    assert "Agents split independently useful, reviewable PRs without asking Marco" in per_pr
+    assert "`>=500` actual PR/diff remains on **HOLD** absent an exact Marco exception" in per_pr
 
 
 def test_human_and_incident_triggers_remain_always_loaded():
@@ -266,6 +270,7 @@ def test_authority_and_work_routing_keep_their_causal_fences():
     assert "Mailbox registration/takeover supplies neither work identity nor authority" in authority
     assert "never create work from a question, status, correction, approval" in authority
     assert "Landing requires current independent review and exact-head/composition gates" in authority
+    assert "docs/code-quality.md#explicit-human-fasttrack" in authority
     assert "work_type=\"Task\"" in usage
     assert 'owner_key=\"SELF\"' in usage
     assert "Use one stable OperationId" in usage
@@ -341,7 +346,9 @@ def test_performance_feedback_and_definitive_receipt_rules_stay_bounded():
     interaction = normalized("docs/human-interaction.md")
     source = normalized("docs/source-history-feedback.md")
 
-    assert "file_performance" in agents
+    assert "feedback capture and triage" in agents
+    assert "docs/source-history-feedback.md#feedback-capture-and-triage" in agents
+    assert "V1-A `file_*` surface" in source
     assert "four `mcp__switchstand__file_*`" not in agents
     assert "definitive semantic receipt is the readback" in agents
     assert "Stop once the requested postcondition is established" in interaction
