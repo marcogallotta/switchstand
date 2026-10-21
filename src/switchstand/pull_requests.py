@@ -204,7 +204,7 @@ async def project(
             work_pull_requests.c.number == row["number"],
         ).order_by(work_pull_requests.c.work_id))).all()
         link_basis.append([str(link) for link in links])
-        visible_links = []
+        visible_links: list[UUID] = []
         for link in links:
             if await can_read(link):
                 visible_links.append(link)
@@ -217,9 +217,10 @@ async def project(
         principal_key, str(work_id), source, link_basis,
         [view.model_dump(mode="json") for view in views],
     ], sort_keys=True).encode()).hexdigest()
-    cursor = PageCursor.model_validate_json(pr_cursor or pr_link_cursor) if (
-        pr_cursor or pr_link_cursor
-    ) else PageCursor(basis=basis, offset=0)
+    raw_cursor = pr_cursor or pr_link_cursor
+    cursor = PageCursor.model_validate_json(raw_cursor) if raw_cursor else PageCursor(
+        basis=basis, offset=0,
+    )
     if (cursor.basis != basis or (pr_cursor and pr_link_cursor)
             or (pr_cursor and cursor.pr_key is not None)
             or (pr_link_cursor and cursor.pr_key is None)):
