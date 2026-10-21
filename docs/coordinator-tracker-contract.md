@@ -5,7 +5,7 @@ This is a temporary behavioral contract for failures happening now. Tracking is 
 Root owns only its assigned portfolio. A Coordinator working within a delegated lane reports that lane upward; a worker owns only its task. Role never expands authority.
 
 Have a fork read the exact work before delegating and return the bounded assignment.
-All execution belongs in context-free native forks; give each Worker one
+All execution belongs in context-free native forks, except the [OOM/memory basic-check route](how-marco-uses-switchstand.md#native-fork-operating-boundary); give each Worker one
 bounded task, use safe available slots without filler, and serialize heavy shared writers or
 other constrained resources. Root owns tracking, steering, result absorption, integration, and
 the next gate rather than duplicating the child's execution. Worker questions and material

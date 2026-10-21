@@ -319,7 +319,51 @@ Named required gate + missing capability, NOT_RUN, SKIP, ambiguous readback or w
 
 When the target branch advances after an immutable candidate exists, that movement alone does not require rebasing or invalidate exact-candidate review. The Coordinator or integration owner assesses whether leaving the candidate unchanged is safe enough and whether rebasing would materially help delivery. Preserve the exact candidate and its review evidence when current-target composition can be established without rewriting it. Rebase only when needed or materially helpful to resolve conflicts, address semantic interaction with target changes, obtain required CI/composition evidence that cannot otherwise be established, or make delivery materially more practical. A rewritten head is a new exact candidate subject to the current review and evidence rules; keep exact-head and composition identities and evidence distinct either way.
 
-For GitHub-native stacks, authoring and focused layer review may proceed while lower-layer review and CI run. A focused PASS may survive a restack only when the deterministic layer diff and its reviewed dependency/interface contract are both unchanged and no conflict resolution occurred. Otherwise that layer receives focused rereview. Defects are fixed in the lowest semantic owner and cascaded upward. The exact current top/full stack still receives fresh cumulative review and qualification before any included layer lands; V1 does not permit early partial landing. Missing or ambiguous inertness, review identity, or dependency-contract evidence fails closed to the broader current evidence set.
+For GitHub-native stacks, authoring and focused layer review may proceed while lower-layer review and CI run. A focused PASS may survive a restack only when the deterministic layer diff and its reviewed dependency/interface contract are both unchanged and no conflict resolution occurred. Otherwise that layer receives focused rereview. Defects are fixed in the lowest semantic owner and cascaded upward. The ordinary path requires fresh cumulative review and qualification of the exact current top/full stack before any included layer lands; explicit-human fasttrack above defers that review while retaining qualification. V1 does not permit early partial landing. Missing or ambiguous inertness, review identity, or dependency-contract evidence fails closed to the broader current evidence set.
+
+## Explicit human fasttrack
+
+When Marco explicitly says to fasttrack the scoped change, that direction authorizes deferring
+independent Code Review until after deployment. Record it on the existing exact WorkId; do not
+ask him to repeat the deferral or approve the same scope again. Urgency alone is not fasttrack.
+The deferral covers the pre-landing review wait too, so landing does not recreate the removed
+pre-deploy gate. It supersedes a hold caused solely by waiting for that review. Ordinary changes
+keep their existing review gates.
+
+The responsible Coordinator carries the scoped candidate through this path:
+
+1. Bind Marco's direction, the exact immutable candidate and current target/composition, the
+   deployment surface and current effect authority on the existing work. A direction such as
+   “fasttrack this to prod” can supply both deferral and that scoped deployment authority;
+   deferral alone does not invent a deployment, activation, credential or provider-effect grant.
+2. Require successful current CI and every required E2E check for that candidate and the claimed
+   boundary. Preserve exact-head versus composition evidence. FAIL, NOT_RUN, SKIP,
+   MISSING_CAPABILITY, UNKNOWN or stale/wrong-candidate evidence does not satisfy a required
+   check. Use the existing claim-specific qualification contract; do not invent universal live
+   tests, a second CI path, or a blanket test bypass.
+3. Record the known-good rollback/disable target and practical recovery action, then land and
+   deploy the tested revision within current authority. Verify the installed revision and the
+   required live behavior through the existing activation/readback procedure. A changed candidate
+   or composition needs corresponding qualification; a review deferral is not evidence transfer.
+4. Own the deferred independent review of the exact deployed revision. Record the review owner,
+   next checkpoint and any remaining obligation on the same work before deployment; the reviewer
+   need not have completed, approved, or even started review before deployment. Dispatch promptly
+   after deployment, retain findings and dispositions, and carry corrections or justified
+   challenges through focused rereview. Keep review visibly open until terminal evidence or an
+   explicit attributable handoff with pickup; deployment success is not review completion.
+
+A missed review checkpoint triggers inquiry and recovery of the obligation, not automatic
+rollback. An actual defect calls for proportionate correction, disablement or rollback according
+to consequence and current authority; live failures use the incident procedure. Neither reviewer
+availability nor a newly invented risk category may restore the waived pre-deploy review gate.
+Current distinct human holds, platform denials and technical impossibility still apply.
+
+Migrations remain separately authorized and governed; fasttrack does not waive their requirements.
+Rollback restores code/configuration only where the actual recovery path supports it: it cannot
+undo disclosed data, already-sent external actions or irreversible writes. Identify such concrete
+effects before acting and reconcile their exact authority and any genuinely unresolved human
+choice. Do not turn that check into a blanket prohibition on fasttracking ordinary reversible
+changes. Record the actual deployment/readback and deferred-review outcome separately.
 
 ## Code Review
 

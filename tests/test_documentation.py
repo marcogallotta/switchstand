@@ -270,6 +270,7 @@ def test_authority_and_work_routing_keep_their_causal_fences():
     assert "Mailbox registration/takeover supplies neither work identity nor authority" in authority
     assert "never create work from a question, status, correction, approval" in authority
     assert "Landing requires current independent review and exact-head/composition gates" in authority
+    assert "docs/code-quality.md#explicit-human-fasttrack" in authority
     assert "work_type=\"Task\"" in usage
     assert 'owner_key=\"SELF\"' in usage
     assert "Use one stable OperationId" in usage

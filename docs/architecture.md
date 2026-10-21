@@ -702,6 +702,9 @@ inert/runtime proof, and requires fresh exact-top cumulative review and quality 
 landing. `scripts/verify-quality-composition` binds an Actions checkout either to the
 ordinary PR merge parents or to the exact native-stack first-parent composition chain.
 Stack discovery, CI execution, review storage, and merge effects remain outside it.
+These predicates describe ordinary reviewed delivery. [Explicit human fasttrack](code-quality.md#explicit-human-fasttrack)
+records review as deferred on the existing work; it never manufactures a predicate PASS for
+review that has not occurred.
 
 ## Launch, candidate, and host control
 
