@@ -246,7 +246,10 @@ async def _discover(endpoint, selected):
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
 
 
-async def test_pr_accountability_over_real_http_and_restart(database_prerequisite):
+@pytest.mark.parametrize("outcome_state_enabled", ["0", "1"])
+async def test_pr_accountability_over_real_http_and_restart(
+    database_prerequisite, outcome_state_enabled,
+):
     """Exercise PR links, workspace backlinks and accepted transfer through real MCP/PG."""
     url = os.environ["TEST_DATABASE_URL"]
     subject = str(uuid4().int)
@@ -256,6 +259,7 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
     port = free_port()
     env = clean_environment() | {
         "DATABASE_URL": url, "EFFECT_FILE": os.devnull,
+        "SWITCHSTAND_OUTCOME_STATE_ACTIONS": outcome_state_enabled,
         "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
         "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
         "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
@@ -263,10 +267,17 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
         "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
         "SWITCHSTAND_MCP_BIND_PORT": str(port),
     }
-    identity = {"repository": "Owner/Repository", "number": 1053, "package_ref": "work:exact"}
+    author = f"pr-author-{subject}"
+    recipient = f"pr-recipient-{subject}"
+    repository = f"Owner/Repository-{subject}"
+    identity = {"repository": repository, "number": 1053, "package_ref": "work:exact"}
     with _server(env, port) as endpoint:
         client = MCP(endpoint + "/mcp", "fixed-bearer")
         client.initialize()
+        inventory = client.call("tools/list", {}, 2)
+        assert isinstance(inventory, dict)
+        read_tool = next(tool for tool in inventory["tools"] if tool["name"] == "work_get")
+        assert {"pr_cursor", "pr_link_cursor"} <= read_tool["inputSchema"]["properties"].keys()
 
         def call(actor, tool_name, **arguments):
             result = client.call("tools/call", {
@@ -277,46 +288,46 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
             return result
 
         try:
-            for actor in ("pr-author", "pr-recipient"):
+            for actor in (author, recipient):
                 assert call(actor, "agent_register", name=actor)["status"] == "ok"
             for work_id in (active, reference, third):
-                observed = call("pr-author", "work_get", work_id=str(work_id))
-                linked = call("pr-author", "work_relate", operation_id=str(uuid4()),
+                observed = call(author, "work_get", work_id=str(work_id))
+                linked = call(author, "work_relate", operation_id=str(uuid4()),
                               work_id=str(work_id), observed_revision=observed["item"]["revision"],
                               patch={"kind": "pull_request", "action": "add",
                                      "pull_request": identity})
                 assert linked["effect"] == "applied"
             # Ordinary HTTP admission is workspace-wide, independent of managed grants.
-            observed = call("pr-author", "work_get", work_id=str(active))
+            observed = call(author, "work_get", work_id=str(active))
             record = observed["pull_requests"]["records"][0]
-            assert record["repository"] == "owner/repository"
+            assert record["repository"] == repository.lower()
             assert record["visibility"] == "FULL"
             assert set(record["work_ids"]) == {str(active), str(reference), str(third)}
             transfer = {
-                **identity, "expected_version": 1, "recipient_key": "pr-recipient",
+                **identity, "expected_version": 1, "recipient_key": recipient,
                 "acceptance_delivery_id": str(uuid4()),
             }
             request = {
                 "work_id": str(active), "observed_revision": observed["item"]["revision"],
                 "patch": {"kind": "pull_request", "action": "set", "pull_request": transfer},
             }
-            denied = call("pr-author", "work_relate", operation_id=str(uuid4()), **request)
+            denied = call(author, "work_relate", operation_id=str(uuid4()), **request)
             assert denied["status"] == "denied" and denied["effect"] == "not_sent"
-            acceptance = call("pr-recipient", "agent_message_send",
-                              recipient_name="pr-author", message_id=str(uuid4()), payload={
-                                  "kind": "pr_owner_acceptance", "repository": "owner/repository",
-                                  "number": 1053, "previous_owner": "pr-author",
+            acceptance = call(recipient, "agent_message_send",
+                              recipient_name=author, message_id=str(uuid4()), payload={
+                                  "kind": "pr_owner_acceptance", "repository": repository.lower(),
+                                  "number": 1053, "previous_owner": author,
                                   "expected_version": 1, "package_ref": "work:exact",
-                                  "recipient_key": "pr-recipient", "recipient_generation": 1,
+                                  "recipient_key": recipient, "recipient_generation": 1,
                                   "previous_owner_generation": 1,
                               })
             assert acceptance["status"] == "ok"
             transfer["acceptance_delivery_id"] = acceptance["message"]["delivery_id"]
             operation_id = str(uuid4())
-            applied = call("pr-author", "work_relate", operation_id=operation_id, **request)
-            replay = call("pr-author", "work_relate", operation_id=operation_id, **request)
+            applied = call(author, "work_relate", operation_id=operation_id, **request)
+            replay = call(author, "work_relate", operation_id=operation_id, **request)
             assert applied == replay and applied["effect"] == "applied"
-            assert applied["receipt"]["pull_request"]["owner_key"] == "pr-recipient"
+            assert applied["receipt"]["pull_request"]["owner_key"] == recipient
         finally:
             client.close()
     # The receipt and owner must survive a completely new edge process and connection.
@@ -329,7 +340,7 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
             }}, 2)
             assert isinstance(recovered, dict) and recovered["status"] == "ok"
             record = recovered["pull_requests"]["records"][0]
-            assert record["owner_key"] == "pr-recipient" and record["row_version"] == 2
+            assert record["owner_key"] == recipient and record["row_version"] == 2
             assert record["acceptance_ref"] == f"delivery:{transfer['acceptance_delivery_id']}"
         finally:
             client.close()
