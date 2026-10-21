@@ -28,7 +28,9 @@ SESSION_SECONDS = 1800
 
 
 class HumanReviewWriter(Protocol):
-    async def prepare(self, package_work_id: UUID, package_revision: str) -> HumanReviewResult: ...
+    async def prepare(
+        self, package_work_id: UUID, package_revision: str, consequence_id: UUID | None = None,
+    ) -> HumanReviewResult: ...
 
     async def submit(
         self,
@@ -87,6 +89,14 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
         baseline_content = (f"<h2>Task</h2><p>{escape(consequence.task_text)}</p>"
                             f"<p>Task approval: {record.consequence_id} · {record.consequence_digest}</p>")
     opening = ""
+    if consequence.candidate is not None:
+        candidate = consequence.candidate
+        opening = (
+            f"<p>Approve exact code candidate for merge: PR #{candidate.pull_request}</p>"
+            f"<p>Head: {candidate.head_sha}<br>Base: {candidate.base_sha}<br>"
+            f"Composition: {candidate.composition_sha}</p>"
+            "<p>The approved Task is unchanged. This does not authorize activation.</p>"
+        )
     if consequence.baseline is not None:
         baseline = consequence.baseline
         opening_values = baseline.opening
@@ -226,9 +236,13 @@ def create_human_review_shell(
             revision = request.query_params["revision"]
             if not revision or len(revision) > 512:
                 raise ValueError
+            selected = request.query_params.get("consequence_id")
+            consequence_id = UUID(selected) if selected is not None else None
         except (KeyError, ValueError):
             return Response(status_code=400)
-        return _render_result(await state.prepare(work_id, revision), form=True)
+        result = (await state.prepare(work_id, revision, consequence_id)
+                  if consequence_id is not None else await state.prepare(work_id, revision))
+        return _render_result(result, form=True)
 
     async def submit(request: Request) -> Response:
         denied = authenticate(request)
@@ -265,7 +279,7 @@ def create_human_review_shell(
             decision: HumanDecision = decision_value
         except (UnicodeDecodeError, ValueError):
             return Response(status_code=400)
-        prepared = await state.prepare(work_id, revision)
+        prepared = await state.prepare(work_id, revision, consequence_id)
         if (
             prepared.record is None
             or prepared.record.consequence_id != consequence_id
