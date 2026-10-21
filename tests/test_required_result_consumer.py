@@ -117,9 +117,9 @@ async def test_save_closes_and_restart_replays_without_duplicate(
     assert conflict.reason == "lifecycle_result_identity_conflict" and provider.revision == "r2"
 
 
-@pytest.mark.parametrize("enrolled", [False, True])
+@pytest.mark.parametrize("enrolled", [False, True, "concurrent", "interrupted"])
 async def test_canonical_save_updates_postgres_notes_and_replays_without_provider(
-    result_engine: AsyncEngine, enrolled: bool,
+    result_engine: AsyncEngine, enrolled: bool | str, monkeypatch,
 ) -> None:
     state, grants = PostgresState(result_engine), GrantState(result_engine)
     handle = await state.bind("asana", "123")
@@ -150,7 +150,7 @@ async def test_canonical_save_updates_postgres_notes_and_replays_without_provide
         required_results=RequiredResultPersistence(LifecycleRepository(result_engine)),
         canonical_work=runtime, canonical_work_active=True,
     )
-    if enrolled:
+    async def enroll():
         from test_human_reviews import v2_consequence
 
         from switchstand.human_reviews import HumanReviewState
@@ -162,16 +162,45 @@ async def test_canonical_save_updates_postgres_notes_and_replays_without_provide
         assert (await state.propose(approval)).status == "PREPARED"
         assert (await state.submit(approval.consequence_id, handle.id,
                                   approval.package_revision, "APPROVED")).status == "RECORDED"
+    if enrolled is True:
+        await enroll()
     action = RequiredResultSaveRequest(
         api_version="1", work_id=handle.id, grant_version=1,
         observed_revision=(await runtime.get(handle.id)).item.revision,  # type: ignore[union-attr]
         text="final result",
     )
 
-    if enrolled:
+    if enrolled == "concurrent":
+        original_update = runtime.protected_update
+
+        async def racing_update(*args):
+            await enroll()
+            monkeypatch.setattr(runtime, "protected_update", original_update)
+            return await original_update(*args)
+
+        monkeypatch.setattr(runtime, "protected_update", racing_update)
+    if enrolled is True or enrolled == "concurrent":
         rejected = await service.required_result_save(action.model_copy(update={"text": "é" * 1024}))
-        assert rejected.reason == "required_result_exceeds_notes_capacity"
+        assert rejected.effect == "not_sent"
+        pending = await service.required_results.repository.get(rejected.operation_id)
+        assert pending.state is ProfileState.PENDING_RESULT and pending.result_correlation is None
+        assert (await runtime.get(handle.id)).item.notes == "initial notes"
+    if enrolled == "interrupted":
+        original_transition = service.required_results.transition
+
+        async def fail_ready(*args, **kwargs):
+            raise SQLAlchemyError("injected failure after canonical journal commit")
+
+        monkeypatch.setattr(service.required_results, "transition", fail_ready)
+        interrupted = await service.required_result_save(action)
+        assert interrupted.effect == "unknown"
+        saved = (await runtime.get(handle.id)).item.revision
+        conflict = await service.required_result_save(action.model_copy(update={"text": "changed"}))
+        assert conflict.reason == "lifecycle_effect_identity_conflict"
+        monkeypatch.setattr(service.required_results, "transition", original_transition)
     first = await service.required_result_save(action)
+    if enrolled == "interrupted":
+        assert (await runtime.get(handle.id)).item.revision == saved
     replay = await service.required_result_save(action)
     stored = await runtime.get(handle.id)
 
