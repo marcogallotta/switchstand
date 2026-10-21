@@ -244,17 +244,10 @@ async def _discover(endpoint, selected):
 
 
 async def test_pr_accountability_over_real_http_and_restart(database_prerequisite):
-    """Exercise PR links, private backlinks and accepted transfer through real MCP/PG."""
+    """Exercise PR links, workspace backlinks and accepted transfer through real MCP/PG."""
     url = os.environ["TEST_DATABASE_URL"]
     subject = str(uuid4().int)
-    selected, hidden = await _provision(url, subject)
-    engine = create_async_engine(url)
-    selected = selected.model_copy(update={
-        "id": uuid4(), "version": 2,
-        "operations": frozenset({"work_get", "work_relate", "message"}),
-        "relation_qualification": "real:disposable-switchstand-test",
-    })
-    await GrantState(engine).issue(selected, 1)
+    selected, third = await _provision(url, subject)
     active = selected.authority.active_work_id
     reference = selected.authority.reference_work_ids[0]
     port = free_port()
@@ -283,22 +276,19 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
         try:
             for actor in ("pr-author", "pr-recipient"):
                 assert call(actor, "agent_register", name=actor)["status"] == "ok"
-            for work_id in (active, reference, hidden):
+            for work_id in (active, reference, third):
                 observed = call("pr-author", "work_get", work_id=str(work_id))
                 linked = call("pr-author", "work_relate", operation_id=str(uuid4()),
                               work_id=str(work_id), observed_revision=observed["item"]["revision"],
                               patch={"kind": "pull_request", "action": "add",
                                      "pull_request": identity})
                 assert linked["effect"] == "applied"
-            # Re-admit only active/reference reads; hidden links must not cross HTTP.
-            restricted = selected.model_copy(update={"id": uuid4(), "version": 3, "scope": "launch"})
-            await GrantState(engine).issue(restricted, 2)
+            # Ordinary HTTP admission is workspace-wide, independent of managed grants.
             observed = call("pr-author", "work_get", work_id=str(active))
             record = observed["pull_requests"]["records"][0]
             assert record["repository"] == "owner/repository"
-            assert record["visibility"] == "PARTIAL"
-            assert set(record["work_ids"]) == {str(active), str(reference)}
-            assert str(hidden) not in str(observed)
+            assert record["visibility"] == "FULL"
+            assert set(record["work_ids"]) == {str(active), str(reference), str(third)}
             transfer = {
                 **identity, "expected_version": 1, "recipient_key": "pr-recipient",
                 "acceptance_delivery_id": str(uuid4()),
@@ -340,7 +330,6 @@ async def test_pr_accountability_over_real_http_and_restart(database_prerequisit
             assert record["acceptance_ref"] == f"delivery:{transfer['acceptance_delivery_id']}"
         finally:
             client.close()
-            await engine.dispose()
 
 
 async def test_e2e_expected_tools_over_real_http(database_prerequisite):
