@@ -70,6 +70,8 @@ def segments(command: str) -> list[list[str]]:
             continue
         if len(openers) != 1:
             raise ValueError("multiple here-documents are denied")
+        if line.rstrip("\r\n").rstrip(" \t").endswith("\\"):
+            raise ValueError("continued here-document header is denied")
         delimiter, strip_tabs, quoted = openers[0]
         end = index + 1
         while end < len(lines) and (lines[end].lstrip("\t") if strip_tabs else lines[end]).strip("\r\n") != delimiter:
