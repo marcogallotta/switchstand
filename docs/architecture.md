@@ -80,6 +80,19 @@ any simultaneous certification identity must match it exactly.
 MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
+PR metadata uses `pull_requests.py` and two existing-PostgreSQL tables: one normalized
+repository/number identity with accountable owner, and restrictive WorkId links.
+Ordinary work_relate shares canonical admission, revision CAS and atomic effect receipts;
+adding a link never replaces an existing owner, and unlinking never releases accountability.
+Ordinary work_get pages task-linked PRs and permission-filtered backlinks with caller-
+and revision-bound cursors; partial visibility never discloses hidden task identities.
+Ownership transfer uses relation set, current source/PR revision CAS and an exact durable
+recipient acceptance message. Its payload binds repository, number, previous owner,
+expected version, package reference, recipient key and both current mailbox generations;
+delivery receipt alone is insufficient. Both mailboxes lock in name order before the PR.
+Metadata supplies no global lookup or deployment authority.
+Migration0027 refuses downgrade while durable PR identities remain.
+
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
 interval aggregation and appends a bounded, privacy-safe subset after the business result through
 one non-retrying transaction. Failures leave coverage partial. Migration

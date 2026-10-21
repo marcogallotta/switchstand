@@ -81,12 +81,12 @@ def _child_server() -> None:
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
     original_get = edge.ChatGPTService.get
 
-    async def delayed_get(service, work_id=None):
+    async def delayed_get(service, work_id=None, **cursors):
         marker = os.getenv("SLOW_GET_STARTED_FILE")
         if marker:
             Path(marker).write_text("started\n")
             await asyncio.sleep(float(os.environ["SLOW_GET_SECONDS"]))
-        return await original_get(service, work_id)
+        return await original_get(service, work_id, **cursors)
 
     edge.ChatGPTService.get = delayed_get
     edge.main()
@@ -244,6 +244,95 @@ async def _discover(endpoint, selected):
                 assert tool.inputSchema.get("additionalProperties") is False
         await read_chain(client, search["items"][0]["id"], exceptional_purpose=True)
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
+
+
+async def test_pr_accountability_over_real_http_and_restart(database_prerequisite):
+    """Exercise PR links, workspace backlinks and accepted transfer through real MCP/PG."""
+    url = os.environ["TEST_DATABASE_URL"]
+    subject = str(uuid4().int)
+    selected, third = await _provision(url, subject)
+    active = selected.authority.active_work_id
+    reference = selected.authority.reference_work_ids[0]
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "EFFECT_FILE": os.devnull,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    identity = {"repository": "Owner/Repository", "number": 1053, "package_ref": "work:exact"}
+    with _server(env, port) as endpoint:
+        client = MCP(endpoint + "/mcp", "fixed-bearer")
+        client.initialize()
+
+        def call(actor, tool_name, **arguments):
+            result = client.call("tools/call", {
+                "name": tool_name, "arguments": {"api_version": "1", **arguments},
+                "_meta": {"openai/session": actor},
+            }, len(client.requests) + 2)
+            assert isinstance(result, dict) and not result.get("isError"), result
+            return result
+
+        try:
+            for actor in ("pr-author", "pr-recipient"):
+                assert call(actor, "agent_register", name=actor)["status"] == "ok"
+            for work_id in (active, reference, third):
+                observed = call("pr-author", "work_get", work_id=str(work_id))
+                linked = call("pr-author", "work_relate", operation_id=str(uuid4()),
+                              work_id=str(work_id), observed_revision=observed["item"]["revision"],
+                              patch={"kind": "pull_request", "action": "add",
+                                     "pull_request": identity})
+                assert linked["effect"] == "applied"
+            # Ordinary HTTP admission is workspace-wide, independent of managed grants.
+            observed = call("pr-author", "work_get", work_id=str(active))
+            record = observed["pull_requests"]["records"][0]
+            assert record["repository"] == "owner/repository"
+            assert record["visibility"] == "FULL"
+            assert set(record["work_ids"]) == {str(active), str(reference), str(third)}
+            transfer = {
+                **identity, "expected_version": 1, "recipient_key": "pr-recipient",
+                "acceptance_delivery_id": str(uuid4()),
+            }
+            request = {
+                "work_id": str(active), "observed_revision": observed["item"]["revision"],
+                "patch": {"kind": "pull_request", "action": "set", "pull_request": transfer},
+            }
+            denied = call("pr-author", "work_relate", operation_id=str(uuid4()), **request)
+            assert denied["status"] == "denied" and denied["effect"] == "not_sent"
+            acceptance = call("pr-recipient", "agent_message_send",
+                              recipient_name="pr-author", message_id=str(uuid4()), payload={
+                                  "kind": "pr_owner_acceptance", "repository": "owner/repository",
+                                  "number": 1053, "previous_owner": "pr-author",
+                                  "expected_version": 1, "package_ref": "work:exact",
+                                  "recipient_key": "pr-recipient", "recipient_generation": 1,
+                                  "previous_owner_generation": 1,
+                              })
+            assert acceptance["status"] == "ok"
+            transfer["acceptance_delivery_id"] = acceptance["message"]["delivery_id"]
+            operation_id = str(uuid4())
+            applied = call("pr-author", "work_relate", operation_id=operation_id, **request)
+            replay = call("pr-author", "work_relate", operation_id=operation_id, **request)
+            assert applied == replay and applied["effect"] == "applied"
+            assert applied["receipt"]["pull_request"]["owner_key"] == "pr-recipient"
+        finally:
+            client.close()
+    # The receipt and owner must survive a completely new edge process and connection.
+    with _server(env, port) as endpoint:
+        client = MCP(endpoint + "/mcp", "fixed-bearer")
+        try:
+            client.initialize()
+            recovered = client.call("tools/call", {"name": "work_get", "arguments": {
+                "api_version": "1", "work_id": str(active),
+            }}, 2)
+            assert isinstance(recovered, dict) and recovered["status"] == "ok"
+            record = recovered["pull_requests"]["records"][0]
+            assert record["owner_key"] == "pr-recipient" and record["row_version"] == 2
+            assert record["acceptance_ref"] == f"delivery:{transfer['acceptance_delivery_id']}"
+        finally:
+            client.close()
 
 
 async def test_e2e_expected_tools_over_real_http(database_prerequisite):

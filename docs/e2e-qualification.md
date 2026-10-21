@@ -137,6 +137,31 @@ error, no private payload, subsequent valid success and unchanged business state
 
 ## Execution truth and cleanup
 
+### PR links and accountable ownership
+
+Prepare two admitted TEST tasks and two registered agents.
+Use a synthetic repository/PR identity: this metadata test never creates a GitHub PR.
+Prompt the first agent to record its PR against both admitted tasks using ordinary
+work_relate, then read the current tasks. Require one normalized identity and one
+initial owner. Have the second agent link the same PR: the owner must remain first.
+Replay the exact operation; changed arguments with that ID must be denied.
+Remove every link, then relink from an admitted task: ownership must survive.
+Exercise more than ten PRs and exhaust task-to-PR continuation without duplicates or
+omissions. Caller, source revision or PR metadata changes invalidate continuation.
+Removal from an unrelated task must deny without exposing PR metadata.
+An uncoached fresh client must recover the recorded identity/owner from an admitted
+linked WorkId. Missing tool/schema/runtime leaves this claim NOT_RUN, not PASS.
+Link one PR to more than ten tasks and exhaust pr_link_cursor. Omit unreadable task
+IDs with PARTIAL visibility; changing links or read permissions invalidates continuation.
+Have the recipient send a durable pr_owner_acceptance payload bound to repository,
+number, previous_owner, expected_version, package_ref, recipient_key,
+recipient_generation and previous_owner_generation. The owner transfers with relation
+set, recipient_key, acceptance_delivery_id and expected_version. Missing/wrong evidence,
+unlinked source, wrong owner or stale mailbox/PR version must leave ownership unchanged.
+After accepted transfer, re-entry must recover the recipient and incremented version;
+replaying the exact operation must return its original receipt. Record exact candidate,
+receipts and cleanup below. These client claims remain NOT_RUN until actually exercised.
+
 Before any client launch the owner sets a finite deadline/tool-turn budget for cost
 control, prepares fixtures, results delivery and cleanup, and coordinates the one
 existing TEST operator/slot. No runtime switch/credential/migration effect follows

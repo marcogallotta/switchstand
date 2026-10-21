@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, ConfigDict, Field, model_validator
 
 from .contracts import ClosedModel, LaunchAuthority, WorkItem, WorkSearchItem
+from .pull_requests import PullRequestChange, PullRequestPage, PullRequestRecord
 
 
 class PrincipalContext(ClosedModel):
@@ -182,16 +183,34 @@ class ProtectedUpdate(ClosedModel):
 
 
 class RelationPatch(ClosedModel):
-    kind: Literal["assignee", "placement", "parent", "dependency"]
+    kind: Literal["assignee", "placement", "parent", "dependency", "pull_request"]
     action: Literal["set", "clear", "add", "remove", "move"]
     target_work_id: UUID | None = None
     project_id: UUID | None = None
     assignee_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
     project_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
     section_gid: str | None = Field(default=None, pattern=r"^[0-9]+$")
+    pull_request: PullRequestChange | None = None
 
     @model_validator(mode="after")
     def valid_relation(self) -> Self:
+        if self.kind == "pull_request":
+            if self.action not in {"add", "remove", "set"} or self.pull_request is None or any(
+                getattr(self, field) is not None for field in (
+                    "target_work_id", "project_id", "assignee_gid", "project_gid", "section_gid",
+                )
+            ):
+                raise ValueError("PR relation requires only PR identity and add/remove/set")
+            transfer = self.pull_request
+            if self.action == "set":
+                if (transfer.expected_version is None or transfer.recipient_key is None
+                        or transfer.acceptance_delivery_id is None):
+                    raise ValueError("PR transfer requires version, recipient and acceptance")
+            elif transfer.recipient_key is not None or transfer.acceptance_delivery_id is not None:
+                raise ValueError("ownership fields require set")
+            return self
+        if self.pull_request is not None:
+            raise ValueError("unrelated PR fields")
         if self.kind == "assignee":
             if self.action not in {"set", "clear"}:
                 raise ValueError("assignee relation requires set or clear")
@@ -295,6 +314,7 @@ class RelationReceipt(ClosedModel):
     observed_revision: str
     patch: RelationPatch
     qualification: str
+    pull_request: PullRequestRecord | None = None
 
 
 class UpdateReceipt(ClosedModel):
@@ -407,3 +427,4 @@ class GrantedWorkResult(ClosedModel):
     status: Literal["ok", "denied", "unknown", "provider_error", "stale"]
     item: WorkItem | None = None
     guard: GuardOutcome | None = None
+    pull_requests: PullRequestPage | None = None
