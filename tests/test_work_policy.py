@@ -106,3 +106,18 @@ def test_opaque_or_incomplete_substantive_create_is_rejected(
     work_type = changes.pop("work_type", "Task")
     with pytest.raises(ValueError):
         validate_create_state(parented=True, work_type=work_type, **state(**changes))
+
+
+def test_field_local_validation_leaves_unrelated_legacy_metadata_alone():
+    legacy = state(canonical_root="broken", owner_key=None, wait_kind="old wait",
+                   next_action_class=None, next_action_ref=None)
+    validate_resultant_state(**legacy, affected={"priority"}, completed=True)
+    for affected in ({"canonical_root"}, {"wait_kind"}, {"next_action_ref"}, {"completed"}):
+        with pytest.raises(ValueError):
+            validate_resultant_state(**legacy, affected=affected, completed=True)
+
+
+@pytest.mark.parametrize("lifecycle,completed", [("CURRENT", True), ("TERMINAL", False)])
+def test_completed_and_lifecycle_must_agree(lifecycle, completed):
+    with pytest.raises(ValueError, match="completed/lifecycle_state"):
+        validate_resultant_state(**state(lifecycle_state=lifecycle), completed=completed)
