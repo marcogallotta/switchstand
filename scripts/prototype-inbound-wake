@@ -46,7 +46,8 @@ async def run(args):
 
             server = FastMCP("Disposable inbound wake prototype", lifespan=lifespan)
             names = {"agent_register", "agent_message_send", "agent_message_pending",
-                     "agent_message_receive", "agent_message_result_send", "agent_message_acknowledge"}
+                     "agent_message_receive", "agent_message_result_send", "agent_message_acknowledge",
+                     "agent_message_disposition"}
             for name, function in build_ordinary_tools(service, agent_identity=identity):
                 if name in names:
                     server.tool(function, name=name)
@@ -57,6 +58,12 @@ async def run(args):
                 return JSONResponse({"status": "running", "database": "switchstand_test",
                     "source_sha": source_sha, "pid": os.getpid(),
                     "outcomes": {str(k): v for k, v in wake.outcomes.items()}})
+
+            @server.custom_route("/internal/codex-stop-mailbox", methods=["POST"])
+            async def route_gate(request):
+                payload = await request.json()
+                return JSONResponse(await service.messages.on_delivery.__self__.check_route(
+                    payload["wake_route_token"], payload["session_id"]))
 
             state = {"pid": os.getpid(), "database_pid": int((directory / "data/postmaster.pid")
                      .read_text().splitlines()[0]), "endpoint": f"http://127.0.0.1:{args.port}/mcp",

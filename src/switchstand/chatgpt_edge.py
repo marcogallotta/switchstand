@@ -750,11 +750,15 @@ def _create_resource_app(
             if not isinstance(raw_payload, dict):
                 raise TypeError("invalid request object")
             payload = cast(dict[str, object], raw_payload)
-            if set(payload) - {"session_id", "cursor", "check_obligations"}:
+            if set(payload) - {"session_id", "cursor", "check_obligations", "wake_route_token"}:
                 raise ValueError("invalid request object")
             session_id = payload.get("session_id")
             cursor_value = payload.get("cursor")
             check_obligations = payload.get("check_obligations", False)
+            route_token = payload.get("wake_route_token")
+            if route_token is not None and (not isinstance(route_token, str) or not route_token
+                                            or check_obligations or cursor_value is not None):
+                raise ValueError("invalid wake route readback")
             if not isinstance(check_obligations, bool):
                 raise TypeError("invalid check_obligations")
             if not isinstance(session_id, str) or not session_id:
@@ -767,6 +771,10 @@ def _create_resource_app(
                 {"status": "recovery_required", "reason": "malformed_request"},
                 status_code=400,
             )
+        if route_token is not None:
+            wake = None if service.messages is None else getattr(service.messages.on_delivery, "__self__", None)
+            return JSONResponse(await wake.check_route(route_token, session_id)
+                                if isinstance(wake, InboundWake) else {"status": "UNKNOWN"})
         if check_obligations:
             return JSONResponse(await _codex_stop_obligations(service, session_id))
         return JSONResponse(await _codex_stop_mailbox_page(service, session_id, cursor))

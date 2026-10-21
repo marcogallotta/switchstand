@@ -261,6 +261,13 @@ def test_codex_stop_mailbox_adapter_is_read_only_and_malformed_input_is_closed()
     assert unavailable.json() == {
         "status": "recovery_required", "reason": "state_unavailable",
     }
+    with TestClient(app) as client:
+        assert client.post(CODEX_STOP_MAILBOX_PATH, json={
+            "session_id": "thread", "wake_route_token": "bad",
+        }).json() == {"status": "UNKNOWN"}
+        assert client.post(CODEX_STOP_MAILBOX_PATH, json={
+            "session_id": "thread", "wake_route_token": "bad", "check_obligations": True,
+        }).status_code == 400
 
 
 def test_certification_runtime_readback_is_explicit_and_exact():

@@ -287,3 +287,33 @@ async def test_subscription_races_reconcile_busy_to_idle(subject, monkeypatch, c
     await asyncio.gather(task, return_exceptions=True)
     assert seen
     assert sum(call.args[0] == "turn/start" for call in rpc.call.call_args_list) == 1
+
+
+@pytest.mark.parametrize("boundary", ["go", "token", "session", "stop", "generation"])
+async def test_native_gate_revalidates_after_admission(subject, monkeypatch, boundary):
+    wake, rpc, binding, identity, delivery = subject
+    root = "actual-root"
+    owner = binding.model_copy(update={"endpoint_id": uuid4()})
+    current = owner
+    wake.mailboxes = SimpleNamespace(by_endpoint_id=AsyncMock(
+        side_effect=lambda _endpoint: SimpleNamespace(mailbox=current)))
+    wake.messages.pending_delivery = AsyncMock(return_value=True)
+    rpc.call.return_value = {"thread": {"parentThreadId": root, "source": {
+        "subAgent": {"thread_spawn": {"agent_path": "/root/head"}}}}}
+    rpc.call.side_effect = None
+    wake.routes["secret"] = (rpc, binding, identity, owner, root, "/root/head", delivery)
+    async def admitted():
+        nonlocal current
+        if boundary == "stop":
+            wake.control.write_text('{"enabled":false,"socket":"/unused"}')
+        if boundary == "generation":
+            current = owner.model_copy(update={"generation": 2})
+        return b"GO", None
+    process = SimpleNamespace(returncode=0, communicate=admitted)
+    create = AsyncMock(return_value=process)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", create)
+    result = await wake.check_route("wrong" if boundary == "token" else "secret",
+                                   "wrong" if boundary == "session" else root)
+    assert result == {"status": {"go": "GO", "token": "DENIED", "session": "DENIED",
+                                "stop": "STOP", "generation": "STALE"}[boundary]}
+    assert create.await_count == (0 if boundary in {"token", "session"} else 1)
