@@ -768,9 +768,11 @@ The same file may set the explicit boolean `test_prefix: true` to enable TEST-pr
 removing that flag disables the prefix trial while preserving any exact-session opt-in.
 The retained continuity hook gates opted-in PILOT runs on a dedicated final reply containing
 exactly one permitted yield marker. ASSIGNMENT accepts ASSIGNMENT_COMPLETE, REAL_BLOCKER,
-HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. Ordinary prose remains blocked;
-this hook does not inspect work obligations or use `stop_hook_active` as an escape. The separate
-mailbox hook honors that escape after one continuation; it does not inspect yield markers. Neither
+HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. An explicit top-level STOP, kill,
+cancel, or pause also allows an ordinary reply to end that same turn. Other ordinary prose remains
+blocked; this hook does not inspect work obligations or use `stop_hook_active` as an escape. The
+separate mailbox hook honors that escape after one continuation and lets the same-turn explicit
+user stop bypass pending mail; it does not inspect yield markers. Neither
 hook mutates obligations or certifies completion or recipient pickup. The optional obligations
 projection above is read-only capability, not enforcement by these retained hooks. This is not
 a scheduler or an autonomous wake mechanism.

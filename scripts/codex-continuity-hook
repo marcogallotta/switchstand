@@ -12,6 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from codex_stop_intent import record as record_stop_intent
+from codex_stop_intent import requested as user_stop_requested
+
 MODES = {"OFF", "PILOT"}
 LIFETIMES = {"ASSIGNMENT", "STANDING"}
 MARKER_NAMES = ("ASSIGNMENT_COMPLETE", "REAL_BLOCKER", "HANDOFF", "USER_STOP")
@@ -105,6 +108,12 @@ def main() -> None:
             if _subagent(payload):
                 print("{}")
                 return
+            try:
+                record_stop_intent(payload)
+            except (OSError, TypeError, ValueError) as error:
+                _append(arguments.telemetry, _event(
+                    payload, event="stop_intent_error", hook_error=str(error),
+                ))
             print(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": PROMPT_CONTEXT,
@@ -117,15 +126,18 @@ def main() -> None:
         matches = list(MARKER.finditer(message or ""))
         terminal = TERMINAL_MARKER.search(message or "")
         marker = terminal.group(1) if terminal and len(matches) == 1 else None
-        allowed = marker in MARKERS and not (
+        allowed_marker = marker in MARKERS and not (
             marker == "ASSIGNMENT_COMPLETE" and arguments.lifetime == "STANDING"
         )
+        user_stop = user_stop_requested(payload)
+        allowed = allowed_marker or user_stop
         _append(arguments.telemetry, _event(
             payload,
             event="stop",
             stop_attempt=1,
             blocked=0 if allowed else 1,
             yield_marker=marker,
+            user_stop=user_stop,
             hook_error=None,
         ))
         if allowed:
