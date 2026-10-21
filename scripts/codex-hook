@@ -57,7 +57,9 @@ def segments(command: str) -> list[list[str]]:
             elif line.startswith("<<", position) and not (
                 line.startswith("<<<", position) or (position > 0 and line[position - 1] == "<")
             ):
-                marker = re.match(r"<<(-?)(?:'([A-Za-z_][A-Za-z_0-9]*)'|\"([A-Za-z_][A-Za-z_0-9]*)\"|([A-Za-z_][A-Za-z_0-9]*))", line[position:])
+                if "((" in line[:position] or "$[" in line[:position]:
+                    raise ValueError("arithmetic shift is not a here-document")
+                marker = re.match(r"<<(-?)(?:'([A-Za-z_][A-Za-z_0-9]*)'|\"([A-Za-z_][A-Za-z_0-9]*)\"|([A-Za-z_][A-Za-z_0-9]*))(?=$|[\s;&|<>])", line[position:])
                 if not marker:
                     raise ValueError("unsupported here-document delimiter")
                 openers.append((next(value for value in marker.groups()[1:] if value),

@@ -1066,6 +1066,12 @@ def test_hook_allows_apostrophe_in_heredoc_but_checks_following_command(tmp_path
     assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
     denied = hook(tmp_path, "echo '<<' EOF\nrm -rf /\nEOF\n", environment)
     assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    denied = hook(tmp_path, "echo $((1 <<EOF))\nrm -rf /\nEOF\n", environment)
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    denied = hook(tmp_path, "cat <<EOF#suffix\nit's data\nEOF#suffix\n", environment)
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+    denied = hook(tmp_path, "cat <<EOF#suffix\nbody\nEOF#suffix\nrm -rf /\nEOF\n", environment)
+    assert "shell-parse" in denied["hookSpecificOutput"]["permissionDecisionReason"]
     assert hook(tmp_path, "cat <<< 'plain data'", environment) == {}
 
 
