@@ -89,6 +89,94 @@ def test_unsafe_interval_makes_union_and_remainder_unknown() -> None:
     assert result["elapsed"]["projection_reason"] == "UNSAFE_INTERVAL"
     assert result["elapsed"]["observed_interval_union_ms"] is None
     assert result["elapsed"]["unobserved_wall_ms"] is None
+    assert result["delivery_timing"]["gaps"] is None
+
+
+def test_delivery_timing_preserves_overlap_source_identity_and_exact_complement() -> None:
+    value = {
+        "captured_at": "2026-01-01T01:00:00+00:00",
+        "admission": {"status": "KNOWN", "at": "2026-01-01T00:00:00+00:00"},
+        "review_pickup": {"status": "KNOWN", "review_id": "review-exact",
+                          "requested_at": "2026-01-01T00:00:00+00:00",
+                          "received_at": "2026-01-01T00:20:00+00:00",
+                          "verdict_at": "2026-01-01T00:20:00+00:00"},
+        "run_receipts": {"status": "PARTIAL", "truncated": True, "attempts": [{
+            "request_id": "research-request", "task_kind": "RESEARCH",
+            "requested_at": "2026-01-01T00:10:00+00:00",
+            "bound_at": "2026-01-01T00:10:00+00:00",
+            "completed_at": "2026-01-01T00:40:00+00:00",
+        }]},
+    }
+    result = project_wall(value)
+    timing = result["delivery_timing"]
+    assert timing["status"] == "PARTIAL"
+    assert timing["interval_cost_sum_ms"] == 50 * 60_000
+    assert result["elapsed"]["observed_interval_union_ms"] == 40 * 60_000
+    assert timing["gaps"] == [{"start": "2026-01-01T00:40:00+00:00",
+                               "end": value["captured_at"], "duration_ms": 20 * 60_000}]
+    assert timing["largest_gap"] == timing["gaps"][0]
+    assert timing["large_gaps"] == []
+    assert [(row["source_id"], row["kind"]) for row in timing["intervals"]] == [
+        ("review-exact", "REVIEW_REQUEST_TO_RECEIVE"),
+        ("research-request", "BOUND_RUN_ENVELOPE"),
+    ]
+    assert timing["largest_interval"]["source_id"] == "research-request"
+    assert result["run_receipts"]["truncated"] is True
+    assert "NOT_ACTIVE_EFFORT_OR_CAUSE" in timing["interpretation"]
+
+
+def test_delivery_timing_orders_clipped_gaps_and_keeps_failure_spans_distinct() -> None:
+    result = project_wall({
+        "captured_at": "2026-01-01T03:00:00+00:00",
+        "admission": {"status": "KNOWN", "at": "2026-01-01T00:00:00+00:00"},
+        "failures": {"status": "KNOWN", "items": [
+            {"attempt_id": "later", "occurred_at": "2026-01-01T02:00:00+00:00",
+             "resolved_at": "2026-01-01T02:30:00+00:00"},
+            {"attempt_id": "first", "occurred_at": "2025-12-31T23:30:00+00:00",
+             "resolved_at": "2026-01-01T00:30:00+00:00"},
+            {"attempt_id": "unresolved", "occurred_at": "2026-01-01T00:30:00+00:00",
+             "resolved_at": None},
+        ]},
+    })
+    timing = result["delivery_timing"]
+    assert [row["source_id"] for row in timing["intervals"]] == ["first", "later"]
+    assert all(row["kind"] == "RECORDED_FAILURE_OPEN" for row in timing["intervals"])
+    assert [row["duration_ms"] for row in timing["large_gaps"]] == [90 * 60_000, 30 * 60_000]
+    assert sum(row["duration_ms"] for row in timing["gaps"]) == 120 * 60_000
+    assert result["elapsed"]["unobserved_wall_ms"] == 120 * 60_000
+
+
+def test_delivery_timing_unbound_request_does_not_cover_unexplained_wall() -> None:
+    result = project_wall({
+        "captured_at": "2026-01-01T01:00:00+00:00",
+        "admission": {"status": "KNOWN", "at": "2026-01-01T00:00:00+00:00"},
+        "run_receipts": {"status": "KNOWN", "attempts": [{
+            "request_id": "open", "requested_at": "2026-01-01T00:30:00+00:00",
+            "bound_at": None, "completed_at": None,
+        }]},
+    })
+    assert result["delivery_timing"]["intervals"] == []
+    assert result["delivery_timing"]["largest_gap"]["duration_ms"] == 60 * 60_000
+    assert result["run_receipts"]["attempts"][0]["request_id"] == "open"
+
+
+@pytest.mark.parametrize("admission", [None, "2026-01-02T00:00:00+00:00"])
+def test_delivery_timing_cannot_locate_gaps_without_safe_window(admission: str | None) -> None:
+    result = project_wall({
+        "captured_at": "2026-01-01T01:00:00+00:00",
+        "admission": {"status": "KNOWN", "at": admission},
+        "run_receipts": {"status": "KNOWN", "attempts": [{
+            "request_id": "research", "requested_at": "2026-01-01T00:30:00+00:00",
+            "bound_at": "2026-01-01T00:40:00+00:00",
+            "completed_at": "2026-01-01T00:50:00+00:00",
+        }]},
+    })
+    assert result["delivery_timing"]["status"] == "UNKNOWN"
+    assert result["delivery_timing"]["gaps"] is None
+    assert result["delivery_timing"]["large_gaps"] is None
+    assert len(result["delivery_timing"]["intervals"]) == 2
+    assert all(row["window_basis"] == "SOURCE_INTERVAL_ONLY"
+               for row in result["delivery_timing"]["intervals"])
 
 
 def test_head_mismatch_makes_source_unknown_without_a_span() -> None:

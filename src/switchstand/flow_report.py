@@ -449,6 +449,7 @@ async def _human_reviews(
 
 async def _failures(
     connection: AsyncConnection, work_id: UUID, captured_at: datetime,
+    *, include_failure_detail: bool = False,
 ) -> tuple[dict[str, object], bool]:
     available = cast(bool, await connection.scalar(text(
         "SELECT to_regclass('public.failure_records') IS NOT NULL "
@@ -506,9 +507,27 @@ async def _failures(
                 (resolution.resolved_at - record.occurred_at).total_seconds() * 1000
             ),
         })
+        if include_failure_detail:
+            canonical = record.canonical()
+            cleared = None if resolution is None else resolution.canonical()
+            items[-1]["detail"] = {
+                key: canonical[key] for key in (
+                    "attempted_claim", "observed_result", "clearing_action", "evidence",
+                )
+            } | {"resolution": None if cleared is None else {
+                "summary": cleared["summary"], "evidence": cleared["evidence"],
+            }}
     items.reverse()
     truncated = total > len(items)
+    capture_coverage = {"capture_coverage": {
+        "status": "UNKNOWN",
+        "reason": "NO_DURABLE_ESCAPE_EVIDENCE" if total == 0 else "CAPTURE_COVERAGE_UNPROVEN",
+        "supported": ["STABLE_AUTH_ACTIVATION_UNTIL_DURABLE_PASS"],
+        "uncovered": ["RUNTIME_AFTER_PASS", "OTHER_DEPLOYMENT_PATHS", "UNAVAILABLE_STORAGE",
+                      "NO_FOLLOWUP_INVOCATION"],
+    }} if include_failure_detail else {}
     return {
+        **capture_coverage,
         "status": "PARTIAL" if truncated else "KNOWN",
         "reason": "MOST_RECENT_RECORDS_ONLY" if truncated else None,
         "correlation": "DIRECT_OWNER_WORK_ID", "items": items,
@@ -678,6 +697,7 @@ async def _snapshot(
     connection: AsyncConnection, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
     timing_write_failed: bool = False,
+    *, include_failure_detail: bool = False,
 ) -> dict[str, object]:
     await connection.execute(text("SET TRANSACTION READ ONLY"))
     captured_at = cast(datetime, await connection.scalar(select(func.now())))
@@ -704,7 +724,9 @@ async def _snapshot(
     trajectory_values = (await connection.execute(select(human_trajectory_revisions).where(
         human_trajectory_revisions.c.work_id_ref == work_id
     ).order_by(human_trajectory_revisions.c.generation))).all()
-    failures, _failures_available = await _failures(connection, work_id, captured_at)
+    failures, _failures_available = await _failures(
+        connection, work_id, captured_at, include_failure_detail=include_failure_detail,
+    )
     activation, activation_available = await _activation(connection, work_id)
     mcp_timings, timings_available = await _mcp_timings(connection, work_id, timing_write_failed)
     run_receipts, run_receipts_available = await _run_receipts(
@@ -934,12 +956,17 @@ async def _snapshot(
 async def report(
     engine: AsyncEngine, work_id: UUID,
     review_occurrences: ReviewOccurrenceState | None = None,
+    *, include_failure_detail: bool = False,
 ) -> dict[str, object]:
     store = timing_persistence(engine)
     async with engine.connect() as connection:
         connection = await connection.execution_options(isolation_level="REPEATABLE READ")
         async with connection.begin():
-            return await _snapshot(connection, work_id, review_occurrences, store is not None and store.write_failed)
+            return await _snapshot(
+                connection, work_id, review_occurrences,
+                store is not None and store.write_failed,
+                include_failure_detail=include_failure_detail,
+            )
 
 
 def _gate_interval(gate: QualificationGate) -> tuple[datetime, datetime] | None:
@@ -990,61 +1017,111 @@ def _unknown_elapsed(reason: str, start: object = None, end: object = None) -> d
 def project_wall(value: dict[str, object]) -> dict[str, object]:
     """Project only validated recorded-wall intervals into the admission window."""
     result = dict(value)
+    timing: dict[str, object] = {
+        "status": "UNKNOWN", "reason": "UNSAFE_OR_MISSING_WINDOW", "intervals": [],
+        "gaps": None, "large_gaps": None, "largest_gap": None, "largest_interval": None,
+        "interval_cost_sum_ms": None, "large_gap_filter_ms": 1_800_000,
+        "coverage": "OBSERVED_ONLY_SEE_SOURCE_COVERAGE",
+        "interpretation": "RECORDED_ENVELOPES_NOT_ACTIVE_EFFORT_OR_CAUSE",
+    }
+    result["delivery_timing"] = timing
     admission = cast(dict[str, object], value["admission"])
     start, end = _aware(admission.get("at")), _aware(value.get("captured_at"))
     if admission.get("status") != "KNOWN" or start is None or end is None:
         result["elapsed"] = _unknown_elapsed(
             "NOT_CAPTURED", admission.get("at"), value.get("captured_at"),
         )
-        return result
-    if start > end:
+    elif start > end:
         result["elapsed"] = _unknown_elapsed(
             "CLOCK_SKEW_OR_FUTURE_START", admission.get("at"), value.get("captured_at"),
         )
-        return result
-
-    raw_intervals: list[tuple[object, object]] = []
+    safe_window = (admission.get("status") == "KNOWN"
+                   and start is not None and end is not None and start <= end)
+    raw_intervals: list[tuple[str, object, str, object, object, bool]] = []
     reviews = cast(dict[str, object], value.get("human_review", {}))
     for item in cast(list[dict[str, object]], reviews.get("items", [])):
         wait = cast(dict[str, object], item["wait"])
-        raw_intervals.append(
-            (wait.get("start"), wait.get("end"))
-            if wait.get("status") in {"OPEN", "CLOSED"} else (None, None)
-        )
+        raw_intervals.append((
+            "human_review", item.get("consequence_id"), "HUMAN_REVIEW_WAIT",
+            wait.get("start") if wait.get("status") in {"OPEN", "CLOSED"} else None,
+            wait.get("end") if wait.get("status") in {"OPEN", "CLOSED"} else None,
+            wait.get("status") == "OPEN",
+        ))
     github = cast(dict[str, object] | None, value.get("github"))
     if github is not None and github.get("status") == "OBSERVED":
         subjects = cast(dict[str, dict[str, object]], github["subjects"])
-        for subject in subjects.values():
+        for kind, subject in subjects.items():
             for interval in cast(list[dict[str, object]], subject["intervals"]):
-                raw_intervals.append((interval.get("started_at"), interval.get("completed_at")))
+                raw_intervals.append((
+                    "github", f"{subject['subject_sha']}:{interval.get('gate')}",
+                    f"CI_{kind.upper()}", interval.get("started_at"), interval.get("completed_at"), False,
+                ))
     failures = cast(dict[str, object], value.get("failures", {}))
     if failures.get("status") in {"KNOWN", "PARTIAL"}:
         for item in cast(list[dict[str, object]], failures.get("items", [])):
             if item.get("resolved_at") is not None:
-                raw_intervals.append((item.get("occurred_at"), item.get("resolved_at")))
+                raw_intervals.append((
+                    "failure_journal", item.get("attempt_id"), "RECORDED_FAILURE_OPEN",
+                    item.get("occurred_at"), item.get("resolved_at"), False,
+                ))
     run_receipts = cast(dict[str, object], value.get("run_receipts", {}))
     if run_receipts.get("status") in {"KNOWN", "PARTIAL"}:
         for attempt in cast(list[dict[str, object]], run_receipts.get("attempts", [])):
+            bound = attempt.get("bound_at")
+            if bound is not None:
+                raw_intervals.append((
+                    "task_runs", attempt.get("request_id"), "REQUEST_TO_BOUND",
+                    attempt.get("requested_at"), bound, False,
+                ))
             if attempt.get("completed_at") is not None:
-                raw_intervals.append((attempt.get("requested_at"), attempt.get("completed_at")))
+                raw_intervals.append((
+                    "task_runs", attempt.get("request_id"), "BOUND_RUN_ENVELOPE",
+                    bound, attempt.get("completed_at"), False,
+                ))
+    pickup = cast(dict[str, object], value.get("review_pickup", {}))
+    if pickup.get("status") == "KNOWN":
+        received = pickup.get("received_at")
+        if received is not None:
+            raw_intervals.append((
+                "review_pickup", pickup["review_id"], "REVIEW_REQUEST_TO_RECEIVE",
+                pickup.get("requested_at"), received, False,
+            ))
+        if pickup.get("verdict_at") is not None:
+            raw_intervals.append((
+                "review_pickup", pickup["review_id"], "REVIEW_RECEIPT_TO_VERDICT_ENVELOPE",
+                received, pickup.get("verdict_at"), False,
+            ))
 
     clipped: list[tuple[datetime, datetime]] = []
-    for raw_start, raw_end in raw_intervals:
+    measured: list[dict[str, object]] = []
+    unsafe = False
+    for source, source_id, kind, raw_start, raw_end, is_open in raw_intervals:
         interval_start, interval_end = _aware(raw_start), _aware(raw_end)
         if interval_start is None or interval_end is None or interval_end < interval_start:
-            result["elapsed"] = {
-                "clock_basis": "RECORDED_WALL_TIME",
-                "wall_status": "KNOWN", "wall_reason": None,
-                "wall_start": admission["at"], "wall_end": value["captured_at"],
-                "wall_ms": int((end - start).total_seconds() * 1000),
-                "projection_status": "UNKNOWN", "projection_reason": "UNSAFE_INTERVAL",
-                "observed_interval_union_ms": None, "unobserved_wall_ms": None,
-                "unobserved_interpretation": "NOT_IDLE_OR_CRITICAL_PATH",
-            }
-            return result
-        clipped_start, clipped_end = max(start, interval_start), min(end, interval_end)
+            unsafe = True
+            continue
+        clipped_start, clipped_end = (
+            (max(start, interval_start), min(end, interval_end))
+            if safe_window and start is not None and end is not None
+            else (interval_start, interval_end)
+        )
         if clipped_start < clipped_end:
             clipped.append((clipped_start, clipped_end))
+            measured.append({
+                "source": source, "source_id": source_id, "kind": kind,
+                "recorded_start": raw_start, "recorded_end": None if is_open else raw_end,
+                "end_basis": "CAPTURE_FOR_OPEN_INTERVAL" if is_open else "RECORDED_BOUNDARY",
+                "window_basis": "CLIPPED_TO_WALL" if safe_window else "SOURCE_INTERVAL_ONLY",
+                "start": _time(clipped_start), "end": _time(clipped_end),
+                "duration_ms": int((clipped_end - clipped_start).total_seconds() * 1000),
+            })
+    measured.sort(key=lambda item: (str(item["start"]), str(item["end"]),
+                                    str(item["source"]), str(item["source_id"]), str(item["kind"])))
+    timing["intervals"] = measured
+    if not safe_window:
+        return result
+    assert start is not None and end is not None
+    timing["reason"] = "UNSAFE_INTERVAL"
     wall_ms = int((end - start).total_seconds() * 1000)
     union_ms = _union_ms(clipped) if clipped else 0
     result["elapsed"] = {
@@ -1052,11 +1129,32 @@ def project_wall(value: dict[str, object]) -> dict[str, object]:
         "wall_status": "KNOWN", "wall_reason": None,
         "wall_start": admission["at"], "wall_end": value["captured_at"],
         "wall_ms": wall_ms,
-        "projection_status": "KNOWN", "projection_reason": None,
-        "observed_interval_union_ms": union_ms,
-        "unobserved_wall_ms": wall_ms - union_ms,
+        "projection_status": "UNKNOWN" if unsafe else "KNOWN",
+        "projection_reason": "UNSAFE_INTERVAL" if unsafe else None,
+        "observed_interval_union_ms": None if unsafe else union_ms,
+        "unobserved_wall_ms": None if unsafe else wall_ms - union_ms,
         "unobserved_interpretation": "NOT_IDLE_OR_CRITICAL_PATH",
     }
+    if not unsafe:
+        gaps: list[dict[str, object]] = []
+        cursor = start
+        for interval_start, interval_end in sorted(clipped):
+            if cursor < interval_start:
+                gaps.append({"start": _time(cursor), "end": _time(interval_start),
+                             "duration_ms": int((interval_start - cursor).total_seconds() * 1000)})
+            cursor = max(cursor, interval_end)
+        if cursor < end:
+            gaps.append({"start": _time(cursor), "end": _time(end),
+                         "duration_ms": int((end - cursor).total_seconds() * 1000)})
+        timing.update({
+            "status": "PARTIAL", "reason": "OBSERVED_SOURCES_ONLY",
+            "gaps": gaps,
+            "interval_cost_sum_ms": sum(cast(int, item["duration_ms"]) for item in measured),
+            "largest_interval": max(measured, key=lambda item: cast(int, item["duration_ms"]),
+                                    default=None),
+            "largest_gap": max(gaps, key=lambda item: cast(int, item["duration_ms"]), default=None),
+            "large_gaps": [item for item in gaps if cast(int, item["duration_ms"]) >= 1_800_000],
+        })
     return result
 
 
@@ -1302,6 +1400,28 @@ def render_concise(value: dict[str, object]) -> str:
         f"unobserved_wall_ms={elapsed['unobserved_wall_ms']} "
         f"interpretation={elapsed['unobserved_interpretation']}"
     )
+    timing = cast(dict[str, object] | None, value.get("delivery_timing"))
+    if timing is not None:
+        lines.append(
+            f"delivery_timing status={timing['status']} reason={timing['reason']} "
+            f"window={elapsed['wall_start']}..{elapsed['wall_end']} "
+            f"interval_cost_sum_ms={timing['interval_cost_sum_ms']} "
+            f"coverage={timing['coverage']} interpretation={timing['interpretation']}"
+        )
+        for item in cast(list[dict[str, object]], timing["intervals"]):
+            lines.append(
+                f"delivery_interval source={item['source']} source_id={item['source_id']} "
+                f"kind={item['kind']} start={item['start']} end={item['end']} "
+                f"duration_ms={item['duration_ms']} end_basis={item['end_basis']}"
+            )
+        for item in cast(list[dict[str, object]], timing["gaps"] or []):
+            lines.append(
+                f"unexplained_gap start={item['start']} end={item['end']} "
+                f"duration_ms={item['duration_ms']} "
+                f"large={cast(int, item['duration_ms']) >= 1_800_000} diagnostic_filter_ms=1800000"
+            )
+        for name in ("largest_interval", "largest_gap"):
+            lines.append(f"delivery_{name}={json.dumps(timing[name], sort_keys=True)}")
     return "\n".join(lines) + "\n"
 
 

@@ -176,7 +176,7 @@ async def test_populated_migration_refuses_to_discard_trajectory(store):
     async with store.engine.connect() as connection:
         assert await connection.scalar(text(
             "SELECT version_num FROM alembic_version"
-        )) == "0026_agent_message_ack"
+        )) == "0027_pull_requests"
         assert await connection.scalar(text(
             "SELECT count(*) FROM human_trajectory_revisions"
         )) == 1

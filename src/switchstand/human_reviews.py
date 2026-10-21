@@ -145,10 +145,13 @@ class HumanReviewConsequence(ClosedModel):
     ] = "READY_FOR_IMPLEMENTATION_ONLY"
     baseline: HumanReviewBaselineV2 | None = None
     requester: HumanReviewRequester | None = None
+    task_text: str | None = Field(default=None, min_length=1)
     candidate: HumanReviewCandidate | None = None
 
     @model_validator(mode="after")
     def bounded_unique_items(self) -> HumanReviewConsequence:
+        if self.task_text is not None and self.baseline is None:
+            raise ValueError("Task text requires an approved-baseline consequence")
         for values in (self.implementation_scope, self.excluded_effects):
             if len(set(values)) != len(values) or any(not value or len(value) > 512 for value in values):
                 raise ValueError("consequence items must be unique strings of 1..512 characters")
@@ -175,6 +178,8 @@ class HumanReviewConsequence(ClosedModel):
     @property
     def digest(self) -> str:
         values = self.model_dump(mode="json")
+        if self.task_text is None:
+            values.pop("task_text")
         if self.requester is None:
             values.pop("requester")  # Preserve the exact digest of existing consequences.
         if self.candidate is None:
@@ -198,6 +203,8 @@ FailureReason = Literal[
     "decision_conflict",
     "baseline_supersession_required",
     "baseline_supersession_invalid",
+    "agent_notes_overflow",
+    "task_text_required",
     "task_approval_changed",
     "candidate_approval_required",
     "candidate_changed",
@@ -296,6 +303,12 @@ async def current_approved_baseline_in_transaction(
     return current[0] if current else None
 
 
+async def agent_notes_fit(connection: AsyncConnection, work_id: UUID, notes: str) -> bool:
+    approved = await current_approved_baseline_in_transaction(connection, work_id)
+    return (approved is None or approved.consequence.task_text is None
+            or len(notes.encode("utf-8")) <= 2048)
+
+
 class HumanReviewState:
     """Atomic consequence preparation and decision storage for a future trusted shell."""
 
@@ -382,6 +395,8 @@ class HumanReviewState:
             or current[0].consequence_id != baseline.supersedes_baseline_id
         ):
             return "baseline_supersession_invalid"
+        if current[0].consequence.task_text is not None and consequence.task_text is None:
+            return "task_text_required"
         return None
 
     async def propose(self, consequence: HumanReviewConsequence) -> HumanReviewResult:
@@ -543,6 +558,10 @@ class HumanReviewState:
                     if row["decision"] != decision:
                         return HumanReviewResult(status="CONFLICT", reason="decision_conflict")
                     return HumanReviewResult(status="REPLAYED", record=human_review_record(row))
+                if decision == "APPROVED" and human_review_record(row).consequence.task_text is not None:
+                    package = await self.works.get_locked(connection, package_work_id)
+                    if package is None or len(package.notes.encode("utf-8")) > 2048:
+                        return HumanReviewResult(status="DENIED", reason="agent_notes_overflow")
                 state = "READY_FOR_IMPLEMENTATION" if decision == "APPROVED" else decision
                 decided = (await connection.execute(update(human_review_consequences).where(
                     human_review_consequences.c.consequence_id == consequence_id

@@ -8,12 +8,13 @@ from dataclasses import replace
 from typing import Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import Text, exists, insert, select
+from sqlalchemy import Text, exists, insert, select, update
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .agent_mailboxes import CODEX_COORDINATOR_NAME
+from . import pull_requests
+from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
 from .canonical_relations import (
     CanonicalRelationsRepository,
     WorkRelations,
@@ -55,6 +56,11 @@ from .grants import (
     ProtectedUpdate,
     RelationReceipt,
     UpdateReceipt,
+)
+from .human_reviews import (
+    HumanReviewRecord,
+    agent_notes_fit,
+    current_approved_baseline_in_transaction,
 )
 from .messages import messages
 from .mutation_effect import blocked_effect_next_action
@@ -182,18 +188,28 @@ class CanonicalWorkRuntime:
 
     async def _item(self, work: CurrentWork) -> WorkItem | None:
         relations = await self.relations.get(work.work_id)
+        approved = await self._task_approval(work.work_id)
         if await self.works.get(work.work_id) != work:
             return None
         return WorkItem(
             id=work.work_id,
             title=work.title,
             notes=work.notes,
+            task_text=None if approved is None else approved.consequence.task_text,
+            task_approval_id=None if approved is None else approved.consequence_id,
+            task_approval_digest=None if approved is None else approved.consequence_digest,
             completed=work.completed,
             revision=canonical_revision(work.work_id, work.row_version),
             routing=_routing(work),
             context=_context(work, relations),
             admitted_at=work.admitted_at,
         )
+
+    async def _task_approval(self, work_id: UUID) -> HumanReviewRecord | None:
+        async with self.works.engine.begin() as connection:
+            await self.works.get_locked(connection, work_id)
+            approved = await current_approved_baseline_in_transaction(connection, work_id)
+            return approved if approved is not None and approved.consequence.task_text is not None else None
 
     async def get(self, work_id: UUID) -> WorkResult:
         for _ in range(2):
@@ -347,6 +363,10 @@ class CanonicalWorkRuntime:
                 target_notes = None if target is None or target_note is None else f"{target.notes.rstrip()}\n\n{target_note}".strip()
                 if len(source_notes) > 8000 or (target_notes is not None and len(target_notes) > 8000):
                     return self._classification_guard(request, "denied", "classification_notes_overflow")
+                if (not await agent_notes_fit(connection, source.work_id, source_notes)
+                        or (target is not None and target_notes is not None
+                            and not await agent_notes_fit(connection, target.work_id, target_notes))):
+                    return self._classification_guard(request, "denied", "agent_notes_overflow")
                 if target_notes is not None:
                     target = await self.works.replace_locked(
                         connection, replace(cast(CurrentWork, target), notes=target_notes)
@@ -525,6 +545,8 @@ class CanonicalWorkRuntime:
                         return self._guard(request, "denied", "invalid_database_metadata")
                     values = {field: getattr(request.patch, field) for field in fields}
                     candidate = replace(current, **values)
+                    if not await agent_notes_fit(connection, candidate.work_id, candidate.notes):
+                        return self._guard(request, "denied", "agent_notes_overflow")
                     try:
                         _validate_semantic_write(candidate, fields)
                     except ValueError:
@@ -695,6 +717,8 @@ class CanonicalWorkRuntime:
                             next_action_class=request.next_action_class,
                             next_action_ref=request.next_action_ref,
                         )
+                        if not await agent_notes_fit(connection, work_id, created.notes):
+                            return CreateGateway.guard(request, "denied", "agent_notes_overflow")
                         try:
                             validate_create_state(
                                 parented=parent is not None,
@@ -791,6 +815,7 @@ class CanonicalWorkRuntime:
 
     async def protected_relation(
         self, grants: GrantState, principal: PrincipalContext, request: ProtectedRelation,
+        *, caller: AgentMailbox | None = None,
     ) -> GuardOutcome:
         """Apply and journal one canonical parent or dependency change atomically."""
         fingerprint = RelationGateway.fingerprint(principal, request)
@@ -856,7 +881,7 @@ class CanonicalWorkRuntime:
                             request, "stale", "source_revision_changed"
                         )
                     patch = request.patch
-                    if patch.kind not in {"parent", "dependency", "placement"}:
+                    if patch.kind not in {"parent", "dependency", "placement", "pull_request"}:
                         return RelationGateway.guard(
                             request, "denied", "invalid_database_relation"
                         )
@@ -865,7 +890,18 @@ class CanonicalWorkRuntime:
                         return RelationGateway.guard(
                             request, "denied", "relation_target_not_granted"
                         )
-                    if patch.kind == "parent":
+                    pr_record = None
+                    if patch.kind == "pull_request":
+                        if caller is None or patch.pull_request is None:
+                            return RelationGateway.guard(request, "denied", "agent_not_registered")
+                        pr_record = await pull_requests.change(
+                            connection, request.work_id, patch.action, patch.pull_request,
+                            caller, principal.key, request.operation_id,
+                        )
+                        await connection.execute(update(canonical_work).where(
+                            canonical_work.c.work_id == request.work_id
+                        ).values(row_version=current.row_version + 1))
+                    elif patch.kind == "parent":
                         await self.relations.set_parent(
                             request.work_id, target, current.row_version,
                             connection=connection,
@@ -895,7 +931,7 @@ class CanonicalWorkRuntime:
                         work_id=request.work_id, provider="postgres",
                         task_gid=str(request.work_id),
                         observed_revision=request.observed_revision,
-                        patch=patch, qualification=qualification,
+                        patch=patch, qualification=qualification, pull_request=pr_record,
                     )
                     outcome = GuardOutcome(
                         status="ok", operation="work_relate", work_id=request.work_id,
@@ -912,6 +948,8 @@ class CanonicalWorkRuntime:
                         outcome=outcome.model_dump(mode="json", exclude_none=True),
                     ))
                     return outcome
+            except pull_requests.StaleVersion:
+                return RelationGateway.guard(request, "stale", "pr_revision_changed")
             except IntegrityError:
                 if attempt == 0:
                     continue

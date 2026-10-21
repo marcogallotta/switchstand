@@ -10,6 +10,11 @@ defined in [Code quality: governed implementation packages](code-quality.md#gove
 Keep its package base fixed across delivery branches and use its solution disposition
 before revising PR decomposition; routine implementation remains worker-owned.
 
+Marco's explicit fasttrack follows [Code quality: explicit human fasttrack](code-quality.md#explicit-human-fasttrack):
+current CI and required E2E pass, review deferred through landing/deployment, and Coordinator-owned
+post-deployment review. The exception changes review timing, with exact effect authority and
+candidate/composition qualification preserved. It also applies to the stack review waits below.
+
 ## Normal local workflow
 
 Prepare the shared tools once from the primary checkout, create a task-owned linked
@@ -74,6 +79,49 @@ For real ChatGPT testing of an unreleased candidate, start with the
 [isolated TEST MCP lifecycle](chatgpt-mcp-edge.md#isolated-real-chatgpt-test-mcp).
 Check the existing TEST service and its current owner before creating another;
 use its separate connection and database for candidate qualification.
+
+## Noninteractive commands from an Implementation Specification
+
+Specification authors should include every required noninteractive command in one
+`spec-test-commands` JSON fence in the Implementation Specification's notes. Each head runs
+these authorized local checks directly:
+
+````text
+```spec-test-commands
+[{"name":"focused quality","argv":["sh","scripts/check","tests/test_example.py"],
+  "cwd":".","timeout_seconds":120,"noninteractive":true}]
+```
+````
+
+When resuming an older specification without the block, add the agreed executable checks
+before using the runner, preserving its acceptance criteria; no bulk rewrite is needed.
+Keep visible or human ChatGPT testing duties separately identified and Coordinator-owned.
+
+The executing head reads current work through `work_get`, saves its successful JSON payload
+(or full CallToolResult) outside the candidate, and runs against that exact specification
+identity and clean candidate:
+
+```bash
+scripts/spec-test-commands --spec /tmp/spec.json --work-id <WorkId> \
+  --revision <exact-revision> --candidate <40-character-SHA> --repo "$PWD" > /tmp/results.json
+```
+
+The runner reads the specification; there is no caller-maintained command subset. Every entry is
+required. Only all actual zero exits plus unchanged source bytes and clean candidate produce PASS.
+Missing/invalid commands or prerequisites remain NOT_RUN; failures/timeouts are FAIL; detected
+post-run source/candidate drift is STALE. The JSON records each argv, cwd, output, exit and duration
+with the specification identity/digest, candidate, reason, next owner and action. Closed stdin,
+CI/display guards and process-group timeouts support noninteractive execution. These guards are
+not a sandbox: the head must select only authorized noninteractive checks that do not launch a
+browser or affect live services. An export cannot prove live canonical currentness; refresh the
+exact spec before execution and reconcile before recording its result.
+
+The executing head records the exact result once through existing Tracker `work_update`; the
+runner prints evidence and does not write Tracker or send a PASS mailbox message. On partial or
+failed evidence, diagnose why and choose code/fixture/spec repair, genuine human input, or a real
+blocker; retain reason/owner/next action. Independent review challenges that judgment, including
+when no change is chosen. Local execution needs no Coordinator approval. Existing review and
+qualification requirements still apply to their own boundaries.
 
 ## Match evidence to the claim
 

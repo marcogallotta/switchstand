@@ -117,3 +117,34 @@ def test_queue_file_reconciles_an_empty_registry_as_pending_sync(tmp_path):
     assert json.loads((queue.directory / "registry.json").read_text()) == {
         str(value.attempt_id): "PENDING_SYNC"
     }
+
+
+def test_identical_queue_replay_syncs_file_and_directory_before_handoff(tmp_path, monkeypatch):
+    import os
+    import stat
+
+    import pytest
+
+    queue = PendingFailureQueue(tmp_path / "pending")
+    value = failure()
+    queue.enqueue(value)
+    original = os.fsync
+    synchronized = []
+
+    def fsync(descriptor):
+        synchronized.append("directory" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file")
+        original(descriptor)
+        if synchronized == ["file"]:
+            raise OSError("file durability unknown")
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    with pytest.raises(OSError):
+        queue.enqueue(value)
+    assert queue.pending() == (value,)
+    synchronized.clear()
+    monkeypatch.setattr(os, "fsync", lambda fd: (
+        synchronized.append("directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"),
+        original(fd),
+    ))
+    assert queue.enqueue(value) == "PENDING_SYNC"
+    assert synchronized == ["file", "directory"]

@@ -217,26 +217,30 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "WHAT YOU ASKED —" not in human_review
     assert "CONFORMS_TO_APPROVED_BASELINE" in human_review
     assert "does not become a portfolio hold" in human_review
-    assert "does not require repeat review solely because implementation or landing is ready" in agents
-    assert "current authority separately authorizes it" in agents
-    assert "Report completed work as status, not another permission request" in agents
+    assert "Check whether Marco already approved the exact solution" in agents
+    assert "unchanged approved work and routine status need no new decision" in agents
+    assert "These triggers do not grant authority" in agents
     assert "Approved-baseline conformance" in quality
 
 
-def test_loc_exceptions_use_one_hard_challenge_and_rare_human_escalation():
+def test_aggregate_extension_and_per_pr_exception_have_distinct_authority():
+    document = read("docs/code-quality.md")
     quality = " ".join(
-        section(read("docs/code-quality.md"), "### Canonical exception challenge").split()
+        section(document, "### Canonical exception challenge").split()
     )
+    extension = " ".join(section(document, "### Coordinator extension review").split())
+    per_pr = " ".join(section(document, "### Exceptional LOC exemption gate").split())
 
     assert "do not quote, summarize, or rewrite it" in quality
-    assert "assume the exception should be rejected" in quality
     assert "without accepting candidate-created invariants as requirements" in quality
-    assert "at or below twice the original hard cap" in quality
-    assert "Growth beyond twice the original hard cap is a 1-in-100 exception" in quality
-    assert "strongest smaller route fail or cause concrete greater harm" in quality
-    assert "A `>=500` actual PR/diff is independently a 1-in-100 exception" in quality
-    assert "never demand serial review pairs" in quality
-    assert "it never grants either 1-in-100 exception" in quality
+    assert "review agreement does not grant it" in quality
+    assert "strictly below twice its corresponding ORIGINAL approved cap" in extension
+    assert "At 2x or above in ANY breached dimension" in extension
+    assert "original baseline, never the last extension" in extension
+    assert "Challenge scope creep at any multiplier" in extension
+    assert "An aggregate package above 500 lines is not itself a `>=500` PR exception" in per_pr
+    assert "Agents split independently useful, reviewable PRs without asking Marco" in per_pr
+    assert "`>=500` actual PR/diff remains on **HOLD** absent an exact Marco exception" in per_pr
 
 
 def test_human_and_incident_triggers_remain_always_loaded():
@@ -245,8 +249,8 @@ def test_human_and_incident_triggers_remain_always_loaded():
     incident = section(agents, "### Live incidents")
 
     assert markdown_links(triggers) >= {"docs/human-input.md", "docs/human-review.md"}
-    assert "Before a new material solution hardens" in triggers
-    assert "an unchanged already-approved solution does not require repeat review" in triggers
+    assert "before that commitment when Marco's judgment could change the choice" in triggers
+    assert "before that action. Check whether Marco already approved the exact solution" in triggers
     assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
     assert markdown_links(incident) >= {
         "docs/operations-live-incident.md",
@@ -266,6 +270,7 @@ def test_authority_and_work_routing_keep_their_causal_fences():
     assert "Mailbox registration/takeover supplies neither work identity nor authority" in authority
     assert "never create work from a question, status, correction, approval" in authority
     assert "Landing requires current independent review and exact-head/composition gates" in authority
+    assert "docs/code-quality.md#explicit-human-fasttrack" in authority
     assert "work_type=\"Task\"" in usage
     assert 'owner_key=\"SELF\"' in usage
     assert "Use one stable OperationId" in usage
@@ -308,7 +313,9 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     assert "must stop and ask Marco for confirmation" in agents
     assert "never retake the Coordinator after losing it" in agents
     assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
-    assert "A stateless repository hook re-injects the existing Feedback V1 obligation" in usage
+    assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
+    assert "The first boundary starts five minutes" in architecture
+    assert "three LIGHT notifications, then HARD, repeating" in architecture
     assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
     assert "`/root` remains a temporary inbound alias" in usage
     assert "stops with `takeover_confirmation_required`" in usage
@@ -339,7 +346,9 @@ def test_performance_feedback_and_definitive_receipt_rules_stay_bounded():
     interaction = normalized("docs/human-interaction.md")
     source = normalized("docs/source-history-feedback.md")
 
-    assert "file_performance" in agents
+    assert "docs/source-history-feedback.md#feedback-capture-and-triage" in agents
+    assert "before unrelated work" in agents
+    assert "Sample ordinary work that produced no report" in source
     assert "four `mcp__switchstand__file_*`" not in agents
     assert "definitive semantic receipt is the readback" in agents
     assert "Stop once the requested postcondition is established" in interaction
@@ -416,8 +425,10 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
     assert "Prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
     assert "do not delay mitigation for repository synchronization" in incident
-    assert "Before a new material solution hardens, follow [Human Input]" in triggers
-    assert "and [Human Review](docs/human-review.md) for any still-open human-owned choice" in triggers
+    assert "commit to a new choice about user behavior, scope, architecture, scale, cost, risk, or lasting agent policy" in triggers
+    assert "[Human Input](docs/human-input.md) before that commitment" in triggers
+    assert "commit to, implement, dispatch, request approval for, or hand off a new solution or material change" in triggers
+    assert "[Human Review](docs/human-review.md) before that action" in triggers
     assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
     assert "agent resource admission" in agents
     assert "Shared canonical `main` is read-only" in agents

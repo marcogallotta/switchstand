@@ -1,6 +1,7 @@
 """Real process/socket/PostgreSQL replay with fixture token verification."""
 
 import asyncio
+import json
 import os
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from key_value.aio.stores.memory import MemoryStore
 from mcp.server.auth.provider import AccessToken
+from sqlalchemy import update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -39,6 +41,7 @@ from switchstand.edge_semantic_probe import MCP
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
+from switchstand.messages import messages
 from switchstand.state import PostgresState, metadata
 from switchstand.work_events import WorkEventRepository
 from switchstand.workspace_admission import WorkspaceAdmissionState
@@ -48,7 +51,7 @@ TOOLS = {
     "work_get", "human_trajectory_get", "human_trajectory_record",
     "work_search", "work_resolve_reference",
     "work_history", "work_event", "work_append", "capability_preflight_get",
-    "work_create", "work_update", "work_relate",
+    "work_create", "work_update", "work_relate", "project_create",
     "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback",
     "file_fork_management",
     "task_control_get", "task_control_checkpoint", "work_hygiene_check",
@@ -78,12 +81,12 @@ def _child_server() -> None:
     edge.create_app = partial(edge.create_app, client_storage=MemoryStore())
     original_get = edge.ChatGPTService.get
 
-    async def delayed_get(service, work_id=None):
+    async def delayed_get(service, work_id=None, **cursors):
         marker = os.getenv("SLOW_GET_STARTED_FILE")
         if marker:
             Path(marker).write_text("started\n")
             await asyncio.sleep(float(os.environ["SLOW_GET_SECONDS"]))
-        return await original_get(service, work_id)
+        return await original_get(service, work_id, **cursors)
 
     edge.ChatGPTService.get = delayed_get
     edge.main()
@@ -113,7 +116,9 @@ async def _provision(url, subject):
     denied = await state.bind("asana", "789")
     works = CanonicalWorkRepository(engine)
     for handle, title in ((active, "Task"), (reference, "Reference"), (denied, "Denied")):
-        await works.create(CurrentWork(handle.id, title, False, f"{title} notes"))
+        notes = (f"Task notes\nHuman Review procedure: work_get {reference.id}"
+                 if handle == active else f"{title} notes")
+        await works.create(CurrentWork(handle.id, title, False, notes))
         await works.bind_asana_gid(handle.provider_work_id, handle.id)
     await WorkEventRepository(engine).append(
         active.id, observed_version=1, operation_id=uuid4(), subtype="comment_added",
@@ -208,12 +213,137 @@ async def _discover(endpoint, selected):
             "api_version": "1", "text": "Task", "limit": 10,
         })).structured_content
         assert search["status"] == "ok" and len(search["items"]) == 1
+        descriptions = {tool.name: tool.description for tool in listed_tools}
+        assert "procedure references" in descriptions["work_get"]
+        assert "not assignment" in descriptions["work_search"]
+        assert "title or topic" in descriptions["work_resolve_reference"]
+        wrong = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": str(uuid4()),
+        })).structured_content
+        assert wrong["status"] == "denied" and wrong["item"] is None
+        assert wrong["guard"]["reason"] == "work_not_granted"
+        recovery = wrong["guard"]["next_action"]
+        assert "changed nothing" in recovery and "work_search" in recovery
+        recovered = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": search["items"][0]["id"],
+        })).structured_content
+        assert recovered["item"] == observed["item"]
+        procedure_id = recovered["item"]["notes"].split("work_get ", 1)[1]
+        procedure = (await client.call_tool("work_get", {
+            "api_version": "1", "work_id": procedure_id,
+        })).structured_content
+        assert procedure["item"]["id"] == str(selected.authority.reference_work_ids[0])
+        assert procedure["item"]["notes"] == "Reference notes"
+        resolved = (await client.call_tool("work_resolve_reference", {
+            "api_version": "1", "reference": "456",
+        })).structured_content
+        assert resolved["item"] == procedure["item"]
         for tool in listed_tools:
             if tool.name in {"work_search", "work_get", "work_history", "work_event"}:
                 assert_public(tool.model_dump(mode="json"))
                 assert tool.inputSchema.get("additionalProperties") is False
         await read_chain(client, search["items"][0]["id"], exceptional_purpose=True)
         assert "provider" not in search["items"][0] and "task_gid" not in search["items"][0]
+
+
+@pytest.mark.parametrize("outcome_state_enabled", ["0", "1"])
+async def test_pr_accountability_over_real_http_and_restart(
+    database_prerequisite, outcome_state_enabled,
+):
+    """Exercise PR links, workspace backlinks and accepted transfer through real MCP/PG."""
+    url = os.environ["TEST_DATABASE_URL"]
+    subject = str(uuid4().int)
+    selected, third = await _provision(url, subject)
+    active = selected.authority.active_work_id
+    reference = selected.authority.reference_work_ids[0]
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "EFFECT_FILE": os.devnull,
+        "SWITCHSTAND_OUTCOME_STATE_ACTIONS": outcome_state_enabled,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1",
+        "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    author = f"pr-author-{subject}"
+    recipient = f"pr-recipient-{subject}"
+    repository = f"Owner/Repository-{subject}"
+    identity = {"repository": repository, "number": 1053, "package_ref": "work:exact"}
+    with _server(env, port) as endpoint:
+        client = MCP(endpoint + "/mcp", "fixed-bearer")
+        client.initialize()
+        inventory = client.call("tools/list", {}, 2)
+        assert isinstance(inventory, dict)
+        read_tool = next(tool for tool in inventory["tools"] if tool["name"] == "work_get")
+        assert {"pr_cursor", "pr_link_cursor"} <= read_tool["inputSchema"]["properties"].keys()
+
+        def call(actor, tool_name, **arguments):
+            result = client.call("tools/call", {
+                "name": tool_name, "arguments": {"api_version": "1", **arguments},
+                "_meta": {"openai/session": actor},
+            }, len(client.requests) + 2)
+            assert isinstance(result, dict) and not result.get("isError"), result
+            return result
+
+        try:
+            for actor in (author, recipient):
+                assert call(actor, "agent_register", name=actor)["status"] == "ok"
+            for work_id in (active, reference, third):
+                observed = call(author, "work_get", work_id=str(work_id))
+                linked = call(author, "work_relate", operation_id=str(uuid4()),
+                              work_id=str(work_id), observed_revision=observed["item"]["revision"],
+                              patch={"kind": "pull_request", "action": "add",
+                                     "pull_request": identity})
+                assert linked["effect"] == "applied"
+            # Ordinary HTTP admission is workspace-wide, independent of managed grants.
+            observed = call(author, "work_get", work_id=str(active))
+            record = observed["pull_requests"]["records"][0]
+            assert record["repository"] == repository.lower()
+            assert record["visibility"] == "FULL"
+            assert set(record["work_ids"]) == {str(active), str(reference), str(third)}
+            transfer = {
+                **identity, "expected_version": 1, "recipient_key": recipient,
+                "acceptance_delivery_id": str(uuid4()),
+            }
+            request = {
+                "work_id": str(active), "observed_revision": observed["item"]["revision"],
+                "patch": {"kind": "pull_request", "action": "set", "pull_request": transfer},
+            }
+            denied = call(author, "work_relate", operation_id=str(uuid4()), **request)
+            assert denied["status"] == "denied" and denied["effect"] == "not_sent"
+            acceptance = call(recipient, "agent_message_send",
+                              recipient_name=author, message_id=str(uuid4()), payload={
+                                  "kind": "pr_owner_acceptance", "repository": repository.lower(),
+                                  "number": 1053, "previous_owner": author,
+                                  "expected_version": 1, "package_ref": "work:exact",
+                                  "recipient_key": recipient, "recipient_generation": 1,
+                                  "previous_owner_generation": 1,
+                              })
+            assert acceptance["status"] == "ok"
+            transfer["acceptance_delivery_id"] = acceptance["message"]["delivery_id"]
+            operation_id = str(uuid4())
+            applied = call(author, "work_relate", operation_id=operation_id, **request)
+            replay = call(author, "work_relate", operation_id=operation_id, **request)
+            assert applied == replay and applied["effect"] == "applied"
+            assert applied["receipt"]["pull_request"]["owner_key"] == recipient
+        finally:
+            client.close()
+    # The receipt and owner must survive a completely new edge process and connection.
+    with _server(env, port) as endpoint:
+        client = MCP(endpoint + "/mcp", "fixed-bearer")
+        try:
+            client.initialize()
+            recovered = client.call("tools/call", {"name": "work_get", "arguments": {
+                "api_version": "1", "work_id": str(active),
+            }}, 2)
+            assert isinstance(recovered, dict) and recovered["status"] == "ok"
+            record = recovered["pull_requests"]["records"][0]
+            assert record["owner_key"] == recipient and record["row_version"] == 2
+            assert record["acceptance_ref"] == f"delivery:{transfer['acceptance_delivery_id']}"
+        finally:
+            client.close()
 
 
 async def test_e2e_expected_tools_over_real_http(database_prerequisite):
@@ -245,6 +375,26 @@ async def test_e2e_expected_tools_over_real_http(database_prerequisite):
                 "api_version": "1", "work_id": str(selected.authority.active_work_id),
             }}, 3)
             assert isinstance(result, dict) and result["status"] == "ok"
+            outer = client.requests[-1]["response"]["result"]
+            assert not outer.get("isError", False) and outer["content"]
+            assert outer["structuredContent"] == result
+            original = result["item"]
+            # Reject an invalid public mutation at the real HTTP boundary and
+            # preserve both the full tool error and its persisted non-effect.
+            rejected = client.call("tools/call", {"name": "work_update", "arguments": {
+                "api_version": "1", "operation_id": str(uuid4()),
+                "work_id": str(selected.authority.active_work_id),
+                "observed_revision": original["revision"],
+                "patch": {"title": "must not persist"}, "unexpected_authority": True,
+            }}, 4)
+            assert isinstance(rejected, dict) and rejected["isError"] is True
+            error = client.requests[-1]["response"]["result"]
+            assert error["isError"] is True and error["content"]
+            assert not error.get("structuredContent")
+            unchanged = client.call("tools/call", {"name": "work_get", "arguments": {
+                "api_version": "1", "work_id": str(selected.authority.active_work_id),
+            }}, 5)
+            assert isinstance(unchanged, dict) and unchanged["item"] == original
             # Same isolated HTTP process + PostgreSQL boundary; no original
             # chat authentication or user confirmation is involved.
             human_source = {
@@ -285,14 +435,198 @@ async def _exercise(endpoint, selected, operation_id, observed_revision):
         return result.structured_content
 
 
-async def _agent_call(endpoint, chat_session, tool, arguments):
+async def _agent_call(endpoint, chat_session, tool, arguments, *, full_result=False):
     transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
     async with Client(transport) as client:
         result = await client.call_tool(
             tool, arguments,
             meta={} if chat_session is None else {"openai/session": chat_session},
         )
-        return result.structured_content
+        return result if full_result else result.structured_content
+
+
+async def test_notification_attention_process_and_returned_review_over_real_http(
+    tmp_path: Path, database_prerequisite,
+):
+    """Scripted protocol journey; does not establish ChatGPT rendering or agent choices."""
+    url = os.environ["TEST_DATABASE_URL"]
+    selected, _ = await _provision(url, str(uuid4().int))
+    work_id = str(selected.authority.active_work_id)
+    policy = tmp_path / "review.json"
+    policy.touch(mode=0o600)
+    policy.write_text(json.dumps({
+        "schema_version": 1, "policy_version": "test-v1",
+        "guidelines_version": "test-v1", "guidelines_digest": "a" * 64,
+    }))
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url, "SWITCHSTAND_REVIEW_CONFIG_PATH": str(policy),
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": selected.principal.subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    suffix = str(uuid4())
+    receiver, alice, bob = (f"{name} {suffix}" for name in ("Receiver", "Alice", "Bob"))
+    with _server(env, port) as endpoint:
+        for session, name in (("receiver", receiver), ("alice", alice), ("bob", bob),
+                              ("reviewer", "Coordinator")):
+            assert (await _agent_call(endpoint, session, "agent_register", {
+                "api_version": "1", "name": name,
+            }))["status"] == "ok"
+        observed = await _agent_call(endpoint, "receiver", "work_get", {
+            "api_version": "1", "work_id": work_id,
+        })
+        requested = await _agent_call(endpoint, "receiver", "review_request", {
+            "api_version": "1", "subject_work_id": work_id,
+            "observed_revision": observed["item"]["revision"], "review_kind": "CODE",
+        })
+        assert requested["status"] == "SENT"
+        review_id = requested["review_id"]
+        received_request = await _agent_call(endpoint, "reviewer", "agent_message_receive", {
+            "api_version": "1", "delivery_id": requested["delivery_id"],
+        })
+        assert received_request["status"] == "ok" and received_request["state"] == "RECEIVED"
+        submitted = await _agent_call(endpoint, "reviewer", "review_submit", {
+            "api_version": "1", "review_id": review_id, "verdict": "PASS",
+            "context_provenance": "UNSEEDED", "findings": [],
+            "evidence_refs": ["test:synthetic-protocol-review"],
+        })
+        assert submitted["status"] == "SUBMITTED" and submitted["review_id"] == review_id
+        expected = {}
+        for index in range(11):
+            message_id = str(uuid4())
+            expected[message_id] = {"notice": index}
+            assert (await _agent_call(
+                endpoint, "alice" if index < 6 else "bob", "agent_message_send", {
+                    "api_version": "1", "recipient_name": receiver,
+                    "message_id": message_id, "payload": expected[message_id],
+                },
+            ))["status"] == "ok"
+        # Age the oldest notice in the isolated fixture; no sleeps or clock substitution.
+        engine = create_async_engine(url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(update(messages).where(
+                    messages.c.message_id == next(iter(expected)),
+                ).values(created_at=datetime.now(UTC) - timedelta(minutes=75)))
+        finally:
+            await engine.dispose()
+        result = await _agent_call(endpoint, "receiver", "work_get", {
+            "api_version": "1", "work_id": work_id,
+        }, full_result=True)
+        assert not result.is_error and result.structured_content == observed
+        footer = result.content[-1].text
+        assert f"6 {alice}" in footer and f"5 {bob}" in footer and "1 more" in footer
+        age_minutes = int(footer.split("; oldest ", 1)[1].split("m.", 1)[0])
+        assert age_minutes >= 75 and "Process now or record reason + next recheck" in footer
+        assert "page while has_more" in footer and "fresh poll without cursor" in footer
+        assert f"Review returned: {review_id}; review_get." in footer
+        # Collect every page before processing, so removal cannot change the paging basis.
+        pending, cursor, pages = [], None, 0
+        while True:
+            args = {"api_version": "1"}
+            if cursor is not None:
+                args["cursor"] = cursor
+            page = await _agent_call(endpoint, "receiver", "agent_message_pending", args)
+            assert page["status"] == "ok"
+            pending.extend(page["messages"])
+            pages += 1
+            if not page["has_more"]:
+                break
+            cursor = page["next_cursor"]
+            assert cursor is not None
+        assert pages == 2
+        handled = set()
+        for delivery in pending:
+            if delivery["message_id"] not in expected:
+                continue  # Review outcomes use review_get, not ordinary acknowledgement.
+            received = await _agent_call(endpoint, "receiver", "agent_message_receive", {
+                "api_version": "1", "delivery_id": delivery["delivery_id"],
+            })
+            assert received["state"] == "RECEIVED"
+            assert delivery["payload"] == expected[delivery["message_id"]]
+            handled.add(delivery["message_id"])
+            acknowledged = await _agent_call(endpoint, "receiver", "agent_message_acknowledge", {
+                "api_version": "1", "delivery_ids": [delivery["delivery_id"]],
+            })
+            assert acknowledged["results"][0]["state"] == "ACKNOWLEDGED"
+        assert handled == set(expected)
+        reviewed = await _agent_call(endpoint, "receiver", "review_get", {
+            "api_version": "1", "review_id": review_id,
+        }, full_result=True)
+        assert not reviewed.is_error and reviewed.structured_content["status"] == "PASS"
+        assert reviewed.structured_content["review_id"] == review_id
+        assert reviewed.structured_content["evidence_refs"] == ["test:synthetic-protocol-review"]
+        assert alice not in reviewed.content[-1].text and bob not in reviewed.content[-1].text
+
+
+async def test_project_create_replay_placement_read_remove_over_real_http(database_prerequisite):
+    """Ordinary HTTP protocol with synthetic identity; not real ChatGPT acceptance."""
+    url = os.environ["TEST_DATABASE_URL"]
+    selected, _ = await _provision(url, str(uuid4().int))
+    work_id = str(selected.authority.active_work_id)
+    port = free_port()
+    env = clean_environment() | {
+        "DATABASE_URL": url,
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_ID": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_CLIENT_SECRET": "fixture",
+        "SWITCHSTAND_MCP_GITHUB_USER_ID": selected.principal.subject,
+        "SWITCHSTAND_MCP_RESOURCE_URL": RESOURCE,
+        "SWITCHSTAND_MCP_BIND_HOST": "127.0.0.1", "SWITCHSTAND_MCP_BIND_PORT": str(port),
+    }
+    with _server(env, port) as endpoint:
+        transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+        async with Client(transport) as client:
+            listed = {tool.name: tool for tool in await client.list_tools()}
+            assert set(listed["project_create"].inputSchema["properties"]) == {
+                "api_version", "operation_id", "name",
+            }
+
+            async def call(tool, arguments):
+                result = await client.call_tool(tool, arguments)
+                assert not result.is_error and result.content and result.structured_content is not None
+                return result.structured_content
+
+            read_args = {"api_version": "1", "work_id": work_id}
+            before = await call("work_get", read_args)
+            assert before["status"] == "ok" and not before["item"]["context"]["placements"]
+            create_args = {"api_version": "1", "operation_id": str(uuid4()),
+                           "name": f"HTTP test project {uuid4()}"}
+            created = await call("project_create", create_args)
+            assert created["status"] == "ok" and created["effect"] == "applied"
+            receipt = created["receipt"]
+            assert receipt["name"] == create_args["name"]
+            assert receipt["operation_id"] == create_args["operation_id"]
+            assert receipt["project_id"] and "work_id" not in receipt
+            # Preserve the exact original operation/name for replay through a fresh HTTP client.
+            async with Client(StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")) as replay:
+                repeated = await replay.call_tool("project_create", create_args)
+                assert not repeated.is_error and repeated.structured_content == created
+            assert await call("work_get", read_args) == before
+            placement = {"api_version": "1", "work_id": work_id,
+                         "observed_revision": before["item"]["revision"],
+                         "operation_id": str(uuid4()), "patch": {
+                             "kind": "placement", "action": "add", "project_id": receipt["project_id"],
+                         }}
+            added = await call("work_relate", placement)
+            assert added["status"] == "ok" and added["effect"] == "applied"
+            assert added["receipt"]["patch"]["project_id"] == receipt["project_id"]
+            placed = await call("work_get", read_args)
+            assert placed["status"] == "ok" and placed["item"]["revision"] != before["item"]["revision"]
+            # Public placement reads expose the project name; identity is in the mutation receipt.
+            placements = placed["item"]["context"]["placements"]
+            assert len(placements) == 1 and placements[0]["area"] == create_args["name"]
+            assert placements[0].get("stage") is None
+            placement.update(operation_id=str(uuid4()), observed_revision=placed["item"]["revision"])
+            placement["patch"]["action"] = "remove"
+            removed = await call("work_relate", placement)
+            assert removed["status"] == "ok" and removed["effect"] == "applied"
+            assert removed["receipt"]["patch"]["project_id"] == receipt["project_id"]
+            after = await call("work_get", read_args)
+            assert after["status"] == "ok" and not after["item"]["context"]["placements"]
+            assert after["item"]["revision"] != placed["item"]["revision"]
 
 
 async def test_sigterm_drains_an_inflight_mcp_call(

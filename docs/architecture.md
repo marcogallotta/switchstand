@@ -31,10 +31,11 @@ append/create/update/relation operations; registered-name `agent_message_*` mess
 required-result persistence; and repository bundle transport. Provider-era effects receive any
 provider readback through the exact pre-cutover deployment while its provider is still configured.
 Fixed reporting tools route bugs, missing features, process complaints, avoidable performance
-latency, Human Review feedback, and the all-event Fork Management trial to separate
-server-selected canonical projects. Fork Management reuses this reporting path for assignments,
-timestamped checks (including no findings), and outcomes under the
-[supervision contract](coordinator-tracker-contract.md#fork-management-feedback-trial).
+latency, Human Review feedback, and Fork Management to separate server-selected canonical
+projects. Fork Management reuses this reporting path for one concise assignment checkpoint
+plus material exceptions/interventions and outcomes under the
+[supervision contract](coordinator-tracker-contract.md#fork-management-checkpoints-and-exceptions).
+Routine checks do not each create a report; a logging receipt does not prove supervision.
 They share one
 private create path with explicit public-argument forwarding (audit callbacks stay local)
 and a narrow `file_issue` grant operation; callers cannot select projects or
@@ -79,6 +80,19 @@ any simultaneous certification identity must match it exactly.
 MCP arguments never supply evidence or acceptance booleans.
 Landing either layer is inert. Enabling the tool, producing a live qualification receipt, or relying
 on TRUE remains separate activation evidence and authority.
+PR metadata uses `pull_requests.py` and two existing-PostgreSQL tables: one normalized
+repository/number identity with accountable owner, and restrictive WorkId links.
+Ordinary work_relate shares canonical admission, revision CAS and atomic effect receipts;
+adding a link never replaces an existing owner, and unlinking never releases accountability.
+Ordinary work_get pages task-linked PRs and permission-filtered backlinks with caller-
+and revision-bound cursors; partial visibility never discloses hidden task identities.
+Ownership transfer uses relation set, current source/PR revision CAS and an exact durable
+recipient acceptance message. Its payload binds repository, number, previous owner,
+expected version, package reference, recipient key and both current mailbox generations;
+delivery receipt alone is insufficient. Both mailboxes lock in name order before the PR.
+Metadata supplies no global lookup or deployment authority.
+Migration0027 refuses downgrade while durable PR identities remain.
+
 `observability.py` owns request-local, redacted terminal timing records and active-request SQL
 interval aggregation and appends a bounded, privacy-safe subset after the business result through
 one non-retrying transaction. Failures leave coverage partial. Migration
@@ -114,6 +128,14 @@ Direct `package_work_id` Human Review rows add prepared/decided point evidence a
 waits. The report clips validated aware intervals to the admission-to-capture wall window and unions
 overlaps; GitHub subjects feed that same union rather than being summed. The remaining wall time is
 explicitly unobserved, not idle time or a critical path, and unsafe clocks or intervals fail closed.
+The additive `delivery_timing` projection locates complement gaps and shows ordered source-identified
+clipped intervals, their cost sum, and the largest interval and unexplained gap. Its 30-minute filter
+is diagnostic, not an SLA or liveness claim. Request-to-bound, bound-run and current exact-review
+request/receipt/verdict envelopes include waits; they are not active effort. Managed/review intervals
+require both recorded boundaries; unbound/open receipts do not fill gaps. Existing open Human Review
+waits end at capture explicitly. Resolved failure-open envelopes stay distinct from queue waits. Source limits and
+missing history remain in coverage; this projection is always partial, even when interval arithmetic
+is known. MCP service cohorts stay separate and do not explain a gap. No new persistence is introduced.
 When the inert Human Review store is not installed, the report keeps that source explicitly
 `UNKNOWN / SOURCE_TABLE_UNAVAILABLE` and continues the same read-only snapshot without fabricating
 review evidence.
@@ -162,15 +184,32 @@ service/state/route transition, binds both split processes to one exact candidat
 transfers persistent systemd startup ownership with exact readback. Caddy changes are scoped to
 the four owned proxy IDs so unrelated ingress changes are preserved. It automatically restores the
 combined service only while public exposure is still disproved. Any
-ambiguous or post-exposure outcome stays gated and never rewinds OAuth state. It does not own the
+operationally ambiguous or post-exposure failure stays gated and never rewinds OAuth state.
+After positive public readiness, terminal receipt persistence uncertainty returns UNKNOWN without
+changing the verified runtime. It does not own the
 future split edge-only replacement transaction, candidate preparation, live qualification, or
-activation authority.
+activation authority. Each invocation requires an exact WorkId and publishes one private interrupted
+attempt pointer beside the deployment lock before effects. A durable monotonic marker precedes
+candidate ungating. The same lock protects evidence-only `reconcile-existing-attempt`, also run
+before the next activation. It disposes pre-boundary attempts, retains unresolved/corrupt evidence,
+and freezes sanitized receipt/FailureRecord arguments before durable PendingFailureQueue handoff.
+Existing queue sync/readback/ack and append-only failure resolutions own subsequent recovery.
+Coverage ends at durable activation PASS: later runtime failures, other deployment paths, lost
+storage and the gap without another invocation remain unknown. Qualification is not live acceptance.
 `chatgpt_mcp.py::ordinary_tool_annotations` is the exhaustive owner for ordinary client-visible
 metadata. This private single-user host intentionally advertises
 `readOnlyHint=true` for every current ordinary tool as a ChatGPT approval-prompt workaround; it is
 not a claim that durable operations have no state effects. Deterministic server-side admission,
 authority, revision, identity, transition, and payload validation remain the safety boundary.
-Ordinary creation accepts one admitted parent WorkId or canonical project ID. Native canonical
+`project_create(api_version, operation_id, name)` creates an empty flat canonical project through
+authenticated workspace admission and the existing canonical runtime. Names are trimmed, require
+1–500 non-NUL characters, and may repeat: the project ID is identity. One transaction persists the
+project and its applied `effect_intents` receipt; exact principal/operation/canonical-name replay
+returns that receipt, including after admission refresh. A changed identity conflicts. The legacy
+journal target is namespaced `project:<UUID>` and confers no work access. No work, membership,
+provider fallback, new table or migration is involved; canonical-disabled service is unavailable.
+
+Ordinary work creation accepts one admitted parent WorkId or canonical project ID. Native canonical
 creates enforce a self-rooted independent item or exact parent-root inheritance, mailbox-derived
 `SELF` ownership, and a complete action-or-wait state; the sole ownerless exception is an inert
 parented Evidence child. Mailbox identity grants no creation or assignment authority. Ordinary
@@ -280,7 +319,11 @@ messaging, and required continuation:
 
 - `failure_journal.py` owns append-only redacted failure attempts and resolutions;
   `pending_failures.py` owns the atomic offline queue and close/handoff gate. Stateful reads may
-  project unresolved clearing actions, but the journal remains authoritative. The legacy
+  project unresolved clearing actions, but the journal remains authoritative. The
+  `observability_get` exact-owner failure projection keeps details private by default;
+  `include_failure_detail=true` includes bounded, validated, redacted failure and resolution
+  evidence. Recorded clearing establishes a fact at its timestamp, not continuing health or
+  complete production coverage. The legacy
   `friction.md` source cannot be archived until import, read parity, queue synchronization, and an
   explicit cutoff all pass.
 - `bootstrap_identity.py` and `bootstrap_adapters.py` own the temporary pre-migration launch
@@ -301,6 +344,12 @@ messaging, and required continuation:
   relation and receipt. `task_control.py` owns append-only owner checkpoints whose server-computed
   control basis excludes notes but includes reviewed routing and structural relations; missing or
   unreadable checkpoints remain `UNKNOWN`, and intended effect labels never grant authority.
+  `task_control_refs.py` decodes only versioned `control-ref:` navigation hints in those
+  capsules. Reads project recorded review watches and accepted-obligation pointers with
+  `UNCHECKED` evidence status and explicit malformed/unsupported-format gaps; raw references,
+  including hygiene's literal `message:` pointers, remain unchanged. Complete decoding never
+  proves complete inventory, target currentness, existence or recipient acceptance. No new
+  storage, grant, write path or scheduler is introduced.
   `work_hygiene.py` derives deterministic readiness from canonical work, that checkpoint API,
   reviews, messages, typed finding capture, and unresolved effects. It creates no persistence,
   scheduler, scanner, ownership registry, repair, or automatic work. The repository's ordinary
@@ -467,6 +516,7 @@ messaging, and required continuation:
   currentness preserves evidence nonterminal for later reconciliation. The managed launcher can
   bind one explicitly supplied exact START request to its durable RunReceipt before
   development setup; omission performs no selection or binding, and uncertain binding aborts launch.
+  IMPLEMENTATION bind rechecks current approval, grant, revision and lifecycle; current HUMAN WORK HOLD denies, and dependency edges return UNKNOWN until eligibility is authoritative.
   The managed client allowlist and default grant exclude `agent_task`. An explicit trusted
   `--agent-task` launch opt-in atomically adds that operation to the newly rotated launch grant and
   exposes only the existing request/result adapters to that launched client. It selects no request
@@ -530,6 +580,18 @@ record a verdict/effect, or close a sender watch. Typed-review routes reject ACK
 may reply from ACK and atomically stores the result plus exact-evidence disposition; replay
 converges both records. Recipient pending reads show only AVAILABLE/RECEIVED deliveries, while
 open request watches and proposed-owner references include ACKNOWLEDGED until disposition.
+
+Ordinary HTTP tool results append one attention text block after SDK error conversion, preserving
+the original content, metadata, structured receipt and error state. `MessageState.attention_admitted`
+reads full AVAILABLE/RECEIVED counts and oldest creation time in one generation-fenced snapshot;
+it validates existing returned-review envelopes and directs `review_get`, without interpreting a
+verdict. The footer shows two largest public sender groups plus remaining deliveries. Exactly one
+hour permits processing when free; older attention directs processing now or recording a competing
+obligation and recheck on existing assigned work. This is instructional, without an access lock or
+server verification of reasons. Identity/state failures remain distinct; a failed or timed-out
+250ms hint lookup yields UNKNOWN without replacing or retrying the primary tool result. The sole
+FastMCP `_mcp_server` handle accesses public SDK middleware; a changed SDK seam requires replan.
+No inactive wake or actual client acceptance is implied by repository landing.
 
 Message receipt is fenced twice. The mailbox generation fences trusted principal takeover;
 `RuntimeCurrentness` fences replacement MCP sessions or managed runs. Recovery is an explicit
@@ -658,6 +720,9 @@ inert/runtime proof, and requires fresh exact-top cumulative review and quality 
 landing. `scripts/verify-quality-composition` binds an Actions checkout either to the
 ordinary PR merge parents or to the exact native-stack first-parent composition chain.
 Stack discovery, CI execution, review storage, and merge effects remain outside it.
+These predicates describe ordinary reviewed delivery. [Explicit human fasttrack](code-quality.md#explicit-human-fasttrack)
+records review as deferred on the existing work; it never manufactures a predicate PASS for
+review that has not occurred.
 
 ## Launch, candidate, and host control
 
@@ -673,11 +738,17 @@ preflight. This is a transitional trusted-host bridge, not a provider API for ag
 
 Ordinary Codex uses the official npm-installed CLI directly. Repository configuration and
 instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
-global `codex` command. A stateless repository hook re-injects the existing Feedback V1 obligation
-on every user prompt and immediately after compaction. It performs no classification, reporting,
-network call, transcript scan, or persistence; the agent still uses the canonical Tracker Issues
+global `codex` command. A repository hook re-injects the existing Feedback V1 obligation
+on every user prompt and immediately after compaction. Compact recovery precedes feedback context:
+the agent restores the exact task's original approved objective, current scope/STOP and role guidance;
+summaries confer no approval, and corrections require recording and approval on that task.
+The hook performs no classification, reporting,
+network call or transcript scan; the agent still uses the canonical Tracker Issues
 V1-A tools and their readback. Its one-second local timeout preserves prompt acknowledgement as the
 first response, and failures are visible and nonblocking.
+On PostToolUse, the hook keeps only a locked due/counter record per payload `(session_id, agent_id-or-parent)` under `$XDG_STATE_HOME/switchstand/codex/notifications` (default `~/.local/state`).
+The first boundary starts five minutes; the next due boundary bundles messages/actionable feedback and fork supervision (three LIGHT notifications, then HARD, repeating), and reminds the agent to resume its original approved objective.
+Activity never postpones the deadline; actors are isolated, duplicates suppressed and missed ticks never burst. The hook only delivers reminders: agents perform checks; no idle wake or completion acknowledgement exists.
 The synchronous mailbox `Stop` hook calls the loopback-only
 `/internal/codex-stop-mailbox` route on the existing edge. That route resolves only the current
 `codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs
@@ -694,13 +765,14 @@ map is compatibility input, not an action whitelist or authority grant. Configur
 are rechecked before returning actions; missing/malformed opt-in or stale evidence releases UNKNOWN.
 The same file may set the explicit boolean `test_prefix: true` to enable TEST-prefix mailboxes;
 removing that flag disables the prefix trial while preserving any exact-session opt-in.
-Current executable owner actions and due review/message watches may reject a dedicated
-HANDOFF, REAL_BLOCKER or ASSIGNMENT_COMPLETE Stop once; ordinary prose and conversation pass. Missing authority, stale or contradictory evidence
-releases without certifying completion. With no runnable obligation or pending delivery, conversation passes. Both Stop handlers pass explicit
-USER_STOP and honor `stop_hook_active` before any network check. They never mutate obligations or
-certify recipient pickup, and the second Stop releases even if work remains. Completion, blocker
-and handoff markers do not bypass the work check; ordinary prose is not a machine
-completion certificate. This is not a scheduler or an autonomous wake mechanism.
+The retained continuity hook gates opted-in PILOT runs on a dedicated final reply containing
+exactly one permitted yield marker. ASSIGNMENT accepts ASSIGNMENT_COMPLETE, REAL_BLOCKER,
+HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. Ordinary prose remains blocked;
+this hook does not inspect work obligations or use `stop_hook_active` as an escape. The separate
+mailbox hook honors that escape after one continuation; it does not inspect yield markers. Neither
+hook mutates obligations or certifies completion or recipient pickup. The optional obligations
+projection above is read-only capability, not enforcement by these retained hooks. This is not
+a scheduler or an autonomous wake mechanism.
 `coordinator_sync.py` owns the hardened canonical-main Git boundary used by both in-session
 synchronization and Coordinator replacement. Its read operation observes the fixed canonical
 checkout and exact remote-main SHA; its write operation accepts only that SHA, revalidates it,
@@ -738,7 +810,8 @@ Their frozen compact/currentness checks and `switchstand-worktree-lifecycle` rem
 and retire those exact generations. Stock Codex creates none of this state and does not use the
 legacy launcher selectors, profiles, hooks, repair units, or dispatcher.
 
-The Coordinator-control MCP also owns the narrow asynchronous implementation handoff. An exact
+The Coordinator-control MCP also owns the narrow asynchronous implementation handoff.
+An optional exact `task_request_id` is forwarded with `--agent-task` and result instructions; omission preserves ordinary launch semantics. An exact
 WorkId, caller-chosen operation identity, and bounded objective start the existing trusted
 `switchstand --isolated` path, which binds a managed Worker to that WorkId and its durable
 task-private linked writer. Spawn returns immediately so Root remains available for coordination;

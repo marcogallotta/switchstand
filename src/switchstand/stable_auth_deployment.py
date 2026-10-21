@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import http.client
 import json
 import os
@@ -14,14 +15,17 @@ import subprocess
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, Protocol, cast
 from urllib.parse import urlparse
+from uuid import UUID, uuid4
 
 import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from .contracts import ClosedModel
 from .edge_maintenance import (
     CADDY,
     EDGE_PATHS,
@@ -38,7 +42,9 @@ from .edge_maintenance import (
     run_host_command,
 )
 from .edge_monitor_host import ExternalIngressHttp
-from .secure_file import atomic_replace_bytes
+from .failure_journal import EffectState, FailureRecord
+from .pending_failures import PendingFailureQueue, failure_queue_root
+from .secure_file import atomic_replace_bytes, read_private_bytes
 from .stable_auth import INTROSPECTION_PATH, IntrospectionContract
 from .stable_auth_host import HostAssets, caddy_routes, read_internal_secret, systemd_units
 from .stable_auth_migration import MigrationFailure, SystemdWriterProbe, copy_with_receipt
@@ -380,6 +386,7 @@ class ActivationConfig:
     migrated_state: Path
     backup_state: Path
     unit_dir: Path
+    work_id: UUID
     retry_after: int = 60
     caddy: str = CADDY
     public_origin: str = PUBLIC_ORIGIN
@@ -404,10 +411,123 @@ class ActivationOperations(Protocol):
     def rollback_pre_exposure(self) -> bool: ...
 
 
+class ActivationIdentity(ClosedModel):
+    attempt_dir: Path
+    work_id: UUID
+    attempt_id: UUID
+    operation_id: UUID
+    current_sha: str
+    candidate_sha: str
+
+
+def _read_evidence(path: Path) -> dict[str, object]:
+    value: object = json.loads(read_private_bytes(path, max_bytes=16384))
+    if not isinstance(value, dict):
+        raise TypeError("activation evidence must be an object")
+    return cast(dict[str, object], value)
+
+
+def _identity(value: dict[str, object]) -> ActivationIdentity:
+    identity = ActivationIdentity.model_validate({
+        key: value[key] for key in ActivationIdentity.model_fields
+    })
+    if any(not re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (
+        identity.current_sha, identity.candidate_sha,
+    )) or not identity.attempt_dir.is_absolute():
+        raise ValueError("invalid activation identity")
+    return identity
+
+
+def _clear_pointer(pointer: Path) -> None:
+    pointer.unlink()
+    PendingFailureQueue(pointer.parent).fsync_directory()
+
+
+def _escape_record(snapshot: dict[str, object], occurred_at: datetime) -> FailureRecord:
+    identity = _identity(snapshot)
+    digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
+    boundary = datetime.fromisoformat(str(snapshot["boundary_at"]))
+    if boundary.tzinfo is None or snapshot["exposure_attempted"] is not True:
+        raise ValueError("invalid exposure boundary")
+    return FailureRecord(
+        attempt_id=identity.attempt_id, operation_id=identity.operation_id,
+        owner=str(identity.work_id), occurred_at=occurred_at,
+        attempted_claim="stable-auth deployment activation readiness",
+        observed_result="NO_DURABLE_ACTIVATION_PASS; exposure " + (
+            "PROVEN" if snapshot.get("exposure_confirmed") is True else "UNKNOWN"
+        ),
+        clearing_action="Responsible owner: investigate activation evidence, record action reference "
+                        "and verified clearing in an append-only failure resolution",
+        effect_state=EffectState.UNKNOWN,
+        evidence=(f"attempt:{identity.attempt_id}", f"candidate:{identity.candidate_sha}",
+                  f"current:{identity.current_sha}", f"boundary:{boundary.isoformat()}",
+                  f"receipt-sha256:{digest}"),
+    ).sanitized()
+
+
+def reconcile_attempt(pointer: Path, queue: PendingFailureQueue) -> str:
+    """Evidence-only reconciliation; caller holds the deployment LOCK. Never rerun effects."""
+    if not pointer.exists() and not pointer.is_symlink():
+        return "NONE"
+    try:
+        identity = _identity(_read_evidence(pointer))
+        receipt_path = identity.attempt_dir / "activation-receipt.json"
+        value = _read_evidence(receipt_path)
+        if _identity(value) != identity or not isinstance(value.get("exposure_attempted"), bool):
+            raise ValueError("activation receipt identity mismatch")
+        if value.get("phase") not in {
+            "PREFLIGHT", "GATED", "STOPPED", "EFFECTS_CLEAR", "STATE_COPIED", "SPLIT_INSTALLED",
+            "AUTH_STARTED", "EDGE_STARTED", "SPLIT_ROUTED", "UNGATED", "COMPLETE", "ROLLED_BACK",
+        } or value.get("status") not in {"RUNNING", "PASS", "FAIL", "UNKNOWN", "ABORTED_PRE_BOUNDARY"}:
+            raise ValueError("invalid activation receipt state")
+        if value.get("status") == "PASS" and value.get("phase") == "COMPLETE" and value[
+            "exposure_attempted"
+        ] is True:
+            _atomic_json(receipt_path, value)  # establish durability after an ambiguous write
+            result = "PASS"
+        elif value["exposure_attempted"] is False or value.get("ungate_not_sent") is True:
+            value["status"] = "ABORTED_PRE_BOUNDARY"
+            _atomic_json(receipt_path, value)
+            result = "PRE_BOUNDARY"
+        else:
+            frozen_path = identity.attempt_dir / "activation-failure.json"
+            if frozen_path.exists():
+                frozen = _read_evidence(frozen_path)
+                snapshot = cast(dict[str, object], frozen["receipt"])
+                record = FailureRecord.model_validate(frozen["record"])
+                if _identity(snapshot) != identity or record != _escape_record(
+                    snapshot, record.occurred_at,
+                ):
+                    raise ValueError("frozen activation evidence mismatch")
+            else:
+                snapshot = {key: value[key] for key in (
+                    *ActivationIdentity.model_fields, "phase", "status", "exposure_attempted",
+                    "boundary_at", "exposure_confirmed",
+                )}
+                record = _escape_record(snapshot, datetime.now(UTC))
+                frozen = {"receipt": snapshot, "record": record.canonical()}
+            _atomic_json(frozen_path, frozen)  # same complete payload on every retry
+            if queue.enqueue(record) != "PENDING_SYNC":
+                return "CONFLICT"
+            result = "PENDING_SYNC"
+        _clear_pointer(pointer)
+        return result
+    except (OSError, ValueError, KeyError, TypeError):
+        return "UNRECORDED"
+
+
 class ActivationReceipt:
     def __init__(self, config: ActivationConfig):
         self.path = config.attempt_dir / "activation-receipt.json"
+        identity = ActivationIdentity(
+            attempt_dir=config.attempt_dir.resolve(), work_id=config.work_id,
+            attempt_id=uuid4(), operation_id=uuid4(), current_sha=config.current_sha,
+            candidate_sha=config.candidate_sha,
+        )
         self.value: dict[str, object] = {
+            **identity.model_dump(mode="json"),
+            "exposure_attempted": False,
+            "exposure_confirmed": False,
             "schema": "switchstand.stable-auth-activation.v1",
             "current_sha": config.current_sha,
             "candidate_sha": config.candidate_sha,
@@ -423,11 +543,21 @@ class ActivationReceipt:
         _atomic_json(self.path, self.value)
 
 
-def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
+def activate(
+    config: ActivationConfig, operations: ActivationOperations, *,
+    pointer: Path | None = None, queue: PendingFailureQueue | None = None,
+) -> str:
+    pointer = pointer or config.attempt_dir.parent / "activation-pending.json"
+    queue = queue or PendingFailureQueue(pointer.parent / "pending")
+    if reconcile_attempt(pointer, queue) in {"UNRECORDED", "CONFLICT"}:
+        return "UNKNOWN"
     receipt = ActivationReceipt(config)
     phase = "PREFLIGHT"
     gate_attempted = False
+    exposure_attempted = False
     receipt.write(phase)
+    PendingFailureQueue(config.attempt_dir.parent).fsync_directory()
+    _atomic_json(pointer, _identity(receipt.value).model_dump(mode="json"))
     try:
         operations.preflight()
         gate_attempted = True
@@ -461,23 +591,21 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
         operations.route_split()
         phase = "SPLIT_ROUTED"
         receipt.write(phase)
+        receipt.value.update(exposure_attempted=True, boundary_at=datetime.now(UTC).isoformat())
+        try:
+            receipt.write(phase)
+        except OSError:
+            receipt.value["ungate_not_sent"] = True
+            raise
+        exposure_attempted = True
         operations.ungate()
         phase = "UNGATED"
+        receipt.value["exposure_confirmed"] = True
         receipt.write(phase)
         if not operations.public_ready():
             raise Unknown("split public verification failed after possible OAuth writes")
-        receipt.write("COMPLETE", "PASS")
-        return "PASS"
-    except Unknown as exc:
-        error = type(exc).__name__
-        try:
-            if gate_attempted and not operations.gate_exact():
-                operations.gate()
-        except Failed, Unknown, OSError, subprocess.SubprocessError:
-            error = "GateRetentionUnknown"
-        receipt.write(phase, "UNKNOWN", error)
-        return "UNKNOWN"
     except (
+        Unknown,
         Failed,
         MigrationFailure,
         OSError,
@@ -485,6 +613,15 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
+        if isinstance(exc, Unknown) or exposure_attempted:
+            error = type(exc).__name__
+            try:
+                if gate_attempted and not operations.gate_exact():
+                    operations.gate()
+            except Failed, Unknown, OSError, subprocess.SubprocessError:
+                error = "GateRetentionUnknown"
+            _finish_attempt(receipt, pointer, queue, phase, "UNKNOWN", error)
+            return "UNKNOWN"
         try:
             if phase != "PREFLIGHT" and not operations.rollback_pre_exposure():
                 raise Unknown("combined rollback verification failed")
@@ -495,10 +632,29 @@ def activate(config: ActivationConfig, operations: ActivationOperations) -> str:
                 error = "RollbackUnknown"
             except Failed, Unknown, OSError, subprocess.SubprocessError:
                 error = "GateRetentionUnknown"
-            receipt.write(phase, "UNKNOWN", error)
+            _finish_attempt(receipt, pointer, queue, phase, "UNKNOWN", error)
             return "UNKNOWN"
-        receipt.write("ROLLED_BACK", "FAIL", type(exc).__name__)
+        _finish_attempt(receipt, pointer, queue, "ROLLED_BACK", "FAIL", type(exc).__name__)
         return "FAIL"
+    # Readiness succeeded. Terminal storage uncertainty cannot change the verified runtime.
+    try:
+        receipt.write("COMPLETE", "PASS")
+        _clear_pointer(pointer)
+    except OSError:
+        return "UNKNOWN"
+    return "PASS"
+
+
+def _finish_attempt(
+    receipt: ActivationReceipt, pointer: Path, queue: PendingFailureQueue,
+    phase: str, status: str, error: str,
+) -> None:
+    # Mitigation has already run. Evidence failure must not interrupt it or discard the pointer.
+    try:
+        receipt.write(phase, status, error)
+    except OSError:
+        pass
+    reconcile_attempt(pointer, queue)
 
 
 class HostActivationOperations:
@@ -919,7 +1075,9 @@ def _config(arguments: argparse.Namespace) -> ActivationConfig:
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
+    subcommands.add_parser("reconcile-existing-attempt")
     activate_parser = subcommands.add_parser("activate")
+    activate_parser.add_argument("--work-id", type=UUID, required=True)
     for name in (
         "attempt-dir",
         "current-runtime",
@@ -943,15 +1101,25 @@ def run(argv: list[str] | None = None) -> int:
     activate_parser.add_argument("--caddy", default=CADDY)
     activate_parser.add_argument("--public-origin", default=PUBLIC_ORIGIN)
     arguments = parser.parse_args(argv)
+    pointer = LOCK.with_name("activation-pending.json")
+    queue = PendingFailureQueue(failure_queue_root(Path.home()))
+    if arguments.command == "reconcile-existing-attempt":
+        with exclusive_lock(LOCK):
+            result = reconcile_attempt(pointer, queue)
+        print(result)
+        return 2 if result in {"UNRECORDED", "CONFLICT"} else 0
     if (
         not re.fullmatch(r"[0-9a-f]{40}", arguments.current_sha)
         or not re.fullmatch(r"[0-9a-f]{40}", arguments.candidate_sha)
         or arguments.retry_after < 1
     ):
         parser.error("candidate SHAs or retry interval are invalid")
-    arguments.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
     config = _config(arguments)
     with exclusive_lock(LOCK):
+        if reconcile_attempt(pointer, queue) in {"UNRECORDED", "CONFLICT"}:
+            print("UNRECORDED")
+            return 2
+        config.attempt_dir.mkdir(mode=0o700, parents=False, exist_ok=False)
 
         def interrupted(signum: int, _frame: object) -> None:
             raise Interrupted(f"activation interrupted by signal {signum}")
@@ -959,7 +1127,7 @@ def run(argv: list[str] | None = None) -> int:
         previous_int = signal.signal(signal.SIGINT, interrupted)
         previous_term = signal.signal(signal.SIGTERM, interrupted)
         try:
-            result = activate(config, HostActivationOperations(config))
+            result = activate(config, HostActivationOperations(config), pointer=pointer, queue=queue)
         finally:
             signal.signal(signal.SIGINT, previous_int)
             signal.signal(signal.SIGTERM, previous_term)

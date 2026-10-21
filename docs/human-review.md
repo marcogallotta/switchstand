@@ -1,5 +1,9 @@
 # Human Review
 
+An approved consequence may enroll exact `task_text`. Work reads then expose that immutable Task
+and approval identity separately from editable Agent notes, limited to 2048 UTF-8 bytes.
+Only exact human-approved supersession replaces the Task; legacy records keep existing semantics.
+
 Human Review is the final decision conversation when the governing procedure requires it.
 
 Before committing to a new material solution, involve Marco if its consequences or tradeoffs are his choice. Approval of a roadmap or goal is not approval of an invented solution. An unchanged solution already covered by Marco's approval needs no second Human Review merely because implementation or landing is ready. Other work follows its governing Human Review procedure.
@@ -21,6 +25,31 @@ The owner should know:
 - the first representative useful end-to-end stage, or why an independently stable non-speculative foundation must precede it and the immediate route from that foundation to the proof.
 
 If a load-bearing assumption, major scope question, or decision-changing size remains unknown, the work is not ready unless the decision is specifically whether to fund the investigation needed to determine it.
+
+## Prepare the actual decision
+
+Prepare before Marco arrives when a material exception, overrun, alternative, partial-test judgment
+or handoff leaves a human-owned choice. Continue unaffected authorized work while he is away; hold
+only the branch that would consume that choice, and do not implement a speculative larger solution.
+Use the existing task/plan and review, not another decision store or format-review gate.
+
+Have the concrete ordinary-use behavior/example and approved goal ready, with credible options
+including keeping the approved baseline. Explain WHY cost grew, what the extra engineering buys,
+what a cut would lose, and what has actually been built/tested versus proposed or NOT_RUN. Prepare
+primary evidence, measured engineering benefit where available (otherwise label the uncertainty),
+the strongest counterargument, recommendation and what evidence would change it, likely follow-up
+answers, and the exact scope/effects each decision would authorize. Let the fresh independent
+material judgment under [code quality](code-quality.md#independent-material-judgment) challenge the
+premise and arguments in the existing review. A head's preferred answer is a claim to check.
+
+Open with the short decision-bearing explanation backed by those ready facts. Do not manufacture
+options or recommend a cut merely because it meets a cap. A reasoned same-task extension already
+within Coordinator authority follows that route; an unchanged approved solution needs status,
+not another permission request.
+
+Use plain environment terms: prod or test. Name the exact service/effect, for example "the agent
+launch service is deployed in prod" only when verified; internal labels such as CONTROL do not
+explain that or imply that every service advanced. Quoted deployment logs alone are not readback.
 
 ## The conversation
 

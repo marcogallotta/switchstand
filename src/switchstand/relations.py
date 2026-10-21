@@ -60,6 +60,8 @@ class RelationGateway:
         self, grant: WorkGrant, provider_name: str, request: ProtectedRelation,
     ) -> ProviderRelation | None:
         patch = request.patch
+        if patch.kind == "pull_request":
+            return None
         target_gid: str | None = None
         if patch.target_work_id is not None:
             if not grant.can_read(patch.target_work_id, explicit_target=True):

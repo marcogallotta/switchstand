@@ -20,6 +20,7 @@ from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 from fastmcp.tools import Tool
 from mcp.server.auth.middleware.auth_context import get_access_token
+from mcp.types import CallToolResult, TextContent
 from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.middleware import Middleware
@@ -91,7 +92,7 @@ CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 CODEX_STOP_MAILBOX_PATH = "/internal/codex-stop-mailbox"
 GRACEFUL_SHUTDOWN_SECONDS = 30
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
-STATEFUL_MIGRATION_REVISION = "0026_agent_message_ack"
+STATEFUL_MIGRATION_REVISION = "0027_pull_requests"
 _https_resource_url = normalize_resource_url
 
 
@@ -295,6 +296,46 @@ def runtime_identity_from_meta(
         key, value = present[0]
         return value if key == "openai/session" else f"codex:{value}"
     return ""
+
+
+async def _notification_footer(service: ChatGPTService, meta: dict[str, Any]) -> str:
+    principal = await service.principal()
+    session = runtime_identity_from_meta(
+        meta, client_id=None if principal is None else principal.client_id,
+    )
+    if principal is None or not session:
+        return "Messages: IDENTITY_UNAVAILABLE"
+    if service.messages is None:
+        return "Messages: UNAVAILABLE"
+    binding = await AgentMailboxState(service.messages.engine).for_actor(principal.key, session)
+    if binding.status != "ok" or binding.mailbox is None:
+        return ("Messages: UNREGISTERED" if binding.reason == "agent_not_registered"
+                else "Messages: UNAVAILABLE")
+    attention = await service.messages.attention_admitted(binding.mailbox)
+    return "Messages: STALE" if attention is None else attention.text()
+
+
+def _notification_middleware(service: ChatGPTService):
+    async def append_footer(ctx: Any, call_next: Any) -> Any:
+        result = await call_next(ctx)
+        if ctx.method != "tools/call" or not isinstance(result, (CallToolResult, dict)):
+            return result
+        try:
+            async with asyncio.timeout(0.25):
+                meta = ctx.meta
+                values = meta.model_dump(by_alias=True) if hasattr(meta, "model_dump") else meta
+                footer = await _notification_footer(service, values or {})
+        except Exception:  # noqa: BLE001 - any hint failure must preserve the primary result
+            # The primary result is definitive; hint failure cannot replace or replay it.
+            footer = "Messages: UNKNOWN"
+        if isinstance(result, dict):
+            result = cast(dict[str, Any], result)
+            return {**result, "content": [*result["content"], {"type": "text", "text": footer}]}
+        return result.model_copy(update={
+            "content": [*result.content, TextContent(type="text", text=footer)],
+        })
+
+    return append_footer
 
 
 def _runtime_identity() -> str:
@@ -683,6 +724,8 @@ def _create_resource_app(
             service.activation_technical = activation_technical
             service.activation_runtime = _activation_runtime
     server = FastMCP("Switchstand ChatGPT", version="1", auth=auth)
+    # The sole version-coupled FastMCP handle; SDK middleware sees converted errors too.
+    server._mcp_server.middleware.append(_notification_middleware(service))  # pyright: ignore[reportPrivateUsage]
     ordinary_tools = build_ordinary_tools(
         service, _audit, agent_identity=_runtime_identity, correlate_work=annotate_target,
         review_bundle_enabled=True,

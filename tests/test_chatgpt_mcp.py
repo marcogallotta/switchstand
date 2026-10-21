@@ -793,7 +793,7 @@ async def test_workspace_reference_binds_once_revalidates_and_stays_provider_neu
         "work_resolve_reference", {"api_version": "1", "reference": "789"}
     )
     assert denied.structured_content == {
-        "status": "denied", "item": None, "guard": {
+        "status": "denied", "item": None, "pull_requests": None, "guard": {
             "status": "denied",
             "operation": "work_get",
             "reason": "reference_not_admitted",
@@ -826,7 +826,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             "repository_bundle_get", "repository_candidate_qualification_get", "work_get", "work_search", "work_resolve_reference",
             "human_trajectory_get", "human_trajectory_record",
             "work_history", "work_event", "work_append", "capability_preflight_get",
-            "work_create", "work_update", "work_relate",
+            "work_create", "work_update", "work_relate", "project_create",
             "file_bug", "file_feature", "file_process", "file_performance",
             "file_review_feedback", "file_fork_management",
             "task_control_get", "task_control_checkpoint", "work_hygiene_check",
@@ -948,7 +948,7 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         relate = next(tool for tool in tools if tool.name == "work_relate")
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
         assert relation["properties"]["kind"]["enum"] == [
-            "parent", "dependency", "placement",
+            "parent", "dependency", "placement", "pull_request",
         ]
         assert "project_id" in relation["properties"]
         assert "gid" not in str(relation).lower()

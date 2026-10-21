@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -14,6 +15,8 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO, cast
+
+from alembic.script import ScriptDirectory
 
 from .edge_semantic_probe import MCP, ProbeFailure, _private, _runtime
 from .stable_auth_deployment import _env
@@ -142,6 +145,7 @@ class Deployer:
         self.runtime = self.attempt / "runtime"
         self.launcher_before = self.attempt / "launcher.before"
         self.launcher_candidate = self.attempt / "launcher"
+        self.code_record = self.attempt / "code-only.json"
         self.database_backup: Path | None = None
         self.cutover_started = False
 
@@ -174,6 +178,8 @@ class Deployer:
         }
 
     def prepare(self) -> None:
+        if self.code_record.exists():
+            raise RuntimeError("retained code-only attempt requires reconciliation")
         refspec = "+refs/heads/main:refs/remotes/origin/main"
         git(self.repo, "fetch", "--quiet", "--no-tags", "origin", refspec)
         accepted = git(self.repo, "rev-parse", "origin/main").stdout.strip()
@@ -323,11 +329,70 @@ class Deployer:
         old_sha = git(old_runtime, "rev-parse", "HEAD").stdout.strip()
         self.local_smoke(old_runtime, old_sha)
 
-    def run(self) -> None:
+    def code_identity(self) -> str:
+        before = self.launcher_before.read_text()
+        old_runtime, _, _ = _runtime_literal(before)
+        sources: list[str] = []
+        for runtime in (old_runtime, self.runtime):
+            if git(runtime, "status", "--porcelain").stdout:
+                raise RuntimeError("code-only runtime is dirty")
+            sources.append(git(runtime, "rev-parse", "HEAD", "HEAD^{tree}").stdout)
+        if sources[1].splitlines()[0] != self.candidate_sha:
+            raise RuntimeError("code-only candidate identity changed")
+        protected = ("migrations", "alembic.ini", "pyproject.toml", "uv.lock")
+        manifests = [
+            git(path, "ls-tree", "-r", "HEAD", "--", *protected).stdout
+            for path in (old_runtime, self.runtime)
+        ]
+        schema = command(
+            db_command(
+                "psql", "-X", "-Atc", "SELECT version_num FROM alembic_version", "-d", "switchstand"
+            )
+        ).stdout.strip()
+        if manifests[0] != manifests[1] or ScriptDirectory(
+            str(old_runtime / "migrations")
+        ).get_heads() != [schema]:
+            raise RuntimeError("code-only dependencies or schema differ")
+        digests = [
+            hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (self.launcher_before, self.launcher_candidate, ENV_FILE)
+        ]
+        return json.dumps([self.candidate_sha, sources, manifests[0], schema, digests])
+
+    def rollback_code_only(self) -> None:
+        if (
+            LAUNCHER.read_bytes() != self.launcher_candidate.read_bytes()
+            or self.code_identity() != self.code_record.read_text()
+        ):
+            raise RuntimeError("code-only rollback identity changed or unavailable")
+        self.local_smoke(self.runtime, self.candidate_sha)
+        self.cutover_started = True
+        self.rollback()
+        old_runtime, _, _ = _runtime_literal(self.launcher_before.read_text())
+        authenticated_smoke(git(old_runtime, "rev-parse", "HEAD").stdout.strip())
+
+    def run(self, code_only_from: str | None = None) -> None:
         try:
+            if code_only_from:
+                old_runtime, _, _ = _runtime_literal(LAUNCHER.read_text())
+                if (
+                    git(old_runtime, "rev-parse", "HEAD").stdout.strip() != code_only_from
+                    or code_only_from == self.candidate_sha
+                    or (
+                        self.launcher_before.exists()
+                        and self.launcher_before.read_bytes() != LAUNCHER.read_bytes()
+                    )
+                ):
+                    raise RuntimeError("code-only preimage or attempt does not match")
             self.step("prepare_candidate", self.prepare)
-            self.step("backup_database", self.backup)
-            self.step("migrate", self.migrate)
+            if code_only_from:
+                identity = self.code_identity()
+                with self.code_record.open("x") as record:
+                    record.write(identity)
+                self.cutover_started = True
+            else:
+                self.step("backup_database", self.backup)
+                self.step("migrate", self.migrate)
             self.step("swap_restart", self.swap_restart)
             self.step("smoke", lambda: self.smoke(self.runtime, self.candidate_sha))
         except BaseException:
@@ -339,6 +404,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate_sha")
     parser.add_argument("--repo", required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--code-only-from", help="reviewed/replay-qualified exact old SHA")
+    mode.add_argument("--rollback-code-only", action="store_true")
     args = parser.parse_args(argv)
     if len(args.candidate_sha) != 40 or any(
         c not in "0123456789abcdef" for c in args.candidate_sha
@@ -353,7 +421,11 @@ def main(argv: list[str] | None = None) -> int:
         except BlockingIOError:
             parser.error("another edge deployment holds the lock")
         try:
-            Deployer(args.repo.resolve(), args.candidate_sha, log).run()
+            deployer = Deployer(args.repo.resolve(), args.candidate_sha, log)
+            if args.rollback_code_only:
+                deployer.step("rollback_code_only", deployer.rollback_code_only)
+            else:
+                deployer.run(args.code_only_from)
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             print(f"DEPLOY FAIL {type(exc).__name__}: {exc}")
             return 1

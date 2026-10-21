@@ -1,5 +1,13 @@
 # ChatGPT MCP edge
 
+`project_create(api_version="1", operation_id, name)` creates one empty flat canonical project
+under current authenticated workspace admission. Trimmed names require 1–500 non-NUL characters;
+names may repeat deliberately. Retain the returned `project_id` for existing placement tools and
+retain `operation_id` plus name: identical retries return the same receipt, while a fresh operation
+creates another project. The atomic PostgreSQL receipt contains no invented work/task identity.
+An uncertain commit returns UNKNOWN/reconcile; retry only the retained identity and request.
+No work or membership is created, and an unavailable canonical runtime never falls back to a provider.
+
 This is Switchstand's authenticated HTTP/OAuth edge for ordinary ChatGPT and
 Codex clients. It is distinct from the launcher-bound managed Codex STDIO
 surface and from the local development MCP. Landing edge code or documentation
@@ -22,6 +30,16 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 
 Canonical work reads expose nullable server admission time. Existing and source-imported rows may
 truthfully remain `null`; landing this schema change does not activate or prove the live client path.
+
+Each ordinary HTTP tool result includes a compact mailbox attention footer: full current-mailbox
+sender counts, oldest message age, and an actionable returned-review ID when available. It does
+not consume messages or grant assignments. More than ten deliveries requires paging
+`agent_message_pending` while `has_more`; omit cursor for every fresh poll. Free agents process
+their inbox; strictly older than one hour means process now or record the competing obligation
+and next recheck on existing assigned work. No reason enforcement or inactive wake is implemented.
+UNKNOWN, unavailable identity/state, unregistered and stale bindings are distinct from zero.
+Hints have a 250ms lookup deadline; even on hint failure the original receipt/error survives.
+Actual ChatGPT/Codex rendering and agent handling require separate runtime acceptance.
 
 The priority-claim and bounded priority-context tools remain default-off unless the resource edge
 starts with `SWITCHSTAND_PRIORITY_CLAIMS=1`. Enabling that flag constructs both projections over
@@ -296,6 +314,11 @@ the exact fetched `origin/main` candidate from the production launcher, includin
 flag. It reuses existing operational tools, verifies the running runtime, makes one logged-in MCP
 `work_get`, and logs each step's duration to `edge-deploy.log`. Any failure after shutdown cleanly
 restores and verifies the database and prior runtime. It uses no signed receipt or Caddy gate.
+
+For an independently source-reviewed and old→new→old replay-qualified exact pair, add `--code-only-from <old-full-sha>`; schema/dependency equality alone is insufficient qualification. The candidate must still be exact current `origin/main`.
+This branch skips backup/migration and keeps ALL database writes, including mistaken candidate writes, when returning to old code. Each landed release needs exact-pair qualification before use.
+To return after successful code-only deployment, use the same command and candidate SHA with `--rollback-code-only`. It checks the retained exact attempt, launchers, clean sources, schema and configuration under the existing lock before stopping; drift/missing identity refuses effects.
+The ordinary full migration/recovery route remains available. Ten-second deployment/five-second rollback are goals; actual systemd/production timings remain unproved.
 
 Follow-up after a proven live deploy: remove the legacy transaction/tests, full R0 production probe,
 sealed qualifier, Caddy receipt gate, and hand-staged launcher procedure.
@@ -590,3 +613,17 @@ refresh, or fresh chat without reinstall is insufficient. After reinstalling,
 start a fresh chat and verify the exact schema exposed to that client and the
 affected behavior before claiming the change is active. This is a standing
 requirement for all future ChatGPT MCP work, not only initial launch.
+
+Stable-auth deployment escape evidence requires `activate --work-id <exact WorkId>` alongside the
+existing activation arguments. Identity and a private pointer are durable before service effects;
+the exposure marker precedes candidate ungating and survives rollback. Before another activation,
+`switchstand-stable-auth-deploy reconcile-existing-attempt` reconciles that pointer under the same
+lock without service, route, gate or OAuth effects. The next activation also performs this step.
+Pre-boundary aborts do not become escapes; a failed marker write never invokes candidate ungating.
+Uncertain exposure freezes sanitized receipt evidence and an exact retry payload in the existing
+failure queue. Failed handoff preserves the pointer and blocks new activation effects. PENDING_SYNC
+is not canonical until existing journal synchronization/readback succeeds. Responsible-owner
+investigation/action and verified clearing belong in append-only failure resolutions, visible in
+the existing opt-in failure detail view. This path neither wakes itself nor proves candidate cause,
+continuous health, or outage duration. Runtime failures after durable PASS, other deployment paths
+and unavailable storage remain uncovered. Disposable tests are qualification, not production acceptance.

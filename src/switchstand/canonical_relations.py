@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import cast
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from sqlalchemy import (
     CheckConstraint,
@@ -20,10 +22,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from .canonical_work import canonical_metadata, canonical_work
+from .grant_state import GrantState, effect_intents
+from .grants import GuardOutcome, PrincipalContext, ProjectCreateReceipt, ProtectedProjectCreate
+
+PROJECT_CREATE_NAMESPACE = UUID("662e52d9-177f-4785-bf32-2eb7b225eb78")
 
 work_dependencies = Table(
     "work_dependencies", canonical_metadata,
@@ -100,6 +106,93 @@ async def _bump(connection: AsyncConnection, work_id: UUID, version: int) -> int
 class CanonicalRelationsRepository:
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
+
+    async def protected_project_create(
+        self, grants: GrantState, principal: PrincipalContext, request: ProtectedProjectCreate,
+    ) -> GuardOutcome:
+        """Persist an empty project and its definitive receipt in one transaction."""
+        guard = GuardOutcome(
+            status="denied", operation="project_create", operation_id=request.operation_id,
+            reason="name_invalid", next_action="Use a trimmed name of 1–500 non-NUL characters.",
+        )
+        name = request.name.strip()
+        if not 1 <= len(name) <= 500 or "\0" in name:
+            return guard
+        semantic = {"api_version": request.api_version, "operation_id": str(request.operation_id),
+                    "name": name}
+        project_id = uuid5(PROJECT_CREATE_NAMESPACE, str(request.operation_id))
+        uncertain = guard.model_copy(update={
+            "status": "unknown", "reason": "canonical_project_outcome_unknown",
+            "effect": "unknown", "retry": "reconcile",
+            "next_action": "Retry only this exact operation_id and name; retain its identity.",
+        })
+        try:
+            for attempt in range(2):
+                try:
+                    async with grants.locked(principal.key) as grant, self.engine.begin() as connection:
+                        exact = (await connection.execute(select(effect_intents).where(
+                            effect_intents.c.operation_id == str(request.operation_id)
+                        ))).mappings().one_or_none()
+                        if exact is not None:
+                            if (exact["principal_key"] != principal.key
+                                    or exact["intent"].get("operation") != "project_create"
+                                    or exact["intent"].get("request") != semantic):
+                                return guard.model_copy(update={"reason": "operation_identity_conflict",
+                                    "next_action": "Retain the original request and operation identity."})
+                            return GuardOutcome.model_validate(exact["outcome"])
+                        if attempt:
+                            return uncertain
+                        reason = None
+                        if grant is None or grant.principal != principal or not grant.current():
+                            reason = "no_current_grant"
+                        elif grant.scope != "workspace" or "project_create" not in grant.operations:
+                            reason = "operation_not_granted"
+                        elif grant.version != request.grant_version:
+                            return guard.model_copy(update={"status": "stale",
+                                "reason": "grant_version_changed", "retry": "refresh",
+                                "next_action": "Refresh current admission before a new effect."})
+                        elif not (grant.create_qualification or "").startswith(
+                            "test:" if principal.assurance == "test" else "real:"
+                        ):
+                            reason = "create_not_qualified_for_this_surface"
+                        if reason is not None:
+                            return guard.model_copy(update={"reason": reason,
+                                "next_action": "Resolve current workspace creation admission."})
+                        assert grant is not None and grant.create_qualification is not None
+                        await connection.execute(insert(projects).values(
+                            project_id=project_id, name=name, asana_project_gid=None,
+                        ))
+                        stored = (await connection.execute(select(projects).where(
+                            projects.c.project_id == project_id
+                        ))).mappings().one()
+                        if stored["name"] != name or stored["asana_project_gid"] is not None:
+                            raise ValueError("project readback mismatch")
+                        outcome = GuardOutcome(
+                            status="ok", operation="project_create", operation_id=request.operation_id,
+                            reason="project_created", effect="applied", next_action=(
+                                "Retain project_id and operation_id. Names may repeat; use project_id "
+                                "with existing placement tools. Exact retries return this receipt."
+                            ), receipt=ProjectCreateReceipt(
+                                operation_id=request.operation_id, principal=principal,
+                                grant_id=grant.id, grant_version=grant.version, project_id=project_id,
+                                name=stored["name"], qualification=grant.create_qualification,
+                            ),
+                        )
+                        await connection.execute(insert(effect_intents).values(
+                            operation_id=str(request.operation_id), principal_key=principal.key,
+                            fingerprint=hashlib.sha256(json.dumps(semantic, sort_keys=True).encode()).hexdigest(),
+                            work_id=f"project:{project_id}", grant_id=str(grant.id), grant_version=grant.version,
+                            intent={"operation": "project_create", "subject_kind": "PROJECT",
+                                    "project_id": str(project_id), "request": semantic, "authority": "postgres"},
+                            outcome=outcome.model_dump(mode="json"),
+                        ))
+                    return outcome
+                except IntegrityError:
+                    if attempt:
+                        return uncertain
+        except (SQLAlchemyError, ValueError, KeyError, TypeError):
+            return uncertain
+        return uncertain
 
     async def get(self, work_id: UUID) -> WorkRelations:
         async with self.engine.connect() as connection:

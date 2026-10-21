@@ -86,6 +86,77 @@ def route(selected):
                         recipient_grant_version=selected.version)
 
 
+async def test_mailbox_attention_full_snapshot_reviews_and_fence(subject):
+    from datetime import UTC, datetime, timedelta
+
+    from switchstand.agent_mailboxes import AgentMailboxState
+    from switchstand.chatgpt import ChatGPTService
+    from switchstand.chatgpt_edge import _notification_footer
+    from switchstand.state import PostgresState
+
+    state, engine, grants, principal, _, _, _ = subject
+    mailboxes = AgentMailboxState(engine)
+    receiver = (await mailboxes.register_agent("Receiver", principal.key, "tab-a")).mailbox
+    other = (await mailboxes.register_agent("Other tab", principal.key, "tab-b")).mailbox
+    alice = (await mailboxes.register_agent("Alice", "alice", "alice-tab")).mailbox
+    bob = (await mailboxes.register_agent("Bob", "bob", "bob-tab")).mailbox
+    assert receiver and other and alice and bob
+    review_ids = [uuid4(), uuid4()]
+    now = datetime.now(UTC)
+    envelopes, deliveries = [], []
+    for index in range(63):
+        sender = alice.endpoint_id if index < 30 else bob.endpoint_id if index < 50 else UUID(int=1)
+        message_id, payload = uuid4(), {}
+        if index < 2:
+            payload = {"brief": {"basis": {
+                "review_id": str(review_ids[index]), "subject_work_id": str(uuid4()),
+                "subject_revision": "r1", "review_kind": "CODE", "mode": "FULL",
+                "requester_endpoint_id": str(receiver.endpoint_id), "requester_generation": 1,
+                "policy_version": "1", "guidelines_version": "1", "guidelines_digest": "a" * 64,
+            }, "subject_title": "Task", "material_claim": "claim", "instructions": []},
+                "outcome": {"review_id": str(review_ids[index]), "reviewer_delivery_id": str(uuid4()),
+                            "verdict": "PASS", "findings": [], "evidence_refs": [],
+                            "context_provenance": "UNSEEDED", "verdict_digest": "b" * 64}}
+        envelopes.append({"sender_work_id": sender, "message_id": message_id,
+            "route_ref": "review.outcome" if index < 3 else "ordinary", "kind": "request",
+            "payload": payload, "digest": str(message_id), "created_at": now - timedelta(minutes=75-index)})
+        deliveries.append({"delivery_id": uuid4(), "sender_work_id": sender, "message_id": message_id,
+            "recipient_work_id": receiver.endpoint_id, "recipient_grant_version": 1,
+            "state": "ACKNOWLEDGED" if index == 61 else "DISPOSITIONED" if index == 62 else
+                  "RECEIVED" if index == 0 else "AVAILABLE"})
+    async with engine.begin() as connection:
+        await connection.execute(messages.insert(), envelopes)
+        await connection.execute(message_deliveries.insert(), deliveries)
+    attention = await state.attention_admitted(receiver)
+    assert attention and attention.groups == (("Alice", 30), ("Bob", 20), ("other sender", 11))
+    assert attention.oldest == envelopes[0]["created_at"] and attention.reviews == tuple(review_ids)
+    hint = attention.text()
+    assert "11 more" in hint and "Process now" in hint and "page while has_more" in hint
+    assert str(review_ids[0]) in hint and "(2 returned)" in hint
+    assert (await state.attention_admitted(other)).text() == "Messages: 0"
+    async def resolve():
+        return principal
+    service = ChatGPTService(resolve, PostgresState(engine), grants, {}, state)
+    assert await _notification_footer(service, {"openai/session": "tab-a"}) == hint
+    assert await _notification_footer(service, {"openai/session": "tab-b"}) == "Messages: 0"
+    assert await _notification_footer(service, {"openai/session": "missing"}) == "Messages: UNREGISTERED"
+    assert await _notification_footer(service, {}) == "Messages: IDENTITY_UNAVAILABLE"
+    moved = await mailboxes.takeover("Receiver", principal.key, "replacement")
+    assert moved.status == "ok" and await state.attention_admitted(receiver) is None
+    assert (await state.attention_admitted(moved.mailbox)).oldest == attention.oldest
+
+
+def test_attention_strict_hour_boundary():
+    from datetime import UTC, datetime, timedelta
+
+    from switchstand.messages import MailboxAttention
+
+    now = datetime.now(UTC)
+    attention = MailboxAttention(groups=(("Sender", 1),), oldest=now-timedelta(hours=1), now=now)
+    assert "Process when free" in attention.text()
+    assert "Process now" in attention.model_copy(update={"now": now+timedelta(microseconds=1)}).text()
+
+
 async def test_route_identity_contract_storage_seam_and_restart(subject):
     state, engine, grants, sender_principal, sender, recipient_principal, recipient = subject
     submitted, selected_route = request(sender), route(recipient)

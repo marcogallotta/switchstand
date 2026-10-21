@@ -1,28 +1,83 @@
 #!/usr/bin/env python3
-"""Keep Feedback V1's existing report path in the active turn context."""
+"""Restore assigned work after compaction and keep Feedback V1 in turn context."""
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
+import os
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
 
 CONTEXT = (
-    "FEEDBACK V1 TURN GATE. Apply the exact Feedback V1 rule in AGENTS.md to the current "
-    "user exchange before resuming unrelated work. Respond to Marco immediately; reporting "
-    "must not delay the acknowledgement. If the exchange is bad/frustrating or contains a "
-    "Human Review outcome, then use the applicable existing mcp__switchstand__file_* Tracker "
-    "tool through functions.exec, inspect the complete result, and finish the report/readback "
-    "before unrelated work resumes. Preserve that obligation across steering or an interrupted "
-    "turn. F:– is false for a required report. F:unavailable is false unless ALL_TOOLS was "
-    "inspected and no applicable file_* tool exists or the required result cannot be confirmed. "
-    "Use F:logged <WorkId> only after confirmed readback. Do not create another reporting path."
+    "FEEDBACK V1. Respond to Marco immediately. During assigned work, notice concrete failures "
+    "and hidden friction, including bad code/specs, missed findings, blockers and avoidable delay. "
+    "Once observed, finish one existing Tracker report or attributable reuse with definitive "
+    "receipt before unrelated work; preserve this obligation across interruption. Frustration "
+    "or a routine Human Review decision alone is not a report trigger; no random sampling. "
+    "Respect STOP and explicit no-logging. Record approximate time, separate quality/priority "
+    "and correction owner; missing exact time or RCA does not excuse silence. Escalate active "
+    "human blockers. Route process/review burden via file_process; inspect complete file_* "
+    "results. F:– is false while capture is owed; "
+    "F:logged needs confirmed readback. Inspect ALL_TOOLS before F:unavailable. No parallel path."
+)
+
+RECOVERY = (
+    "POST-COMPACT RECOVERY. Honor current STOP/pause/correction first. Preserve your "
+    "Coordinator/Worker role and exact assigned WorkId; summaries do not reassign you. "
+    "Before resuming, read work_get(api_version=\"1\", work_id=<exact assigned WorkId>); "
+    "bare work_get is only for a trusted launch-bound managed run. From that exact task "
+    "recover the ORIGINAL APPROVED objective, current constraints/STOP and bounded agent "
+    "notes. An agent-rewritten summary is never approved truth. Corrections must be "
+    "recorded AND approved on that task; no parallel chat correction feed. Read current "
+    "role guidance: Root reads docs/coordinator-tracker-contract.md; other Coordinators "
+    "and Workers follow their role route in supplied AGENTS.md. AGENTS is already supplied; "
+    "do not blanket reread it. Load other docs only for the applicable function/phase/trigger. "
+    "Missing identity or a material contradiction blocks dependent action: recover through "
+    "your assigned parent or Marco, never infer a replacement identity. Resume useful "
+    "authorized work toward the ORIGINAL APPROVED objective within current scope/STOP.\n\n"
 )
 
 
 def _output(value: dict[str, Any]) -> None:
     print(json.dumps(value, separators=(",", ":")))
+
+
+def _notification(event: dict[str, Any]) -> str:
+    session = event.get("session_id")
+    actor = event.get("agent_id", "parent")
+    if not isinstance(session, str) or not session or not isinstance(actor, str) or not actor:
+        raise ValueError("PostToolUse requires session_id and a valid actor")
+    key = hashlib.sha256(json.dumps([session, actor]).encode()).hexdigest()
+    directory = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    directory = directory / "switchstand/codex/notifications"
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{key}.json").open("a+") as record:
+        fcntl.flock(record, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        record.seek(0)
+        raw = record.read()
+        now = time.time()
+        state = json.loads(raw) if raw else {"due": now + 300, "counter": 0}
+        context = ""
+        if now >= state["due"]:
+            state = {"due": now + 300, "counter": (state["counter"] + 1) % 4}
+            level = "HARD" if state["counter"] == 0 else "LIGHT"
+            context = (
+                "FIVE-MINUTE NOTIFICATION. Check new messages and actionable feedback. "
+                f"If supervising forks, do a {level} check with them. "
+                "Perform the checks yourself, then resume the ORIGINAL APPROVED objective "
+                "within current scope and STOP/pause instructions. This notification does "
+                "not mean the checks are complete."
+            )
+        if not raw or context:
+            record.seek(0)
+            record.truncate()
+            json.dump(state, record)
+        return context
 
 
 def main() -> int:
@@ -31,6 +86,12 @@ def main() -> int:
         if not isinstance(event, dict):
             raise TypeError("hook input must be a JSON object")
         name = event.get("hook_event_name")
+        if name == "PostToolUse":
+            context = _notification(event)
+            _output({"hookSpecificOutput": {
+                "hookEventName": name, "additionalContext": context,
+            }})
+            return 0
         if name == "UserPromptSubmit":
             if not isinstance(event.get("prompt"), str):
                 raise TypeError("UserPromptSubmit prompt must be a string")
@@ -38,12 +99,12 @@ def main() -> int:
             if event.get("source") != "compact":
                 raise ValueError("SessionStart source must be compact")
         else:
-            raise ValueError("expected UserPromptSubmit or compact SessionStart")
+            raise ValueError("expected UserPromptSubmit, PostToolUse or compact SessionStart")
         _output({"hookSpecificOutput": {
             "hookEventName": name,
-            "additionalContext": CONTEXT,
+            "additionalContext": (RECOVERY if name == "SessionStart" else "") + CONTEXT,
         }})
-    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError) as error:
         _output({
             "continue": True,
             "systemMessage": f"Switchstand Feedback V1 trigger hook failed open: {error}",

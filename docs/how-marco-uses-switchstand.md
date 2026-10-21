@@ -37,7 +37,13 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 
 ### Ordinary Codex Coordinator
 
-Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, Wakeful supervisor, or launch-bound WorkId. A stateless repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `Codex Coordinator` calls `agent_takeover("Codex Coordinator", message=<Marco's full current message>)`. A first cross-principal attempt without that confirmation stops with `takeover_confirmation_required` and tells the agent to ask Marco; the retry passes Marco's full confirmation message. `/root` remains a temporary inbound alias for old senders. The Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, Wakeful supervisor, or launch-bound WorkId. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `Codex Coordinator` calls `agent_takeover("Codex Coordinator", message=<Marco's full current message>)`. A first cross-principal attempt without that confirmation stops with `takeover_confirmation_required` and tells the agent to ask Marco; the retry passes Marco's full confirmation message. `/root` remains a temporary inbound alias for old senders. The Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+
+After compaction, the same hook first directs recovery of the ORIGINAL APPROVED objective,
+current constraints/STOP and bounded agent notes from the exact assigned task; agent summaries
+are not approval. Corrections must be recorded and approved on that task. Preserve role/WorkId,
+read current role guidance (Root: the Coordinator tracking contract; others: their AGENTS route),
+and load other docs only for the current function/phase/trigger; AGENTS is already supplied.
 
 Switchstand-authored policy remains subordinate to Marco. A Coordinator executes ordinary
 reversible direction, warns briefly and continues through bounded risk unless material ambiguity
@@ -68,9 +74,18 @@ does not require launching another fork to admit its own launch. Missing evidenc
 Do not claim a repository instruction overrides a higher-priority mandatory main-agent
 operation, disables host compaction, or supplies an unavailable native capability.
 
-The initial Fork Management trial logs all assignments/checks/outcomes through the existing
-fixed `file_fork_management` feedback adapter. Its category is `FORK_MANAGEMENT`; ordinary
-edge and managed profiles read `SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
+If an OOM or measured memory admission prevents a fork, the parent may perform basic bounded
+checks directly: resource/admission checks, exact work or mailbox reads, and status inspection.
+State the memory condition and keep these checks small. This exception permits neither
+implementation, substantive investigation/testing nor independent review in the parent; it does
+not authorize memory-heavy work, a host/cgroup change or bypassing admission for another fork.
+Resume the normal fork route when memory allows it.
+
+Fork Management records one concise checkpoint per bounded assignment plus material exceptions
+and outcomes through the existing fixed `file_fork_management` feedback adapter; routine checks
+do not each create a report. A logging receipt does not prove actual supervision. Its category
+is `FORK_MANAGEMENT`; ordinary edge and managed profiles read
+`SWITCHSTAND_FORK_MANAGEMENT_PROJECT_ID` for the existing
 canonical project destination. Provisioning/configuring that destination and activating a
 runtime are separate effects. Missing configuration truthfully denies reporting; source
 landing does not establish collection. The later ticker is not part of this implementation.
@@ -275,6 +290,47 @@ ChatGPT and Codex deliberately use different coordinator, delegation, task-bindi
 Shared semantics do not imply identical host storage, tools, roles, or orchestration.
 The [root-cause analysis procedure](root-cause-analysis.md) applies this same boundary to
 evidence lanes, checkpoints, correction watches, and matching-event validation.
+
+## Shared PR overview
+
+Coordinators and implementers build the same permitted overview from existing PR links and
+current Work records. Each uses their own read admission; role, login, a link or a named next
+actor supplies no assignment, pickup or effect authority. This is a read recipe, not stored status.
+
+1. Start with the exact WorkIds in the explicitly assigned portfolio. When discovery is needed,
+   use admitted `work_search` with the applicable filters and follow every `next_cursor`;
+   search matches are navigation and do not expand the portfolio. Read exact candidates with
+   `work_get(api_version="1", work_id=...)` before including their current state.
+2. Read each portfolio Work's `pull_requests` page. Follow its `next_cursor` as `pr_cursor` on
+   that same `work_get`; separately follow each row's `link_next_cursor` as `pr_link_cursor`
+   until exhausted. Send only one cursor type per call. A `stale` page requires a fresh first
+   page and reconciliation of that Work's collected pages; never combine incompatible pages.
+3. Deduplicate PRs by normalized lowercase `repository` and numeric `number`. Retain the PR
+   row's `owner_key`, `row_version`, `acceptance_ref` and all readable linked Work obligations.
+   Different observed versions require refresh, not an arbitrary winner. A linked Work outside
+   the assigned portfolio remains an explicit coverage boundary, not a new assignment.
+4. Read each admitted linked workflow Work's current revision, lifecycle, status, owner and next
+   action. Preserve each obligation and its source; never choose the first/latest linked Work
+   as the PR's controlling workflow. Keep accountable PR owner, next-action actor and actual
+   attributable pickup evidence distinct. Missing or conflicting workflow direction is `UNKNOWN`.
+5. Read the attributed code-review evidence referenced by those current records through existing
+   admission. Retain verdict, reviewer/provenance, exact reviewed head and evidence/source
+   revision and the actual assurance of independent native evidence. Missing or unreadable
+   evidence is `UNKNOWN`; self-report/PR prose never becomes validated independent evidence.
+6. Refresh the PR's GitHub head with the existing `repository_candidate_qualification_get`
+   capability only for its supported repository; require matching returned repository/PR identity.
+   Compare its `head_sha` to the reviewed head: mismatch or a later
+   observed head change is `STALE`; absent/failed provider or head evidence is `UNKNOWN`.
+   Preserve the raw qualification status and exact-head/composition gates separately from
+   code-review status. CI `NOT_READY` can coexist with attributed exact-head review PASS.
+
+Present one row per PR: repository/number, PR owner/version, linked Work obligations and source
+revisions, lifecycle/status, attributed review verdict/head/currentness, raw qualification, next
+actor/action and pickup evidence. Mark the overview `PARTIAL` for unlinked portfolio work,
+unreadable sources, links outside the portfolio, `visibility="PARTIAL"` or incomplete pagination;
+name the coverage boundary without exposing hidden links. An empty page never proves a global
+empty queue. Refresh current sources before consequential action. The overview grants no landing
+permission, writes nothing and never advances reviews, requests pickup or transfers ownership.
 
 ## Repository delivery
 
