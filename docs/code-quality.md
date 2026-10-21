@@ -61,6 +61,30 @@ package database, or parallel review ceremony. At approval freeze:
 - the explicit approved margins and resulting production, support and total hard caps;
 - the strongest credible simpler alternative, economy proof and material replan triggers.
 
+### Independent material judgment
+
+Use a fresh context-free independent native fork for a material judgment about an exception,
+overrun, alternative, partial-test/no-change acceptance, or readiness/handoff. Reuse the applicable
+existing design, implementation or review stage; routine realization does not need another review.
+Actual participation determines independence: an author, designer, implementer or participant in
+the disputed disposition cannot independently review it.
+
+The reviewer starts with repository `AGENTS.md`, the exact current WorkId/candidate and raw primary
+evidence, follows applicable routes independently, and challenges the question and logic as well
+as the proposed answer. A head may supply a proposal and arguments clearly labeled as claims to
+check. A brief must not dictate a verdict, replace primary evidence with its summary, narrow away
+relevant challenge, or suppress a counterargument. Within the assigned judgment, inspect the
+evidence and applicable guidance needed to assess incomplete framing; bounded-worker scope is
+not authority for the head to forbid that challenge. Missing admitted evidence becomes a concrete
+evidence request to the parent, never guessed truth or unrelated discovery.
+
+Return causal evidence, credible alternatives, uncertainty and recommendation. The responsible
+Coordinator owns disposition within current authority; review grants no extension or effect
+authority. For a concrete unresolved question, expertise gap or evidence conflict, the reviewer
+may recommend a second independent reviewer with the exact reason and question. The parent
+arranges that bounded review; no automatic recursive chain or mandatory pair for every exception.
+Preserve material dissent and follow the existing finding/dispute route.
+
 ### Material design review before Human Review
 
 Start the first existing material-design review when there is a concrete provisional route,
@@ -147,39 +171,76 @@ to Marco. **KEEP** requires evidence that the simpler alternative is inadequate;
 removes/reuses mechanisms while preserving the outcome; **REPLACE** adopts a smaller sound
 solution and identifies what it supersedes.
 
-For size/envelope reasons, first apply the canonical exception challenge below. Two agreeing
-independent reviewers may clear cumulative growth only up to twice the immutable original hard
-cap without Marco. Growth beyond twice that cap is a 1-in-100 exception and may reach Marco only
-after both reviewers independently conclude that it is genuinely exceptional under the canonical
-challenge. Existing Human Input triggers remain independent:
-material scope, architecture, authority/trust, risk/burden or other consequential changes still
-return while cheap even if all line caps are green. Existing banned scope/authority boundaries
-and the >=500 actual PR/diff exemption rule remain hard and independent; splitting cannot launder
-either package growth or the per-PR rule.
+### Coordinator extension review
+
+Approved aggregate production, support and total caps remain separate review triggers. Before
+further affected expansion would exceed an approved ceiling, stop that expansion and bring the
+causal reason to the responsible Coordinator. A breach never grants automatic permission, even
+below 2x. Reconcile already-observed overruns before continuing; unaffected authorized work proceeds.
+
+Keep the ORIGINAL approved baseline caps and immutable package base. For each applicable dimension,
+record its original cap, current fixed-base retained count, complete remaining forecast, proposed
+absolute final ceiling and any prior extension. The Coordinator may approve a justified extension
+for the SAME approved task only when every proposed extended ceiling is strictly below twice its
+corresponding ORIGINAL approved cap. A later extension gets a new causal review against that same
+original baseline, never the last extension. A zero original cap cannot become a positive allowance
+by multiplication. Missing baseline/counts or UNKNOWN composition cannot establish this route.
+At 2x or above in ANY breached dimension, take the prepared decision to Marco before further
+affected expansion. A total below 2x does not clear a support or production dimension at 2x;
+unused allowance in one dimension does not transfer to another.
+
+Review WHY the cost grew: necessary work for the approved outcome, underestimated implementation
+or assurance cost, a changed external fact, or invented scope/mechanism. Use a fresh independent
+judgment under the section above; Coordinator approval remains a separate reasoned disposition.
+Challenge scope creep at any multiplier. An estimate miss or necessary test growth can justify
+same-task continuation when evidence supports it; convenience, sunk cost, schedule pressure and
+"almost done" alone do not. Do not remove useful approved behavior, necessary causal tests or
+readability just to make the count fit.
+
+The existing task/Execution Plan carries exact WorkId, approved baseline/package revision,
+base/head, reproducible production/support/total counts, causal growth explanation, remaining
+forecast, credible KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE routes and their engineering benefit
+or functional loss, independent judgment, and Coordinator approval/challenge/escalation with
+absolute ceilings. Approval binds that same scope and those ceilings. Crossing an extended ceiling
+triggers review again; it never compounds the original denominator or silently admits new scope.
+This replaces the mandatory two-reviewer aggregate-extension permission stage.
+
+Existing human choices about outcome, scope, architecture, trust/authority, risk or burden still
+return while cheap, at any count. Preserve current HOLD/DENIED, independent Code Review, CI,
+exact-head/composition, landing and separate deployment/activation authority.
 
 ### Exceptional LOC exemption gate
 
-Both a governed package hard-cap exemption and a `>=500` actual PR/diff exemption start on
-**HOLD** and are separate decisions: granting either one never grants or weakens the other. A
-`>=500` change reaches Marco only as a 1-in-100 exception after two independent reviewers apply
-the canonical challenge below and both conclude that an emergency or a demonstrated indivisible
-correctness, migration, compatibility, recovery, or reviewability reason makes splitting genuinely
-worse. Convenience, sunk cost, schedule pressure, "almost done", ordinary test growth, or avoiding
-another PR is not exceptional. Root, the implementation parent, and the integration owner reject
-routine or incomplete requests before review or human attention.
+The per-PR rule is separate from aggregate task caps. Aim for coherent PRs around 300 gross changed
+lines as a norm, not another hard gate. Agents split independently useful, reviewable PRs without
+asking Marco, keeping required related tests with the relevant behavior. Splitting never resets
+the aggregate baseline, hides cumulative growth or admits scope creep. An aggregate package above
+500 lines is not itself a `>=500` PR exception; measure each actual PR against its exact stable
+merge-base/head separately from the fixed-base retained package.
+
+A `>=500` actual PR/diff remains on **HOLD** absent an exact Marco exception before landing. Such
+requests should basically never be necessary: first attempt coherent smaller delivery boundaries
+and explain the concrete technical inability to split safely. An indivisible correctness,
+migration, compatibility, recovery or reviewability constraint needs evidence; convenience,
+deadlines, laziness, already-written code, sunk cost, ordinary test growth or avoiding another PR
+do not qualify. Do not cut approved functionality or synthetically slice invalid partial states.
+Use the existing independent review and canonical challenge below; no mandatory second reviewer
+unless a concrete unresolved reason requires one. Coordinator may approve an aggregate extension
+within the rule above, but cannot waive this distinct per-PR ceiling. Conversely, splitting a large
+PR needs no human permission and cannot waive an aggregate cap.
 
 LOC bounds are controls, not optimization targets. Never compress or omit necessary work, choose
 499 lines, or otherwise shape a change to sit just below a review boundary. Estimate the smallest
 sound implementation honestly and apply every boundary it crosses.
 
-Freeze one complete evidence packet before requesting either exemption. It contains the exact
+Use existing task/Execution Plan evidence for an extension or per-PR exception. It contains the exact
 WorkId and approved package/specification revision; immutable package base and exact candidate/head
 where applicable; the reproducible count and disclosed classifications/exclusions; original
-forecast, approved margin, current hard cap, exact current count, complete remaining-work forecast,
+forecast, approved margin, original cap, approved ceiling, exact count, complete remaining forecast,
 and one requested absolute final ceiling with explicit contingency; the causal reason the original
 plan failed; why the additional lines are essential to the approved outcome; and concrete
 `KEEP ONE PR / SPLIT / REPLAN` alternatives, including the strongest smaller design or cut and the
-evidence for rejecting it. A legitimate exception must rest on a demonstrated indivisible
+evidence for rejecting it. A legitimate per-PR exception must rest on a demonstrated indivisible
 correctness, migration, compatibility, recovery or reviewability invariant, a size fixed by an
 external contract/artifact, or necessary mechanical movement/deletion for which splitting would
 materially reduce reviewability. Merely asserting that the change is atomic is insufficient.
@@ -187,10 +248,10 @@ materially reduce reviewability. Merely asserting that the change is atomic is i
 ### Canonical exception challenge
 
 Give each reviewer this section by reference as part of the current review package; do not quote,
-summarize, or rewrite it in the request. Two reviewers who did not author, design, or implement the
-candidate independently apply this complete challenge:
+summarize, or rewrite it in the request. The fresh independent reviewer applies this complete
+challenge, testing both the head's framing and the proposed answer:
 
-1. Start from `HOLD` and assume the exception should be rejected. Reconstruct the original outcome,
+1. Keep the per-PR exception on `HOLD` pending evidence. Reconstruct the original outcome,
    immutable base and original limits without accepting candidate-created invariants as requirements.
 2. Verify the cumulative fixed-base counts, classification, remaining forecast and resistance to
    PR, WorkId, rebase, category, or serial-increment laundering.
@@ -202,30 +263,21 @@ candidate independently apply this complete challenge:
 5. Return `HOLD` unless the evidence defeats that smaller route. State the evidence, the attempted
    smaller route, why it fails, and whether the unchanged packet is genuinely exceptional.
 
-The requester resolves every count, evidence, scope, or viable-smaller-route finding. Any `HOLD`
-blocks progress, and a material packet revision requires both reviews again. For cumulative scope
-growth at or below twice the original hard cap, two explicit concurring clearances approve the
-replacement cap without Marco. Growth beyond twice the original hard cap is a 1-in-100 exception:
-it may only be presented to Marco after both reviewers independently conclude that an emergency
-or demonstrated indivisible case makes the strongest smaller route fail or cause concrete greater
-harm. A `>=500` actual PR/diff is independently a 1-in-100 exception and likewise may only be
-presented to Marco after both reviewers explicitly agree that splitting is genuinely worse. One
-canonical challenge occurrence with the same reviewer pair may adjudicate simultaneous size
-triggers, recording a separate conclusion for each; never demand serial review pairs. Reviewer
-agreement filters the request; it never grants either 1-in-100 exception. Preserve genuine
-tradeoff dissent verbatim.
+The requester resolves every count, evidence, scope or viable-smaller-route finding; a surviving
+material blocker holds only its affected claim. Material revisions receive focused rereview.
+Apply Coordinator extension authority only to aggregate caps, never as a per-PR waiver. A `>=500`
+PR exception reaches Marco only after concrete evidence establishes why sound splitting fails;
+review agreement does not grant it. Preserve genuine tradeoff dissent verbatim.
 
-A package-cap request asks once for one absolute replacement ceiling measured from the immutable
-original limit, never an increment such as "20 more lines". Approval binds the exact WorkId,
-approved package revision and surfaces. Exceeding that replacement ceiling requires `STOP` and
-`CUT / SPLIT / REPLAN`, not another top-up. A later request is admissible only after genuinely new
-Marco-directed scope or a new external fact materially changes the objective; record that as
-explicit re-scope or a new package rather than underestimated continuation work. Request the
-exception before crossing the cap.
+An aggregate extension requests absolute ceilings measured against the immutable original limits,
+never a renewed multiplier on the last extension. Same-task underestimate continuation follows
+Coordinator causal review below 2x; at 2x or above it goes to Marco. Genuinely new Marco-directed
+scope requires explicit re-scope, never laundering as an underestimated continuation.
 
 The `>=500` exemption binds the exact stable merge-base/head and measured actual diff and must be
-granted before landing. Material candidate or base change invalidates it. Aggregate semantically
-coupled stacked and follow-up work serving one objective when testing for laundering. A legitimate
+granted before landing. Material candidate or base change invalidates it. Check coupled stacked
+and follow-up work against the aggregate baseline; do not sum legitimate independent PRs to invent
+a per-PR exception. A legitimate
 split must be independently useful, valid, reviewable, testable, landable and recoverable/revertible,
 without placeholder or dead sibling code. Changing bases, WorkIds, PR boundaries, or line-category
 labels does not reset the governing history.
@@ -291,7 +343,7 @@ Every approving or clearing review also checks this danger hotlist:
 - **D4 ANTI-MALICE OVERBUILD** — agents can fail but are not malicious; do not assume internal-agent malice without an explicit current threat or direction.
 - **D5 SECURITY LAUNDERING** — “security” grants no authority; name the actor, attack path/capability, and material consequence.
 - **D6 DUPLICATE / SHADOW MACHINERY** — a second owner or path exists where one canonical path plus a local guard suffices.
-- **D7 COMPLEXITY / EXEMPTION RATCHET** — material aggregate growth, a >=500 diff, or an exemption has not proved CUT/SPLIT/SIMPLIFY/REPLACE worse; splitting does not erase growth.
+- **D7 COMPLEXITY / EXTENSION RATCHET** — aggregate growth lacks causal review against original caps or compounds an extension; a >=500 PR lacks the concrete smaller-route challenge and exact exception. Splitting does not erase growth.
 - **D8 SAFEGUARD-GENERATED HARM** — protection removes required capability, blocks ordinary use, creates disproportionate burden, or makes Marco the routine control plane.
 - **D9 FALSE / PROXY SUCCESS** — PASS rests on proxy evidence while the real path, identity, or readback remains unproved.
 - **D10 UNAUTHORIZED REMOVAL / DEPLOYMENT** — removal/disablement and production deployment/activation require Marco's explicit go; calling something “security,” removing functions, then deploying without approval fires D5 + D10.

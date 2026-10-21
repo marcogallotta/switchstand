@@ -72,6 +72,15 @@ wake, or implemented ticker; the eventual 'check in with your agents' ticker is 
 
 A missed checkpoint starts bounded inquiry; call it a stall only when the child missed a task-specific observable and shows no attributable progress after that inquiry. Silence, elapsed time, or a verified external wait is not enough.
 
+For material extension, exception, alternative, partial-test or handoff judgments, route a fresh
+context-free independent native fork under [code quality](code-quality.md#independent-material-judgment).
+Give it AGENTS, exact work/candidate and raw primary evidence; let it independently route and
+challenge the question. The head's proposal is a claim to check, never a prescribed verdict.
+Coordinator owns the causal extension decision under the original aggregate caps; coherent PR
+splits are agent-owned under the separate per-PR rule. Prepare a surviving human-owned choice
+under [Human Review](human-review.md#prepare-the-actual-decision) before Marco arrives. Keep
+unaffected authorized work moving.
+
 A Root challenge names the exact work/revision, applicable clause, evidence, concrete harm, smaller path, cheapest falsifier, and affected branch. The child may answer `ACCEPT_FIX`, `COUNTEREVIDENCE`, `NEEDS_EVIDENCE`, or `MATERIAL_HUMAN_CHOICE`. Evaluate the answer and withdraw or narrow a disproved challenge; disagreement alone is not disobedience. Send an established material human choice directly to Marco while safe unaffected work continues.
 
 On `FINAL`, validate the evidence against the exact WorkId and terminal condition, absorb every remaining obligation into the current picture, and advance the next safe gate. A failed child does not stop healthy siblings; current Marco direction remains foreground.
