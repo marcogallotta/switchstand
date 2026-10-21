@@ -152,7 +152,6 @@ def test_switchstand_tools_have_narrow_approval_free_policy():
     # client surface is part of the separately authorized activation step.
     activation_gated = {
         "task_control_get", "task_control_checkpoint", "work_hygiene_check",
-        "agent_status_get", "agent_status_update",
     }
     review_tools = {"review_request", "review_get", "review_recover", "review_submit"}
     expected_ordinary = ordinary - activation_gated - review_tools
