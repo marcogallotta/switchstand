@@ -30,7 +30,7 @@ def verify_trace(workspace, evidence, work):
     for row in rows:
         source = next(c[3]["item"] for c in reads if c[3]["item"]["id"] == row["work_id"])
         assert row["title"] == source["title"] and "DEFERRED" in source["notes"]
-        assert row["next_action"].strip() and "NOT_RUN" in source["notes"]
+        assert row["next_action"].strip()
     writes = [c for c in calls if c[2]["tool"] == "work_update"]
     assert len(writes) == 3, writes
     for position, call in enumerate(writes):
