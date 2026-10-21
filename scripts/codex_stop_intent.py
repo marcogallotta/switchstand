@@ -9,7 +9,7 @@ import re
 import tempfile
 from pathlib import Path
 
-COMMAND = re.compile(r"\A\s*(?:stop|kill|cancel|pause)\s*[.!]?\s*\Z", re.I)
+COMMAND = re.compile(r"\A\s*(?:stop|kill|cancel|pause)\s*[.!]?\s*\Z", re.IGNORECASE)
 
 
 def _path(session_id: str) -> Path:
@@ -23,7 +23,7 @@ def record(payload: dict) -> None:
     prompt = payload.get("prompt")
     turn_id = payload.get("turn_id")
     if not isinstance(prompt, str):
-        raise ValueError("UserPromptSubmit prompt must be a string")
+        raise TypeError("UserPromptSubmit prompt must be a string")
     if not isinstance(turn_id, str) or not turn_id:
         raise ValueError("missing turn_id")
     target = _path(payload.get("session_id"))

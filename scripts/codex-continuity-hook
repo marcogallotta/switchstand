@@ -12,7 +12,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from codex_stop_intent import record as record_stop_intent, requested as user_stop_requested
+from codex_stop_intent import record as record_stop_intent
+from codex_stop_intent import requested as user_stop_requested
 
 MODES = {"OFF", "PILOT"}
 LIFETIMES = {"ASSIGNMENT", "STANDING"}
