@@ -308,8 +308,10 @@ def ordinary_tool_annotations(name: str) -> ToolAnnotations:
     )
 
 
-def project_ordinary_work(result: GrantedWorkResult) -> OrdinaryWorkResult:
-    projected = project_work(result)
+def project_ordinary_work(
+    result: GrantedWorkResult, *, include_notes: bool = True,
+) -> OrdinaryWorkResult:
+    projected = project_work(result, include_notes=include_notes)
     return OrdinaryWorkResult(
         status=projected.status, item=projected.item, guard=projected.guard,
         pull_requests=result.pull_requests,
@@ -478,20 +480,23 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID | None = None,
         pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
         pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        include_notes: bool = False,
     ) -> OrdinaryWorkResult:
         """Read an exact WorkId's current notes, routing and placement context.
 
         Use the assigned WorkId directly; use work_search for discovery or
         work_resolve_reference for a legacy task ID/URL. Omit work_id only in a
-        trusted task-bound launch. Current notes supersede stale summaries;
-        follow their procedure references before Human Review or another phase.
+        trusted task-bound launch. Long notes are previewed by default;
+        set include_notes=true for full current notes before consequential action.
+        Current notes supersede stale summaries; follow their procedure references
+        before Human Review or another phase.
         If no route is known, resolve START HERE (1218327002478382).
         Reading work or a procedure does not grant assignment or effect authority.
         """
         correlate(work_id)
         result = await service.get(work_id, pr_cursor=pr_cursor, pr_link_cursor=pr_link_cursor)
         audited("work_get", None if work_id is None else str(work_id), result.status)
-        return project_ordinary_work(result)
+        return project_ordinary_work(result, include_notes=include_notes)
 
     async def human_trajectory_get(
         api_version: Literal["1"], work_id: UUID,
@@ -557,9 +562,12 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID | None = None,
         pr_cursor: Annotated[str, Field(max_length=2000)] | None = None,
         pr_link_cursor: Annotated[str, Field(max_length=2000)] | None = None,
+        include_notes: bool = False,
     ) -> StatefulOrdinaryWorkResult:
         """Read exact work with its owner-local action summary when available."""
-        result = await work_get(api_version, work_id, pr_cursor, pr_link_cursor)
+        result = await work_get(
+            api_version, work_id, pr_cursor, pr_link_cursor, include_notes,
+        )
         summary = None
         failures = None
         activation = None
