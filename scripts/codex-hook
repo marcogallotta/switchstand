@@ -33,6 +33,56 @@ def deny(reason: str, event: str) -> dict[str, object]:
 
 
 def segments(command: str) -> list[list[str]]:
+    # Here-document bodies are data, not shell syntax. Keep the header and all
+    # commands after the delimiter visible to the existing classifier.
+    lines = command.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if "<<" not in line:
+            continue
+        openers: list[tuple[str, bool, bool]] = []
+        quote = ""
+        escaped = False
+        for position, char in enumerate(line):
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote != "'":
+                escaped = True
+            elif quote:
+                if char == quote:
+                    quote = ""
+            elif char in "'\"":
+                quote = char
+            elif char == "#":
+                break
+            elif line.startswith("<<", position) and not (
+                line.startswith("<<<", position) or (position > 0 and line[position - 1] == "<")
+            ):
+                if "((" in line[:position] or "$[" in line[:position]:
+                    raise ValueError("arithmetic shift is not a here-document")
+                marker = re.match(r"<<(-?)[ \t]*(?:'([A-Za-z_][A-Za-z_0-9]*)'|\"([A-Za-z_][A-Za-z_0-9]*)\"|([A-Za-z_][A-Za-z_0-9]*))(?=$|[\s;&|<>])", line[position:])
+                if not marker:
+                    raise ValueError("unsupported here-document delimiter")
+                openers.append((next(value for value in marker.groups()[1:] if value),
+                                bool(marker.group(1)), bool(marker.group(2) or marker.group(3))))
+        if not openers:
+            if "\n" in command:
+                raise ValueError("ambiguous here-document marker is denied")
+            continue
+        if len(openers) != 1:
+            raise ValueError("multiple here-documents are denied")
+        if line.rstrip("\r\n").rstrip(" \t").endswith("\\"):
+            raise ValueError("continued here-document header is denied")
+        delimiter, strip_tabs, quoted = openers[0]
+        end = index + 1
+        while end < len(lines) and (lines[end].lstrip("\t") if strip_tabs else lines[end]).strip("\r\n") != delimiter:
+            if not quoted and ("$(" in lines[end] or "`" in lines[end]):
+                raise ValueError("here-document command substitution is denied")
+            lines[end] = "\n"
+            end += 1
+        if end == len(lines):
+            raise ValueError("unterminated here-document")
+        lines[end] = ";\n"
+    command = "".join(lines)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
     lexer.commenters = ""
