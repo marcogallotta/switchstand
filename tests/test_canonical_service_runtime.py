@@ -533,6 +533,45 @@ async def test_atomic_update_replays_and_rejects_operation_conflict(subject: Sub
     assert (await subject.runtime.get(subject.work_id)).item.title == "Changed"  # type: ignore[union-attr]
 
 
+async def test_approved_task_survives_supported_notes_replacement(subject: Subject):
+    from test_human_reviews import v2_consequence
+
+    from switchstand.human_reviews import HumanReviewState
+    from switchstand.mcp import project_work
+
+    state = HumanReviewState(subject.engine, subject.runtime.works)
+    consequence = v2_consequence(canonical_revision(subject.work_id, 1)).model_copy(update={
+        "package_work_id": subject.work_id, "task_text": "Finish the still unfinished Task",
+    })
+    assert (await state.propose(consequence)).status == "PREPARED"
+    assert (await state.submit(consequence.consequence_id, subject.work_id,
+                               consequence.package_revision, "APPROVED")).status == "RECORDED"
+    action = update(subject, notes="The demo passed; everything is complete")
+    assert (await subject.service.update(action)).effect == "applied"
+    assert await subject.service.update(action) == await subject.service.update(action)
+    read = await subject.service.get(subject.work_id)
+    assert read.item is not None and read.item.notes == action.patch.notes
+    assert read.item.task_text == consequence.task_text
+    assert project_work(read).item.task_approval_id == consequence.consequence_id
+    overflow = update(subject, notes="é" * 1024 + "x").model_copy(update={
+        "observed_revision": read.item.revision,
+    })
+    assert (await subject.service.update(overflow)).reason == "agent_notes_overflow"
+    assert (await subject.service.get(subject.work_id)).item == read.item
+    with pytest.raises(ValidationError):
+        ScalarPatch.model_validate({"task_text": "Changed task"})
+    successor = v2_consequence(read.item.revision, supersedes=consequence.consequence_id).model_copy(
+        update={"package_work_id": subject.work_id},
+    )
+    assert (await state.propose(successor)).reason == "task_text_required"
+    successor = successor.model_copy(update={"task_text": "Human changed the unfinished Task"})
+    assert (await state.propose(successor)).status == "PREPARED"
+    assert (await subject.service.get(subject.work_id)).item.task_text == consequence.task_text
+    assert (await state.submit(successor.consequence_id, subject.work_id,
+                               read.item.revision, "APPROVED")).status == "RECORDED"
+    assert (await subject.service.get(subject.work_id)).item.task_text == successor.task_text
+
+
 async def test_atomic_update_round_trips_supported_routing_and_preserves_fences(
     subject: Subject,
 ) -> None:
@@ -983,8 +1022,9 @@ async def test_fork_trial_suggestions_are_isolated_without_hiding_data(subject: 
     ("NEW", False), ("AMEND", True), ("DUPLICATE", True),
     ("SUB-ITEM", False), ("RELATED", False),
 ])
+@pytest.mark.parametrize("enrolled", [False, True])
 async def test_feedback_classification_is_atomic_exact_and_replayable(
-    subject: Subject, monkeypatch: pytest.MonkeyPatch, classification: str, closed: bool,
+    subject: Subject, monkeypatch: pytest.MonkeyPatch, classification: str, closed: bool, enrolled: bool,
 ) -> None:
     category, project_id = "BUG", uuid4()
     async with subject.engine.begin() as connection:
@@ -1000,7 +1040,7 @@ async def test_feedback_classification_is_atomic_exact_and_replayable(
     )
     await subject.service.file_issue(category, uuid4(), "unshared", "decoy evidence")
     source = await subject.service.file_issue(
-        category, uuid4(), "Shared crash source", "source evidence",
+        category, uuid4(), "Shared crash source", "é" * 1024 if enrolled else "source evidence",
     )
     assert target.work_id is not None and source.work_id is not None
     assert [candidate.id for candidate in source.candidates] == [target.work_id]
@@ -1014,6 +1054,22 @@ async def test_feedback_classification_is_atomic_exact_and_replayable(
         "observed_source_revision": canonical_revision(source.work_id, 1),
         "classification": classification, **target_fields,
     }
+    if enrolled:
+        from test_human_reviews import v2_consequence
+
+        from switchstand.human_reviews import HumanReviewState
+
+        state = HumanReviewState(subject.engine, subject.runtime.works)
+        approval = v2_consequence(arguments["observed_source_revision"]).model_copy(update={
+            "package_work_id": source.work_id, "task_text": "Investigate the unfinished issue",
+        })
+        assert (await state.propose(approval)).status == "PREPARED"
+        await state.submit(approval.consequence_id, source.work_id, approval.package_revision, "APPROVED")
+        failed = await subject.service.file_issue(category, operation_id, **arguments)
+        assert failed.reason == "agent_notes_overflow" and failed.effect == "not_sent"
+        assert (await subject.runtime.get(source.work_id)).item.notes == "é" * 1024
+        assert (await subject.runtime.get(target.work_id)).item.notes == "target evidence"
+        return
     if classification in {"AMEND", "SUB-ITEM"}:
         def fail_journal(_table: Table):
             raise SQLAlchemyError("injected classification failure")

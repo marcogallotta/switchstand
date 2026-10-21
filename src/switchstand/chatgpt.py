@@ -29,6 +29,7 @@ from .contracts import (
     WorkGetRequest,
     WorkHistoryRequest,
     WorkHistoryResult,
+    WorkItem,
     WorkResolveReferenceRequest,
     WorkSearchRequest,
     WorkSearchResult,
@@ -1117,6 +1118,10 @@ class ChatGPTService:
                     )
                 try:
                     notes = _required_result_notes(current_work.notes, request.text)
+                    if (self.canonical_work_active and isinstance(current_work, WorkItem)
+                            and current_work.task_text is not None
+                            and len(notes.encode("utf-8")) > 2048):
+                        raise ValueError("approved Task Agent notes capacity exceeded")
                 except ValueError:
                     return GuardOutcome(
                         status="not_applied", operation="required_result_save",
@@ -1156,9 +1161,16 @@ class ChatGPTService:
                         request, "denied", "lifecycle_effect_identity_conflict", operation_id
                     )
 
-            # Do not bind one immutable result identity until its exact notes update
-            # has passed every no-effect current-work and capacity check. A caller may
-            # then correct a rejected result without inheriting an unusable obligation.
+            # Atomic canonical journal rejects racing enrollment before result binding.
+            outcome: GuardOutcome | None = None
+            if self.canonical_work_active:
+                assert self.canonical_work is not None
+                outcome = await self.canonical_work.protected_update(
+                    self.admission_grants, principal, update_request
+                )
+                possible_send = outcome.effect != "not_sent"
+                if not possible_send:
+                    return outcome.model_copy(update={"operation": "required_result_save"})
             if obligation.state is ProfileState.PENDING_RESULT:
                 try:
                     obligation = await self.required_results.transition(
@@ -1174,14 +1186,10 @@ class ChatGPTService:
                     request, "denied", "lifecycle_result_identity_conflict", operation_id
                 )
 
-            if self.canonical_work_active:
-                assert self.canonical_work is not None
-                outcome = await self.canonical_work.protected_update(
-                    self.admission_grants, principal, update_request
-                )
-            else:
+            if not self.canonical_work_active:
                 outcome = await self.update_gateway.update(principal, update_request)
-            possible_send = outcome.effect != "not_sent"
+                possible_send = outcome.effect != "not_sent"
+            assert outcome is not None
             if outcome.effect == "applied" and isinstance(outcome.receipt, UpdateReceipt):
                 evidence = {
                     "destination_ref": destination, "result_correlation": correlation,
