@@ -44,6 +44,7 @@ from .canonical_work import CanonicalWorkRepository, CurrentWork
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
+from .codex_inbound_wake import InboundWake
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
 from .human_reviews import HumanReviewState
@@ -749,11 +750,15 @@ def _create_resource_app(
             if not isinstance(raw_payload, dict):
                 raise TypeError("invalid request object")
             payload = cast(dict[str, object], raw_payload)
-            if set(payload) - {"session_id", "cursor", "check_obligations"}:
+            if set(payload) - {"session_id", "cursor", "check_obligations", "wake_route_token"}:
                 raise ValueError("invalid request object")
             session_id = payload.get("session_id")
             cursor_value = payload.get("cursor")
             check_obligations = payload.get("check_obligations", False)
+            token = payload.get("wake_route_token")
+            if token is not None and (not isinstance(token, str) or not token
+                                      or cursor_value is not None or check_obligations):
+                raise ValueError("invalid wake route")
             if not isinstance(check_obligations, bool):
                 raise TypeError("invalid check_obligations")
             if not isinstance(session_id, str) or not session_id:
@@ -766,6 +771,10 @@ def _create_resource_app(
                 {"status": "recovery_required", "reason": "malformed_request"},
                 status_code=400,
             )
+        if token is not None:
+            wake = None if service.messages is None else getattr(service.messages.on_delivery, "__self__", None)
+            return JSONResponse(await wake.check_route(token, session_id)
+                                if isinstance(wake, InboundWake) else {"status": "UNKNOWN"})
         if check_obligations:
             return JSONResponse(await _codex_stop_obligations(service, session_id))
         return JSONResponse(await _codex_stop_mailbox_page(service, session_id, cursor))
@@ -794,6 +803,7 @@ async def resource_service(
 ) -> AsyncGenerator[tuple[ChatGPTService, tuple[str, str] | None]]:
     """Own the resource edge's PostgreSQL dependencies for either launch mode."""
     engine = create_async_engine(os.environ["DATABASE_URL"])
+    wake = None
     register_sqlalchemy_timing(engine)
     register_timing_persistence(
         engine, os.getenv("SWITCHSTAND_RUNTIME_GENERATION", "UNKNOWN"),
@@ -819,6 +829,10 @@ async def resource_service(
             canonical_repository, WorkEventRepository(engine)
         )
         messages = MessageState(engine, grants)
+        if control := os.getenv("SWITCHSTAND_CODEX_WAKE_CONTROL"):
+            wake = InboundWake(messages, Path(control),
+                               Path(__file__).resolve().parents[2] / "scripts/agent-resource-admission")
+            messages.on_delivery = wake.signal
         priority_claims = None
         priority_context = None
         priority_claims_enabled = os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1"
@@ -913,6 +927,8 @@ async def resource_service(
             runtime = certification_runtime
         yield service, runtime
     finally:
+        if wake is not None:
+            await wake.close()
         await engine.dispose()
 
 

@@ -1,5 +1,12 @@
 # ChatGPT MCP edge
 
+### Optional same-daemon inbound wake
+
+Default off. For an authorized edge launch, set `SWITCHSTAND_CODEX_WAKE_CONTROL=/absolute/control.json` before `.venv/bin/python -m switchstand.chatgpt_edge`; retain the existing edge configuration. Create that user-owned file with mode0600 and JSON `{"socket":"/absolute/existing/daemon.sock","enabled":false}`; select the actual owning Codex0.163 Unix WebSocket socket. Set `enabled:true` only under the separate activation authority. No daemon or database schema is installed.
+Supports registered standalone Roots and their direct native Heads with registered owning Root under the same principal. Nested actors are UNKNOWN. Root routing acceptance remains pending until the same Head handles its own mailbox. Gate tokens are read-only route bearers on the existing local endpoint; GO is a current snapshot, not an atomic reservation or new authority. Head mailbox APIs still fence effects.
+Disable by setting `enabled:false`; already accepted native turns cannot be revoked. Transport or acceptance uncertainty stops that recipient as UNKNOWN without automatic replay; preserve exact delivery/turn receipts and leave disabled pending operator reconciliation. Restart alone does not establish permission to retry pending work. Automatic recovery is unavailable.
+For disposable synthetic-identity testing, run `.venv/bin/python scripts/prototype-inbound-wake /absolute/control.json /absolute/state.json 18764`; control may set `gate_url` to `http://127.0.0.1:18764/internal/codex-stop-mailbox`. It owns an isolated test database, never production credentials. Register each actor from its own native thread, idle both, send one fresh request, verify own receive/reply/disposition and sender result. This fixture does not qualify OAuth or native sender wake. Check with `sh scripts/check tests/test_codex_inbound_wake.py tests/test_chatgpt_edge.py`.
+
 `project_create(api_version="1", operation_id, name)` creates one empty flat canonical project
 under current authenticated workspace admission. Trimmed names require 1–500 non-NUL characters;
 names may repeat deliberately. Retain the returned `project_id` for existing placement tools and
