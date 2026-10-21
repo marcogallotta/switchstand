@@ -103,7 +103,9 @@ def test_validate_codex_args_blocks_boundary_overrides():
 def test_managed_codex_requires_both_mcp_servers():
     command = codex_command(Path("/control"), Path("/writer"), [])
     assert "mcp_servers.switchstand.enabled=false" in command
+    assert "mcp_servers.switchstand_managed.enabled=true" in command
     assert "mcp_servers.switchstand_managed.required=true" in command
+    assert "mcp_servers.switchstand_development.enabled=true" in command
     assert "mcp_servers.switchstand_development.required=true" in command
 
 
@@ -162,8 +164,10 @@ def test_managed_codex_starts_work_without_a_manual_prompt():
         "-c", 'mcp_servers.switchstand.url="https://laptop.tail46f0b9.ts.net/switchstand/mcp"',
         "-c", "mcp_servers.switchstand.enabled=false",
         "-c", 'mcp_servers.switchstand_managed.command="scripts/switchstand-controller-mcp"',
+        "-c", "mcp_servers.switchstand_managed.enabled=true",
         "-c", "mcp_servers.switchstand_managed.required=true",
         "-c", 'mcp_servers.switchstand_development.command="scripts/switchstand-development-mcp"',
+        "-c", "mcp_servers.switchstand_development.enabled=true",
         "-c", "mcp_servers.switchstand_development.required=true",
         "-c", "developer_instructions=" + json.dumps(MANAGED_DEVELOPER_INSTRUCTIONS),
     ]
