@@ -386,6 +386,52 @@ async def test_issue_wrappers_fix_category_and_preserve_evidence(tool_name, cate
     assert classified["classification"] == "NEW" and classified["mode"] == "CLASSIFY"
 
 
+async def test_file_issue_rejects_fields_outside_selected_mode():
+    subject = service()
+    subject.issue_projects = {"BUG": uuid4()}
+    subject.canonical_work_active = True
+    subject.canonical_work = SimpleNamespace(
+        protected_create=AsyncMock(return_value=subject.denied("file_issue", "probe")),
+        protected_feedback_classification=AsyncMock(
+            return_value=subject.denied("feedback_classify", "probe")),
+    )
+    create = subject.canonical_work.protected_create
+    classify = subject.canonical_work.protected_feedback_classification
+    source_id = uuid4()
+
+    filed = await subject.file_issue("BUG", uuid4(), "Observed", "Exact evidence")
+    assert filed.reason == "probe"
+    assert create.await_args.args[2].title == "Observed"
+    assert create.await_args.args[2].notes == "Exact evidence"
+    create.reset_mock()
+
+    proper_classification = await subject.file_issue(
+        "BUG", uuid4(), mode="CLASSIFY", source_work_id=source_id,
+        observed_source_revision="r1", classification="NEW",
+    )
+    assert proper_classification.reason == "probe"
+    assert classify.await_args.args[2].source_work_id == source_id
+    classify.reset_mock()
+
+    for supplied in ({"title": "New title"}, {"evidence": "New evidence"},
+                     {"title": "New title", "evidence": "New evidence"}):
+        rejected = await subject.file_issue(
+            "BUG", uuid4(), mode="CLASSIFY", source_work_id=source_id,
+            observed_source_revision="r1", classification="NEW", **supplied,
+        )
+        assert rejected.status == "denied" and rejected.effect == "not_sent"
+        assert rejected.reason == "invalid_classification_request"
+        assert "title" in rejected.next_action and "evidence" in rejected.next_action
+    classify.assert_not_awaited()
+
+    wrong_file = await subject.file_issue(
+        "BUG", uuid4(), "Observed", "Exact evidence",
+        source_work_id=source_id, observed_source_revision="r1", classification="NEW",
+    )
+    assert wrong_file.reason == "invalid_file_request"
+    create.assert_not_awaited()
+
+
 async def test_title_only_capture_needs_no_registered_owner(monkeypatch):
     subject = service()
     subject.canonical_work_active = True

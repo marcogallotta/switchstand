@@ -244,6 +244,12 @@ class ChatGPTService:
             )
         grant = await self.admission_grants.current(principal.key)
         if mode == "CLASSIFY":
+            if title is not None or evidence is not None:
+                return FeedbackOutcome(
+                    status="denied", operation="feedback_classify",
+                    operation_id=operation_id, reason="invalid_classification_request",
+                    next_action="Omit title and evidence in CLASSIFY; supply them in FILE.",
+                )
             try:
                 request = ProtectedFeedbackClassification(
                     operation_id=operation_id,
