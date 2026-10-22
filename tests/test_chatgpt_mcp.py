@@ -983,6 +983,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
             search.input_schema["properties"].keys()
         )
         relate = next(tool for tool in tools if tool.name == "work_relate")
+        assert relate.input_schema["properties"]["confirm_cancels_review"]["default"] is False
+        assert "confirm_cancels_review" not in relate.input_schema["required"]
         relation = relate.input_schema["$defs"]["OrdinaryRelationPatch"]
         assert relation["properties"]["kind"]["enum"] == [
             "parent", "dependency", "placement", "pull_request",

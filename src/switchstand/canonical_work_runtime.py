@@ -937,6 +937,16 @@ class CanonicalWorkRuntime:
                         return RelationGateway.guard(
                             request, "stale", "source_revision_changed"
                         )
+                    if not request.confirm_cancels_review:
+                        review_id = await pending_review_id(
+                            connection, request.work_id, request.observed_revision,
+                        )
+                        if review_id is not None:
+                            return RelationGateway.guard(
+                                request, "CONFIRM_REQUIRED", "pending_review",
+                            ).model_copy(update={
+                                "next_action": confirmation_message(review_id),
+                            })
                     patch = request.patch
                     if patch.kind not in {"parent", "dependency", "placement", "pull_request"}:
                         return RelationGateway.guard(
