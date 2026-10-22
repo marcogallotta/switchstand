@@ -78,10 +78,10 @@ class CoordinatorWorkers:
                     "unit_start_not_applied" if existing.phase == "PREPARED" else "execution_lost"
                 )
                 return self._spawn_result("unknown", existing, reason)
-            if existing.phase == "PREPARED":
-                return self._spawn_result("unknown", existing, "worker_start_pending")
             if not self._unit_running(state):
                 return self._spawn_result("unknown", existing, "execution_lost")
+            if existing.phase == "PREPARED":
+                return self._spawn_result("unknown", existing, "worker_start_pending")
             return self._spawn_result("replayed", existing, "operation_replayed_running")
         self._require_unambiguous_state(work_id)
         base, writer, branch, git_common = self.store.candidate_identity(work_id)

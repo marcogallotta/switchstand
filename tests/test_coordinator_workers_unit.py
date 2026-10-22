@@ -72,6 +72,19 @@ def test_spawn_persists_prepared_identity_before_start(
     assert pending.status == "unknown" and pending.reason == "worker_start_pending"
     assert launches == 1
 
+    for active, sub in (("failed", "failed"), ("inactive", "dead")):
+        unit_state = f"LoadState=loaded\nActiveState={active}\nSubState={sub}\n"
+        lost_prepared = subject.spawn(operation, work_id, "objective")
+        assert lost_prepared.status == "unknown" and lost_prepared.reason == "execution_lost"
+        assert lost_prepared.spawn_id == operation and lost_prepared.work_id == work_id
+        assert subject.status(operation).reason == "execution_lost"
+        assert launches == 1
+
+    unit_state = "LoadState=loaded\nActiveState=active\nSubState=running\n"
+    active_prepared = subject.spawn(operation, work_id, "objective")
+    assert active_prepared.status == "unknown" and active_prepared.reason == "worker_start_pending"
+    assert launches == 1
+
     subject.store.write(record.model_copy(update={"phase": "RUNNING"}), replace=True)
     restarted = CoordinatorWorkers(home, state_root=tmp_path / "state")
     monkeypatch.setattr(restarted, "_command", capture)
