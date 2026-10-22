@@ -1249,6 +1249,45 @@ async def test_confirmed_pending_review_relation_stales_review_and_fences_replay
     assert (stale.status, stale.reason) == ("STALE", "review_basis_changed")
 
 
+@pytest.mark.parametrize("action", ["clear", "set"])
+@pytest.mark.parametrize("confirm", [False, True])
+async def test_pending_review_occurrence_cannot_change_subject_relation(
+    subject: Subject, action: str, confirm: bool,
+) -> None:
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
+    target = uuid4()
+    if action == "set":
+        await subject.runtime.works.create(CurrentWork(target, "New subject", False, ""))
+    request = ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=review_id,
+        grant_version=subject.grant.version,
+        observed_revision=canonical_revision(review_id, 1),
+        patch=RelationPatch(
+            kind="parent", action=action,
+            target_work_id=target if action == "set" else None,
+        ),
+        confirm_cancels_review=confirm,
+    )
+
+    denied = await subject.service.relate(request)
+
+    assert (denied.status, denied.effect, denied.reason) == (
+        "denied", "not_sent", "pending_review_subject_relation",
+    )
+    occurrence = await subject.runtime.works.get(review_id)
+    subject_work = await subject.runtime.works.get(subject.work_id)
+    assert occurrence is not None and occurrence.row_version == 1
+    assert subject_work is not None and subject_work.row_version == 1
+    assert (await subject.runtime.relations.get(review_id)).parent_work_id == subject.work_id
+    assert (await reviews.get(review_id, requester)).status == "REQUEST_UNPICKED"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(request.operation_id)
+        )) is None
+
+
 async def test_atomic_dependency_relation_and_unsupported_kind(subject: Subject) -> None:
     target = uuid4()
     await subject.runtime.works.create(CurrentWork(target, "Dependency", False, ""))
