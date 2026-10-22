@@ -90,6 +90,7 @@ def segments(command: str) -> list[list[str]]:
     escaped = False
     # A command substitution has its own quoting context. Its newlines were
     # already outside this guard's direct-command classification boundary.
+    # Depth zero marks a backtick substitution; positive depth marks $(...).
     substitutions: list[tuple[str, int]] = []
     position = 0
     while position < len(command):
@@ -104,15 +105,21 @@ def segments(command: str) -> list[list[str]]:
             separated.append("$(")
             position += 2
             continue
+        elif char == "`" and quote != "'":
+            if substitutions and substitutions[-1][1] == 0:
+                quote, _ = substitutions.pop()
+            else:
+                substitutions.append((quote, 0))
+                quote = ""
         elif quote:
             if char == quote:
                 quote = ""
         elif char in "'\"":
             quote = char
-        elif char == "(" and substitutions:
+        elif char == "(" and substitutions and substitutions[-1][1] > 0:
             previous, depth = substitutions[-1]
             substitutions[-1] = previous, depth + 1
-        elif char == ")" and substitutions:
+        elif char == ")" and substitutions and substitutions[-1][1] > 0:
             previous, depth = substitutions[-1]
             if depth == 1:
                 substitutions.pop()
