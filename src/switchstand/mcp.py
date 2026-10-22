@@ -635,7 +635,7 @@ def build_server(
             task_kind: Literal["INVESTIGATION", "VALIDATION"],
             objective: Annotated[str, Field(min_length=1, max_length=8000)],
             result_contract: dict[str, JsonValue],
-            continuation: Literal["START", "CONTINUE", "TAKEOVER"] = "START",
+            continuation: Literal["START"] = "START",
             candidate_ref: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
         ) -> TaskRunRequestResult:
             """Persist one launch-bound investigation or validation request; never launch it."""

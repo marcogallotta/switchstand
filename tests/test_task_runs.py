@@ -36,6 +36,7 @@ from switchstand.task_runs import (
     AgentTaskRequest,
     AgentTaskResult,
     ImplementationTaskRequest,
+    StoredAgentTaskRequest,
     TaskRunState,
     task_run_executions,
     task_run_requests,
@@ -92,6 +93,16 @@ def request(execution, **changes):
         "result_contract": {"required": ["evidence", "conclusion"]},
     }
     return AgentTaskRequest(**(values | changes))
+
+
+def test_new_agent_task_request_advertises_start_only():
+    continuation = AgentTaskRequest.model_json_schema()["properties"]["continuation"]
+    assert continuation.get("const", continuation.get("enum")) == "START"
+    with pytest.raises(ValidationError):
+        request(uuid4(), continuation="CONTINUE")
+    assert StoredAgentTaskRequest.model_validate(
+        request(uuid4()).model_dump() | {"continuation": "CONTINUE"}
+    ).continuation == "CONTINUE"
 
 
 def receipt(execution, run_id=None):
@@ -238,7 +249,9 @@ async def test_request_revision_and_continuation_fail_closed_without_writes(subj
     continued = await state.request(
         requester,
         uuid4(),
-        request(execution, continuation="CONTINUE"),
+        StoredAgentTaskRequest.model_validate(
+            request(execution).model_dump() | {"continuation": "CONTINUE"}
+        ),
     )
     assert (continued.status, continued.reason) == ("denied", "continuation_not_bound")
 

@@ -364,6 +364,10 @@ async def test_managed_server_constructs_task_runs_but_defaults_deny(monkeypatch
     server = managed_mcp.server_from_env()
     assert constructed == [(engine, works)]
     assert "agent_task_request" in server._tool_manager._tools
+    continuation = server._tool_manager.get_tool("agent_task_request").parameters[
+        "properties"
+    ]["continuation"]
+    assert continuation.get("const", continuation.get("enum")) == "START"
     result = await server.call_tool("agent_task_request", {
         "api_version": "1",
         "execution_work_id": str(ID),
