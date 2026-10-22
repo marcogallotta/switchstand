@@ -1067,6 +1067,9 @@ def test_hook_checks_newline_separated_commands_at_entrypoint(tmp_path):
 
     assert hook(tmp_path, "printf 'one\ntwo'\nprintf ok", environment) == {}
     assert hook(tmp_path, "printf ok \\\ncontinued\nprintf done", environment) == {}
+    assert hook(tmp_path, 'printf "%s" "$(printf "foo\nrm -rf /\n")"', environment) == {}
+    assert hook(primary, 'printf "%s" "$(printf "foo\ngit add README.md\n")"',
+                environment, coordinator_primary=primary) == {}
 
 
 def test_hook_allows_apostrophe_in_heredoc_but_checks_following_command(tmp_path):

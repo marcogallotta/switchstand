@@ -88,19 +88,41 @@ def segments(command: str) -> list[list[str]]:
     separated = []
     quote = ""
     escaped = False
-    for char in command:
+    # A command substitution has its own quoting context. Its newlines were
+    # already outside this guard's direct-command classification boundary.
+    substitutions: list[tuple[str, int]] = []
+    position = 0
+    while position < len(command):
+        char = command[position]
         if escaped:
             escaped = False
         elif char == "\\" and quote != "'":
             escaped = True
+        elif char == "$" and quote != "'" and command[position:position + 2] == "$(":
+            substitutions.append((quote, 1))
+            quote = ""
+            separated.append("$(")
+            position += 2
+            continue
         elif quote:
             if char == quote:
                 quote = ""
         elif char in "'\"":
             quote = char
-        elif char == "\n":
+        elif char == "(" and substitutions:
+            previous, depth = substitutions[-1]
+            substitutions[-1] = previous, depth + 1
+        elif char == ")" and substitutions:
+            previous, depth = substitutions[-1]
+            if depth == 1:
+                substitutions.pop()
+                quote = previous
+            else:
+                substitutions[-1] = previous, depth - 1
+        elif char == "\n" and not substitutions:
             separated.append(";")
         separated.append(char)
+        position += 1
     command = "".join(separated)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
