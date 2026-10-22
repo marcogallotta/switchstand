@@ -139,16 +139,55 @@ def test_malformed_hook_input_fails_open_without_read() -> None:
     assert not server.requests
 
 
-def test_explicit_user_stop_skips_pending_mailbox(tmp_path: Path) -> None:
+@pytest.mark.parametrize("command", [
+    "STOP", "Please stop working now.", "Stop the task.", "I want you to stop.",
+])
+def test_explicit_user_stop_skips_pending_mailbox(tmp_path: Path, command: str) -> None:
     prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "session-1",
-              "turn_id": "turn", "prompt": "STOP"}
+              "turn_id": "turn", "prompt": command}
     subprocess.run(
         [PROMPT_HOOK, "--mode", "PILOT", "--lifetime", "STANDING",
          "--telemetry", str(tmp_path / "telemetry.jsonl")],
         input=json.dumps(prompt), text=True, capture_output=True, check=True,
         env=os.environ | {"XDG_STATE_HOME": str(tmp_path)},
     )
-    with MailboxServer([]) as server:
-        assert invoke(stop() | {"turn_id": "turn"}, server.endpoint,
+    with MailboxServer([{
+        "status": "ok", "delivery_ids": [str(uuid4())], "has_more": False,
+        "next_cursor": None,
+    }]) as server:
+        stop_payload = stop() | {"turn_id": "turn", "last_assistant_message":
+                                 "<!-- SWITCHSTAND_YIELD:USER_STOP -->"}
+        assert invoke(stop_payload, server.endpoint,
                       state_home=tmp_path) == {}
         assert server.requests == []
+    continuity = subprocess.run(
+        [PROMPT_HOOK, "--mode", "PILOT", "--lifetime", "STANDING",
+         "--telemetry", str(tmp_path / "telemetry.jsonl")],
+        input=json.dumps(stop_payload), text=True, capture_output=True, check=True,
+        env=os.environ | {"XDG_STATE_HOME": str(tmp_path)},
+    )
+    assert json.loads(continuity.stdout) == {}
+
+
+@pytest.mark.parametrize("command", [
+    "Don't stop; carry on.", '"Stop the task."',
+])
+def test_quoted_or_negated_stop_keeps_pending_mailbox_check(
+    tmp_path: Path, command: str,
+) -> None:
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "session-1",
+              "turn_id": "turn", "prompt": command}
+    subprocess.run(
+        [PROMPT_HOOK, "--mode", "PILOT", "--lifetime", "STANDING",
+         "--telemetry", str(tmp_path / "telemetry.jsonl")],
+        input=json.dumps(prompt), text=True, capture_output=True, check=True,
+        env=os.environ | {"XDG_STATE_HOME": str(tmp_path)},
+    )
+    with MailboxServer([{
+        "status": "ok", "delivery_ids": [str(uuid4())], "has_more": False,
+        "next_cursor": None,
+    }]) as server:
+        result = invoke(stop() | {"turn_id": "turn"}, server.endpoint,
+                        state_home=tmp_path)
+        assert result["decision"] == "block"
+        assert len(server.requests) == 1

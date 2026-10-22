@@ -59,7 +59,10 @@ def test_root_prompt_adds_resume_context_but_subagent_payload_does_not(tmp_path:
     assert events == child_events == []
 
 
-@pytest.mark.parametrize("command", ["STOP", "stop", "kill", "cancel", "pause", "  StOp!  "])
+@pytest.mark.parametrize("command", [
+    "STOP", "stop", "kill", "cancel", "pause", "  StOp!  ",
+    "Please stop working now.", "Stop the task.", "I want you to stop.",
+])
 def test_current_turn_explicit_user_stop_allows_markerless_end(
     tmp_path: Path, command: str,
 ) -> None:
@@ -80,12 +83,25 @@ def test_stop_intent_cannot_escape_its_top_level_turn(tmp_path: Path) -> None:
     invoke(tmp_path, prompt | {"turn_id": "later", "prompt": "continue"})
     replaced, _ = invoke(tmp_path, stop("Working." ) | {"turn_id": "later"})
     assert replaced["decision"] == "block"
-    invoke(tmp_path, prompt | {"prompt": "please STOP"})
+    invoke(tmp_path, prompt | {"prompt": 'The user wrote "please STOP" earlier.'})
     quoted, _ = invoke(tmp_path, stop("Working."))
     assert quoted["decision"] == "block"
     invoke(tmp_path, prompt | {"prompt": "STOP", "agent_id": "child"})
     after_child, _ = invoke(tmp_path, stop("Working."))
     assert after_child["decision"] == "block"
+
+
+@pytest.mark.parametrize("prompt", [
+    "Don't stop; carry on.", "Please don't stop working.",
+    "Do not stop the task.", '"Please stop working now."',
+    "The words 'stop the task' appear in the report.",
+])
+def test_quoted_or_negated_stop_does_not_end_turn(tmp_path: Path, prompt: str) -> None:
+    invoke(tmp_path, {"hook_event_name": "UserPromptSubmit", "session_id": "session",
+                      "turn_id": "turn", "prompt": prompt})
+    output, events = invoke(tmp_path, stop("Working."))
+    assert output["decision"] == "block"
+    assert events[-1]["user_stop"] is False
 
 
 def test_missing_turn_id_cannot_release_stop(tmp_path: Path) -> None:
