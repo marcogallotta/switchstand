@@ -90,15 +90,39 @@ class Canary:
             )
 
         probe = Path(__file__).with_name("agent_canary_probe.py")
-        receipts: list[dict[str, Any]] = [
-            self.runner.run(
-                worker,
-                ["/usr/bin/python3", str(probe), relative],
-                workdir,
-                120,
-            )
-            for worker, relative in zip(workers, files, strict=True)
-        ]
+        receipts: list[dict[str, Any]] = []
+        for worker, relative in zip(workers, files, strict=True):
+            try:
+                receipts.append(
+                    self.runner.run(
+                        worker,
+                        ["/usr/bin/python3", str(probe), relative],
+                        workdir,
+                        120,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001 - runner failures may have any cause
+                leases = self.broker.status()["leases"]
+                return self._record(
+                    report
+                    | {
+                        "state": "unknown",
+                        "reason": "runner_exception",
+                        "failed_worker": worker,
+                        "error": f"{type(error).__name__}: {error}",
+                        "workers": receipts,
+                        "lease_states": {key: value["state"] for key, value in leases.items()},
+                        "held_leases": {
+                            key: value for key, value in leases.items()
+                            if value["state"] in {"reserved", "execution_active"}
+                        },
+                        "next_action": (
+                            "Inspect the held leases and each worker's execution receipt and "
+                            "runtime unit/cgroup; reconcile through the identity-bound broker "
+                            "only after proving execution terminal or launch absent."
+                        ),
+                    }
+                )
         evidence = [
             self._worker_evidence(worker, expected_file)
             for worker, expected_file in zip(workers, expected, strict=True)
