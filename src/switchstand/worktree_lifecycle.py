@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from switchstand.secure_file import atomic_replace_bytes
+
 EVIDENCE = {".qualification", ".switchstand-incidents"}
 DISPOSABLE = {".venv", ".pytest_cache", ".ruff_cache", ".mypy_cache", "friction.md"}
 def _run(*arguments: str, cwd: Path | None = None) -> str:
@@ -21,10 +23,7 @@ def _git(repo: Path, *arguments: str) -> str:
     return _run("git", "-C", str(repo), *arguments)
 def _atomic_json(path: Path, value: object) -> None:
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
-    os.chmod(temporary, 0o600)
-    os.replace(temporary, path)
+    atomic_replace_bytes(path, (json.dumps(value, indent=2, sort_keys=True) + "\n").encode())
 def _records(repo: Path) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for block in _git(repo, "worktree", "list", "--porcelain").split("\n\n"):
