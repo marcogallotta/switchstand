@@ -141,6 +141,7 @@ def test_malformed_hook_input_fails_open_without_read() -> None:
 
 @pytest.mark.parametrize("command", [
     "STOP", "Please stop working now.", "Stop the task.", "I want you to stop.",
+    "Stop, please.", "Stop what you are doing.",
 ])
 def test_explicit_user_stop_skips_pending_mailbox(tmp_path: Path, command: str) -> None:
     prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "session-1",
@@ -170,7 +171,8 @@ def test_explicit_user_stop_skips_pending_mailbox(tmp_path: Path, command: str) 
 
 
 @pytest.mark.parametrize("command", [
-    "Don't stop; carry on.", '"Stop the task."',
+    "Don't stop; carry on.", "Don't stop what you are doing.",
+    '"Stop the task."', '"Stop, please."',
 ])
 def test_quoted_or_negated_stop_keeps_pending_mailbox_check(
     tmp_path: Path, command: str,

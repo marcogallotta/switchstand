@@ -62,6 +62,7 @@ def test_root_prompt_adds_resume_context_but_subagent_payload_does_not(tmp_path:
 @pytest.mark.parametrize("command", [
     "STOP", "stop", "kill", "cancel", "pause", "  StOp!  ",
     "Please stop working now.", "Stop the task.", "I want you to stop.",
+    "Stop, please.", "Stop what you are doing.",
 ])
 def test_current_turn_explicit_user_stop_allows_markerless_end(
     tmp_path: Path, command: str,
@@ -93,7 +94,8 @@ def test_stop_intent_cannot_escape_its_top_level_turn(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("prompt", [
     "Don't stop; carry on.", "Please don't stop working.",
-    "Do not stop the task.", '"Please stop working now."',
+    "Do not stop the task.", "Don't stop what you are doing.",
+    '"Please stop working now."', '"Stop, please."',
     "The words 'stop the task' appear in the report.",
 ])
 def test_quoted_or_negated_stop_does_not_end_turn(tmp_path: Path, prompt: str) -> None:

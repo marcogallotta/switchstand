@@ -13,7 +13,8 @@ from pathlib import Path
 # command inside a longer message. Both Stop hooks consume this same decision.
 COMMAND = re.compile(
     r"\A\s*(?:(?:please\s+)?(?:stop|kill|cancel|pause)"
-    r"(?:\s+(?:working|the task|this task|the work|this work))?(?:\s+now)?"
+    r"(?:\s+(?:working|the task|this task|the work|this work|what you are doing))?"
+    r"(?:\s+now)?(?:,\s*please)?"
     r"|i\s+want\s+you\s+to\s+(?:stop|pause)(?:\s+working)?(?:\s+now)?)"
     r"\s*[.!]?\s*\Z",
     re.IGNORECASE,
