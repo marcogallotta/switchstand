@@ -83,6 +83,25 @@ def segments(command: str) -> list[list[str]]:
             raise ValueError("unterminated here-document")
         lines[end] = ";\n"
     command = "".join(lines)
+    # shlex treats newlines as whitespace, while the shell runs an unquoted,
+    # unescaped newline as a command boundary.
+    separated = []
+    quote = ""
+    escaped = False
+    for char in command:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "\n":
+            separated.append(";")
+        separated.append(char)
+    command = "".join(separated)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
     lexer.commenters = ""
