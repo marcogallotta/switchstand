@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -104,6 +105,10 @@ class LeaseRequest(BaseModel):
         if value not in CLASSES:
             raise ValueError("unknown worker class")
         return value
+
+    def fingerprint(self) -> str:
+        payload = json.dumps(self.model_dump(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -293,9 +298,23 @@ class Broker:
             state = self._read_state()
             prior = state["requests"].get(request.request_id)
             if prior is not None:
-                if prior["parent"] != request.parent:
+                fingerprint = prior.get("request_fingerprint")
+                if fingerprint is None and prior["state"] == "reserved":
+                    # Older ledgers have no fingerprint. A reserved lease retains
+                    # the original envelope; a refused request does not.
+                    lease = state["leases"].get(prior["lease_id"])
+                    if lease is not None and lease["request_id"] == request.request_id:
+                        original = LeaseRequest(
+                            request_id=request.request_id,
+                            parent=lease["parent"],
+                            worker=lease["lease_id"],
+                            worker_class=lease["worker_class"],
+                            children=ChildBudget(**lease["children"]),
+                        )
+                        fingerprint = original.fingerprint()
+                if prior["parent"] != request.parent or fingerprint != request.fingerprint():
                     raise ValueError("request identifier collision")
-                return prior
+                return {key: value for key, value in prior.items() if key != "request_fingerprint"}
             sample = self._pressure(state, pressure)
             reserved_memory, candidate_memory = self._admission_memory(state, request)
             refusal = sample.refusal(
@@ -313,7 +332,10 @@ class Broker:
                 }
             else:
                 result = self._reserve(state, request)
-            state["requests"][request.request_id] = result
+            state["requests"][request.request_id] = {
+                **result,
+                "request_fingerprint": request.fingerprint(),
+            }
             self._atomic_json(self.state_path, state)
             return result
 

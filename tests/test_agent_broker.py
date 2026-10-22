@@ -77,6 +77,70 @@ def test_hierarchy_subdivides_and_deduplicates(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("worker", "worker_class", "children"),
+    [
+        ("other", "light", {}),
+        ("worker", "implementation", {}),
+        ("worker", "light", {"tasks": 1}),
+    ],
+)
+def test_same_request_id_rejects_changed_envelope(
+    tmp_path: Path, worker: str, worker_class: str, children: dict[str, int]
+) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    first = broker.ingest("root", "r1", GREEN)
+    original_state = broker.status()
+
+    request(tmp_path, "root", "r1", worker, worker_class, **children)
+    with pytest.raises(ValueError, match="request identifier collision"):
+        broker.ingest("root", "r1", GREEN)
+
+    assert broker.status() == original_state
+    assert json.loads((tmp_path / "results/r1.json").read_text()) == first
+
+
+def test_request_fingerprint_survives_restart_and_refusal(tmp_path: Path) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    first = broker.ingest("root", "r1", GREEN)
+    restarted = Broker(tmp_path)
+    assert restarted.ingest("root", "r1", GREEN) == first
+
+    request(tmp_path, "root", "r2", "blocked")
+    refused = restarted.ingest("root", "r2", Pressure(16_000, 100, 4_000, 0, 0))
+    assert refused["state"] == "refused"
+    restarted = Broker(tmp_path)
+    assert restarted.ingest("root", "r2", GREEN) == refused
+    request(tmp_path, "root", "r2", "different")
+    with pytest.raises(ValueError, match="request identifier collision"):
+        restarted.ingest("root", "r2", GREEN)
+
+
+def test_legacy_request_replay_uses_lease_or_fails_closed(tmp_path: Path) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(ROOT)
+    request(tmp_path, "root", "r1", "worker")
+    first = broker.ingest("root", "r1", GREEN)
+    request(tmp_path, "root", "r2", "blocked")
+    broker.ingest("root", "r2", Pressure(16_000, 100, 4_000, 0, 0))
+    legacy = broker.status()
+    for entry in legacy["requests"].values():
+        del entry["request_fingerprint"]
+    broker._atomic_json(broker.state_path, legacy)
+
+    restarted = Broker(tmp_path)
+    assert restarted.ingest("root", "r1", GREEN) == first
+    request(tmp_path, "root", "r1", "other")
+    with pytest.raises(ValueError, match="request identifier collision"):
+        restarted.ingest("root", "r1", GREEN)
+    with pytest.raises(ValueError, match="request identifier collision"):
+        restarted.ingest("root", "r2", GREEN)
+
+
 def test_proof_free_complete_and_cancel_are_rejected(tmp_path: Path) -> None:
     broker = Broker(tmp_path)
     broker.initialize(ROOT)
