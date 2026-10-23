@@ -530,7 +530,7 @@ messaging, and required continuation:
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. Message routes accept and create only the durable PostgreSQL message and delivery records;
+  checks. After durable commit, optional default-off `codex_inbound_wake.py` observes the owning daemon, serializes registered standalone Roots and their direct native Heads by actual Root, and wakes Root; nested actors remain UNKNOWN. Root routing acceptance stays pending until the same Head handles its own mailbox. Gate bearers provide read-only snapshots, not reservations or authority; Head mailbox APIs fence effects. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
@@ -923,5 +923,5 @@ are removal predicates, not removal decisions:
 `disk_pressure.py` is a non-destructive, one-shot Wakeful producer that runs outside the Codex
 launch path. It performs only a constant-time filesystem capacity probe, records an atomic private
 SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
-It does not start Codex or deliver into Codex sessions. Stock Codex consumes durable mailbox
+It does not start Codex or deliver into Codex sessions. Without the optional inbound adapter, stock Codex consumes durable mailbox
 messages only while the user is actively running and prompting that session.
