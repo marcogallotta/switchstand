@@ -535,7 +535,10 @@ messaging, and required continuation:
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
-  endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
+  endpoint UUID and generation. Migration `0028_agent_status` adds a nullable reserved
+  `agent_status` column without report APIs or checkpoint cues in the compatibility baseline.
+  Code-only rollback retains schema `0028_agent_status` and its data; the migration refuses downgrade.
+  Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
   unreferenced legacy residue. Registration is read-or-create for that authenticated session, except
   that the canonical `codex-coordinator` name key and temporary `root` alias are reserved: an

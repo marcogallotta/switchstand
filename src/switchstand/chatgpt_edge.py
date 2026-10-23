@@ -92,7 +92,7 @@ CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 CODEX_STOP_MAILBOX_PATH = "/internal/codex-stop-mailbox"
 GRACEFUL_SHUTDOWN_SECONDS = 30
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
-STATEFUL_MIGRATION_REVISION = "0027_pull_requests"
+STATEFUL_MIGRATION_REVISION = "0028_agent_status"
 _https_resource_url = normalize_resource_url
 
 
