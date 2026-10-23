@@ -476,6 +476,8 @@ messaging, and required continuation:
   contract's product owner, carry the exact installed contract in its result contract, match the
   requested transition outcome, and retain nonempty server-read evidence references; every
   mismatch remains fail-closed.
+  The review shell shows the decision explanation and approval meaning first; immutable audit
+  fields remain available in a collapsed disclosure. Request replay status is not a human decision.
   `human_review_shell.py` provides a default-off server-rendered password-only and exact-Origin
   confirmation app over that store. Its local persistent factory wires the canonical state owner
   without owning the database engine lifecycle. Pages use a same-origin referrer policy so browser
