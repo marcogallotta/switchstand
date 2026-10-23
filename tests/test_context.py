@@ -1052,6 +1052,30 @@ def test_unscoped_hook_denies_malformed_shell_and_allows_balanced_read(tmp_path)
     assert hook(tmp_path, "echo 'balanced'", environment) == {}
 
 
+def test_hook_checks_newline_separated_commands_at_entrypoint(tmp_path):
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    git(primary, "init", "-b", "main")
+    environment = dict(os.environ)
+
+    denied = hook(primary, "printf ok\ngit add README.md", environment,
+                  coordinator_primary=primary)
+    assert "primary-checkout" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+    denied = hook(tmp_path, "echo ok\nrm -rf /", environment)
+    assert "recursive rm" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+    assert hook(tmp_path, "printf 'one\ntwo'\nprintf ok", environment) == {}
+    assert hook(tmp_path, "printf ok \\\ncontinued\nprintf done", environment) == {}
+    assert hook(tmp_path, 'printf "%s" "$(printf "foo\nrm -rf /\n")"', environment) == {}
+    assert hook(tmp_path, 'printf "%s" "`printf "foo\nrm -rf /\n"`"', environment) == {}
+    assert hook(primary, 'printf "%s" "$(printf "foo\ngit add README.md\n")"',
+                environment, coordinator_primary=primary) == {}
+    denied = hook(tmp_path, 'printf "%s" "`printf "foo\nrm -rf /\n"`"\nrm -rf /',
+                  environment)
+    assert "recursive rm" in denied["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 def test_hook_allows_apostrophe_in_heredoc_but_checks_following_command(tmp_path):
     environment = dict(os.environ)
     body = "cat <<'EOF'\nit's data; git reset --hard\nEOF\n"
