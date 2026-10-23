@@ -68,7 +68,21 @@ class CoordinatorWorkers:
                 return WorkerSpawnResult(
                     status="denied", work_id=work_id, reason="operation_identity_conflict"
                 )
-            return self._spawn_result("replayed", existing)
+            if existing.phase == "TERMINAL":
+                return self._spawn_result("replayed", existing, "operation_replayed_terminal")
+            state = self._unit_state(existing)
+            if state is None:
+                return self._spawn_result("unknown", existing, "unit_state_unavailable")
+            if state.load == "not-found":
+                reason = (
+                    "unit_start_not_applied" if existing.phase == "PREPARED" else "execution_lost"
+                )
+                return self._spawn_result("unknown", existing, reason)
+            if not self._unit_running(state):
+                return self._spawn_result("unknown", existing, "execution_lost")
+            if existing.phase == "PREPARED":
+                return self._spawn_result("unknown", existing, "worker_start_pending")
+            return self._spawn_result("replayed", existing, "operation_replayed_running")
         self._require_unambiguous_state(work_id)
         base, writer, branch, git_common = self.store.candidate_identity(work_id)
         unit = f"switchstand-implementation-{operation_id.hex}.service"
@@ -235,9 +249,7 @@ class CoordinatorWorkers:
     def _require_unambiguous_state(self, work_id: UUID) -> None:
         for record in self.store.records():
             if record.work_id == work_id and record.phase != "TERMINAL":
-                state = self._unit_state(record)
-                if state is None or self._unit_running(state) or record.phase == "RUNNING":
-                    raise ValueError("work_already_has_active_worker")
+                raise ValueError("work_already_has_active_worker")
 
     def execute(self, spawn_id: UUID) -> int:
         """Systemd-owned wrapper that durably records launcher start and exit."""
@@ -344,7 +356,9 @@ class CoordinatorWorkers:
 
     @staticmethod
     def _spawn_result(
-        status: Literal["started", "replayed"], record: WorkerRecord
+        status: Literal["started", "replayed", "unknown"],
+        record: WorkerRecord,
+        reason: str | None = None,
     ) -> WorkerSpawnResult:
         return WorkerSpawnResult(
             status=status,
@@ -352,7 +366,7 @@ class CoordinatorWorkers:
             work_id=record.work_id,
             writer=record.writer,
             base_sha=record.base_sha,
-            reason="worker_started" if status == "started" else "operation_replayed",
+            reason=reason or ("worker_started" if status == "started" else "operation_replayed"),
         )
 
     @staticmethod

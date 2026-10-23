@@ -31,12 +31,20 @@ def test_spawn_persists_prepared_identity_before_start(
     (control / "manifest").write_text(f"state=ACTIVE\ncontrol_sha={base}\ncontrol_path={repo}\n")
     subject = CoordinatorWorkers(home, state_root=tmp_path / "state")
     command: tuple[str, ...] = ()
+    launches = 0
+    unit_state = "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
 
     def capture(*args, **_kwargs):
-        nonlocal command
+        nonlocal command, launches
         if args[0] == "systemd-run":
             command = args
-        return SimpleNamespace(returncode=0)
+            launches += 1
+            return SimpleNamespace(returncode=0)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=unit_state,
+            stderr="",
+        )
 
     monkeypatch.setattr(subject, "_command", capture)
     operation = uuid4()
@@ -51,3 +59,57 @@ def test_spawn_persists_prepared_identity_before_start(
     assert record.git_common == str((repo / ".git").resolve())
     assert record.command[:2] == (str(repo / "scripts/switchstand"), "--isolated")
     assert "--collect" in command
+    replay = subject.spawn(operation, work_id, "objective")
+    assert replay.status == "unknown"
+    assert replay.reason == "unit_start_not_applied"
+    assert replay.spawn_id == operation and replay.work_id == work_id
+    assert launches == 1
+    assert subject.spawn(uuid4(), work_id, "objective").status == "unknown"
+    assert launches == 1
+
+    assert subject.cancel(operation).status == "cancelled"
+    cancelled = subject.store.load(operation)
+    assert cancelled is not None and cancelled.phase == "TERMINAL" and cancelled.cancelled
+    assert subject.status(operation).status == "cancelled"
+    operation = uuid4()
+    assert subject.spawn(operation, work_id, "objective").status == "started"
+    record = subject.store.load(operation)
+    assert record is not None and record.phase == "PREPARED"
+    assert launches == 2
+
+    unit_state = "LoadState=loaded\nActiveState=activating\nSubState=start\n"
+    pending = subject.spawn(operation, work_id, "objective")
+    assert pending.status == "unknown" and pending.reason == "worker_start_pending"
+    assert launches == 2
+
+    for active, sub in (("failed", "failed"), ("inactive", "dead")):
+        unit_state = f"LoadState=loaded\nActiveState={active}\nSubState={sub}\n"
+        lost_prepared = subject.spawn(operation, work_id, "objective")
+        assert lost_prepared.status == "unknown" and lost_prepared.reason == "execution_lost"
+        assert lost_prepared.spawn_id == operation and lost_prepared.work_id == work_id
+        assert subject.status(operation).reason == "execution_lost"
+        assert launches == 2
+
+    unit_state = "LoadState=loaded\nActiveState=active\nSubState=running\n"
+    active_prepared = subject.spawn(operation, work_id, "objective")
+    assert active_prepared.status == "unknown" and active_prepared.reason == "worker_start_pending"
+    assert launches == 2
+
+    subject.store.write(record.model_copy(update={"phase": "RUNNING"}), replace=True)
+    restarted = CoordinatorWorkers(home, state_root=tmp_path / "state")
+    monkeypatch.setattr(restarted, "_command", capture)
+    replayed = restarted.spawn(operation, work_id, "objective")
+    assert replayed.status == "replayed" and replayed.reason == "operation_replayed_running"
+    assert replayed.spawn_id == operation and replayed.work_id == work_id
+    assert restarted.spawn(operation, work_id, "different").reason == "operation_identity_conflict"
+    assert launches == 2
+
+    unit_state = "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+    lost = restarted.spawn(operation, work_id, "objective")
+    assert lost.status == "unknown" and lost.reason == "execution_lost"
+    assert launches == 2
+
+    subject.store.write(record.model_copy(update={"phase": "TERMINAL", "exit_status": 1}), replace=True)
+    terminal = restarted.spawn(operation, work_id, "objective")
+    assert terminal.status == "replayed" and terminal.reason == "operation_replayed_terminal"
+    assert launches == 2
