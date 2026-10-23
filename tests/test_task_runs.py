@@ -9,7 +9,7 @@ from alembic import command
 from alembic.config import Config
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
-from sqlalchemy import create_engine, func, select, text, update
+from sqlalchemy import create_engine, func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -38,6 +38,7 @@ from switchstand.task_runs import (
     ImplementationTaskRequest,
     StoredAgentTaskRequest,
     TaskRunState,
+    _digest,
     task_run_executions,
     task_run_requests,
     task_run_results,
@@ -103,6 +104,28 @@ def test_new_agent_task_request_advertises_start_only():
     assert StoredAgentTaskRequest.model_validate(
         request(uuid4()).model_dump() | {"continuation": "CONTINUE"}
     ).continuation == "CONTINUE"
+
+
+@pytest.mark.parametrize("continuation", ["CONTINUE", "TAKEOVER"])
+async def test_historical_continuation_request_reads_from_database(subject, continuation):
+    state, engine, requester, execution = subject
+    historical = StoredAgentTaskRequest.model_validate(
+        request(execution).model_dump() | {"continuation": continuation}
+    )
+    request_id = uuid4()
+    async with engine.begin() as connection:
+        await connection.execute(insert(task_run_requests).values(
+            request_id=request_id,
+            operation_id=uuid4(),
+            requester_work_id=requester,
+            content_digest=_digest(requester, historical),
+            **historical.model_dump(mode="json", exclude={"api_version"}),
+        ))
+
+    readback = await state.get(request_id)
+    assert readback.status == "ok"
+    assert readback.request is not None
+    assert readback.request.continuation == continuation
 
 
 def receipt(execution, run_id=None):
