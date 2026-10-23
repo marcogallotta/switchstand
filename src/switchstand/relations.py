@@ -38,6 +38,7 @@ class RelationGateway:
         payload = [
             principal.key, str(request.work_id), request.grant_version,
             request.observed_revision, request.patch.model_dump(mode="json"),
+            request.confirm_cancels_review,
         ]
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 

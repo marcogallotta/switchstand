@@ -8,7 +8,7 @@ from dataclasses import replace
 from typing import Protocol, cast
 from uuid import UUID
 
-from sqlalchemy import Text, exists, insert, select, update
+from sqlalchemy import Text, exists, insert, select, true, update
 from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -85,6 +85,7 @@ _START_HERE_PROVIDER_WORK_ID = "1218327002478382"
 
 async def pending_review_id(
     connection: AsyncConnection, work_id: UUID, revision: str,
+    *, occurrence_id: UUID | None = None,
 ) -> UUID | None:
     """Return one deterministic pending review bound to this exact work revision."""
     review_id = sql_cast(canonical_work.c.work_id, Text)
@@ -110,6 +111,8 @@ async def pending_review_id(
     ).where(
         work_parents.c.parent_work_id == work_id,
         canonical_work.c.work_type == "REVIEW",
+        (canonical_work.c.work_id == occurrence_id if occurrence_id is not None
+         else true()),
         has_basis,
         ~has_outcome,
     ).order_by(canonical_work.c.work_id).limit(1))
@@ -937,11 +940,39 @@ class CanonicalWorkRuntime:
                         return RelationGateway.guard(
                             request, "stale", "source_revision_changed"
                         )
+                    if not request.confirm_cancels_review:
+                        review_id = await pending_review_id(
+                            connection, request.work_id, request.observed_revision,
+                        )
+                        if review_id is not None:
+                            return RelationGateway.guard(
+                                request, "CONFIRM_REQUIRED", "pending_review",
+                            ).model_copy(update={
+                                "next_action": confirmation_message(review_id),
+                            })
                     patch = request.patch
                     if patch.kind not in {"parent", "dependency", "placement", "pull_request"}:
                         return RelationGateway.guard(
                             request, "denied", "invalid_database_relation"
                         )
+                    if patch.kind == "parent" and current.work_type == "REVIEW":
+                        parent = await connection.scalar(select(
+                            work_parents.c.parent_work_id
+                        ).where(work_parents.c.child_work_id == request.work_id))
+                        if parent is not None and parent != patch.target_work_id:
+                            # Confirmation cancels a review by revising its subject. Moving
+                            # the occurrence itself would hide that review without revising
+                            # the subject, so confirmation cannot authorize this route.
+                            subject_version = await connection.scalar(select(
+                                canonical_work.c.row_version
+                            ).where(canonical_work.c.work_id == parent))
+                            if (subject_version is not None and await pending_review_id(
+                                connection, parent, canonical_revision(parent, subject_version),
+                                occurrence_id=request.work_id,
+                            ) is not None):
+                                return RelationGateway.guard(
+                                    request, "denied", "pending_review_subject_relation"
+                                )
                     target = patch.target_work_id
                     if target is not None and not grant.can_read(target, explicit_target=True):
                         return RelationGateway.guard(
