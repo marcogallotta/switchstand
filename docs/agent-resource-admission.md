@@ -123,8 +123,12 @@ In `codex-runs/JOBS.md`, replace the fixed “5G / max 3” policy with the same
 both initial launch and resume use the existing containment prefix:
 
 ```text
-nohup setsid env CODEX_HOME=/home/marco/.local/state/switchstand/codex-bg-home systemd-run --user --scope --quiet --slice=agents.slice --unit=ss-codex-<name>-$(date +%H%M%S) codex exec ...
+nohup setsid env CODEX_HOME=/home/marco/.local/state/switchstand/codex-bg-home systemd-run --user --scope --quiet --slice=agents.slice --unit=ss-codex-<heavy|light>-<name>-$(date +%H%M%S) codex exec ...
 ```
+
+Choose `heavy` for implementation and other memory-bearing work, including the Codex mailbox
+Coordinator. Choose `light` only for bounded review work. The sync checklist counts these existing
+unit identities and flags more than four heavy or six total live jobs.
 
 During activation, every dispatch-capable head must acknowledge the rule on its next interaction
 or re-enter with the updated prompt. Until then, mark it unable to dispatch. Do not edit
