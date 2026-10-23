@@ -84,6 +84,28 @@ def test_complete_current_and_waiting_work_passes() -> None:
     assert evaluate(waiting, checkpoint=checkpoint(waiting)).status == "PASS"
 
 
+def test_completion_must_agree_with_lifecycle() -> None:
+    current = work()
+    terminal = replace(
+        current, lifecycle_state="TERMINAL", completed=True,
+        next_action_class="NONE", next_action_ref="NONE",
+    )
+    for item in (replace(current, completed=True), replace(terminal, completed=False)):
+        result = evaluate(item)
+        assert result.status == "FAIL"
+        assert next(check for check in result.checks if check.name == "lifecycle_action_or_wait").state == "FAIL"
+    assert evaluate(current).status == "PASS"
+    assert evaluate(terminal).status == "PASS"
+
+
+def test_completion_contributes_to_hygiene_digest() -> None:
+    current = work()
+    saved = checkpoint(current)
+    assert evaluate(current, checkpoint=saved).basis_digest != evaluate(
+        replace(current, completed=True), checkpoint=saved,
+    ).basis_digest
+
+
 def test_stale_missing_and_unknown_evidence_never_passes() -> None:
     item = work()
     stale = evaluate(item, observed_revision="stale")

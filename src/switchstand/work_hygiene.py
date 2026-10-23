@@ -88,7 +88,8 @@ def evaluate_work_hygiene(
     checks: list[HygieneCheck] = []
     try:
         validate_resultant_state(
-            lifecycle_state=work.lifecycle_state, canonical_root=work.canonical_root,
+            lifecycle_state=work.lifecycle_state, completed=work.completed,
+            canonical_root=work.canonical_root,
             owner_key=work.owner_key, wait_kind=work.wait_kind,
             unblock_condition=work.unblock_condition, next_due=work.next_due,
             next_action_class=work.next_action_class, next_action_ref=work.next_action_ref,
@@ -168,7 +169,7 @@ def evaluate_work_hygiene(
     evidence = {
         "gate": gate, "work_id": str(work_id), "revision": current_revision,
         "routing": {field: getattr(work, field) for field in (
-            "work_type", "lifecycle_state", "canonical_root", "owner_key", "wait_kind",
+            "work_type", "completed", "lifecycle_state", "canonical_root", "owner_key", "wait_kind",
             "unblock_condition", "next_due", "next_action_class", "next_action_ref",
         )},
         "checkpoint": None if checkpoint is None else checkpoint.model_dump(mode="json"),
