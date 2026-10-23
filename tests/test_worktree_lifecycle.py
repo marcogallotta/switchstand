@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 from argparse import Namespace
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from switchstand import secure_file
 from switchstand import worktree_lifecycle as lifecycle
 
 
@@ -105,6 +107,66 @@ def test_terminal_writer_plan_preserves_evidence_and_removes_exact_worktree(tmp_
     assert not writer.exists()
     assert other.exists()
     assert str(writer) not in git(repo, "worktree", "list", "--porcelain")
+
+
+def test_retirement_receipts_are_synced_before_and_after_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, root, coordinator, archive = fixture(tmp_path)
+    writer = terminal_writer(repo, root, coordinator)
+    plan, receipt = tmp_path / "plan.json", tmp_path / "receipt.json"
+    lifecycle._plan_retire(plan_args(repo, root, coordinator, archive, writer, plan))
+    events: list[tuple[str, str]] = []
+    original_fsync = os.fsync
+    original_git = lifecycle._git
+
+    def recording_fsync(descriptor: int) -> None:
+        kind = "dir" if os.path.isdir(f"/proc/self/fd/{descriptor}") else "file"
+        events.append(("fsync", kind))
+        original_fsync(descriptor)
+
+    def recording_git(repo_path: Path, *arguments: str) -> str:
+        if arguments[:3] == ("worktree", "remove", "--force"):
+            events.append(("git", "remove"))
+        return original_git(repo_path, *arguments)
+
+    monkeypatch.setattr(secure_file.os, "fsync", recording_fsync)
+    monkeypatch.setattr(lifecycle, "_git", recording_git)
+    lifecycle._apply_retire(apply_args(plan, receipt))
+
+    remove_at = events.index(("git", "remove"))
+    assert events[:remove_at] == [("fsync", "file"), ("fsync", "dir")] * 2
+    assert events[remove_at + 1 :] == [("fsync", "file"), ("fsync", "dir")]
+    assert json.loads(receipt.read_text())["state"] == "COMPLETE"
+
+
+def test_post_removal_receipt_failure_preserves_started_recovery_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, root, coordinator, archive = fixture(tmp_path)
+    writer = terminal_writer(repo, root, coordinator)
+    plan, receipt = tmp_path / "plan.json", tmp_path / "receipt.json"
+    lifecycle._plan_retire(plan_args(repo, root, coordinator, archive, writer, plan))
+    original_replace = lifecycle.atomic_replace_bytes
+
+    def fail_complete(path: Path, data: bytes) -> None:
+        if path == receipt and json.loads(data)["state"] == "COMPLETE":
+            raise OSError("simulated final receipt write failure")
+        original_replace(path, data)
+
+    monkeypatch.setattr(lifecycle, "atomic_replace_bytes", fail_complete)
+    with pytest.raises(OSError, match="simulated final receipt write failure"):
+        lifecycle._apply_retire(apply_args(plan, receipt))
+
+    result = json.loads(receipt.read_text())
+    assert result["state"] == "STARTED"
+    assert result["evidence"][0]["source"] == str(writer / ".qualification")
+    assert Path(result["evidence"][0]["archive"], "proof.txt").read_text() == "evidence\n"
+    assert not writer.exists()
+    assert str(writer) not in git(repo, "worktree", "list", "--porcelain")
+    with pytest.raises(FileNotFoundError):
+        lifecycle._apply_retire(apply_args(plan, receipt))
+
 
 def test_changed_retirement_preimage_has_no_effect(tmp_path: Path) -> None:
     repo, root, coordinator, archive = fixture(tmp_path)
