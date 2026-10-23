@@ -102,6 +102,24 @@ def test_same_request_id_rejects_changed_envelope(
     assert json.loads((tmp_path / "results/r1.json").read_text()) == first
 
 
+def test_same_request_id_rejects_changed_parent_after_restart(tmp_path: Path) -> None:
+    broker = Broker(tmp_path)
+    broker.initialize(ROOT)
+    parent_request(tmp_path)
+    assert broker.ingest("root", "r1", GREEN)["state"] == "reserved"
+    request(tmp_path, "root", "r2", "worker")
+    first = broker.ingest("root", "r2", GREEN)
+    original_state = broker.status()
+
+    request(tmp_path, "parent", "r2", "worker")
+    restarted = Broker(tmp_path)
+    with pytest.raises(ValueError, match="request identifier collision"):
+        restarted.ingest("parent", "r2", GREEN)
+
+    assert restarted.status() == original_state
+    assert json.loads((tmp_path / "results/r2.json").read_text()) == first
+
+
 def test_request_fingerprint_survives_restart_and_refusal(tmp_path: Path) -> None:
     broker = Broker(tmp_path)
     broker.initialize(ROOT)
