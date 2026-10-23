@@ -453,12 +453,22 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         pull_request: Annotated[int, Field(ge=1)],
         include_failure_detail: bool = False,
+        work_id: UUID | None = None,
     ) -> repository_candidate.RepositoryCandidateQualification:
         """Qualify the exact current GitHub PR candidate against code-owned CI gates."""
         del api_version
         result = await repository_candidate.qualify_repository_candidate(
             pull_request, include_failure_detail,
         )
+        reason = None
+        if service.human_reviews is not None:
+            reason = await service.human_reviews.candidate_approval_reason(
+                pull_request, result.base_sha, result.head_sha, result.composition_sha, work_id,
+            )
+        elif work_id is not None:
+            reason = "candidate_approval_unavailable"
+        if reason is not None and result.status == "READY":
+            result = result.model_copy(update={"status": "NOT_READY", "reason": reason})
         audited("repository_candidate_qualification_get", str(pull_request), result.status)
         return result
 
@@ -1279,14 +1289,18 @@ def build_ordinary_tools(
         result = await service.human_reviews.propose(bound)
         values = result.model_dump(mode="json")
         if result.record is not None:
+            query = {"revision": bound.package_revision}
+            if bound.candidate is not None:
+                query["consequence_id"] = str(result.record.consequence_id)
             values["url"] = (
                 f"{service.human_review_origin}/human-review/{bound.package_work_id}?"
-                + urlencode({"revision": bound.package_revision})
+                + urlencode(query)
             )
         return values
 
     async def human_review_get(
         api_version: Literal["1"], work_id: UUID, revision: str,
+        consequence_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Read this exact request and saved decision; no decision argument exists."""
         del api_version
@@ -1294,7 +1308,9 @@ def build_ordinary_tools(
         if isinstance(context, tuple):
             return {"status": context[0], "reason": context[1]}
         assert service.human_reviews is not None
-        return (await service.human_reviews.prepare(work_id, revision)).model_dump(mode="json")
+        result = (await service.human_reviews.prepare(work_id, revision, consequence_id)
+                  if consequence_id is not None else await service.human_reviews.prepare(work_id, revision))
+        return result.model_dump(mode="json")
 
     unregistered_agent_next_action = (
         "Call agent_register for this exact session using its intended durable agent name, "

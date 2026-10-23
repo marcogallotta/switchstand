@@ -120,6 +120,16 @@ class HumanReviewRequester(ClosedModel):
     mailbox_id: UUID
 
 
+class HumanReviewCandidate(ClosedModel):
+    """One repository candidate, separately approved against an unchanged Task."""
+
+    task_approval_id: UUID
+    pull_request: int = Field(ge=1)
+    base_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+    composition_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
+
+
 class HumanReviewConsequence(ClosedModel):
     """The exact server-owned meaning of approving one package revision."""
 
@@ -131,10 +141,12 @@ class HumanReviewConsequence(ClosedModel):
     approval_effect: Literal[
         "READY_FOR_IMPLEMENTATION_ONLY",
         "CLEAR_HUMAN_REVIEW_FOR_NAMED_CONTINUATION",
+        "APPROVE_EXACT_CANDIDATE_FOR_LANDING",
     ] = "READY_FOR_IMPLEMENTATION_ONLY"
     baseline: HumanReviewBaselineV2 | None = None
     requester: HumanReviewRequester | None = None
     task_text: str | None = Field(default=None, min_length=1)
+    candidate: HumanReviewCandidate | None = None
 
     @model_validator(mode="after")
     def bounded_unique_items(self) -> HumanReviewConsequence:
@@ -143,6 +155,10 @@ class HumanReviewConsequence(ClosedModel):
         for values in (self.implementation_scope, self.excluded_effects):
             if len(set(values)) != len(values) or any(not value or len(value) > 512 for value in values):
                 raise ValueError("consequence items must be unique strings of 1..512 characters")
+        if self.candidate is not None:
+            if self.baseline is not None or self.approval_effect != "APPROVE_EXACT_CANDIDATE_FOR_LANDING":
+                raise ValueError("candidate approval is separate from Task approval/supersession")
+            return self
         if self.baseline is None:
             if self.approval_effect != "READY_FOR_IMPLEMENTATION_ONLY":
                 raise ValueError("V2 approval effect requires a baseline")
@@ -166,6 +182,8 @@ class HumanReviewConsequence(ClosedModel):
             values.pop("task_text")
         if self.requester is None:
             values.pop("requester")  # Preserve the exact digest of existing consequences.
+        if self.candidate is None:
+            values.pop("candidate")
         payload = json.dumps(
             values, sort_keys=True, separators=(",", ":"), allow_nan=False
         ).encode()
@@ -187,6 +205,9 @@ FailureReason = Literal[
     "baseline_supersession_invalid",
     "agent_notes_overflow",
     "task_text_required",
+    "task_approval_changed",
+    "candidate_approval_required",
+    "candidate_changed",
     "state_unavailable",
 ]
 class HumanReviewRecord(ClosedModel):
@@ -311,12 +332,37 @@ class HumanReviewState:
 
     @staticmethod
     async def _proposals(
-        connection: AsyncConnection, package_work_id: UUID, package_revision: str
+        connection: AsyncConnection, package_work_id: UUID, package_revision: str,
+        consequence_id: UUID | None = None,
+        candidate: HumanReviewCandidate | None = None,
     ) -> list[RowMapping]:
-        return list((await connection.execute(select(human_review_consequences).where(
+        query = select(human_review_consequences).where(
             human_review_consequences.c.package_work_id == package_work_id,
             human_review_consequences.c.package_revision == package_revision,
-        ).with_for_update())).mappings().all())
+        )
+        if consequence_id is not None:
+            query = query.where(human_review_consequences.c.consequence_id == consequence_id)
+        elif candidate is not None:
+            query = query.where(
+                human_review_consequences.c.consequence["candidate"] == candidate.model_dump(mode="json")
+            )
+        else:
+            query = query.where(human_review_consequences.c.consequence["candidate"].astext.is_(None))
+        return list((await connection.execute(query.with_for_update())).mappings().all())
+
+    async def _request_reason(
+        self, connection: AsyncConnection, consequence: HumanReviewConsequence,
+    ) -> FailureReason | None:
+        if consequence.candidate is None:
+            return await self._package_reason(
+                connection, consequence.package_work_id, consequence.package_revision,
+            )
+        if await self.works.get_locked(connection, consequence.package_work_id) is None:
+            return "package_not_found"
+        task = await current_approved_baseline_in_transaction(connection, consequence.package_work_id)
+        if task is None or task.consequence_id != consequence.candidate.task_approval_id:
+            return "task_approval_changed"
+        return None
 
     @staticmethod
     async def _baseline_supersession_reason(
@@ -357,16 +403,15 @@ class HumanReviewState:
         """Persist non-authoritative typed intent for one exact canonical package revision."""
         try:
             async with self.engine.begin() as connection:
-                reason = await self._package_reason(
-                    connection, consequence.package_work_id, consequence.package_revision
-                )
+                reason = await self._request_reason(connection, consequence)
                 if reason is not None:
                     return HumanReviewResult(
                         status="DENIED" if reason == "package_not_found" else "STALE",
                         reason=reason,
                     )
                 rows = await self._proposals(
-                    connection, consequence.package_work_id, consequence.package_revision
+                    connection, consequence.package_work_id, consequence.package_revision,
+                    candidate=consequence.candidate,
                 )
                 if len(rows) > 1:
                     return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
@@ -398,26 +443,83 @@ class HumanReviewState:
             return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
 
     async def prepare(
-        self, package_work_id: UUID, package_revision: str
+        self, package_work_id: UUID, package_revision: str, consequence_id: UUID | None = None,
     ) -> HumanReviewResult:
         try:
             async with self.engine.begin() as connection:
-                reason = await self._package_reason(
-                    connection, package_work_id, package_revision
+                await self.works.get_locked(connection, package_work_id)
+                if consequence_id is None:
+                    reason = await self._package_reason(connection, package_work_id, package_revision)
+                    if reason is not None:
+                        return HumanReviewResult(
+                            status="DENIED" if reason == "package_not_found" else "STALE", reason=reason,
+                        )
+                rows = await self._proposals(
+                    connection, package_work_id, package_revision, consequence_id,
                 )
-                if reason is not None:
-                    return HumanReviewResult(
-                        status="STALE" if reason != "package_not_found" else "DENIED",
-                        reason=reason,
-                    )
-                rows = await self._proposals(connection, package_work_id, package_revision)
                 if not rows:
                     return HumanReviewResult(status="UNKNOWN", reason="consequence_unavailable")
                 if len(rows) > 1:
                     return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
-                return HumanReviewResult(status="REPLAYED", record=human_review_record(rows[0]))
+                record = human_review_record(rows[0])
+                related = await self._proposals(
+                    connection, package_work_id, package_revision,
+                    candidate=record.consequence.candidate,
+                )
+                if len(related) != 1:
+                    return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
+                reason = await self._request_reason(connection, record.consequence)
+                if reason is not None:
+                    return HumanReviewResult(status="STALE", reason=reason)
+                return HumanReviewResult(status="REPLAYED", record=record)
         except (SQLAlchemyError, TypeError, ValueError):
             return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
+
+    async def candidate_approval_reason(
+        self, pull_request: int, base_sha: str | None, head_sha: str | None,
+        composition_sha: str | None, work_id: UUID | None = None,
+    ) -> str | None:
+        """Consume candidate decisions on the existing qualification path.
+
+        Once a request binds a PR, omitting its WorkId cannot evade its decision.
+        Unbound legacy qualification remains a CI-only read.
+        """
+        try:
+            async with self.engine.begin() as connection:
+                rows = (await connection.execute(select(human_review_consequences).where(
+                    human_review_consequences.c.consequence["candidate"]["pull_request"].as_integer()
+                    == pull_request,
+                ))).mappings().all()
+                if not rows:
+                    return "candidate_approval_required" if work_id is not None else None
+                records = [human_review_record(row) for row in rows]
+                owners = {record.package_work_id for record in records}
+                if len(owners) != 1 or work_id is not None and work_id not in owners:
+                    return "candidate_approval_required"
+                owner = next(iter(owners))
+                await self.works.get_locked(connection, owner)
+                task = await current_approved_baseline_in_transaction(connection, owner)
+                records = [record for record in records if task is not None
+                    and record.consequence.candidate is not None
+                    and record.consequence.candidate.task_approval_id == task.consequence_id]
+                if not records:
+                    return "task_approval_changed"
+                matching = [record for record in records if record.consequence.candidate is not None
+                    and (record.consequence.candidate.base_sha, record.consequence.candidate.head_sha,
+                         record.consequence.candidate.composition_sha)
+                    == (base_sha, head_sha, composition_sha)]
+                if len(matching) != 1:
+                    return "candidate_changed" if not matching else "state_unavailable"
+                record = matching[0]
+                reason = await self._request_reason(connection, record.consequence)
+                if reason is not None:
+                    return reason
+                return None if record.decision == "APPROVED" else (
+                    "candidate_approval_pending" if record.decision is None
+                    else "candidate_approval_rejected"
+                )
+        except (SQLAlchemyError, TypeError, ValueError):
+            return "state_unavailable"
 
     async def submit(
         self,
@@ -428,17 +530,24 @@ class HumanReviewState:
     ) -> HumanReviewResult:
         try:
             async with self.engine.begin() as connection:
-                reason = await self._package_reason(
-                    connection, package_work_id, package_revision
+                await self.works.get_locked(connection, package_work_id)
+                rows = await self._proposals(
+                    connection, package_work_id, package_revision, consequence_id,
                 )
-                if reason is not None:
-                    return HumanReviewResult(status="STALE", reason=reason)
-                rows = await self._proposals(connection, package_work_id, package_revision)
                 if not rows:
                     return HumanReviewResult(status="DENIED", reason="consequence_unavailable")
                 if len(rows) > 1:
                     return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
                 row = rows[0]
+                consequence = human_review_record(row).consequence
+                related = await self._proposals(
+                    connection, package_work_id, package_revision, candidate=consequence.candidate,
+                )
+                if len(related) != 1:
+                    return HumanReviewResult(status="UNKNOWN", reason="state_unavailable")
+                reason = await self._request_reason(connection, consequence)
+                if reason is not None:
+                    return HumanReviewResult(status="STALE", reason=reason)
                 if (
                     row["consequence_id"] != consequence_id
                     or row["package_work_id"] != package_work_id
