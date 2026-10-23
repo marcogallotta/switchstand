@@ -112,7 +112,11 @@ def feedback_report_tool(
         if audit is not None:
             audit(result.status)
         return result
-    report.__name__, report.__doc__ = tool_name, description
+    report.__name__ = tool_name
+    report.__doc__ = (
+        f"{description} FILE requires title and evidence. CLASSIFY requires source_work_id, "
+        "observed_source_revision, and classification; omit title and evidence."
+    )
     return report
 
 

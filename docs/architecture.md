@@ -40,6 +40,8 @@ They share one
 private create path with explicit public-argument forwarding (audit callbacks stay local)
 and a narrow `file_issue` grant operation; callers cannot select projects or
 gain generic create authority; each tool also returns bounded lexical suggestions and atomically records an explicit NEW/AMEND/DUPLICATE/SUB-ITEM/RELATED classification.
+FILE requires title and evidence; CLASSIFY rejects those fields and uses the existing report's
+source WorkId, observed revision, and classification instead.
 Separately authorized frozen-cutover operator action archives or deletes the adjudicated rows before
 the DB-native application is deployed. Managed task-bound runtimes separately retain the
 WorkId-addressed `message_*` family.
