@@ -22,6 +22,18 @@ root `AGENTS.md`. A serious incident does not automatically qualify a new bootst
 use a total byte/line cap as the semantic gate: size may be reported diagnostically, but review
 must challenge ownership and necessity rather than compress prose to hit a threshold.
 
+## Required gate-friction evaluation
+
+Before proposing, accepting, or expanding **any workflow gate, confirmation requirement, blocker, or automatic escalation**, evaluate whether it blocks ordinary authorized work unnecessarily. This is a substantive part of the existing design/code review, not a new universal approval step.
+
+- Identify the actual protected invariant and distinguish **hard authority, security, currentness and review-integrity restrictions** from advisory warnings. An agent's assertion of a false positive never grants missing authority or erases a genuinely invalidated review.
+- Exercise ordinary authorized paths, **unchanged/no-op requests**, retries/replays, benign updates, and a real case that must be denied. Compare observed behaviour and cost with the smallest alternative (including no gate).
+- For every confirmation or denial, show whether the operation would actually change protected state. Do not demand confirmation of harmless unchanged work solely because a review exists. Preserve existing authority checks and deny genuine review-detachment or invalidation escapes.
+- Where a warning can safely be overridden under existing authority, require a short reason and evidence attached to the exact Work and effect; make the outcome auditable and schedule a follow-up if the policy requires one. Do not promise automatic execution unless a functioning due-work consumer has been demonstrated.
+- Record the demonstrated false-positive/false-negative tradeoff, test evidence, friction or delay, and chosen disposition (narrow, remove, retain, or escalate to Marco). Stop and ask Marco only for a consequential change of safeguard policy or effect authority.
+
+For manual follow-up until a functioning background scheduler is approved, use [Coordinator schedule](coordinator-schedule.md). A listed due item never creates implementation or provider-effect authority.
+
 ## Author / implementer
 
 Prefer the smallest safe vertical end-to-end stage that produces representative useful behavior and evidence. Use a foundation-only or inert first stage only when a vertical stage is unsafe or impractical; state why, keep the foundation independently stable, exclude speculative later-stage machinery, and name the immediate route to the first representative useful end-to-end proof. Default-off or inert readiness is a landing claim, not ordinary-use product completion.
