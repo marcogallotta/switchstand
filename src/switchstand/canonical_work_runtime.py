@@ -20,6 +20,7 @@ from .canonical_relations import (
     WorkRelations,
     project_memberships,
     projects,
+    work_dependencies,
     work_parents,
 )
 from .canonical_work import (
@@ -940,16 +941,6 @@ class CanonicalWorkRuntime:
                         return RelationGateway.guard(
                             request, "stale", "source_revision_changed"
                         )
-                    if not request.confirm_cancels_review:
-                        review_id = await pending_review_id(
-                            connection, request.work_id, request.observed_revision,
-                        )
-                        if review_id is not None:
-                            return RelationGateway.guard(
-                                request, "CONFIRM_REQUIRED", "pending_review",
-                            ).model_copy(update={
-                                "next_action": confirmation_message(review_id),
-                            })
                     patch = request.patch
                     if patch.kind not in {"parent", "dependency", "placement", "pull_request"}:
                         return RelationGateway.guard(
@@ -978,6 +969,46 @@ class CanonicalWorkRuntime:
                         return RelationGateway.guard(
                             request, "denied", "relation_target_not_granted"
                         )
+                    # These canonical operations are idempotent. A request that
+                    # leaves the relation unchanged does not invalidate its review.
+                    # Check under the already-locked Work transaction, after the
+                    # usual grant, revision and target checks.
+                    changes_relation = True
+                    if patch.kind == "parent":
+                        current_parent = await connection.scalar(select(
+                            work_parents.c.parent_work_id
+                        ).where(work_parents.c.child_work_id == request.work_id))
+                        changes_relation = current_parent != target
+                    elif patch.kind == "dependency" and target is not None:
+                        has_dependency = await connection.scalar(select(
+                            work_dependencies.c.work_id
+                        ).where(
+                            work_dependencies.c.work_id == request.work_id,
+                            work_dependencies.c.depends_on_work_id == target,
+                        ))
+                        changes_relation = (has_dependency is not None) != (
+                            patch.action == "add"
+                        )
+                    elif patch.kind == "placement" and patch.project_id is not None:
+                        has_membership = await connection.scalar(select(
+                            project_memberships.c.work_id
+                        ).where(
+                            project_memberships.c.work_id == request.work_id,
+                            project_memberships.c.project_id == patch.project_id,
+                        ))
+                        changes_relation = (has_membership is not None) != (
+                            patch.action == "add"
+                        )
+                    if changes_relation and not request.confirm_cancels_review:
+                        review_id = await pending_review_id(
+                            connection, request.work_id, request.observed_revision,
+                        )
+                        if review_id is not None:
+                            return RelationGateway.guard(
+                                request, "CONFIRM_REQUIRED", "pending_review",
+                            ).model_copy(update={
+                                "next_action": confirmation_message(review_id),
+                            })
                     pr_record = None
                     if patch.kind == "pull_request":
                         if caller is None or patch.pull_request is None:
