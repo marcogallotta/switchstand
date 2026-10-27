@@ -513,8 +513,9 @@ messaging, and required continuation:
 - `human_trajectory.py` owns an inert, append-only record of bounded human-direction continuity.
   Its `RECORDED_HUMAN_DIRECTION` provenance is not implementation authorization, it has no public
   MCP wiring, and landing its schema does not activate process reliance or provider cutover.
-- `task_runs.py` owns inert INVESTIGATION, VALIDATION, and server-derived IMPLEMENTATION requests;
-  its managed public request adapter remains INVESTIGATION/VALIDATION-only, with trusted
+- `task_runs.py` retains historical INVESTIGATION and continuation rows, and owns new
+  START VALIDATION plus server-derived IMPLEMENTATION requests. New generic INVESTIGATION
+  admission is retired; the managed public request adapter is VALIDATION START-only, with trusted
   START-to-RunReceipt bindings. The managed server constructs its persistence owner and registers
   request and result adapters, which admit only the exact managed principal with a current
   launch-bound `agent_task` grant and write authority for the active WorkId. Result submission
@@ -526,7 +527,8 @@ messaging, and required continuation:
   The managed client allowlist and default grant exclude `agent_task`. An explicit trusted
   `--agent-task` launch opt-in atomically adds that operation to the newly rotated launch grant and
   exposes only the existing request/result adapters to that launched client. It selects no request
-  and starts no child. Continuation/takeover, request-selected or automatic launch,
+  and starts no child. New generic INVESTIGATION, continuation/takeover, request-selected
+  or automatic launch,
   ordinary HTTP exposure, and activation remain absent.
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
