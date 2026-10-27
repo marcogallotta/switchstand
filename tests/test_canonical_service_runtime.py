@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import Table, delete, event, func, select
+from sqlalchemy import Table, delete, event, func, insert, select
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
@@ -1187,6 +1187,205 @@ async def test_atomic_parent_relation_replays_and_rejects_conflict(subject: Subj
     stored = await subject.runtime.relations.get(subject.work_id)
     assert stored.parent_work_id == target
     assert (await subject.runtime.works.get(subject.work_id)).row_version == 2  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(("kind", "action", "already_present"), [
+    ("parent", "set", True),
+    ("parent", "clear", False),
+    ("dependency", "add", True),
+    ("dependency", "remove", False),
+    ("placement", "add", True),
+    ("placement", "remove", False),
+])
+async def test_pending_review_relation_noop_needs_no_confirmation(
+    subject: Subject, kind: str, action: str, already_present: bool,
+) -> None:
+    """Unchanged authorized relations must not cancel a pending review."""
+    target = uuid4()
+    project_id = uuid4()
+    if kind in {"parent", "dependency"}:
+        await subject.runtime.works.create(CurrentWork(target, "Related", False, ""))
+    async with subject.engine.begin() as connection:
+        if kind == "placement":
+            await connection.execute(insert(projects).values(
+                project_id=project_id, name="Existing project",
+            ))
+        if already_present:
+            if kind == "parent":
+                await connection.execute(insert(work_parents).values(
+                    child_work_id=subject.work_id, parent_work_id=target,
+                ))
+            elif kind == "dependency":
+                await connection.execute(insert(work_dependencies).values(
+                    work_id=subject.work_id, depends_on_work_id=target,
+                ))
+            else:
+                await connection.execute(insert(project_memberships).values(
+                    work_id=subject.work_id, project_id=project_id,
+                ))
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
+    patch = RelationPatch(
+        kind=kind, action=action,
+        target_work_id=target if kind == "dependency" or action == "set" else None,
+        project_id=project_id if kind == "placement" else None,
+    )
+    request = relation(subject, patch)
+
+    applied = await subject.service.relate(request)
+    replay = await subject.service.relate(request)
+
+    assert applied.status == "ok" and applied.effect == "applied"
+    assert replay == applied
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 1
+    assert (await reviews.get(review_id, requester)).status == "REQUEST_UNPICKED"
+    current_relations = await subject.runtime.relations.get(subject.work_id)
+    if kind == "parent":
+        assert current_relations.parent_work_id == (target if already_present else None)
+    elif kind == "dependency":
+        assert (target in current_relations.dependency_work_ids) == already_present
+    else:
+        assert (project_id in [p.project_id for p in current_relations.placements]) == (
+            already_present
+        )
+
+
+@pytest.mark.parametrize("kind", ["dependency", "placement"])
+async def test_pending_review_real_relation_change_still_requires_confirmation(
+    subject: Subject, kind: str,
+) -> None:
+    target = uuid4()
+    project_id = uuid4()
+    if kind == "dependency":
+        await subject.runtime.works.create(CurrentWork(target, "Dependency", False, ""))
+    else:
+        async with subject.engine.begin() as connection:
+            await connection.execute(insert(projects).values(
+                project_id=project_id, name="Another project",
+            ))
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
+    request = relation(subject, RelationPatch(
+        kind=kind, action="add",
+        target_work_id=target if kind == "dependency" else None,
+        project_id=project_id if kind == "placement" else None,
+    ))
+
+    denied = await subject.service.relate(request)
+    assert (denied.status, denied.effect, denied.reason) == (
+        "CONFIRM_REQUIRED", "not_sent", "pending_review",
+    )
+    assert (await subject.runtime.works.get(subject.work_id)).row_version == 1  # type: ignore[union-attr]
+    assert (await reviews.get(review_id, requester)).status == "REQUEST_UNPICKED"
+
+    confirmed = await subject.service.relate(request.model_copy(update={
+        "operation_id": uuid4(), "confirm_cancels_review": True,
+    }))
+    assert confirmed.status == "ok" and confirmed.effect == "applied"
+    assert (await subject.runtime.works.get(subject.work_id)).row_version == 2  # type: ignore[union-attr]
+    assert (await reviews.get(review_id, requester)).status == "STALE"
+
+
+async def test_pending_review_relation_requires_confirmation_without_writing(
+    subject: Subject,
+) -> None:
+    review_id, *_rest = await pending_review(subject)
+    target = uuid4()
+    await subject.runtime.works.create(CurrentWork(target, "Parent", False, ""))
+    request = relation(subject, RelationPatch(
+        kind="parent", action="set", target_work_id=target,
+    ))
+
+    warned = await subject.service.relate(request)
+
+    assert (warned.status, warned.effect, warned.reason, warned.next_action) == (
+        "CONFIRM_REQUIRED", "not_sent", "pending_review",
+        CONFIRM_CANCELS_REVIEW_MESSAGE.format(review_id=review_id),
+    )
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 1
+    assert (await subject.runtime.relations.get(subject.work_id)).parent_work_id is None
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(request.operation_id)
+        )) is None
+
+
+async def test_confirmed_pending_review_relation_stales_review_and_fences_replay(
+    subject: Subject,
+) -> None:
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
+    target = uuid4()
+    await subject.runtime.works.create(CurrentWork(target, "Parent", False, ""))
+    request = relation(subject, RelationPatch(
+        kind="parent", action="set", target_work_id=target,
+    ))
+    warned = await subject.service.relate(request)
+    confirmed = request.model_copy(update={
+        "operation_id": uuid4(), "confirm_cancels_review": True,
+    })
+
+    applied = await subject.service.relate(confirmed)
+    replay = await subject.service.relate(confirmed)
+    conflict = await subject.service.relate(confirmed.model_copy(update={
+        "confirm_cancels_review": False,
+    }))
+
+    assert warned.status == "CONFIRM_REQUIRED"
+    assert applied.status == "ok" and applied.effect == "applied"
+    assert replay == applied
+    assert (conflict.status, conflict.reason, conflict.effect) == (
+        "denied", "operation_identity_conflict", "not_sent",
+    )
+    assert (await subject.runtime.relations.get(subject.work_id)).parent_work_id == target
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 2
+    stale = await reviews.get(review_id, requester)
+    assert (stale.status, stale.reason) == ("STALE", "review_basis_changed")
+
+
+@pytest.mark.parametrize("action", ["clear", "set"])
+@pytest.mark.parametrize("confirm", [False, True])
+async def test_pending_review_occurrence_cannot_change_subject_relation(
+    subject: Subject, action: str, confirm: bool,
+) -> None:
+    review_id, _delivery_id, reviews, requester, _reviewer, _messages = (
+        await pending_review(subject)
+    )
+    target = uuid4()
+    if action == "set":
+        await subject.runtime.works.create(CurrentWork(target, "New subject", False, ""))
+    request = ProtectedRelation(
+        api_version="1", operation_id=uuid4(), work_id=review_id,
+        grant_version=subject.grant.version,
+        observed_revision=canonical_revision(review_id, 1),
+        patch=RelationPatch(
+            kind="parent", action=action,
+            target_work_id=target if action == "set" else None,
+        ),
+        confirm_cancels_review=confirm,
+    )
+
+    denied = await subject.service.relate(request)
+
+    assert (denied.status, denied.effect, denied.reason) == (
+        "denied", "not_sent", "pending_review_subject_relation",
+    )
+    occurrence = await subject.runtime.works.get(review_id)
+    subject_work = await subject.runtime.works.get(subject.work_id)
+    assert occurrence is not None and occurrence.row_version == 1
+    assert subject_work is not None and subject_work.row_version == 1
+    assert (await subject.runtime.relations.get(review_id)).parent_work_id == subject.work_id
+    assert (await reviews.get(review_id, requester)).status == "REQUEST_UNPICKED"
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(request.operation_id)
+        )) is None
 
 
 async def test_atomic_dependency_relation_and_unsupported_kind(subject: Subject) -> None:
