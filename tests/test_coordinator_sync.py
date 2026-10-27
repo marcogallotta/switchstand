@@ -127,6 +127,88 @@ def test_fast_forward_failure_reports_reason_and_preserves_state(
     assert git(primary, "status", "--porcelain", "--untracked-files=all") == ""
 
 
+def test_oserror_after_fast_forward_reconciles_head_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home, primary, source, started, target = setup(tmp_path)
+    subject = control(home, source.parent / "remote.git")
+    real_clean = subject._clean
+    real_git = subject._git
+    merges = 0
+    failed = False
+
+    def count_merges(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        nonlocal merges
+        if arguments[:2] == ("merge", "--ff-only"):
+            merges += 1
+        return real_git(*arguments, check=check)
+
+    def fail_after_merge() -> bool:
+        nonlocal failed
+        if git(primary, "rev-parse", "HEAD") == target and not failed:
+            failed = True
+            raise OSError("injected postmerge readback failure")
+        return real_clean()
+
+    monkeypatch.setattr(subject, "_git", count_merges)
+    monkeypatch.setattr(subject, "_clean", fail_after_merge)
+
+    result = subject.sync(target)
+
+    assert failed and merges == 1
+    assert result.status == "ok" and result.effect == "applied"
+    assert result.previous_sha == started and result.resulting_sha == target
+    assert git(primary, "rev-parse", "HEAD") == target
+    assert git(primary, "status", "--porcelain", "--untracked-files=all") == ""
+
+
+def test_oserror_before_fast_forward_reports_no_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home, primary, source, started, target = setup(tmp_path)
+    subject = control(home, source.parent / "remote.git")
+    real_git = subject._git
+    merges = 0
+
+    def fail_before_merge(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        nonlocal merges
+        if arguments[:2] == ("merge", "--ff-only"):
+            merges += 1
+        if arguments[:2] == ("fetch", "--quiet"):
+            raise OSError("injected premerge failure")
+        return real_git(*arguments, check=check)
+
+    monkeypatch.setattr(subject, "_git", fail_before_merge)
+    result = subject.sync(target)
+
+    assert result.status == "not_applied" and result.effect == "not_sent"
+    assert result.previous_sha == result.resulting_sha == started
+    assert merges == 0
+    assert git(primary, "rev-parse", "HEAD") == started
+
+
+def test_oserror_releasing_config_lock_preserves_known_applied_effect(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home, primary, source, started, target = setup(tmp_path)
+    subject = control(home, source.parent / "remote.git")
+    real_unlink = Path.unlink
+
+    def fail_after_unlink(path: Path, *, missing_ok: bool = False) -> None:
+        real_unlink(path, missing_ok=missing_ok)
+        if path == primary / ".git" / "config.lock":
+            raise OSError("injected lock release failure")
+
+    monkeypatch.setattr(Path, "unlink", fail_after_unlink)
+    result = subject.sync(target)
+
+    assert result.status == "unknown" and result.effect == "applied"
+    assert result.previous_sha == started and result.resulting_sha == target
+    assert result.reason == "sync_lock_release_failed"
+    assert git(primary, "rev-parse", "HEAD") == target
+    assert git(primary, "status", "--porcelain", "--untracked-files=all") == ""
+
+
 async def test_real_stdio_boundary_performs_fixed_host_fast_forward(tmp_path: Path) -> None:
     home, primary, source, _started, final = setup(tmp_path)
     server = StdioServerParameters(
