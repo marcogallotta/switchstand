@@ -17,11 +17,13 @@ ROOT = Budget(2100, 3072, 384, 300, 288, 3, 0)
 
 class FakeRunner:
     def __init__(
-        self, broker: Broker, state: str = "completed", bad_file: str | None = None
+        self, broker: Broker, state: str = "completed", bad_file: str | None = None,
+        fail_on_call: int | None = None,
     ) -> None:
         self.broker = broker
         self.state = state
         self.bad_file = bad_file
+        self.fail_on_call = fail_on_call
         self.calls: list[str] = []
 
     def run(
@@ -30,6 +32,8 @@ class FakeRunner:
         self.calls.append(lease_id)
         receipt: dict[str, Any] = {"lease_id": lease_id, "state": self.state}
         self.broker.claim_execution(lease_id, {"state": "starting"})
+        if len(self.calls) == self.fail_on_call:
+            raise RuntimeError(f"runner raised for {lease_id}")
         execution = self.broker.execution_dir(lease_id)
         relative = command[-1]
         payload = (working_directory / relative).read_bytes()
@@ -148,6 +152,33 @@ def test_unknown_worker_keeps_capacity_and_reports_incomplete(tmp_path: Path) ->
     assert report["lease_states"]["unknown-parent"] == "reserved"
     assert report["lease_states"]["unknown-worker-0"] == "execution_active"
     assert report["lease_states"]["unknown-worker-1"] == "execution_active"
+
+
+@pytest.mark.parametrize("fail_on_call", [1, 2])
+def test_runner_exception_records_unknown_and_keeps_held_leases(
+    tmp_path: Path, fail_on_call: int
+) -> None:
+    broker = initialized(tmp_path)
+    runner = FakeRunner(broker, fail_on_call=fail_on_call)
+    report = Canary(broker, runner).run(f"raised{fail_on_call}", Path.cwd(), GREEN)
+
+    assert report["state"] == "unknown"
+    assert report["reason"] == "runner_exception"
+    assert report["failed_worker"] == f"raised{fail_on_call}-worker-{fail_on_call - 1}"
+    assert report["held_leases"] == {
+        lease_id: lease
+        for lease_id, lease in broker.status()["leases"].items()
+        if lease["state"] in {"reserved", "execution_active"}
+    }
+    assert report["held_leases"][report["failed_worker"]]["state"] == "execution_active"
+    assert report["held_leases"][f"raised{fail_on_call}-parent"]["state"] == "reserved"
+    if fail_on_call == 1:
+        assert report["held_leases"]["raised1-worker-1"]["state"] == "reserved"
+    else:
+        assert report["lease_states"]["raised2-worker-0"] == "completed"
+        assert len(report["workers"]) == 1
+    assert "reconcile" in report["next_action"].lower()
+    assert json.loads(Path(report["report_path"]).read_text()) == report
 
 
 @pytest.mark.parametrize("field", ["path", "sha256", "missing:path", "missing:sha256"])
