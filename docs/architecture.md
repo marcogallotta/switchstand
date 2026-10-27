@@ -417,9 +417,11 @@ messaging, and required continuation:
   append-only. Legacy V1 exact-revision rows remain readable but cannot authorize cross-revision
   baseline conformance.
   `reviews.py` owns durable review requests and outcomes.
-  Typed reviews route to the `Coordinator` mailbox. That reviewer endpoint is distinct from the
-  `Codex Coordinator` control mailbox and does not follow its `/root` rename or takeover lifecycle.
-  Codex: reviews = a fresh native fork; never the `review_*` tools.
+  New typed reviews route to Marco's named `Codex Audit Recovery` mailbox. Existing requests
+  delivered to `Coordinator` remain valid for their original reviewer to receive and submit.
+  Both reviewer mailboxes are distinct from the `Codex Coordinator` control mailbox. The V1
+  recovery reviewer formally receives and submits after independent native review; other Codex
+  review work uses fresh native forks.
   Its default-off non-Codex path is
   `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
   pending responses explicitly direct sleep 20 seconds before every exact-ID poll.
@@ -434,7 +436,7 @@ messaging, and required continuation:
   takeover, and `review_submit` remains the sole verdict mutation. Requester and reviewer
   identities come from the current authenticated agent mailbox and are never public arguments.
   The occurrence row serializes authoritative request creation, so polling can acquire a newly
-  available configured reviewer without a Coordinator mailbox or manual message choreography.
+  available named reviewer without manual message choreography.
   Legacy typed occurrences remain readable when their exact stored basis and delivery pass current
   invariants. The resource service accepts one explicit default-off review policy/guidelines
   configuration and constructs one mailbox/occurrence graph shared with the independently enabled
@@ -442,10 +444,11 @@ messaging, and required continuation:
   activation remain separate. `review_config_loader.py` loads that configuration only when optional
   `SWITCHSTAND_REVIEW_CONFIG_PATH` names one absolute, bounded, mode-0600 closed/versioned JSON
   file; unset remains off, every present path is literal, and configured-invalid fails startup
-  closed. The file carries policy and guideline identities plus an immutable partial reviewer map.
+  closed. The file carries policy and guideline identities; its legacy partial reviewer map is
+  validated but ignored for routing.
   The installed `typed-review-v1-cutoff` receipt continues to reject generic
   `review.request`, `review.acquisition`, and `review.outcome` message routes; only the typed review
-  owner writes them. Unmapped kinds remain `WAITING_REVIEWER`. Client-visible activation requires
+  owner writes them. Requests wait when the named reviewer is unavailable. Client-visible activation requires
   a ChatGPT reinstall followed by fresh-chat schema and behavior verification.
   Baseline checks in the existing review basis bind the owner comparison to the exact candidate;
   reviewer assessments bind the baseline, phase, typed disposition, evidence and verdict digest.
