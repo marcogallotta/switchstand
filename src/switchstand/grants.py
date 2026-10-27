@@ -275,6 +275,7 @@ class ProtectedRelation(ClosedModel):
     grant_version: int = Field(ge=1)
     observed_revision: str = Field(min_length=1)
     patch: RelationPatch
+    confirm_cancels_review: bool = False
 
 
 class EffectReceipt(ClosedModel):
