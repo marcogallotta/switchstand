@@ -231,14 +231,23 @@ class CoordinatorSync:
                 reason="canonical_checkout_unavailable",
             )
         lock_path = self.repo / ".git" / "switchstand-coordinator-sync.lock"
+        sync_result: SyncResult | None = None
         try:
             with lock_path.open("a") as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX)
                 with self._config_guard():
                     self._validate_local_config()
                     current = self._validate_repo()
-                    return self._sync_locked(current, target_sha)
+                    sync_result = self._sync_locked(current, target_sha)
+                    return sync_result
         except (OSError, GitFailure) as error:
+            if sync_result is not None:
+                return SyncResult(
+                    status="unknown" if sync_result.effect != "not_sent" else "not_applied",
+                    effect=sync_result.effect, previous_sha=sync_result.previous_sha,
+                    target_sha=target_sha, resulting_sha=sync_result.resulting_sha,
+                    reason="sync_lock_release_failed",
+                )
             return SyncResult(
                 status="not_applied", effect="not_sent", target_sha=target_sha,
                 reason=str(error) if isinstance(error, GitFailure) else "sync_lock_unavailable",
@@ -366,19 +375,25 @@ class CoordinatorSync:
                 status="ok", effect="applied", previous_sha=current,
                 target_sha=target_sha, resulting_sha=resulting, reason="fast_forward_applied",
             )
-        except GitFailure as error:
+        except (GitFailure, OSError) as error:
             if not merge_attempted:
                 return self._unchanged(observed_current, target_sha, str(error))
             try:
                 resulting = self._validate_repo()
                 clean = self._clean()
-            except GitFailure:
+            except (GitFailure, OSError):
                 return SyncResult(
                     status="unknown", effect="unknown", previous_sha=observed_current,
                     target_sha=target_sha, reason=str(error),
                 )
             if resulting == observed_current and clean:
                 return self._unchanged(observed_current, target_sha, str(error))
+            if resulting == target_sha and clean:
+                return SyncResult(
+                    status="ok", effect="applied", previous_sha=observed_current,
+                    target_sha=target_sha, resulting_sha=resulting,
+                    reason="fast_forward_applied_after_readback_error",
+                )
             return SyncResult(
                 status="unknown", effect="unknown", previous_sha=observed_current,
                 target_sha=target_sha, resulting_sha=resulting,
