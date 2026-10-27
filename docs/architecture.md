@@ -535,7 +535,7 @@ messaging, and required continuation:
   checks. Message routes accept and create only the durable PostgreSQL message and delivery records;
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
-- `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible immutable agent
+- `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
@@ -550,8 +550,9 @@ messaging, and required continuation:
   row in place, preserves the endpoint and deliveries, replaces the principal/session binding, and
   increments its generation.
   `/root` resolves only as an inbound alias and successful readback uses `Codex Coordinator`.
-  Other names retain the existing
-  same-principal behavior. For older cross-principal recovery, the destination authenticated session
+  For an absent ordinary name, `agent_takeover` creates a mailbox or renames the caller's
+  existing ordinary mailbox in place, preserving its endpoint and deliveries. Existing names retain
+  the same-principal behavior. For older cross-principal recovery, the destination authenticated session
   records an exact preimage-bound request; the host-only `switchstand-agent-mailbox-transfer`
   command approves it in one transaction. It preserves the endpoint and deliveries, increments
   generation, fences the old principal/session, and fails closed if the mailbox or destination

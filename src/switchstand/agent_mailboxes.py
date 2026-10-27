@@ -258,7 +258,27 @@ class AgentMailboxState:
                     agent_mailboxes.c.name_key == key
                 ).with_for_update())).mappings().one_or_none()
                 if row is None:
-                    return AgentMailboxResult(status="denied", reason="mailbox_not_found")
+                    prior = (await connection.execute(select(agent_mailboxes).where(
+                        agent_mailboxes.c.principal_key == principal_key,
+                        agent_mailboxes.c.session_key == session_key,
+                    ).with_for_update())).mappings().one_or_none()
+                    if prior is not None and prior["name_key"] in {CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY}:
+                        return AgentMailboxResult(status="conflict", reason="session_already_registered")
+                    if prior is None:
+                        await connection.execute(insert(agent_mailboxes).values(
+                            name_key=key, display_name=" ".join(name.strip().split()),
+                            endpoint_id=uuid4(), principal_key=principal_key,
+                            session_key=session_key, generation=1,
+                        ).on_conflict_do_nothing())
+                    else:
+                        await connection.execute(update(agent_mailboxes).where(
+                            agent_mailboxes.c.name_key == prior["name_key"],
+                        ).values(name_key=key, display_name=" ".join(name.strip().split())))
+                    row = (await connection.execute(select(agent_mailboxes).where(
+                        agent_mailboxes.c.name_key == key
+                    ).with_for_update())).mappings().one_or_none()
+                    if row is None:
+                        return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
                 if row["principal_key"] != principal_key and not allow_principal_change:
                     return AgentMailboxResult(status="denied", reason="principal_mismatch")
                 if row["principal_key"] == principal_key and row["session_key"] == session_key:
