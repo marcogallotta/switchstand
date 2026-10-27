@@ -40,6 +40,7 @@ from .state import work_handles
 REVIEW_NAMESPACE = UUID("d966cd4f-9994-4f6f-99cc-6ccca873542d")
 REVIEW_PROTOCOL = "switchstand.review.v1"
 COORDINATOR_MAILBOX = "Coordinator"
+AUDIT_RECOVERY_MAILBOX = "Codex Audit Recovery"
 ReviewKind = Literal["CODE", "DESIGN", "IMPLEMENTATION", "PROCESS", "OPERATIONS", "EVIDENCE"]
 ReviewMode = Literal["FULL", "FOCUSED"]
 ReviewVerdict = Literal["PASS", "FINDINGS", "BLOCKED"]
@@ -321,9 +322,14 @@ class ReviewPolicy:
 
     @staticmethod
     def reviewer_name(review_kind: ReviewKind) -> str:
-        # Every MCP review, of every kind, is delivered to the Coordinator.
+        # New MCP reviews of every kind go to Marco's named recovery reviewer.
         del review_kind
-        return COORDINATOR_MAILBOX
+        return AUDIT_RECOVERY_MAILBOX
+
+    @staticmethod
+    def accepts_reviewer(name: str, review_kind: ReviewKind) -> bool:
+        # The Coordinator remains eligible for requests already delivered there.
+        return name in {ReviewPolicy.reviewer_name(review_kind), COORDINATOR_MAILBOX}
 
     @staticmethod
     def eligible(requester: AgentMailbox, reviewer: AgentMailbox) -> bool:
@@ -563,12 +569,13 @@ class ReviewOccurrenceState:
             if envelope is None or envelope.brief.basis.review_id != review_id:
                 continue
             basis = envelope.brief.basis
-            reviewer_name = self.policy.reviewer_name(basis.review_kind)
-            reviewer = (await self.mailboxes.by_name(reviewer_name, connection)).mailbox
+            reviewer = (await self.mailboxes.by_endpoint_id(
+                record.delivery.recipient_work_id, connection,
+            )).mailbox
             if (
                 basis.policy_version != self.policy.version
                 or reviewer is None
-                or record.delivery.recipient_work_id != reviewer.endpoint_id
+                or not self.policy.accepts_reviewer(reviewer.name, basis.review_kind)
                 or record.delivery.recipient_grant_version != reviewer.generation
                 or envelope.reviewer_principal_key not in {None, reviewer.principal_key}
             ):
@@ -1161,7 +1168,8 @@ class ReviewService:
             record, _envelope = requests[0]
             return ReviewResult(status="SENT", review_id=review_id,
                                 delivery_id=record.delivery.delivery_id)
-        reviewer_name = self.policy.reviewer_name(basis.review_kind)
+        reviewer_name = (COORDINATOR_MAILBOX if coordinator is not None
+                         else self.policy.reviewer_name(basis.review_kind))
         reviewer = (await self.mailboxes.by_name(reviewer_name, connection)).mailbox
         if reviewer is None:
             return ReviewResult(status="WAITING_REVIEWER", review_id=review_id,
@@ -1415,10 +1423,9 @@ class ReviewService:
                 current = await self.mailboxes.by_endpoint_id(reviewer.endpoint_id, connection)
                 record, envelope = requests[0]
                 delivery = record.delivery
-                expected_name = self.policy.reviewer_name(basis.review_kind)
                 if (
                     current.status != "ok" or current.mailbox != reviewer
-                    or expected_name != reviewer.name
+                    or not self.policy.accepts_reviewer(reviewer.name, basis.review_kind)
                     or envelope.reviewer_endpoint_id != reviewer.endpoint_id
                     or envelope.reviewer_principal_key != reviewer.principal_key
                     or delivery.recipient_work_id != reviewer.endpoint_id
@@ -1510,7 +1517,7 @@ class ReviewService:
                                 reason="subject_not_found")
         requester_result = await self.mailboxes.by_endpoint_id(basis.requester_endpoint_id)
         requester = requester_result.mailbox
-        reviewer_name = self.policy.reviewer_name(basis.review_kind)
+        reviewer_name = COORDINATOR_MAILBOX
         reviewer = (await self.mailboxes.by_name(reviewer_name)).mailbox
         if requester is None or reviewer is None:
             return ReviewResult(status="WAITING_REVIEWER", review_id=review_id,

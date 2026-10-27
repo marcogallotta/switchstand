@@ -473,7 +473,7 @@ async def test_notification_attention_process_and_returned_review_over_real_http
     receiver, alice, bob = (f"{name} {suffix}" for name in ("Receiver", "Alice", "Bob"))
     with _server(env, port) as endpoint:
         for session, name in (("receiver", receiver), ("alice", alice), ("bob", bob),
-                              ("reviewer", "Coordinator")):
+                              ("reviewer", "Codex Audit Recovery")):
             assert (await _agent_call(endpoint, session, "agent_register", {
                 "api_version": "1", "name": name,
             }))["status"] == "ok"
