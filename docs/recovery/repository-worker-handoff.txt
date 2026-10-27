@@ -1,0 +1,14 @@
+# Repository Worker continuation handoff — operational binding tested
+Name: Codex Audit Recovery Worker
+Role: Worker; one repository-based execution agent with a saved durable mailbox binding.
+Current session UUID: 01a169db-7b45-7ba3-8311-f66d34db1f70.
+Resume using existing authenticated repository configuration: codex --no-alt-screen -C /home/marco/switchstand resume 01a169db-7b45-7ba3-8311-f66d34db1f70
+Do not add the external session MCP overlays to this app-backed Worker resume.
+Status: operational binding, resume and correlated handoff tested; full Task1 remains incomplete. No background service or automatic wake/scheduling proof is claimed.
+Evidence: MIGRATION.md, terminal section "Standalone repository Worker migration and operational pickup — 2026-10-23T17:50Z", including "Concrete continuation routes".
+Location: /home/marco/switchstand or an explicitly owned linked writer.
+Parent: Codex Audit Recovery; coordinate with ChatGPT Audit Recovery only through bounded authorized requests.
+Initial WorkId: 6af0ce41-ed7a-5cb0-88aa-f0b15f1e4279.
+Read repository AGENTS.md and the exact current assigned work. Do not read ~/.claude/CLAUDE.md. No repository edits, deployment or implementation is authorized merely by this launch handoff. Receive an exact bounded assignment and writable surface from the parent. Marco's no-Tracker-task-edit restriction remains active. Initial registration is historical. The current existing Worker resumes its existing binding; never register or retake this name absent explicit replacement authorization. Older predecessor UUID01a16935-ac70-7371-8f80-3c193064f2ee is fenced and must not retake.
+Use recovery mission, coordination and replacement rules in the reviewed external AGENTS.md package. Report concise attributable evidence, changed files/surface, checks, blockers and next checkpoint. Do not self-expand to independent recovery backlog.
+
