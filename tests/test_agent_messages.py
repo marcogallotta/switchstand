@@ -305,11 +305,26 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
 
 
 async def test_takeover_claims_missing_ordinary_name_from_registered_session(agent_messaging):
-    tools, _actor, _session, _owner, _other, _service = agent_messaging
+    tools, _actor, _session, _owner, _other, service = agent_messaging
     assert (await tools["agent_register"]("1", "Old Name")).name == "Old Name"
+    assert service.messages is not None
+    mailboxes = AgentMailboxState(service.messages.engine)
+    before = (await mailboxes.by_name("Old Name")).mailbox
     moved = await tools["agent_takeover"]("1", "PR1091")
     assert (moved.status, moved.name) == ("ok", "PR1091")
     assert (await tools["agent_register"]("1", "PR1091")).name == "PR1091"
+    after = (await mailboxes.by_name("PR1091")).mailbox
+    assert after is not None and before is not None
+    assert after.endpoint_id == before.endpoint_id
+    assert (await mailboxes.by_name("Old Name")).reason == "mailbox_not_found"
+
+
+async def test_takeover_claims_missing_ordinary_name_without_registration(agent_messaging):
+    tools, _actor, session, _owner, _other, _service = agent_messaging
+    session[0] = "fresh-session"
+    moved = await tools["agent_takeover"]("1", "Fresh Name")
+    assert (moved.status, moved.name) == ("ok", "Fresh Name")
+    assert (await tools["agent_message_pending"]("1")).status == "ok"
 
 
 async def test_marco_authorized_named_takeover_crosses_principal_and_keeps_mail(
