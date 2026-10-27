@@ -304,6 +304,14 @@ async def test_takeover_preserves_delivery_and_fences_old_session(agent_messagin
     assert stale.next_action is None
 
 
+async def test_takeover_claims_missing_ordinary_name_from_registered_session(agent_messaging):
+    tools, _actor, _session, _owner, _other, _service = agent_messaging
+    assert (await tools["agent_register"]("1", "Old Name")).name == "Old Name"
+    moved = await tools["agent_takeover"]("1", "PR1091")
+    assert (moved.status, moved.name) == ("ok", "PR1091")
+    assert (await tools["agent_register"]("1", "PR1091")).name == "PR1091"
+
+
 async def test_marco_authorized_named_takeover_crosses_principal_and_keeps_mail(
     agent_messaging,
 ):
