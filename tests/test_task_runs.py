@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import ValidationError
-from sqlalchemy import create_engine, func, select, text, update
+from sqlalchemy import create_engine, func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -36,6 +38,7 @@ from switchstand.task_runs import (
     AgentTaskRequest,
     AgentTaskResult,
     ImplementationTaskRequest,
+    StoredAgentTaskRequest,
     TaskRunState,
     task_run_executions,
     task_run_requests,
@@ -87,7 +90,7 @@ def request(execution, **changes):
         "api_version": "1",
         "execution_work_id": execution,
         "observed_revision": canonical_revision(execution, 1),
-        "task_kind": "INVESTIGATION",
+        "task_kind": "VALIDATION",
         "objective": "Identify the exact failing invariant.",
         "result_contract": {"required": ["evidence", "conclusion"]},
     }
@@ -106,6 +109,55 @@ def receipt(execution, run_id=None):
     )
 
 
+def test_public_request_schema_has_one_real_new_kind_and_mode():
+    schema = AgentTaskRequest.model_json_schema()["properties"]
+    assert schema["task_kind"].get("const", schema["task_kind"].get("enum")) == "VALIDATION"
+    assert schema["continuation"].get("const", schema["continuation"].get("enum")) == "START"
+    assert StoredAgentTaskRequest.model_validate(
+        request(uuid4()).model_dump() | {"task_kind": "INVESTIGATION", "continuation": "TAKEOVER"}
+    ).continuation == "TAKEOVER"
+
+
+@pytest.mark.parametrize(("kind", "mode"), [
+    ("INVESTIGATION", "START"),
+    ("INVESTIGATION", "CONTINUE"),
+    ("VALIDATION", "TAKEOVER"),
+])
+async def test_stored_legacy_request_read_replay_and_new_admission_denial(subject, kind, mode):
+    state, engine, requester, execution = subject
+    legacy = StoredAgentTaskRequest.model_validate(
+        request(execution).model_dump() | {"task_kind": kind, "continuation": mode}
+    )
+    operation_id, request_id = uuid4(), uuid4()
+    # Independent historical digest oracle; don't use the production _digest helper.
+    envelope = {"requester_work_id": str(requester), "request": legacy.model_dump(mode="json")}
+    digest = hashlib.sha256(json.dumps(
+        envelope, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+    async with engine.begin() as connection:
+        await connection.execute(insert(task_run_requests).values(
+            request_id=request_id,
+            operation_id=operation_id,
+            requester_work_id=requester,
+            content_digest=digest,
+            **legacy.model_dump(mode="json", exclude={"api_version"}),
+        ))
+    stored = await state.get(request_id)
+    assert stored.status == "ok" and stored.request is not None
+    assert (stored.request.task_kind, stored.request.continuation) == (kind, mode)
+    if kind == "INVESTIGATION" and mode == "START":
+        bound = await state.bind_start(request_id, receipt(execution))
+        assert bound.status == "ok" and bound.execution is not None
+    # Same operation remains replayable; a NEW retired request must never enter the DB.
+    assert await state.request(requester, operation_id, legacy) == stored
+    denied = await state.request(requester, uuid4(), legacy)
+    assert (denied.status, denied.reason) == (
+        "denied", "task_kind_retired" if kind == "INVESTIGATION" else "continuation_not_bound"
+    )
+    async with engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(task_run_requests)) == 1
+
+
 def result(**changes):
     values = {
         "api_version": "1",
@@ -118,6 +170,9 @@ def result(**changes):
 
 @pytest.mark.parametrize("change", [
     {"task_kind": "IMPLEMENTATION"},
+    {"task_kind": "INVESTIGATION"},
+    {"continuation": "CONTINUE"},
+    {"continuation": "TAKEOVER"},
     {"target_runtime": "codex"},
     {"result_contract": {"payload": "x" * 16_385}},
 ])
@@ -238,7 +293,9 @@ async def test_request_revision_and_continuation_fail_closed_without_writes(subj
     continued = await state.request(
         requester,
         uuid4(),
-        request(execution, continuation="CONTINUE"),
+        StoredAgentTaskRequest.model_validate(
+            request(execution).model_dump() | {"continuation": "CONTINUE"}
+        ),
     )
     assert (continued.status, continued.reason) == ("denied", "continuation_not_bound")
 

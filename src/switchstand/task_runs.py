@@ -129,16 +129,14 @@ task_run_results = Table(
     CheckConstraint("length(content_digest) = 64", name="ck_task_run_result_digest"),
 )
 
-class AgentTaskRequest(ClosedModel):
-    """Public intent; operation identity and requester route remain server-owned."""
+class _AgentTaskRequestFields(ClosedModel):
+    """Shared shape for new validation and historical generic task requests."""
 
     api_version: ApiVersion
     execution_work_id: UUID
     observed_revision: str = Field(min_length=1, max_length=512)
-    task_kind: Literal["INVESTIGATION", "VALIDATION"]
     objective: str = Field(min_length=1, max_length=8000)
     result_contract: dict[str, JsonValue]
-    continuation: Literal["START", "CONTINUE", "TAKEOVER"] = "START"
     candidate_ref: str | None = Field(default=None, min_length=1, max_length=1024)
 
     @model_validator(mode="after")
@@ -149,6 +147,20 @@ class AgentTaskRequest(ClosedModel):
         if len(encoded) > 16_384:
             raise ValueError("result contract exceeds 16384 bytes")
         return self
+
+
+class AgentTaskRequest(_AgentTaskRequestFields):
+    """New launch-bound VALIDATION START only; no generic investigation queue."""
+
+    task_kind: Literal["VALIDATION"]
+    continuation: Literal["START"] = "START"
+
+
+class StoredAgentTaskRequest(_AgentTaskRequestFields):
+    """Read and replay verified historical kinds/modes without admitting new ones."""
+
+    task_kind: Literal["INVESTIGATION", "VALIDATION"]
+    continuation: Literal["START", "CONTINUE", "TAKEOVER"] = "START"
 
 
 class ImplementationTaskRequest(ClosedModel):
@@ -264,6 +276,7 @@ class TaskRunRequestResult(ClosedModel):
         "execution_work_not_found",
         "source_revision_changed",
         "continuation_not_bound",
+        "task_kind_retired",
         "operation_identity_conflict",
         "no_current_grant",
         "operation_not_granted",
@@ -285,7 +298,8 @@ _REQUEST_COLUMNS = tuple(task_run_requests.c)
 
 
 def _digest(
-    requester_work_id: UUID, request: AgentTaskRequest | ImplementationTaskRequest
+    requester_work_id: UUID,
+    request: AgentTaskRequest | StoredAgentTaskRequest | ImplementationTaskRequest,
 ) -> str:
     value = {
         "requester_work_id": str(requester_work_id),
@@ -321,7 +335,7 @@ async def validated_task_run_request(
     else:
         if row["authorization_ref"] is not None or row["send_authority_ref"] is not None:
             raise ValueError("stored generic task-run request has authority references")
-        payload = AgentTaskRequest(
+        payload = StoredAgentTaskRequest(
             api_version="1",
             execution_work_id=cast(UUID, row["execution_work_id"]),
             observed_revision=cast(str, row["observed_revision"]),
@@ -398,7 +412,7 @@ class TaskRunState:
         self,
         requester_work_id: UUID,
         operation_id: UUID,
-        request: AgentTaskRequest,
+        request: AgentTaskRequest | StoredAgentTaskRequest,
     ) -> TaskRunRequestResult:
         try:
             async with self.engine.begin() as connection:
@@ -413,7 +427,7 @@ class TaskRunState:
         connection: AsyncConnection,
         requester_work_id: UUID,
         operation_id: UUID,
-        request: AgentTaskRequest | ImplementationTaskRequest,
+        request: AgentTaskRequest | StoredAgentTaskRequest | ImplementationTaskRequest,
     ) -> TaskRunRequestResult:
         """Admit one request inside a caller-owned atomic currentness transaction."""
         digest = _digest(requester_work_id, request)
@@ -438,6 +452,8 @@ class TaskRunState:
             return TaskRunRequestResult(status="denied", reason="execution_work_not_found")
         if canonical_revision(execution.work_id, execution.row_version) != request.observed_revision:
             return TaskRunRequestResult(status="stale", reason="source_revision_changed")
+        if request.task_kind == "INVESTIGATION":
+            return TaskRunRequestResult(status="denied", reason="task_kind_retired")
         if request.continuation != "START":
             return TaskRunRequestResult(status="denied", reason="continuation_not_bound")
         values = {
