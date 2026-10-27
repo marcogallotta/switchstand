@@ -91,11 +91,11 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
         baseline = consequence.baseline
         opening_values = baseline.opening
         opening = (
-            f"<p>WHAT YOU ASKED — {escape(opening_values.what_you_asked)}</p>"
-            f"<p>WHAT THIS DOES — {escape(opening_values.what_this_does)}</p>"
-            "<p>WHAT THIS DOES NOT DO / WHAT CHANGES FOR YOU — "
+            f"<p>{escape(opening_values.what_you_asked)}</p>"
+            f"<p>{escape(opening_values.what_this_does)}</p>"
+            "<p>"
             f"{escape(opening_values.what_this_does_not_or_changes_for_you)}</p>"
-            f"<p>SIZE — {escape(opening_values.size)}</p>"
+            f"<p>{escape(opening_values.size)}</p>"
         )
 
         def listed(values: tuple[str, ...]) -> str:
@@ -130,17 +130,20 @@ def _render_result(result: HumanReviewResult, *, form: bool) -> HTMLResponse:
         )
     requester = consequence.requester
     identity = ("" if requester is None else
-        f"<p>Requested by <strong>{escape(requester.name)}</strong> · "
-        f"{requester.mailbox_id}</p>")
-    saved = "" if record.decision is None else f"<h2>Saved: {escape(record.decision)}</h2>"
+        f"<p>Requested by <strong>{escape(requester.name)}</strong></p>")
+    decision = {None: "Awaiting your decision", "APPROVED": "Approved",
+        "NO_DISPATCH": "Rejected", "WAIT": "Waiting", "HOLD": "On hold"}[record.decision]
+    requester_detail = ("" if requester is None else
+        f"<p>Requester mailbox: {requester.mailbox_id}</p>")
     return _page(
-        f"{identity}{saved}{opening}<h1>Human Review: {escape(result.status)}</h1>"
-        f"{baseline_content}"
+        f"<h1>Review request</h1>{identity}<p>{decision}</p>{opening}"
+        f"<h2>What Approve means</h2><ul>{details}</ul>"
+        f"<h2>Not included</h2><ul>{excluded}</ul>{controls}"
+        '<details><summary>Evidence and exact request</summary>'
+        f"{baseline_content}{requester_detail}"
         f"<p>Target: {escape(consequence.implementation_target)}</p>"
-        f"<h2>Implementation scope</h2><ul>{details}</ul>"
-        f"<h2>Excluded effects</h2><ul>{excluded}</ul>"
         f"<p>Approval effect: {escape(consequence.approval_effect)}</p>"
-        f"<p>State: {record.state}</p>{controls}"
+        f"<p>State: {record.state}</p></details>"
     )
 
 
