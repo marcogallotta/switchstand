@@ -1380,12 +1380,13 @@ async def test_focused_rereview_allows_only_authoritative_named_findings(occurre
         ), {"id": subject_id})
     corrected = await occurrences.works.get(subject_id)
     assert corrected is not None
-    focused = await service.request(ReviewRequest(
+    focused_request = ReviewRequest(
         subject_work_id=subject_id,
         observed_revision=canonical_revision(corrected.work_id, corrected.row_version),
         review_kind="CODE", mode="FOCUSED", prior_review_id=initial.review_id,
         finding_ids=("F-1",),
-    ), requester)
+    )
+    focused = await service.request(focused_request, requester)
     assert focused.status == "SENT"
     delivery = await occurrences.request_delivery(
         initial.review_id,
@@ -1422,16 +1423,24 @@ async def test_focused_rereview_allows_only_authoritative_named_findings(occurre
         "DENIED", "focused_finding_not_selected",
     )
 
+    changed_candidate = await service.request(focused_request.model_copy(update={
+        "candidate_ref": "git:changed",
+    }), requester)
+    assert (changed_candidate.status, changed_candidate.reason) == (
+        "DENIED", "review_basis_changed",
+    )
+    replay = await service.request(focused_request, requester)
+    assert (replay.status, replay.delivery_id) == ("SENT", focused.delivery_id)
+    assert (await service.get(initial.review_id, requester)).status == "RECEIVED"
+
     upgraded = await service.request(ReviewRequest(
         subject_work_id=subject_id,
         observed_revision=canonical_revision(corrected.work_id, corrected.row_version),
         review_kind="CODE", prior_review_id=initial.review_id,
     ), requester)
-    assert (upgraded.status, upgraded.reason) == ("UNKNOWN", "duplicate_authoritative_state")
-    assert (await service.recover(initial.review_id, reviewer)).reason == "duplicate_authoritative_state"
-    assert (await service.bundle_access(initial.review_id, reviewer)).reason == (
-        "duplicate_authoritative_state"
-    )
+    assert (upgraded.status, upgraded.reason) == ("DENIED", "review_basis_changed")
+    assert (await service.recover(initial.review_id, reviewer)).status == "RECEIVED"
+    assert (await service.get(initial.review_id, requester)).status == "RECEIVED"
 
 
 @pytest.mark.parametrize(
