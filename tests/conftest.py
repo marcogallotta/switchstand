@@ -66,7 +66,7 @@ def _drop_database_prerequisite_tables(engine: Engine) -> None:
     # database at the fixture boundary instead.
     with engine.begin() as connection:
         connection.exec_driver_sql(
-            "DROP TABLE IF EXISTS activation_obligation_revisions, "
+            "DROP TABLE IF EXISTS lifecycle_obligations, activation_obligation_revisions, "
             "task_control_checkpoints, "
             "task_run_results, task_run_executions, "
             "task_run_requests, failure_resolutions, failure_records, "

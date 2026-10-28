@@ -1306,6 +1306,16 @@ class ReviewService:
                 if not await self.occurrences.ensure(brief, connection):
                     return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
                                         reason="occurrence_conflict")
+                if any(
+                    prior.brief.basis != basis
+                    for _record, prior in await self.occurrences.basis_sources(
+                        basis.review_id, connection,
+                    )
+                    if prior.brief.basis.subject_work_id == basis.subject_work_id
+                    and prior.brief.basis.subject_revision == basis.subject_revision
+                ):
+                    return ReviewResult(status="DENIED", review_id=basis.review_id,
+                                        reason="review_basis_changed")
                 if await self._record_basis(brief, requester, connection) is None:
                     return ReviewResult(status="UNKNOWN", review_id=basis.review_id,
                                         reason="message_conflict")
