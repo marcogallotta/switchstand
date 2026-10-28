@@ -30,7 +30,7 @@ def write(path: Path, value: object) -> None:
     path.chmod(0o600)
 
 
-def test_loads_policy_and_routes_every_kind_to_coordinator(tmp_path: Path) -> None:
+def test_loads_policy_and_routes_every_kind_to_audit_recovery(tmp_path: Path) -> None:
     path = tmp_path / "reviews.json"
     write(path, payload())
 
@@ -39,8 +39,8 @@ def test_loads_policy_and_routes_every_kind_to_coordinator(tmp_path: Path) -> No
     assert loaded.policy.version == "policy-v1"
     assert loaded.guidelines.version == "guidelines-v1"
     assert loaded.guidelines.digest == "a" * 64
-    assert loaded.policy.reviewer_name("CODE") == "Coordinator"
-    assert loaded.policy.reviewer_name("DESIGN") == "Coordinator"
+    assert loaded.policy.reviewer_name("CODE") == "Codex Audit Recovery"
+    assert loaded.policy.reviewer_name("DESIGN") == "Codex Audit Recovery"
 
 
 def test_legacy_reviewer_mapping_is_optional(tmp_path: Path) -> None:
@@ -49,7 +49,7 @@ def test_legacy_reviewer_mapping_is_optional(tmp_path: Path) -> None:
     del value["reviewer_by_kind"]
     write(path, value)
 
-    assert load_review_config(path).policy.reviewer_name("CODE") == "Coordinator"
+    assert load_review_config(path).policy.reviewer_name("CODE") == "Codex Audit Recovery"
 
 
 def test_environment_path_is_literal_absolute_and_default_off(

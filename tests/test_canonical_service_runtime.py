@@ -318,7 +318,7 @@ async def pending_review(
         "Requester", "principal-requester", "chat-requester",
     )).mailbox
     reviewer = (await mailboxes.register_agent(
-        "Coordinator", "principal-reviewer", "chat-reviewer",
+        "Codex Audit Recovery", "principal-reviewer", "chat-reviewer",
     )).mailbox
     assert requester is not None and reviewer is not None
     policy = ReviewPolicy(version="policy-v1")

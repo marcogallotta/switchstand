@@ -33,7 +33,7 @@ class InstalledReviewConfig(ClosedModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     schema_version: Literal[1]
     policy_version: str = Field(min_length=1, max_length=120)
-    # Legacy key, accepted and ignored: every review goes to the Coordinator.
+    # Legacy key, accepted and ignored: routing is server owned.
     reviewer_by_kind: dict[ReviewKind, ReviewerName] = Field(default_factory=dict[ReviewKind, ReviewerName], max_length=6)
     guidelines_version: str = Field(min_length=1, max_length=120)
     guidelines_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
