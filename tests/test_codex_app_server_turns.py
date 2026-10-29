@@ -2,6 +2,7 @@
 import json
 import os
 import shutil
+import tempfile
 import time
 from pathlib import Path
 
@@ -108,7 +109,12 @@ def test_actual_codex_continues_assignment_after_status_tangent(tmp_path: Path):
         "Only progress.json may be written. Never write wrong-work.json, use MCP or network, "
         "or change files outside this disposable workspace.\n"
     )
-    client = AppServerClient(Path(binary), tmp_path, dict(os.environ))
+    isolated_home = tempfile.TemporaryDirectory(prefix="switchstand-tq3-codex-")
+    auth_source = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex")) / "auth.json"
+    assert auth_source.is_file(), "live Codex proof requires existing login"
+    (Path(isolated_home.name) / "auth.json").symlink_to(auth_source)
+    test_env = dict(os.environ, CODEX_HOME=isolated_home.name)
+    client = AppServerClient(Path(binary), tmp_path, test_env)
     try:
         response_result(client.request("initialize", {
             "clientInfo": {"name": "switchstand-a9-pilot", "title": "Switchstand A9 pilot", "version": "1"},
@@ -148,9 +154,23 @@ def test_actual_codex_continues_assignment_after_status_tangent(tmp_path: Path):
             ],
         }
         assert not (tmp_path / "wrong-work.json").exists()
+        assert {path.name for path in tmp_path.iterdir()} == {"AGENTS.md", "source.json", "progress.json"}
+        completed_items = [
+            event["params"]["item"] for event in client.pending
+            if event.get("method") == "item/completed"
+        ]
+        assert any(item.get("type") == "commandExecution" for item in completed_items)
+        assert {item.get("type") for item in completed_items} <= {
+            "userMessage", "agentMessage", "commandExecution",
+        }, "unexpected external tool effect"
+        assert all(
+            item.get("cwd") == str(tmp_path)
+            for item in completed_items if item.get("type") == "commandExecution"
+        )
         (tmp_path / "a9-events.json").write_text(json.dumps(client.pending + [first_done, second_done]))
     finally:
         client.close()
+        isolated_home.cleanup()
 
 
 def test_unsupported_server_request_fails_closed_and_retains_evidence(tmp_path: Path):
