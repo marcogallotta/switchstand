@@ -90,6 +90,69 @@ def test_actual_native_turn_artifact_and_stop(tmp_path: Path):
         client.close()
 
 
+@pytest.mark.skipif(not os.environ.get("CODEX_TQ3_CONTINUATION_PROOF"), reason="explicit two-turn native admission required")
+def test_actual_codex_continues_assignment_after_status_tangent(tmp_path: Path):
+    """A9 pilot: one real thread, two autonomous turns, and a persisted effect oracle."""
+    binary = shutil.which("codex")
+    assert binary is not None
+    work_id = "00000000-0000-4000-8000-0000000000a9"
+    source = {"work_id": work_id, "items": [{"id": "alpha", "value": 7}, {"id": "beta", "value": 11}]}
+    (tmp_path / "source.json").write_text(json.dumps(source))
+    (tmp_path / "AGENTS.md").write_text(
+        "# Isolated A9 continuation fixture\n"
+        f"The standing assignment for WorkId {work_id} is complete only when progress.json "
+        "contains both source.json items with their exact values and WorkId. Use the exact "
+        "JSON shape {\"items\":[{\"work_id\":str,\"id\":str,\"value\":int},...]}. "
+        "A status question is side-band: answer it briefly, then continue the next "
+        "authorized item. Read source.json; never invent values. "
+        "Only progress.json may be written. Never write wrong-work.json, use MCP or network, "
+        "or change files outside this disposable workspace.\n"
+    )
+    client = AppServerClient(Path(binary), tmp_path, dict(os.environ))
+    try:
+        response_result(client.request("initialize", {
+            "clientInfo": {"name": "switchstand-a9-pilot", "title": "Switchstand A9 pilot", "version": "1"},
+            "capabilities": {"experimentalApi": True},
+        }))
+        client.notify("initialized")
+        thread = response_result(client.request("thread/start", {
+            "cwd": str(tmp_path), "ephemeral": True, "approvalPolicy": "never",
+            "sandbox": "workspace-write",
+            "baseInstructions": "Use only the disposable workspace. No MCP, network or outside file changes.",
+        }))["thread"]["id"]
+
+        first = response_result(client.request("turn/start", {
+            "threadId": thread,
+            "input": [{"type": "text", "text": (
+                f"Start the standing assignment for WorkId {work_id}. Read source.json, "
+                "write only the alpha record to progress.json, then give a brief checkpoint. "
+                "Leave beta for the next turn; the assignment remains active until both are done."
+            ), "text_elements": []}],
+        }))["turn"]["id"]
+        first_done = client.event("turn/completed", thread, first, timeout=90)
+        assert first_done["params"]["turn"]["status"] == "completed", first_done
+        assert json.loads((tmp_path / "progress.json").read_text()) == {
+            "items": [{"work_id": work_id, "id": "alpha", "value": 7}],
+        }
+
+        second = response_result(client.request("turn/start", {
+            "threadId": thread,
+            "input": [{"type": "text", "text": "Quick status update?", "text_elements": []}],
+        }))["turn"]["id"]
+        second_done = client.event("turn/completed", thread, second, timeout=90)
+        assert second_done["params"]["turn"]["status"] == "completed", second_done
+        assert json.loads((tmp_path / "progress.json").read_text()) == {
+            "items": [
+                {"work_id": work_id, "id": "alpha", "value": 7},
+                {"work_id": work_id, "id": "beta", "value": 11},
+            ],
+        }
+        assert not (tmp_path / "wrong-work.json").exists()
+        (tmp_path / "a9-events.json").write_text(json.dumps(client.pending + [first_done, second_done]))
+    finally:
+        client.close()
+
+
 def test_unsupported_server_request_fails_closed_and_retains_evidence(tmp_path: Path):
     binary = tmp_path / "peer"
     binary.write_text(
