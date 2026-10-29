@@ -105,15 +105,12 @@ def test_review_result_guidance_distinguishes_unavailable_reviewer_from_active_p
             status=status, review_id=review_id, delivery_id=delivery_id,
         )
         for required in (
-            "While this chat can run", "bounded active polling", "Bash sleep 20",
-            f"review_get(review_id='{review_id}')", "empty read is nonterminal",
-            "No verdict yet", "Do not end the turn", "until PASS, FINDINGS, or BLOCKED",
-            "Sleep before the first poll", "perform the returned next_action",
-            "Every pending response requires another sleep and poll",
-            "real host/session limit", "preserve the exact review_id and state",
-            "do not use an hourly Scheduled task",
+            "Do not end the turn", "Sleep 20 seconds",
+            f"review_get(review_id='{review_id}')", "Repeat sleep and poll",
+            "PASS/FINDINGS/BLOCKED", "perform next_action",
         ):
             assert required in result.next_action
+        assert len(result.next_action) <= 190
         assert result.next_action != waiting.next_action
 
 
@@ -790,9 +787,9 @@ async def test_received_review_submits_authoritative_pass(occurrence_runtime):
         assert pending.status == "REQUEST_UNPICKED"
         assert pending.review_id == sent.review_id
         assert pending.verdict is None
-        assert "No verdict yet" in pending.next_action
-        assert "Bash sleep 20" in pending.next_action
-        assert "Every pending response requires another sleep and poll" in pending.next_action
+        assert "Do not end the turn" in pending.next_action
+        assert "Sleep 20 seconds" in pending.next_action
+        assert "Repeat sleep and poll" in pending.next_action
     received = await messages.receive_admitted(
         reviewer.endpoint_id, reviewer.generation,
         RuntimeCurrentness(
