@@ -39,15 +39,19 @@ When resuming an older specification, add its missing command block with the agr
 while preserving its acceptance criteria.
 
 For a material change, include a short **test plan in that same Implementation Specification**.
-Tie each required check to the approved user outcome and WorkId, a checkable positive result,
-and a relevant forbidden or negative effect. Name the earliest causal unit, component, or
-integration check, its command and observable result, including a regression for the known fault.
+Tie the plan to the approved user outcome and WorkId, with a checkable positive result and a
+relevant forbidden or negative effect. Name the earliest causal unit, component, or integration
+check, its command and observable result, including a regression for the known fault.
 Use the existing command block for runnable noninteractive checks. Add a small scripted end-to-end
 journey only when changed behavior crosses a meaningful seam that cheaper checks cannot credibly
 cover, such as real MCP/HTTP and persistence, authority/currentness, process composition,
 migration, UI, or a critical multi-tool path. No end-to-end or omission boilerplate is universal.
-When composition is the claim, launch the candidate through its actual production-shaped entrypoint
-with isolated test resources; manually wiring the dependency under test is not that proof.
+For a runtime-composition claim, boot the candidate through its actual production-shaped
+entrypoint with isolated test resources and call the externally consumed interface. Do not
+manually wire the dependency under test. Show that omitting a required dependency in that
+authentic composition makes the positive call fail readiness even if unit tests pass; show a
+healthy positive call and a denied call with no persisted effect through the same path.
+If a legitimate test launch or credentials are unavailable, record `NOT_RUN`/`UNKNOWN`.
 For small slices, identify the affected fast checks; before a major integrated deployment, name
 the applicable broad regression and end-to-end checks on the exact release candidate. Do not
 defer an essential seam check until after activation or require a heavy journey after every safe
