@@ -290,7 +290,13 @@ class ReviewResult(ClosedModel):
                 "WAITING_REVIEWER": "No eligible reviewer is available, so no reviewer delivery exists; this is distinct from REQUEST_UNPICKED. Preserve this exact review_id and bounded watch, continue other owned work with limited rechecks, and report a genuine actor/capability blocker if a reviewer cannot be activated; do not create a duplicate request.",
             }.get(self.status)
             if value is None:
-                value = (f"No verdict yet. Do not end the turn. While this chat can run, use supported bounded active polling: Bash sleep 20, then review_get(review_id='{self.review_id}'), repeatedly. Sleep before the first poll after review_request too. Every pending response requires another sleep and poll until PASS, FINDINGS, or BLOCKED, then perform the returned next_action. An empty read is nonterminal. At a real host/session limit, preserve the exact review_id and state for continuation; do not use an hourly Scheduled task as a substitute." if self.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"} else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly.")
+                value = (
+                    f"Do not end the turn. Sleep 20 seconds, then call "
+                    f"review_get(review_id='{self.review_id}'). Repeat sleep and poll "
+                    "until PASS/FINDINGS/BLOCKED; then perform next_action."
+                    if self.status in {"SENT", "REQUEST_UNPICKED", "RECEIVED"}
+                    else f"Reconcile {self.reason or 'review state'} before retrying; do not retry blindly."
+                )
             object.__setattr__(self, "next_action", value)
         if self.durable_capture is None:
             refs = (
