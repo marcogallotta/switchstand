@@ -48,9 +48,10 @@ cover, such as real MCP/HTTP and persistence, authority/currentness, process com
 migration, UI, or a critical multi-tool path. No end-to-end or omission boilerplate is universal.
 For a runtime-composition claim, boot the candidate through its actual production-shaped
 entrypoint with isolated test resources and call the externally consumed interface. Do not
-manually wire the dependency under test. Show that omitting a required dependency in that
-authentic composition makes the positive call fail readiness even if unit tests pass; show a
-healthy positive call and a denied call with no persisted effect through the same path.
+manually wire the dependency under test. For a known or suspected missing-dependency wiring
+fault, as in the 6 October pilot, show that omitting the required dependency in that authentic
+composition makes the positive call fail readiness even if unit tests pass. The healthy
+composition for that fault must pass a positive call and a denied call with no persisted effect.
 If a legitimate test launch or credentials are unavailable, record `NOT_RUN`/`UNKNOWN`.
 For small slices, identify the affected fast checks; before a major integrated deployment, name
 the applicable broad regression and end-to-end checks on the exact release candidate. Do not
