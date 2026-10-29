@@ -60,6 +60,19 @@ incremental PR. For each required check, record the proof boundary, expected res
 teardown, rerun condition, cost, and actual `PASS`/`FAIL`/`SKIP`/`NOT_RUN`/`UNKNOWN` result.
 Review of a proposed plan is not execution or acceptance evidence.
 
+When writing material tests, derive the oracle from the approved outcome and observable
+consumer behavior, not from the implementation or a model summary of the intended result.
+Use an allowed positive and a relevant forbidden or failure case when they discriminate the
+claim; check lasting and absent effects at the real boundary. A denial-only hook test, for
+example, also needs an allowed call through the hook so an all-deny implementation fails.
+Ask which plausible wrong behavior would pass the test, then use the cheapest causal check
+that would fail it; for a regression, reproduce the old fault or a specific equivalent.
+Prefer existing scripts and isolated real boundaries over large mock worlds. Keep expensive
+agent or end-to-end journeys only where they add a distinct failure signal, with bounded
+trials and stop conditions. For variable model output, ground and calibrate a rubric with
+known-good and known-bad examples and valid alternate outcomes; exact phrasing is not a
+success oracle unless required. Hard authority and side-effect invariants remain hard failures.
+
 During implementation:
 - Fix the causal owner; do not patch callers/tests around the defect.
 - At each quality refresh, compare the actual trajectory with the current Execution Plan. Unexpected new owner/provider/persistence/trust/interface/external-I/O/recovery surface, materially larger defensive/test-support machinery, or loss of the planned discriminating proof means stop/replan/classify the affected path before adding another patch layer. Routine local/private/reversible mechanics remain worker-owned.
@@ -400,7 +413,7 @@ A. **Should this solution exist?** Correct problem and owner? Root fix? Smaller 
 A1. **Right scale first.** Is this the right thing and scale to build before internal completeness is polished? Does the candidate take the smallest safe useful vertical stage, or justify an independently stable non-speculative foundation plus its immediate route to representative end-to-end proof?
 B. **Whole-system effect.** Does local success create duplicate truth, dependency/authority drift, hidden behavior, residue/coupling, disproportionate operational/support burden, or worse agent navigation?
 C. **Implementation quality.** Correctness, failure/UNKNOWN semantics, applicable concurrency/idempotency/external semantics, cohesion/readability, unnecessary cleverness; does the implementation still match the concrete owner/reuse/evidence shape of its Execution Plan?
-D. **Tests as adversarial artifacts.** What concrete fault does each material test catch? Would plausible broken code fail? Are mocks/fixtures fabricating the real boundary? Is important causal regression or high-fidelity boundary evidence missing? Is the test-support architecture itself becoming a maintenance liability?
+D. **Tests as adversarial artifacts.** Independently name a plausible wrong user result; which proposed test fails it? Where the claim depends on a real boundary, does the suite exercise relevant allowed and forbidden behavior through the actual client, runtime, authority or persistence path, including absent effects? Would a denial-only hook suite pass an all-deny hook? Are mocks, fixtures, ordering assumptions or model graders fabricating success? Is a required check skipped, run on a stale subject, or merely planned rather than executed? Is a meaningful end-to-end check missing, or is an expensive journey duplicating cheaper proof? Challenge test-support growth and keep only consequential findings; use this same review and focused rereview, never a second test approval.
 E. **Outcome / qualification.** Does the candidate deliver the governing behavior independently of its own tests? Is each landing/activation claim supported by the right evidence subject? Preserve NOT_RUN/SKIP/MISSING_CAPABILITY and exact-head-vs-composition truth.
 F. **Scope / decomposition.** Does each PR/layer represent the smallest independently useful, valid, reviewable and recoverable intermediate state? Could an obvious smaller slice safely land with meaningful acceptance evidence and independent rollback/rework? If yes, prefer it. If no, name the reason the behavior/evidence/recovery must remain together. Dependency order alone does not justify bundling; sub-500 splitting does not prove good decomposition; split laundering is a defect.
 G. **Documentation currency.** For Implementation Specification-scoped work: verify the candidate's UPDATE/HISTORICALIZE/DELETE documentation-impact dispositions (under 1218218678917862) are reconciled to the actual retained candidate, not the spec's original projection. For work outside that process: does the candidate's diff touch something [architecture](architecture.md) describes? If so, does the same PR update `docs/architecture.md`? Either way, a qualifying diff that leaves its documentation stale is a material finding under Findings, remedies and challenge, not optional polish.
