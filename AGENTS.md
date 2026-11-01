@@ -89,7 +89,7 @@ Feedback V1: while doing assigned work, notice concrete failures and hidden fric
 
 Before a new material solution hardens, follow [Human Input](docs/human-input.md) and [Human Review](docs/human-review.md) for any still-open human-owned choice. Roadmap agreement is not approval of a different material solution; an unchanged already-approved solution does not require repeat review solely because implementation or landing is ready. If the handoff names an effect and current authority separately authorizes it, continue; otherwise report the unavailable handoff. Report completed work as status, not another permission request.
 
-For Tracker and Human Input design/review, read the current V1 judgment bootstrap at Work a5764f43-e621-550a-9e8d-2f5a54d09db4; follow its exact current revision only after Marco explicitly approves it, and only within its stated scope. This pointer grants no implementation or effect authority.
+FOR ALL design and implementation spec work, follow this judgement bootstrap: a5764f43-e621-550a-9e8d-2f5a54d09db4
 
 A mechanically established required-currentness/applicable-invariant contradiction or ambiguous consequential effect requires one bounded situation review under current owner; low confidence alone does not. Other review, quality, activation, canary, documentation, research, and portfolio mechanics stay behind routed owners.
 
