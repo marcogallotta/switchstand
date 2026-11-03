@@ -45,7 +45,7 @@ While doing assigned work, notice concrete failures and hidden friction that del
 endanger delivery: bad code or incomplete specs discovered by the author, serious review
 findings, failures escaping earlier tests, deployment/resource faults, repeated work,
 blockers, avoidable process or test time, and agent-caused Marco frustration or interaction
-friction. Also file every Human Review outcome. Legitimate difficult work is not itself an issue. A corrected harmless typo can stay local.
+friction. Also file every Human Review outcome, good or bad, with `file_review_feedback`. Legitimate difficult work is not itself an issue. A corrected harmless typo can stay local.
 
 Once a credible concrete failure is observed, respond to Marco first, then capture it before
 unrelated work. Use the Feedback `file_*` tools, or reuse a known exact
