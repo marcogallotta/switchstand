@@ -157,7 +157,10 @@ def test_role_router_has_exact_function_routes_and_owner_links():
         routes["Review Worker / eligible Coordinator reviewer"]
     )
     assert "docs/code-quality.md" in markdown_links(routes["Integration/landing Coordinator"])
-    assert "docs/research-sources.md" in markdown_links(routes["Research/design Worker"])
+    assert (
+        "Any agent doing research follows [research sources](docs/research-sources.md)."
+        in read("AGENTS.md").split("### Route only the current function", 1)[0]
+    )
 
 
 def test_role_contract_preserves_boundaries_without_execution_detail():
