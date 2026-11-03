@@ -1,5 +1,7 @@
 # ChatGPT MCP edge
 
+- Optional inbound wake defaults off. For an authorized edge launch, set `SWITCHSTAND_CODEX_WAKE_CONTROL=/absolute/control.json` before `.venv/bin/python -m switchstand.chatgpt_edge`; retain existing edge configuration. Create that user-owned file with mode0600 and JSON `{"socket":"/absolute/existing/daemon.sock","enabled":false}` using the actual owning Codex0.163 Unix WebSocket socket. Set `enabled:true` only under separate activation authority; `enabled:false` disables future starts, but cannot revoke accepted turns. Transport or acceptance uncertainty stops the recipient as UNKNOWN without automatic replay: preserve exact delivery/turn receipts and remain disabled pending operator reconciliation. Restart does not authorize retries; automatic recovery is unavailable. No daemon or schema is installed.
+
 `project_create(api_version="1", operation_id, name)` creates one empty flat canonical project
 under current authenticated workspace admission. Trimmed names require 1–500 non-NUL characters;
 names may repeat deliberately. Retain the returned `project_id` for existing placement tools and
