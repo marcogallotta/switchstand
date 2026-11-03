@@ -1055,3 +1055,75 @@ async def test_authenticated_registry_preserves_append_and_routes_create(monkeyp
     assert capture.structured_content["effect"] == "not_sent"
     assert updated.structured_content["status"] == "ok"
     assert subject.providers["asana"].sends == 1
+
+
+async def test_claude_mail_summary_real_state_is_read_only(state_database_schema):
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from switchstand.agent_mailboxes import AgentMailboxState
+    from switchstand.messages import MessageState, message_deliveries, messages
+
+    engine = create_async_engine(state_database_schema)
+    mailboxes = AgentMailboxState(engine)
+    name = f"Claude {uuid4()}"
+    receiver = (await mailboxes.register_agent(name, "owner", str(uuid4()))).mailbox
+    sender = (await mailboxes.register_agent(f"Sender {uuid4()}", "sender", str(uuid4()))).mailbox
+    other = (await mailboxes.register_agent(f"Other {uuid4()}", "other", str(uuid4()))).mailbox
+    assert receiver and sender and other
+    subject = service()
+    subject.messages = MessageState(engine, subject.grants)
+    app = create_app(subject, CONFIG, client_storage=MemoryStore())
+    path = chatgpt_edge.CLAUDE_MAIL_SUMMARY_PATH
+    transport = httpx2.ASGITransport(app=app, client=("127.0.0.1", 1234))
+    async with httpx2.AsyncClient(transport=transport, base_url=ISSUER) as client:
+        assert (await client.get(path, params={"name": "missing"})).status_code == 403
+        for params in ({}, {"name": " "}, {"name": name, "ack": "yes"}):
+            assert (await client.get(path, params=params)).status_code == 400
+        empty = (await client.get(path, params={"name": name})).json()
+        assert empty == {"status": "ok", "name": name, "count": 0, "senders": []}
+        for state, recipient in (("AVAILABLE", receiver), ("RECEIVED", receiver),
+                                 ("ACKNOWLEDGED", receiver), ("DISPOSITIONED", receiver),
+                                 ("AVAILABLE", other)):
+            message_id = uuid4()
+            async with engine.begin() as connection:
+                await connection.execute(messages.insert().values(
+                    sender_work_id=sender.endpoint_id, message_id=message_id,
+                    route_ref="ordinary", kind="request", payload={"text": "private body"},
+                    digest=str(message_id),
+                ))
+                await connection.execute(message_deliveries.insert().values(
+                    delivery_id=uuid4(), sender_work_id=sender.endpoint_id, message_id=message_id,
+                    recipient_work_id=recipient.endpoint_id, recipient_grant_version=1, state=state,
+                ))
+        async with engine.connect() as connection:
+            before = (await connection.execute(select(message_deliveries))).all()
+        for _ in range(2):
+            response = await client.get(path, params={"name": name})
+            assert response.status_code == 200
+            assert response.json() == {"status": "ok", "name": name, "count": 2,
+                                       "senders": [{"name": sender.name, "count": 2}]}
+            assert "private body" not in response.text
+        async with engine.connect() as connection:
+            assert (await connection.execute(select(message_deliveries))).all() == before
+    await engine.dispose()
+
+
+async def test_claude_mail_summary_access_and_read_failures(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    path = chatgpt_edge.CLAUDE_MAIL_SUMMARY_PATH
+    subject = service()
+    app = create_app(subject, CONFIG, client_storage=MemoryStore())
+    transport = httpx2.ASGITransport(app=app, client=("192.0.2.1", 1234))
+    async with httpx2.AsyncClient(transport=transport, base_url=ISSUER) as client:
+        assert (await client.get(path, params={"name": "Claude"})).status_code == 403
+    transport = httpx2.ASGITransport(app=app, client=("127.0.0.1", 1234))
+    async with httpx2.AsyncClient(transport=transport, base_url=ISSUER) as client:
+        assert (await client.get(path, params={"name": "Claude"})).status_code == 503
+        binding = SimpleNamespace(status="ok", mailbox=SimpleNamespace(name="Claude"))
+        monkeypatch.setattr(chatgpt_edge.AgentMailboxState, "by_name", AsyncMock(return_value=binding))
+        subject.messages = SimpleNamespace(engine=None, attention_admitted=AsyncMock(return_value=None))
+        assert (await client.get(path, params={"name": "Claude"})).status_code == 503
+        subject.messages.attention_admitted.side_effect = RuntimeError("database unavailable")
+        assert (await client.get(path, params={"name": "Claude"})).status_code == 503

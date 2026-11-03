@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -91,6 +92,7 @@ from .workspace_admission import WorkspaceAdmissionState
 LOG = logging.getLogger(__name__)
 CERTIFICATION_RUNTIME_PATH = "/.well-known/switchstand-certification-runtime"
 CODEX_STOP_MAILBOX_PATH = "/internal/codex-stop-mailbox"
+CLAUDE_MAIL_SUMMARY_PATH = "/internal/claude-mail-summary"
 GRACEFUL_SHUTDOWN_SECONDS = 30
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
 STATEFUL_MIGRATION_REVISION = "0027_pull_requests"
@@ -739,6 +741,37 @@ def _create_resource_app(
     ))
     for name, tool in ordinary_tools:
         server.tool(tool, annotations=ordinary_tool_annotations(name))
+
+    @server.custom_route(CLAUDE_MAIL_SUMMARY_PATH, methods=["GET"], include_in_schema=False)
+    async def _claude_mail_summary(  # pyright: ignore[reportUnusedFunction]
+        request: Request,
+    ) -> JSONResponse:
+        """Local read-only attention hint; never receive or acknowledge mail."""
+        try:
+            local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+        except ValueError:
+            local = False
+        if not local:
+            return JSONResponse({"status": "denied", "reason": "loopback_required"}, status_code=403)
+        name = request.query_params.get("name", "").strip()
+        if not name or set(request.query_params) != {"name"}:
+            return JSONResponse({"status": "denied", "reason": "invalid_name"}, status_code=400)
+        if service.messages is None:
+            return JSONResponse({"status": "recovery_required", "reason": "state_unavailable"}, status_code=503)
+        binding = await AgentMailboxState(service.messages.engine).by_name(name)
+        if binding.status != "ok" or binding.mailbox is None:
+            return JSONResponse({"status": binding.status, "reason": binding.reason}, status_code=403)
+        try:
+            attention = await service.messages.attention_admitted(binding.mailbox)
+        except Exception:  # noqa: BLE001 - failed reads must not look like an empty mailbox
+            attention = None
+        if attention is None:
+            return JSONResponse({"status": "recovery_required", "reason": "stale_or_unavailable"}, status_code=503)
+        return JSONResponse({
+            "status": "ok", "name": binding.mailbox.name,
+            "count": sum(count for _, count in attention.groups),
+            "senders": [{"name": sender, "count": count} for sender, count in attention.groups],
+        })
 
     @server.custom_route(CODEX_STOP_MAILBOX_PATH, methods=["POST"], include_in_schema=False)
     async def _codex_stop_mailbox(  # pyright: ignore[reportUnusedFunction]

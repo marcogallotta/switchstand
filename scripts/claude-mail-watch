@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Wait without model calls for unacknowledged mail; leave it for the agent to process."""
+
+import argparse
+import json
+import os
+import sys
+import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import ProxyHandler, build_opener
+
+
+def watch(name, port, interval=60):
+    url = f"http://127.0.0.1:{port}/internal/claude-mail-summary?{urlencode({'name': name})}"
+    opener = build_opener(ProxyHandler({}))
+    while True:
+        try:
+            with opener.open(url, timeout=15) as response:
+                result = json.load(response)
+            if not isinstance(result, dict) or result.get("status") != "ok":
+                raise ValueError("mailbox read did not return status ok")
+            count, senders = result.get("count"), result.get("senders")
+            if type(count) is not int or count < 0 or not isinstance(senders, list):
+                raise ValueError("invalid mailbox summary")
+            if any(not isinstance(sender, dict) or not isinstance(sender.get("name"), str)
+                   or type(sender.get("count")) is not int or sender["count"] <= 0
+                   for sender in senders):
+                raise ValueError("invalid sender summary")
+            if sum(sender["count"] for sender in senders) != count:
+                raise ValueError("inconsistent mailbox summary")
+        except HTTPError as error:
+            print(f"claude-mail-watch: HTTP {error.code}; check mailbox registration/access "
+                  "and local edge service", file=sys.stderr)
+            return 1
+        except (URLError, OSError, ValueError) as error:
+            print(f"claude-mail-watch: local edge transport/summary error ({type(error).__name__})",
+                  file=sys.stderr)
+            return 1
+        if count:
+            summary = ", ".join(f"{sender['count']} from {sender['name']}" for sender in senders)
+            print(f"Messages for {name}: {count} unacknowledged ({summary}). "
+                  "Use agent_message_pending to process; watcher acknowledged nothing.")
+            return 0
+        time.sleep(interval)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("name", help="registered Switchstand mailbox name")
+    args = parser.parse_args()
+    name = args.name.strip()
+    if not name:
+        parser.error("name must not be empty")
+    try:
+        port = int(os.environ.get("SWITCHSTAND_MCP_BIND_PORT", "8790"))
+        if not 1 <= port <= 65535:
+            raise ValueError
+    except ValueError:
+        parser.error("SWITCHSTAND_MCP_BIND_PORT must be a valid port")
+    try:
+        return watch(name, port)
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())
