@@ -2,8 +2,9 @@
 
 import hashlib
 import json
+import logging
 import os
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Literal, Self
@@ -442,6 +443,7 @@ def runtime_admission(runtime: RuntimeCurrentness) -> RuntimeAdmissionFailure | 
 class MessageState:
     def __init__(self, engine: AsyncEngine, grants: GrantState):
         self.engine, self.grants = engine, grants
+        self.on_delivery: Callable[[PendingMessage, bool], None] | None = None
         raw_cutoff = os.getenv("SWITCHSTAND_REVIEW_CUTOFF_RECEIPT")
         self.review_cutoff = None if raw_cutoff is None else datetime.fromisoformat(raw_cutoff)
         if self.review_cutoff is not None and self.review_cutoff.utcoffset() is None:
@@ -703,11 +705,11 @@ class MessageState:
             )))).scalar_one()
             if current != digest:
                 return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
-            await connection.execute(insert(message_deliveries).values(
+            inserted = await connection.scalar(insert(message_deliveries).values(
                 delivery_id=delivery_id, sender_work_id=sender_work_id,
                 message_id=request.message_id, recipient_work_id=route.recipient_work_id,
                 recipient_grant_version=route.recipient_grant_version,
-            ).on_conflict_do_nothing())
+            ).on_conflict_do_nothing().returning(message_deliveries.c.delivery_id))
             row = (await connection.execute(self._pending_query().where(
                 message_deliveries.c.delivery_id == delivery_id
             ))).mappings().one()
@@ -718,7 +720,13 @@ class MessageState:
                 )
                 if failure is not None:
                     raise _AtomicResultFailure(failure)
-        return MessageSubmitResult(status="ok", message=_view(dict(row)))
+        result = MessageSubmitResult(status="ok", message=_view(dict(row)))
+        if self.on_delivery is not None and result.message is not None:
+            try:
+                self.on_delivery(result.message, inserted is not None)
+            except Exception:
+                logging.getLogger(__name__).exception("post-commit wake signal unavailable")
+        return result
 
     async def _disposition_result(
         self, connection: AsyncConnection, delivery_id: UUID, sender_work_id: UUID,
