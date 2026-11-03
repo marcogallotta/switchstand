@@ -252,6 +252,10 @@ def test_codex_stop_mailbox_adapter_is_read_only_and_malformed_input_is_closed()
     with TestClient(app) as client:
         malformed = client.post(CODEX_STOP_MAILBOX_PATH, json={})
         unavailable = client.post(CODEX_STOP_MAILBOX_PATH, json={"session_id": "thread"})
+        assert client.post(CODEX_STOP_MAILBOX_PATH, json={"session_id": "thread",
+            "wake_route_token": "test"}).json() == {"status": "UNKNOWN"}
+        assert client.post(CODEX_STOP_MAILBOX_PATH, json={"session_id": "thread",
+            "wake_route_token": "test", "check_obligations": True}).status_code == 400
 
     assert malformed.status_code == 400
     assert malformed.json() == {
