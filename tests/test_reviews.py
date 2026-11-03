@@ -1310,8 +1310,10 @@ async def test_owner_polling_acquires_independent_reviewer(
         review_kind="CODE",
     ), requester)
     assert waiting.review_id is not None and waiting.delivery_id is None
-    reviewer = (await register_reviewer(
-        mailboxes, "principal-b", "chat-b"
+    reviewer = (await (
+        mailboxes.register_agent("Coordinator", "principal-b", "chat-b")
+        if legacy_acquisition
+        else register_reviewer(mailboxes, "principal-b", "chat-b")
     )).mailbox
     assert reviewer is not None
     service.policy = ReviewPolicy(version="policy-v1")
@@ -1335,7 +1337,16 @@ async def test_owner_polling_acquires_independent_reviewer(
                                   grant_version=reviewer.generation), agent_binding=reviewer,
         )
         sent = await service.continue_acquisition(waiting.review_id, reviewer)
-        assert notices[-1][0] == requester.endpoint_id  # Committed acquisition acknowledgement.
+        assert sent.status == "SENT", sent
+        assert any(
+            recipient == requester.endpoint_id and fresh and committed == delivery_id
+            for recipient, delivery_id, fresh, committed in notices
+        ), notices  # Committed acquisition acknowledgement.
+        assert any(
+            recipient == reviewer.endpoint_id and delivery_id == sent.delivery_id
+            and fresh and committed == delivery_id
+            for recipient, delivery_id, fresh, committed in notices
+        )  # Committed review request also wakes the reviewer.
     else:
         sent = await service.get(waiting.review_id, requester)
     assert sent.status == ("SENT" if legacy_acquisition else "REQUEST_UNPICKED"), sent
