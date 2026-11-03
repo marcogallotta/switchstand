@@ -15,19 +15,17 @@ from typing import Any
 
 CONTEXT = (
     "FEEDBACK V1. Respond to Marco immediately. During assigned work, notice concrete failures "
-    "and hidden friction, including bad code/specs, missed findings, blockers and avoidable delay. "
-    "Once observed, finish one existing Tracker report or attributable reuse with definitive "
-    "receipt before unrelated work; preserve this obligation across interruption. Frustration "
-    "or a routine Human Review decision alone is not a report trigger; no random sampling. "
-    "Respect STOP and explicit no-logging. Record approximate time, separate quality/priority "
-    "and correction owner; missing exact time or RCA does not excuse silence. Escalate active "
-    "human blockers. Route process/review burden via file_process; inspect complete file_* "
-    "results. F:– is false while capture is owed; "
-    "F:logged needs confirmed readback. Inspect ALL_TOOLS before F:unavailable. No parallel path."
+    "and hidden friction, including bad code/specs, missed findings, blockers, avoidable delay "
+    "and agent-caused Marco frustration. Once observed, file it with the Feedback file_* tools "
+    "before unrelated work; preserve this obligation across interruption. File every Human "
+    "Review outcome, good or bad, with file_review_feedback. Classify honestly; never invent a "
+    "defect. Respect STOP and explicit no-logging. Record approximate time when known. Inspect "
+    "complete file_* results. Inspect ALL_TOOLS before saying Feedback is unavailable."
 )
 
 RECOVERY = (
-    "POST-COMPACT RECOVERY. Honor current STOP/pause/correction first. Preserve your "
+    "POST-COMPACT RECOVERY. Honor current STOP/pause/correction first. "
+    "If you are the Recovery agent, reread docs/recovery-plan.md now and follow it. Preserve your "
     "Coordinator/Worker role and exact assigned WorkId; summaries do not reassign you. "
     "Before resuming, read work_get(api_version=\"1\", work_id=<exact assigned WorkId>); "
     "bare work_get is only for a trusted launch-bound managed run. From that exact task "

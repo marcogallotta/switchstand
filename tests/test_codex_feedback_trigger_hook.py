@@ -37,16 +37,15 @@ def test_each_turn_and_compaction_restore_the_feedback_obligation(
 
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "Respond to Marco immediately" in context
-    assert "Once observed, finish one existing Tracker report or attributable reuse" in context
+    assert "Once observed, file it with the Feedback file_* tools" in context
     assert "before unrelated work" in context
     assert "preserve this obligation across interruption" in context
-    assert "Frustration or a routine Human Review decision alone is not a report trigger" in context
+    assert "Inspect ALL_TOOLS before saying Feedback is unavailable" in context
+    assert "F:" not in context
+    assert "File every Human Review outcome, good or bad, with file_review_feedback" in context
     assert "Respect STOP and explicit no-logging" in context
-    assert "Route process/review burden via file_process" in context
-    assert "F:– is false while capture is owed" in context
-    assert "F:logged needs confirmed readback" in context
-    assert "Inspect ALL_TOOLS before F:unavailable" in context
-    assert "No parallel path" in context
+    if payload["hook_event_name"] == "SessionStart":
+        assert "reread docs/recovery-plan.md" in context
     assert len(context) < (2600 if payload["hook_event_name"] == "SessionStart" else 1200)
 
 
