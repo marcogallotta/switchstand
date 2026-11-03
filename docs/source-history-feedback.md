@@ -44,11 +44,11 @@ do not establish that an external effect occurred.
 While doing assigned work, notice concrete failures and hidden friction that delay or
 endanger delivery: bad code or incomplete specs discovered by the author, serious review
 findings, failures escaping earlier tests, deployment/resource faults, repeated work,
-blockers, and avoidable process or test time. A routine decision, frustration alone, or
-legitimate difficult work is not itself an issue. A corrected harmless typo can stay local.
+blockers, avoidable process or test time, and agent-caused Marco frustration or interaction
+friction. Also file every Human Review outcome, good or bad, with `file_review_feedback`. Legitimate difficult work is not itself an issue. A corrected harmless typo can stay local.
 
 Once a credible concrete failure is observed, respond to Marco first, then capture it before
-unrelated work. Use the existing Tracker Issues V1-A `file_*` surface, or reuse a known exact
+unrelated work. Use the Feedback `file_*` tools, or reuse a known exact
 issue with recurrence evidence and definitive receipt. Preserve an unfinished capture across
 interruption. Do not file again for every exchange, and do not create a parallel register.
 Respect STOP and explicit no-logging. Missing exact timing or a complete RCA does not excuse
@@ -56,8 +56,7 @@ silence: label approximate time as measured, estimated/range, or UNKNOWN. Distin
 effort, agent effort, and critical-path delay; avoid counting overlapping waits twice.
 Use `file_process` for procedure or review-burden failures, `file_performance` for avoidable
 time loss, and `file_bug` for software defects. Name the actual failure, not its setting:
-a Human Review document that wastes human review time can be a process failure without being
-a routine Human Review outcome.
+a Human Review document that wastes human review time is a process failure.
 
 Record briefly what failed, its source, consequence, time impact, workaround, and proposed
 clearing action. Give separate LOW/MEDIUM/HIGH information quality and advisory priority with
