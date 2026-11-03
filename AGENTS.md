@@ -107,11 +107,13 @@ Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overa
 - Keep one mutation owner per writable surface and one integration owner for shared surfaces. Every child/delegated obligation is terminal, stopped, or transferred with attributable pickup before parent completion.
 - An authorized implementation-through-landing candidate continues through review, CI, correction, and landing until terminal unless current `HOLD`, `DENIED`, or a real blocker stops that path.
 
+Any agent doing research follows [research sources](docs/research-sources.md).
+
 ### Route only the current function
 
 - **Root:** Root Coordinator only. Have forks apply [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md), returning concise supervision and communication requirements. Follow the ALL-work fork rule above; do not load detailed work or logs into the parent.
 - **Delegated Coordinator:** every other head follows exact lane/parent obligations + lane-required procedures; it does not inherit Root tracking or portfolio authority merely by being a head or Coordinator.
-- **Research/design Worker:** exact work + current bound research/design package; use [research sources](docs/research-sources.md) when researching and [code quality](docs/code-quality.md) for material design review before Human Review.
+- **Research/design Worker:** exact work + current bound research/design package; use [code quality](docs/code-quality.md) for material design review before Human Review.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
 - **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + bound review owner; for substantive code/config/test review also load [code quality](docs/code-quality.md). No implementation execution detail unless needed to judge the candidate.
 - **Integration/landing Coordinator:** exact candidate/current target + [code quality](docs/code-quality.md) landing/composition guidance; do not preload implementation execution detail unless needed to resolve the integration.
