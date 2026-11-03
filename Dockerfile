@@ -9,7 +9,7 @@ COPY --from=base /bin/uv /bin/uvx /bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends docker-cli git libatomic1 \
+    && apt-get install --yes --no-install-recommends docker-cli git libatomic1 nodejs \
     && docker --version \
     && git --no-lazy-fetch --version \
     && rm -rf /var/lib/apt/lists/*
