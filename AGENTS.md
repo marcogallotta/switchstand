@@ -2,7 +2,7 @@
 
 **If you are the Recovery agent:** read [docs/recovery-plan.md](docs/recovery-plan.md) now, after every compaction, and after any replacement, and follow it. It applies only to the Recovery agent; every other agent keeps its own task.
 
-**Recovery mode (all agents, until Marco ends it):** do not edit existing Tracker tasks without Marco's permission, except recording ownership when Marco directly assigns you an exact WorkId. While doing assigned work, check your mailbox at least every 5 minutes.
+**Recovery mode (all agents, until Marco ends it):** do not edit existing Tracker tasks without Marco's permission, except recording ownership when Marco directly assigns you an exact WorkId and keeping the working notes of your own assigned task current. While doing assigned work, check your mailbox at least every 5 minutes.
 
 This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand-managed runs. Managed requirements apply only when a trusted launch supplies a bound WorkId and tools. Ordinary sessions must not infer a WorkId or assignment. Marco's exact assignment controls local scope; role, documentation, readability, and tool access never grant authority.
 
@@ -89,7 +89,7 @@ for periodic checks, intervention, and checkpoint/exception/outcome feedback. Re
 use fresh independent native forks; never the `review_*` tools. Keep parent context and
 Marco's screen small.
 
-Feedback V1: while doing assigned work, notice concrete failures and hidden friction, including wasted time, blocked work, bad code or specs, missed review findings, failures discovered late, and agent-caused Marco frustration or interaction friction. File it promptly with the Feedback tools (`mcp__switchstand__file_*`) and keep working; do not stop other work for it. File every Human Review outcome. Classify honestly; never invent a defect. Respond to Marco first; honor STOP and explicit no-logging. Include approximate time impact when known. Before saying Feedback is unavailable, check `ALL_TOOLS` for the `file_*` functions.
+Feedback V1: while doing assigned work, notice concrete failures and hidden friction, including wasted time, blocked work, bad code or specs, missed review findings, failures discovered late, and agent-caused Marco frustration or interaction friction. Once a concrete failure is observed, file it with the Feedback tools (`mcp__switchstand__file_*`) before unrelated work, per [feedback capture and triage](docs/source-history-feedback.md#feedback-capture-and-triage). File every Human Review outcome. Classify honestly; never invent a defect. Respond to Marco first; honor STOP and explicit no-logging. Include approximate time impact when known. Before saying Feedback is unavailable, check `ALL_TOOLS` for the `file_*` functions.
 
 Before a new material solution hardens, follow [Human Input](docs/human-input.md) and [Human Review](docs/human-review.md) for any still-open human-owned choice. Roadmap agreement is not approval of a different material solution; an unchanged already-approved solution does not require repeat review solely because implementation or landing is ready. If the handoff names an effect and current authority separately authorizes it, continue; otherwise report the unavailable handoff. Report completed work as status, not another permission request.
 
