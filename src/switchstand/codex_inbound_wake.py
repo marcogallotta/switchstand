@@ -230,6 +230,8 @@ class InboundWake:
                     root = thread.get("parentThreadId") or identity
                     root_binding = binding
                     path = None
+                    if root == identity and thread.get("canAcceptDirectInput") is not True:
+                        raise RuntimeError("UNKNOWN: actor is not an externally wakeable Root")
                     if root != identity:
                         spawn = thread.get("source", {}).get("subAgent", {}).get("thread_spawn", {})
                         if spawn.get("parent_thread_id") != root or spawn.get("depth") != 1:
@@ -329,9 +331,15 @@ class InboundWake:
                     brief = payload.get("brief") if isinstance(payload, dict) else None
                     basis = brief.get("basis") if isinstance(brief, dict) else None
                     try:
-                        if not isinstance(basis, dict):
-                            raise TypeError("missing review basis")
-                        review_id = str(UUID(str(basis["review_id"])))
+                        if (message.route_ref == "review.acquisition"
+                                and getattr(message, "kind", None) == "result"):
+                            if not isinstance(payload, dict):
+                                raise TypeError("missing reviewer binding")
+                            review_id = str(UUID(str(payload["review_id"])))
+                        else:
+                            if not isinstance(basis, dict):
+                                raise TypeError("missing review basis")
+                            review_id = str(UUID(str(basis["review_id"])))
                     except (KeyError, TypeError, ValueError) as error:
                         raise RuntimeError("UNKNOWN: typed review identity unavailable") from error
                     action = ("receive this review and use review_submit, never ordinary result_send"

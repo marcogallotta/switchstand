@@ -36,7 +36,7 @@ def subject(tmp_path):
     return wake, rpc, binding, identity, delivery
 
 
-@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "receipt", "routed", "unknown"])
+@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "acquisition_result", "receipt", "routed", "unknown"])
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
     if boundary == "oldnew":
@@ -45,6 +45,12 @@ async def test_dispatch_boundaries(subject, boundary):
         review_id = str(uuid4())
         wake.fresh_messages[delivery] = NS(route_ref="review.request", payload={
             "brief": {"basis": {"review_id": review_id}}})
+    if boundary == "acquisition_result":
+        review_id = str(uuid4())
+        wake.fresh_messages[delivery] = NS(
+            route_ref="review.acquisition", kind="result", payload={
+                "review_id": review_id, "reviewer_delivery_id": str(uuid4()),
+                "reviewer_name": "Coordinator"})
     original = rpc.call.side_effect
     async def call(method, params):
         if method == "thread/read" and boundary == "stop_after_read" and rpc.call.await_count == 3:
@@ -70,7 +76,7 @@ async def test_dispatch_boundaries(subject, boundary):
     else:
         await wake._reconcile(rpc, binding, identity, path="/root/head" if boundary == "routed" else None)
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
-    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "unknown"} else 0)
+    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "acquisition_result", "unknown"} else 0)
     if boundary == "oldnew":
         assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(module.MARKER):]) == [str(delivery)]
     if boundary == "old":
@@ -78,6 +84,9 @@ async def test_dispatch_boundaries(subject, boundary):
     if boundary == "review":
         assert f"review_id={review_id}" in starts[0]["input"][0]["text"]
         assert "use review_submit, never ordinary result_send" in starts[0]["input"][0]["text"]
+    if boundary == "acquisition_result":
+        assert f"review_id={review_id}" in starts[0]["input"][0]["text"]
+        assert "use review_get; never ordinary result_send" in starts[0]["input"][0]["text"]
     if boundary == "idle":
         assert set(starts[0]) == {"threadId", "input"} and starts[0]["threadId"] == identity
     if boundary == "routed":
@@ -116,6 +125,32 @@ async def test_receipts_ignore_nonuser_text_and_follow_pages(subject):
                             {"data": [{"items": [{"type": "userMessage", "content": [marker]}]}]}]
     assert await module.receipts(rpc, identity) == {str(delivery)}
     assert rpc.call.call_args.kwargs == {} and rpc.call.call_args.args[1]["cursor"] == "next"
+
+
+@pytest.mark.parametrize("direct_input", [False, None])
+async def test_standalone_root_requires_direct_input_capability(subject, monkeypatch, direct_input):
+    wake, rpc, binding, identity, delivery = subject
+    wake.mailboxes = NS(by_endpoint_id=AsyncMock(return_value=NS(mailbox=binding)))
+    thread = {"parentThreadId": None, "status": {"type": "idle"}}
+    if direct_input is not None:
+        thread["canAcceptDirectInput"] = direct_input
+    rpc.call.side_effect = None
+    rpc.call.return_value = {"thread": thread}
+
+    @asynccontextmanager
+    async def connection(_socket, dirty):
+        dirty()
+        yield rpc
+
+    monkeypatch.setattr(module, "DaemonConnection", connection)
+    monkeypatch.setattr(module, "resolve_thread", AsyncMock(return_value=identity))
+    wake._reconcile = AsyncMock()
+    wake.signal(NS(delivery_id=delivery, recipient_work_id=binding.endpoint_id), True)
+    await asyncio.wait_for(wake.tasks[binding.endpoint_id], 1)
+    wake._reconcile.assert_not_awaited()
+    assert "externally wakeable Root" in wake.outcomes[binding.endpoint_id]
+    assert not any(c.args[0] in {"thread/resume", "turn/start"} for c in rpc.call.call_args_list)
+    await wake.close()
 
 
 @pytest.mark.parametrize("failure", [None, "uncertain", "rejected", "resume_rejected"])
