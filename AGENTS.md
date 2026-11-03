@@ -2,7 +2,7 @@
 
 **If you are the Recovery agent:** read [docs/recovery-plan.md](docs/recovery-plan.md) now, after every compaction, and after any replacement, and follow it. It applies only to the Recovery agent; every other agent keeps its own task.
 
-**Recovery mode (all agents, until Marco ends it):** do not edit existing Tracker tasks without Marco's permission, except recording ownership when Marco directly assigns you an exact WorkId. While doing assigned work, check your mailbox at least every 5 minutes.
+**Recovery mode (all agents, until Marco ends it):** never edit a Main task or Roadmap task without Marco's approval; they hold the goal and plan agreed with him. Your own Agent Notes task is yours to update freely. Recording ownership when Marco directly assigns you an exact WorkId is allowed. While doing assigned work, check your mailbox at least every 5 minutes.
 
 This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand-managed runs. Managed requirements apply only when a trusted launch supplies a bound WorkId and tools. Ordinary sessions must not infer a WorkId or assignment. Marco's exact assignment controls local scope; role, documentation, readability, and tool access never grant authority.
 
