@@ -36,14 +36,15 @@ def subject(tmp_path):
     return wake, rpc, binding, identity, delivery
 
 
-@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "acquisition_result", "receipt", "routed", "unknown"])
+@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown"])
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
     if boundary == "oldnew":
         wake.messages.pending_delivery_ids.return_value = (uuid4(), delivery)
-    if boundary == "review":
+    if boundary in {"review", "review_result"}:
         review_id = str(uuid4())
-        wake.fresh_messages[delivery] = NS(route_ref="review.request", payload={
+        wake.fresh_messages[delivery] = NS(route_ref="review.request",
+            kind="request" if boundary == "review" else "result", payload={
             "brief": {"basis": {"review_id": review_id}}})
     if boundary == "acquisition_result":
         review_id = str(uuid4())
@@ -76,7 +77,7 @@ async def test_dispatch_boundaries(subject, boundary):
     else:
         await wake._reconcile(rpc, binding, identity, path="/root/head" if boundary == "routed" else None)
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
-    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "acquisition_result", "unknown"} else 0)
+    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown"} else 0)
     if boundary == "oldnew":
         assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(module.MARKER):]) == [str(delivery)]
     if boundary == "old":
@@ -84,6 +85,9 @@ async def test_dispatch_boundaries(subject, boundary):
     if boundary == "review":
         assert f"review_id={review_id}" in starts[0]["input"][0]["text"]
         assert "use review_submit, never ordinary result_send" in starts[0]["input"][0]["text"]
+    if boundary == "review_result":
+        assert f"review_id={review_id}" in starts[0]["input"][0]["text"]
+        assert "use review_get; never ordinary result_send" in starts[0]["input"][0]["text"]
     if boundary == "acquisition_result":
         assert f"review_id={review_id}" in starts[0]["input"][0]["text"]
         assert "use review_get; never ordinary result_send" in starts[0]["input"][0]["text"]

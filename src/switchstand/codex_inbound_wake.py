@@ -343,7 +343,7 @@ class InboundWake:
                     except (KeyError, TypeError, ValueError) as error:
                         raise RuntimeError("UNKNOWN: typed review identity unavailable") from error
                     action = ("receive this review and use review_submit, never ordinary result_send"
-                              if message.route_ref == "review.request" else
+                              if message.route_ref == "review.request" and message.kind == "request" else
                               "use review_get; never ordinary result_send")
                     hints.append(f"{delivery}: {message.route_ref} review_id={review_id}; {action}.")
                 else:
