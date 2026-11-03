@@ -11,6 +11,7 @@ sys.path[:0] = [str(ROOT / "src"), str(ROOT / "tests")]
 from disposable_postgres import disposable_postgres
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
+from starlette.responses import JSONResponse
 from switchstand.chatgpt_edge import resource_service, runtime_identity_from_meta
 from switchstand.chatgpt_mcp import build_ordinary_tools
 from switchstand.grants import PrincipalContext
@@ -34,6 +35,11 @@ async def run(control, state, port):
                             "agent_message_receive", "agent_message_result_send",
                             "agent_message_acknowledge", "agent_message_disposition"}:
                     server.tool(function, name=name)
+            @server.custom_route("/internal/codex-stop-mailbox", methods=["POST"])
+            async def gate(request):
+                payload = await request.json()
+                return JSONResponse(await service.messages.on_delivery.__self__.check_route(
+                    payload["wake_route_token"], payload["session_id"]))
             state.write_text(json.dumps({"pid": os.getpid(), "directory": str(directory),
                 "database_pid": int((directory / "data/postmaster.pid").read_text().splitlines()[0])}))
             await server.run_http_async(host="127.0.0.1", port=port, path="/mcp", show_banner=False)
