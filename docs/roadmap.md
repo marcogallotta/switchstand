@@ -43,9 +43,9 @@ steps. Its task states and ordering have not been maintained since 2026-09-29.
    described in `docs/architecture.md` — replacing the local file with something
    shared and queryable. Not scoped or prioritized yet.
 6. **Research-sources seed doc and research escalation** (not yet an Asana task —
-   captured here only) — the current research-sources task (Asana 1218212325278817) is
-   too limited. Idea: a repo doc covering all of Switchstand that tells any agent
-   handed a task where to start researching. When an agent (especially a ChatGPT or
+   captured here only) — the maintained research discovery owner is now
+   [Research sources](research-sources.md). The original idea was a repo doc telling any
+   agent handed a task where to start researching. When an agent (especially a ChatGPT or
    Codex one, which search poorly) cannot find enough on something important, it
    hands off to Claude Code for a deeper search seeded from that doc, and asks Marco
    to retrieve sources that are blocked to agents. Per Marco (2026-09-29), Claude

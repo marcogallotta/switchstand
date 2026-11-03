@@ -1,10 +1,25 @@
 # Research sources
 
-Last updated: 2026-09-30
+Last updated: 2026-11-03
 
-A seed list of where to research, for any Switchstand task. It is a lookup, not a report and not
-authority: it grants nothing and settles no design question. Entries are sites, orgs and tools, not
-individual posts; search inside a source for the current task.
+The single owner for research discovery and source guidance, for any agent researching a
+Switchstand task. This is a lookup, not authority: entries grant nothing and settle no design
+question. Current subject work owns conclusions and decisions; use the closest relevant routes.
+
+## Read first
+
+Before fresh material research, read the current subject task and its controlling position, plus
+relevant danger/evidence tasks. Search current Switchstand work and the predecessor Switchstand
+project for subject-specific completed research. When external agentic-system evidence is relevant,
+consult predecessor evidence map `1218204391876008` — EVIDENCE — Agentic engineering systems and
+assurance watch (resolve the legacy reference through `work_resolve_reference`). Preserve valid
+prior conclusions, distinguish observations from hypotheses, and identify the unresolved gap before
+searching externally. This document replaces the research-routing content of Tracker
+`d421e639-2263-4708-a1d7-9b09a23ddaed`; neither route grants a new assignment.
+
+For targeted predecessor falsification, resolve `1218226269829925` for instruction-kernel
+accretion, and `1217801783752508` / `1217756902143547` for duplicated host guidance and repair
+contention. These are historical evidence routes; recheck facts before drawing current conclusions.
 
 ## How to use it
 
@@ -39,8 +54,10 @@ regardless of what conclusion they reached.
 
 ## Keeping it current
 
-Any research that finds, verifies, downgrades or rejects a source, or fills a gap listed at the end,
-updates this file in the same change. Do not leave findings only in a task or chat.
+Keep reusable source routes and cautions here; keep topic-specific findings and dispositions with
+the subject work. Research that verifies, downgrades or rejects a listed source, or fills a listed
+gap, updates this document in the same authorized change. Do not duplicate this guidance in Tracker
+notes or host settings; those surfaces point here.
 
 ## How to read an entry
 
@@ -52,9 +69,8 @@ updates this file in the same change. Do not leave findings only in a task or ch
 - Tier 1 is highest leverage for Switchstand's core problems: agents not following written process,
   false completion claims, review-process failure modes, and Marco's attention.
 
-Status: built 2026-09-29 by research agents. Entry URLs were checked reachable, except three that
-refused automated fetches (OpenAI harness post, Microsoft Research blog, Uber blog). Topic notes are
-agent-reported and not independently verified.
+Discovery leads include prior agent research, not a fresh verification of every source. Recheck
+reachability, current technical facts and relevance when using an entry for a material decision.
 
 ## Tier 1
 
@@ -67,11 +83,12 @@ agent-reported and not independently verified.
   CLAUDE.md handling, subagents, sandboxing, and how much instruction to load and when (the memory
   and skills pages under https://code.claude.com/docs/en/). Use: mechanics. Fit: good.
 - **OpenAI Codex docs** — https://learn.chatgpt.com/docs. Go for: AGENTS.md, approvals and sandbox,
-  hooks, code review, automations. Use: mechanics. Fit: good.
+  hooks, code review, automations; inspect the real App Server seam before inventing transport or
+  lifecycle machinery. Use: mechanics. Fit: good.
 - **OpenAI harness engineering** — https://openai.com/index/harness-engineering/. Go for: repository
   as system of record, a short AGENTS.md index, few blocking gates. Skip: the "no manual code"
   framing as a target. Use: evidence, vendor voice. Fit: partial; its minimal human review conflicts
-  with selective code review. Not fetchable automatically; read it in a browser.
+  with selective code review.
 - **OpenAI Symphony** — https://github.com/openai/symphony. Go for: tracker-driven runs, restart
   recovery from tracker state, proof-of-work, human review before merge, and the repo-versus-tracker
   split (work items in the tracker; rules and prompt in a versioned WORKFLOW.md in the repo, per
@@ -122,8 +139,8 @@ agent-reported and not independently verified.
   operational playbook capable of challenging Google-derived incident roles, status, and
   lifecycle. Use: mechanics and vendor voice. Fit: good after removing its larger-team ceremony.
   The legacy page was not fetchable by the automated research client on 2026-09-30, but the
-  first-party GitHub source and current PagerDuty Ops Guide were reachable and used for the Code
-  Red update/verification/follow-up lifecycle. The current postmortem process at
+  first-party GitHub source and PagerDuty Ops Guide were used for the Code Red lifecycle. The
+  postmortem process at
   https://response.pagerduty.com/after/post_mortem_process/ was USED on 2026-10-06 for its
   major-incident trigger, ROI test, and warning against too many low-value follow-up tickets.
 - **Cursor Blog** — https://cursor.com/blog. Go for: running many agents, long-run efficiency. Use:
@@ -136,7 +153,7 @@ agent-reported and not independently verified.
 - **Shopify Engineering** — https://shopify.engineering. Go for: harness design that outlasts the
   model, durable event logs. Use: evidence. Fit: strong for a replaceable harness.
 - **Uber engineering** — https://www.uber.com/us/en/blog/ureview/. Go for: multi-stage AI review and
-  its measured usefulness. Skip: its diff-volume scale. Use: evidence. Not fetchable automatically.
+  its measured usefulness. Skip: its diff-volume scale. Use: evidence.
 - **GitHub Docs (merge queue)** —
   https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue.
   Use: mechanics.
@@ -156,7 +173,8 @@ agent-reported and not independently verified.
   Use: evidence.
 - **Goose (Block)** — https://github.com/aaif-goose/goose. Go for: MCP extension model. Use:
   mechanics. Fit: mixed; its Smart Approval mode is an LLM judging its own gate.
-- **OpenHands** — https://docs.openhands.dev. Go for: agent SDK, sandbox server. Use: mechanics.
+- **OpenHands** — https://docs.openhands.dev. Go for: agent SDK, sandbox server and Agent Server
+  controller/runtime/client separation. Use: mechanics.
 
 ### MCP external and stable authentication
 
@@ -225,10 +243,43 @@ current dispositions and remaining proof are summarized in
   Nick Cameron's critique (https://ncameron.org/blog/the-problem-with-rfcs): slow, one template for
   every change size, no record of what was built. Use: mechanics and opinion. Fit: partial.
 
-CI history acquisition (2026-10-20): USED [GitHub workflow-runs REST reference](https://docs.github.com/en/rest/actions/workflow-runs)
-for combined count/run responses, 100-row pages and the 1,000-result filtered-search cap.
-Real provider/Git evidence found 751 main push runs with the current workflow-generation boundary
-at row 5; older pages were unnecessary under the existing health contract.
+### Additional routes from prior research
+
+- **Anthropic context and harness engineering** —
+  https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents and
+  https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents.
+  Go for: just-in-time retrieval, bounded sessions and explicit continuation state. Use: practice
+  and evidence; do not import a generalized lifecycle engine merely for continuity.
+- **Agent permissions and monitoring** — Anthropic auto mode
+  (https://www.anthropic.com/engineering/claude-code-auto-mode), SLEIGHT-Bench
+  (https://alignment.anthropic.com/2026/sleight-bench/), OpenAI Codex safety
+  (https://openai.com/index/running-codex-safely/) and internal-agent monitoring
+  (https://openai.com/index/how-we-monitor-internal-coding-agents-misalignment/).
+  Go for: delegation boundaries, containment and monitor blind spots. Use: first-party mechanics
+  and measured evidence; qualify the actual host rather than treating a report as a guarantee.
+- **Google agent-scaling research** —
+  https://research.google/blog/towards-a-science-of-scaling-agent-systems-when-and-why-agent-systems-work/.
+  Go for: task-dependent coordination cost and error propagation. Use: measured evidence within
+  the study's conditions, not a universal topology recommendation.
+- **Documentation duplication and merge conflicts** — Luciv et al.
+  (https://arxiv.org/abs/1711.04705) and Vale, Costa & Apel
+  (https://link.springer.com/article/10.1007/s10664-023-10395-8).
+  Go for: copied documentation diverging and concurrent-change resolution cost. Use: evidence;
+  claims of catastrophic remediation-throughput collapse remain an inference, not a measurement.
+- **Tracker navigation and findability** — Mining Issue Trackers
+  (https://arxiv.org/abs/2403.05716), issue dependencies
+  (https://ieeexplore.ieee.org/document/9911687/), information foraging
+  (https://www.nngroup.com/articles/information-foraging/) and tree testing
+  (https://www.nngroup.com/articles/tree-testing/).
+  Go for: tracker complexity, dependency relations, useful labels and task-based findability checks.
+  Use: research and practice; these do not establish a need for a knowledge-graph service.
+- **CI and release diagnosis** — Meta predictive test selection
+  (https://engineering.fb.com/2018/11/21/developer-tools/predictive-test-selection/), GitHub required
+  checks (https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks),
+  workflow runs (https://docs.github.com/en/rest/actions/workflow-runs), git bisect
+  (https://git-scm.com/docs/git-bisect) and GitLab compatible migrations
+  (https://docs.gitlab.com/development/database/avoiding_downtime_in_migrations/).
+  Use: provider mechanics and evidence for targeted diagnosis, not new CI or release policy.
 
 ## Tier 3 and use with caution
 
@@ -238,10 +289,6 @@ at row 5; older pages were unnecessary under the existing health contract.
 - **Sourcegraph** — https://sourcegraph.com/blog. Go for: agent evaluation; vendor voice.
 - **GitLab Blog** — https://about.gitlab.com/blog/. Marketing-heavy.
 - **OpenTelemetry** — https://opentelemetry.io/blog. GenAI conventions unconfirmed; use selectively.
-- **Meta Engineering** — https://engineering.fb.com. No relevant review or agent posts found;
-  revisit only for a specific topic.
-- **Microsoft Research** — https://www.microsoft.com/en-us/research/blog/. Low value found; not
-  fetchable automatically.
 - **GitHub Spec Kit** — https://github.com/github/spec-kit. Popular, but a sequential ceremony
   workflow. Do not treat as enforcement.
 - **BMAD-METHOD** — https://github.com/bmad-code-org/BMAD-METHOD. Roles and phases with no
@@ -255,8 +302,9 @@ at row 5; older pages were unnecessary under the existing health contract.
 
 ## Gaps with no good source yet
 
-Syncing a tracker with repo docs, and reviewing changes to agent policy docs (Symphony's split and
-KEPs are the nearest). Intake and requirements (ask versus proceed), kill switch and rollback,
-stall and loop detection, first-party spend limits, audit cadence, agent aging and replacement, first-party guidance on
-design and spec review, measuring the whole system, and false "done" claims beyond the arXiv study
-above. When research fills one, update this list.
+Strong comparative evidence for syncing a tracker with repo docs and reviewing agent-policy
+changes (Symphony, KEPs and the documentation studies above are partial leads). Intake and
+requirements (ask versus proceed), kill switch and rollback, stall and loop detection, first-party
+spend limits, audit cadence, agent aging and replacement, first-party guidance on design and spec
+review, measuring the whole system, and false "done" claims beyond the arXiv study above. When
+research fills one, update this list.
