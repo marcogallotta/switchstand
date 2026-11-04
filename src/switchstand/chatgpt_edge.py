@@ -371,7 +371,7 @@ async def _codex_stop_mailbox_page(
         MessagePendingRequest(
             api_version="1", grant_version=binding.generation, cursor=cursor, limit=10,
         ),
-        agent_binding=binding,
+        agent_binding=binding, ordinary_only=True,
     )
     if result.status != "ok":
         return {"status": result.status, "reason": result.reason}

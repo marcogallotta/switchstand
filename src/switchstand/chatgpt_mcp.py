@@ -713,7 +713,9 @@ def build_ordinary_tools(
         """Capture a title-only unassigned Task; capture grants no execution authority.
 
         Omit semantic fields for inert WAITING capture, optionally under an admitted
-        parent or project. Assigned work requires explicit SELF and legal state/action.
+        parent or project. Before assigned SELF creation, register this MCP session's
+        unique durable agent name with agent_register (reuse its binding on resume).
+        Assigned work requires explicit SELF and legal state/action.
         Explicit UNKNOWN or incompatible partial state is denied, never defaulted.
         """
         correlate(parent_work_id)
@@ -1696,7 +1698,7 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         delivery_ids: Annotated[list[UUID], Field(min_length=1, max_length=10)],
     ) -> MessageAcknowledgeResult:
-        """Acknowledge processed ordinary notifications; this is not completion or reply."""
+        """Dismiss received deliveries, including reserved review mail; this is not completion, a review verdict, or a reply."""
         context = await agent_context()
         if isinstance(context, tuple):
             return MessageAcknowledgeResult(status=context[0], reason=context[1])

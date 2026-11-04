@@ -12,7 +12,10 @@ If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002
 the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may
 identify current routes or candidate WorkIds, but it cannot assign work, select focus, transfer
 ownership, or grant an effect. When Marco directly assigns new substantive work but supplies no
-WorkId, resolve and read `START HERE` as its provider-neutral parent. If the parent exposes an exact
+WorkId, first register this MCP session's unique durable agent name with `agent_register`
+(reuse an existing binding on resume; do not take over `Codex Coordinator` unless Marco assigned
+that role). Assigned `owner_key="SELF"` creation requires that registration. Then resolve and
+read `START HERE` as its provider-neutral parent. If the parent exposes an exact
 `canonical_root`, the child inherits it; because `START HERE` is an imported navigation-only
 `Context` without one, each child starts a new exact canonical root while retaining `START HERE`
 only as its placement parent. In either case create a minimally titled child with `work_type="Task"`,
@@ -65,8 +68,10 @@ Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Wor
 
 #### Native fork operating boundary
 
-ALL execution belongs in context-free native forks, including record/document reads and
-Tracker, mailbox and feedback operations. The parent talks with Marco and actively supervises
+All execution except parent-session mail operations belongs in context-free native forks, including
+record/document reads and Tracker and feedback operations. Mailbox registration, takeover, and
+all mail calls stay in the parent session; forks are not registered to the parent's mailbox.
+The parent talks with Marco and actively supervises
 concise checkpoints/results under the [Root tracking contract](coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence).
 Workers execute their bounded assignments directly. Required resource admission belongs to
 dispatch mechanics (only GO/WAIT reaches the parent); it must precede the exact action and
@@ -75,7 +80,7 @@ Do not claim a repository instruction overrides a higher-priority mandatory main
 operation, disables host compaction, or supplies an unavailable native capability.
 
 If an OOM or measured memory admission prevents a fork, the parent may perform basic bounded
-checks directly: resource/admission checks, exact work or mailbox reads, and status inspection.
+checks directly: resource/admission checks, exact work reads, and status inspection.
 State the memory condition and keep these checks small. This exception permits neither
 implementation, substantive investigation/testing nor independent review in the parent; it does
 not authorize memory-heavy work, a host/cgroup change or bypassing admission for another fork.

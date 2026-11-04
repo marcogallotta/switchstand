@@ -1,0 +1,39 @@
+approval_policy = "never"
+default_permissions = ":danger-full-access"
+# This must be in CODEX_HOME before project discovery; project-local settings are too late.
+project_root_markers = [".git", ".recovery-root"]
+project_doc_max_bytes = 32768
+mcp_oauth_credentials_store = "keyring"
+
+[features]
+hooks = true
+multi_agent = true
+apps = false
+remote_plugin = false
+memories = false
+
+[projects."/home/marco/switchstand-recovery/coordinator"]
+trust_level = "trusted"
+
+[mcp_servers.switchstand]
+url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+required = true
+default_tools_approval_mode = "approve"
+enabled_tools = ["work_get", "work_update", "agent_register", "agent_message_send", "agent_message_pending", "agent_message_receive", "agent_message_recover", "agent_message_result_send", "agent_message_acknowledge", "agent_message_disposition", "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management"]
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/home/marco/switchstand/scripts/codex-stop-mailbox"
+timeout = 5
+
+[[hooks.SessionStart]]
+matcher = "compact"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/home/marco/switchstand-recovery/coordinator/codex-home/recovery-notes-hook"
+timeout = 45
+
+# Exclude the observed remote Test connector even if remote apps are enabled elsewhere.
+[apps.asdk_app_6ad75caa7b108191abdd036d618b352e]
+enabled = false
