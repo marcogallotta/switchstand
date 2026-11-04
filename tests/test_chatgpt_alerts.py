@@ -30,7 +30,7 @@ def test_manifest_hash_and_fixed_scope(tmp_path):
         read_manifest(path, "0" * 64)
     assert value.grant.operations == {"message"}
     assert not value.grant.can_write(uuid4())
-    assert value.recipient == "Codex Coordinator"
+    assert value.recipient == "ChatGPT Wake Setup 2026-11-04"
 
 
 async def test_bootstrap_interruption_and_exact_alert_replay(state_database_schema, monkeypatch):
@@ -60,7 +60,7 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
     # The reserved recipient is a real fixture registry row, never a takeover of a live role.
     async with engine.begin() as connection:
         await connection.execute(agent_mailboxes.insert().values(
-            name_key="codex-coordinator", display_name="Codex Coordinator", endpoint_id=uuid4(),
+            name_key="chatgpt-wake-setup-2026-11-04", display_name="ChatGPT Wake Setup 2026-11-04", endpoint_id=uuid4(),
             principal_key="fixture-coordinator", session_key=chat_session_key("fixture"), generation=1))
     target = (await mailboxes.register_agent("Fixture tracker", "fixture-target", "fixture-chat")).mailbox
     assert target

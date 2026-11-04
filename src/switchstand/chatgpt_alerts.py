@@ -19,13 +19,13 @@ from .messages import MessageState, MessageSubmitResult
 
 WORK = UUID("662bd6ec-ed4e-5ee7-b02a-34311a42d6ca")
 NAME = "ChatGPT Wake Reporter"
-RECIPIENT = "Codex Coordinator"
+RECIPIENT = "ChatGPT Wake Setup 2026-11-04"
 
 
 class ReporterManifest(ClosedModel):
     version: Literal[1] = 1
     name: Literal["ChatGPT Wake Reporter"] = NAME
-    recipient: Literal["Codex Coordinator"] = RECIPIENT
+    recipient: Literal["ChatGPT Wake Setup 2026-11-04"] = RECIPIENT
     work_id: Literal["662bd6ec-ed4e-5ee7-b02a-34311a42d6ca"] = "662bd6ec-ed4e-5ee7-b02a-34311a42d6ca"
     service_id: UUID
     grant_id: UUID

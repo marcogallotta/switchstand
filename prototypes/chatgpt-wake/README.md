@@ -72,7 +72,7 @@ the original demo and does not feed this candidate.
 change the running V1 service or create an identity. Live bootstrap and writable
 reporter activation remain held until the exact reviewed manifest is approved.
 The browser keeps drafts intact. Pending mail plus60 seconds of continuously
-observed draft blocking, or a closed tab, qualifies one Codex Coordinator alert;
+observed draft blocking, or a closed tab, qualifies one ChatGPT Wake Setup 2026-11-04 alert;
 clear observation qualifies one recovery. STOP/disarm does not emit a recovery.
 A worker restart or observation gap resets an unqualified draft timer. Fresh empty
 mailbox observation recovers even while the tab stays closed. After an outage,

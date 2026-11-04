@@ -947,7 +947,7 @@ The local config route supplies an ephemeral report-only bearer capability. JSON
 reports require that capability and loopback peer/Host; ordinary web origins get
 no CORS access. By default reports go only to existing runtime logging and
 escalation remains unconfigured. An explicitly injected `HostReporter` adds the
-fixed Codex Coordinator alert path; it never registers or issues a grant on startup.
+fixed ChatGPT Wake Setup 2026-11-04 alert path; it never registers or issues a grant on startup.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed
