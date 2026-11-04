@@ -11,13 +11,6 @@ from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import work_dependencies
-from switchstand.canonical_work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.contracts import LaunchAuthority
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
@@ -28,6 +21,13 @@ from switchstand.priority_claims import NewPriorityClaim, PriorityClaimRepositor
 from switchstand.reviews import BaselineReviewProof
 from switchstand.state import PostgresState
 from switchstand.task_runs import task_run_requests
+from switchstand.tracker.relations import work_dependencies
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
+)
 
 PACKAGE = UUID("45000000-0000-4000-8000-000000000001")
 PRINCIPAL = PrincipalContext(issuer="fixture", subject="implementation-owner", client_id="codex", assurance="test")

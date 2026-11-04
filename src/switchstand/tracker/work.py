@@ -1,4 +1,4 @@
-"""Inert compact PostgreSQL repository for canonical current work."""
+"""Compact PostgreSQL repository for canonical current work."""
 
 from __future__ import annotations
 

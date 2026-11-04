@@ -8,16 +8,16 @@ import pytest
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from switchstand.canonical_work import (
+from switchstand.contracts import LaunchAuthority
+from switchstand.grants import PrincipalContext, WorkGrant
+from switchstand.task_control import DurableControlCapsule, TaskControlState
+from switchstand.task_control_refs import ControlReference
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_metadata,
     canonical_revision,
 )
-from switchstand.contracts import LaunchAuthority
-from switchstand.grants import PrincipalContext, WorkGrant
-from switchstand.task_control import DurableControlCapsule, TaskControlState
-from switchstand.task_control_refs import ControlReference
 
 
 @pytest.fixture

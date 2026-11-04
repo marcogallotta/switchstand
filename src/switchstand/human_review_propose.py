@@ -13,9 +13,9 @@ from typing import Protocol
 
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from .canonical_work import CanonicalWorkRepository
 from .human_reviews import HumanReviewConsequence, HumanReviewResult, HumanReviewState
 from .secure_file import PrivateFileOpenError
+from .tracker.work import CanonicalWorkRepository
 
 MAX_CONSEQUENCE_BYTES = 64 * 1024
 

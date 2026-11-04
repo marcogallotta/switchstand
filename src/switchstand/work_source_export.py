@@ -16,10 +16,10 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from .canonical_work import normalize_title
 from .core import ProviderSourceStory, ProviderStoriesPage, ProviderWork
 from .provider import AsanaProvider
 from .state import work_event_handles, work_handles
+from .tracker.work import normalize_title
 from .work_corpus import load_manifest, parity_manifest, parity_value, write_manifest
 
 Placement = tuple[str, str, str | None]

@@ -8,11 +8,11 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from .canonical_work import CanonicalWorkRepository
 from .failure_journal import redact_environment
 from .provision import require_current_schema
 from .run import RunReceipt
 from .task_runs import TaskRunBindResult, TaskRunState
+from .tracker.work import CanonicalWorkRepository
 
 MAX_RECEIPT_BYTES = 4096
 OUTPUT_PREFIX = "TASK_RUN_BIND="

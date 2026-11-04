@@ -28,7 +28,7 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_work import canonical_metadata, canonical_work
+from .work import canonical_metadata, canonical_work
 
 work_events = Table(
     "work_events", canonical_metadata,

@@ -11,16 +11,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from switchstand.bootstrap_identity import MIGRATION_COMPLETE_RECEIPT
-from switchstand.canonical_relations import project_memberships, projects
-from switchstand.canonical_work import canonical_metadata, canonical_work
 from switchstand.state import metadata, work_migration_receipts
+from switchstand.tracker.events import work_events
+from switchstand.tracker.relations import project_memberships, projects
+from switchstand.tracker.work import canonical_metadata, canonical_work
 from switchstand.work_corpus import (
     compare_parity_exports,
     parity_manifest,
     parity_value,
     write_manifest,
 )
-from switchstand.work_events import work_events
 from switchstand.work_import import (
     TABLES,
     import_parity,
