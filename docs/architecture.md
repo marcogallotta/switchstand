@@ -976,7 +976,9 @@ No new persistence table, OAuth flow, background Worker or native-input route is
 introduced.
 
 The wake prototype's local extras use a user-service template with restart-on-failure,
-three-second delay and three-starts-per-minute limit; no login enablement. The exact
+three-second delay and three-starts-per-minute limit. Marco authorized user-login
+startup via default.target, without linger or administrator changes; the prototype
+[operations guide](../prototypes/chatgpt-wake/OPS.md) covers local recovery. The exact
 reviewed launcher preserves read-only observation and the existing admitted reporter.
 The sole current alert target is `browser extension`, fenced to its existing parent
 endpoint/generation; /config reports this runtime target while the immutable issued

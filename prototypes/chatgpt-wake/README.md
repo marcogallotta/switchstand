@@ -115,7 +115,8 @@ Live Coordinator alert delivery remains NOT_RUN until separately activated/teste
 `chatgpt-wake.service.in` is the bounded local user-service template. Render
 `@WRITER@` and `@LAUNCHER@` only from the independently reviewed exact-head
 activation package; verify with `systemd-analyze --user verify`. Install/start
-only under this Work's current local activation grant. There is no login enablement.
+only under this Work's current local activation grant. Marco subsequently authorized user-login startup: `[Install] WantedBy=default.target`,
+without linger or administrator changes. [OPS.md](OPS.md) is the plain operating guide.
 Three starts per minute bound permanent startup failures; transient failures restart
 after three seconds. Health is `GET http://127.0.0.1:18766/internal/chatgpt-wake/config`:
 require HTTP200, configured escalation, and recipient `browser extension`.
