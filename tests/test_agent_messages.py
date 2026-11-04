@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -23,6 +24,7 @@ from switchstand.agent_messages import (
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_edge import _codex_stop_mailbox_page
 from switchstand.chatgpt_mcp import build_ordinary_tools
+from switchstand.codex_inbound_wake import InboundWake
 from switchstand.contracts import ClosedModel
 from switchstand.durable_capture import DurableCaptureGuidance
 from switchstand.grant_state import GrantState
@@ -156,6 +158,65 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     returned = await tools["agent_message_pending"]("1")
     assert [item.message_id for item in returned.messages] == [result_id]
     assert actor[0] == owner
+
+
+@pytest.mark.parametrize("long_diagnostics", [False, True], ids=["short", "long-diagnostics"])
+async def test_wake_failure_alert_and_other_mail_can_be_read_and_acknowledged(
+    agent_messaging, tmp_path, long_diagnostics,
+):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "claude-coordinator")).status == "ok"
+    session[0] = "sender-chat"
+    assert (await tools["agent_register"]("1", "Sender")).status == "ok"
+    ordinary = await tools["agent_message_send"](
+        "1", "claude-coordinator", uuid4(), {"request": "review"},
+    )
+    assert ordinary.message is not None and service.messages is not None
+    control = tmp_path / "wake.json"
+    control.write_text(json.dumps({"enabled": True, "socket": "/unused"}))
+    wake = InboundWake(service.messages, control, tmp_path / "admission")
+    evidence = {"phase": "discovery"}
+    error = "recipient missing"
+    if long_diagnostics:
+        evidence["discovery"] = "socket diagnostics " * 200
+        error += ": " + "long daemon error " * 100
+    await wake._alert(evidence, RuntimeError(error))
+
+    session[0] = "chat-a"
+    pending = await tools["agent_message_pending"]("1")
+    assert pending.status == "ok"
+    assert len(pending.messages) == 2
+    alert = next(item for item in pending.messages if item.sender_name == "switchstand-inbound-wake")
+    assert isinstance(alert.payload, dict)
+    assert alert.payload["wake_failure"]["phase"] == "discovery"
+    assert alert.payload["error"].startswith("recipient missing")
+    assert len(json.dumps(alert.payload, ensure_ascii=False, separators=(",", ":"))) <= 800
+    assert ordinary.message in pending.messages
+    ack = await tools["agent_message_acknowledge"]("1", [alert.delivery_id])
+    assert [(item.status, item.state) for item in ack.results] == [("ok", "ACKNOWLEDGED")]
+    assert (await tools["agent_message_pending"]("1")).messages == (ordinary.message,)
+
+
+async def test_unregistered_sender_does_not_gain_a_public_identity(agent_messaging):
+    tools, _actor, _session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Receiver")).status == "ok"
+    assert service.messages is not None
+    receiver = (await AgentMailboxState(service.messages.engine).by_name("Receiver")).mailbox
+    assert receiver is not None
+    sender, message_id = uuid4(), uuid4()
+    async with service.messages.engine.begin() as connection:
+        await connection.execute(insert(messages).values(
+            sender_work_id=sender, message_id=message_id, route_ref="ordinary",
+            kind="request", payload={}, digest="unknown-sender",
+        ))
+        await connection.execute(insert(message_deliveries).values(
+            delivery_id=uuid4(), sender_work_id=sender, message_id=message_id,
+            recipient_work_id=receiver.endpoint_id, recipient_grant_version=receiver.generation,
+        ))
+    pending = await tools["agent_message_pending"]("1")
+    assert (pending.status, pending.reason, pending.messages) == (
+        "recovery_required", "state_unavailable", (),
+    )
 
 
 async def test_registration_replay_names_the_existing_identity(agent_messaging):
