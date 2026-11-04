@@ -248,3 +248,67 @@ def test_code_only_rejects_drift_before_effects(
     assert target.launcher_before.read_bytes() == before
     assert subject.LAUNCHER.read_bytes() == current
     target.service.assert_not_called()  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("branch", ["prod", "release/stable", "main"])
+def test_prepare_requires_fresh_exact_selected_remote_tip(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str
+) -> None:
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    subject.command(["git", "init", "--bare", str(remote)])
+    subject.command(["git", "init", str(repo)])
+    subject.git(repo, "config", "user.name", "Test")
+    subject.git(repo, "config", "user.email", "test@example.test")
+    subject.git(repo, "commit", "--allow-empty", "-m", "baseline")
+    before = subject.git(repo, "rev-parse", "HEAD").stdout.strip()
+    subject.git(repo, "remote", "add", "origin", str(remote))
+    subject.git(repo, "push", "origin", f"HEAD:refs/heads/{branch}")
+    subject.git(repo, "fetch", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}")
+    subject.git(repo, "commit", "--allow-empty", "-m", "new remote tip")
+    candidate = subject.git(repo, "rev-parse", "HEAD").stdout.strip()
+    subject.git(repo, "push", "origin", f"HEAD:refs/heads/{branch}")
+    target = deployer(tmp_path, monkeypatch)
+    target.branch = branch
+    target.candidate_sha = before
+    with pytest.raises(RuntimeError, match="exact current origin/"):
+        target.prepare()
+    assert not target.attempt.exists()
+    target.candidate_sha = candidate
+    subject.LAUNCHER.write_text(launcher(repo))
+    original_command = subject.command
+
+    def command(arguments: list[str], **kwargs):
+        if "--verify-import-only" in arguments:
+            return subject.subprocess.CompletedProcess(arguments, 0, "", "")
+        return original_command(arguments, **kwargs)
+
+    monkeypatch.setattr(subject, "command", command)
+    target.prepare()
+    assert subject.git(target.runtime, "rev-parse", "HEAD").stdout.strip() == candidate
+    assert subject.git(target.runtime, "branch", "--show-current").stdout.strip() == ""
+
+
+@pytest.mark.parametrize("branch", ["--upload-pack=evil", "prod:main", "../main", ""])
+def test_prepare_rejects_invalid_branch_before_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, branch: str
+) -> None:
+    target = deployer(tmp_path, monkeypatch)
+    target.branch = branch
+    target.repo.mkdir()
+    subject.command(["git", "init", str(target.repo)])
+    with pytest.raises(subject.subprocess.CalledProcessError):
+        target.prepare()
+    assert not target.attempt.exists()
+
+
+@pytest.mark.parametrize("options, expected", [([], "prod"), (["--branch", "main"], "main")])
+def test_cli_selects_remote_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, options: list[str], expected: str
+) -> None:
+    target = deployer(tmp_path, monkeypatch)
+    factory = Mock(return_value=target)
+    monkeypatch.setattr(subject, "Deployer", factory)
+    monkeypatch.setattr(target, "run", Mock())
+    assert subject.main([SHA, "--repo", str(target.repo), *options]) == 0
+    assert factory.call_args.args[3] == expected

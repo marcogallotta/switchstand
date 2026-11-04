@@ -314,12 +314,12 @@ write requires exact-state reconciliation before any retry.
 ## Maintenance-window replacement
 
 `scripts/switchstand-edge-maintenance <sha>` is the sole production replacement command. It derives
-the exact fetched `origin/main` candidate from the production launcher, including its outcome-state
+the exact fetched `origin/prod` candidate (override with `--branch <name>`) from the production launcher, including its outcome-state
 flag. It reuses existing operational tools, verifies the running runtime, makes one logged-in MCP
 `work_get`, and logs each step's duration to `edge-deploy.log`. Any failure after shutdown cleanly
 restores and verifies the database and prior runtime. It uses no signed receipt or Caddy gate.
 
-For an independently source-reviewed and old→new→old replay-qualified exact pair, add `--code-only-from <old-full-sha>`; schema/dependency equality alone is insufficient qualification. The candidate must still be exact current `origin/main`.
+For an independently source-reviewed and old→new→old replay-qualified exact pair, add `--code-only-from <old-full-sha>`; schema/dependency equality alone is insufficient qualification. The candidate must still be the exact current tip of the selected remote branch.
 This branch skips backup/migration and keeps ALL database writes, including mistaken candidate writes, when returning to old code. Each landed release needs exact-pair qualification before use.
 To return after successful code-only deployment, use the same command and candidate SHA with `--rollback-code-only`. It checks the retained exact attempt, launchers, clean sources, schema and configuration under the existing lock before stopping; drift/missing identity refuses effects.
 The ordinary full migration/recovery route remains available. Ten-second deployment/five-second rollback are goals; actual systemd/production timings remain unproved.
