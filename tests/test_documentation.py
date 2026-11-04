@@ -423,7 +423,9 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
         "around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject."
     )
     assert war_machines in " ".join(triggers.split())
-    assert "Effects require Marco's direct active assignment or an explicit `CURRENT` grant" in agents
+    assert "Effects need Marco's active assignment" in agents
+    assert "via exact mailbox sender `claude-coordinator` in recipient Work" in agents
+    assert "or a `CURRENT` grant for exact WorkId/surface/effect" in agents
     assert "challenge and confirm seriously destructive or irreversible action" in agents
     assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
     assert "Prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
