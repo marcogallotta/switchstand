@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from ..canonical_work_runtime import confirmation_message, pending_review_id
 from ..core import (
     Provider,
     ProviderError,
@@ -28,6 +27,7 @@ from ..grants import (
 )
 from .events import OperationConflictError, StaleWorkVersion, WorkEventRepository
 from .mutation_effect import blocked_effect_next_action
+from .runtime import confirmation_message, pending_review_id
 from .work import canonical_revision, canonical_work
 
 

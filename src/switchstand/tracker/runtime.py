@@ -1,4 +1,4 @@
-"""Inert DB-only projection for current work reads, search, and scalar updates."""
+"""DB-only projection for current work reads, search, and scalar updates."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from . import pull_requests
-from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
-from .contracts import (
+from .. import pull_requests
+from ..agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
+from ..contracts import (
     Routing,
     WorkContext,
     WorkItem,
@@ -25,8 +25,8 @@ from .contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
-from .grant_state import GrantState, effect_intents
-from .grants import (
+from ..grant_state import GrantState, effect_intents
+from ..grants import (
     CreateReceipt,
     EffectBlocker,
     EffectOutcomeView,
@@ -41,17 +41,18 @@ from .grants import (
     ScalarPatch,
     UpdateReceipt,
 )
-from .human_reviews import (
+from ..human_reviews import (
     HumanReviewRecord,
     agent_notes_fit,
     current_approved_baseline_in_transaction,
 )
-from .messages import messages
-from .state import work_handles
-from .tracker.creates import CreateGateway
-from .tracker.mutation_effect import blocked_effect_next_action
-from .tracker.provider_relations import RelationGateway
-from .tracker.relations import (
+from ..messages import messages
+from ..state import work_handles
+from .creates import CreateGateway
+from .mutation_effect import blocked_effect_next_action
+from .policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
+from .provider_relations import RelationGateway
+from .relations import (
     CanonicalRelationsRepository,
     WorkRelations,
     project_memberships,
@@ -59,14 +60,13 @@ from .tracker.relations import (
     work_dependencies,
     work_parents,
 )
-from .tracker.work import (
+from .work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_revision,
     canonical_work,
     normalize_title,
 )
-from .work_policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",

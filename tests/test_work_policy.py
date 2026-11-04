@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import pytest
 
-from switchstand.work_policy import (
+from switchstand.tracker.policy import (
     SEMANTIC_FIELDS,
     validate_create_state,
     validate_resultant_state,

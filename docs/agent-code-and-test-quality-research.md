@@ -86,7 +86,7 @@ with that helper, then compare the returned area with the new relation's name.
 Those placement assertions cannot distinguish fresh placement data from cached old placement
 data when the returned revision is fresh. That limitation follows directly from the identical
 observable values. It does not establish a runtime caching defect: the
-[runtime implementation](../src/switchstand/canonical_work_runtime.py) reads relations and checks
+[runtime implementation](../src/switchstand/tracker/runtime.py) reads relations and checks
 work currentness. A targeted mutation run was **NOT_RUN**. A small potential test improvement is
 to give the two placements different public values and show that returning the old value fails.
 
