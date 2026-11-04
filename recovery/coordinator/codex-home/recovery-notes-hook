@@ -33,7 +33,8 @@ def current_section(notes):
 def render(notes, agents_bytes):
     labels = ('Situation (FULL)', 'Priorities focus-now (FULL)',
               'Coordinator notes CURRENT section (FULL)')
-    output = ('THREE FULL RESTORED STARTUP NOTES\n'
+    goal = Path('/home/marco/switchstand-recovery/coordinator/GOAL.md').read_text()
+    output = ('GOAL (read first):\n' + goal + '\n\nTHREE FULL RESTORED STARTUP NOTES\n'
               'All three required startup reads are restored below in one message. '
               'Use these notes; they are not missing because they share a message.\n\n'
               + '\n\n'.join(f'## RESTORED NOTE {index}: {label}\n{note}'
