@@ -1,4 +1,4 @@
-"""Inert compact relations and project placement persistence."""
+"""Compact relations and project placement persistence."""
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_work import canonical_metadata, canonical_work
-from .grant_state import GrantState, effect_intents
-from .grants import GuardOutcome, PrincipalContext, ProjectCreateReceipt, ProtectedProjectCreate
+from .work import canonical_metadata, canonical_work
+from ..grant_state import GrantState, effect_intents
+from ..grants import GuardOutcome, PrincipalContext, ProjectCreateReceipt, ProtectedProjectCreate
 
 PROJECT_CREATE_NAMESPACE = UUID("662e52d9-177f-4785-bf32-2eb7b225eb78")
 

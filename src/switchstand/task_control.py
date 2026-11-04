@@ -28,8 +28,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_relations import work_dependencies, work_parents
-from .canonical_work import (
+from .tracker.relations import work_dependencies, work_parents
+from .tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_metadata,

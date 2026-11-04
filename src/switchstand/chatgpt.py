@@ -19,8 +19,8 @@ from .activation_continuity import (
 )
 from .activation_continuity_store import ActivationContinuity
 from .agent_mailboxes import AgentMailbox
-from .canonical_event_reads import CanonicalEventReader
-from .canonical_work_runtime import CanonicalWorkRuntime
+from .tracker.event_reads import CanonicalEventReader
+from .tracker.runtime import CanonicalWorkRuntime
 from .contracts import (
     ClosedModel,
     LaunchAuthority,
@@ -40,9 +40,9 @@ from .core import (
     ProviderError,
     State,
 )
-from .creates import CreateGateway
+from .tracker.creates import CreateGateway
 from .discovery import DiscoveryProvider, WorkDiscovery
-from .effects import AppendGateway, CanonicalAppendGateway
+from .tracker.appends import AppendGateway, CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
     CodeReconciliation,
@@ -92,7 +92,7 @@ from .priority_claim_service import (
 from .priority_claims import SubjectKind
 from .priority_context import PriorityContextProjection, PriorityContextResult
 from .product_currentness import ProductCurrentness
-from .relations import RelationGateway
+from .tracker.provider_relations import RelationGateway
 from .reviews import ReviewService
 from .task_control import (
     DurableControlCapsule,
@@ -101,7 +101,7 @@ from .task_control import (
     TaskControlState,
 )
 from .task_ref import parse_legacy_task_reference
-from .updates import UpdateGateway
+from .tracker.updates import UpdateGateway
 from .work_hygiene import HygieneGate, WorkHygieneResult, WorkHygieneState, evaluate_work_hygiene
 from .workspace_admission import WorkspaceAdmissionState
 

@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .candidate import CandidateError, prepare_launch_source
-from .canonical_work import CanonicalWorkRepository, CurrentWork
+from .tracker.work import CanonicalWorkRepository, CurrentWork
 from .task_ref import asana_task_id
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")

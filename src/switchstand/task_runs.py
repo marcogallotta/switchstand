@@ -27,7 +27,7 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_work import CanonicalWorkRepository, canonical_revision
+from .tracker.work import CanonicalWorkRepository, canonical_revision
 from .contracts import ApiVersion, ClosedModel
 from .messages import RuntimeCurrentness
 from .run import RunReceipt

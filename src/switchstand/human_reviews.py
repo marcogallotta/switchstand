@@ -25,7 +25,7 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_work import CanonicalWorkRepository, canonical_metadata, canonical_revision
+from .tracker.work import CanonicalWorkRepository, canonical_metadata, canonical_revision
 from .contracts import ClosedModel
 
 CONSEQUENCE_NAMESPACE = UUID("7dfd482c-1705-4a60-b684-0ea40db05e2e")

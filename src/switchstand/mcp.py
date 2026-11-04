@@ -12,10 +12,10 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from . import activation_continuity as ac
 from .activation_continuity_store import ActivationContinuity
-from .canonical_event_reads import CanonicalEventReader
-from .canonical_relations import CanonicalRelationsRepository
-from .canonical_work import CanonicalWorkRepository
-from .canonical_work_runtime import CanonicalWorkRuntime
+from .tracker.event_reads import CanonicalEventReader
+from .tracker.relations import CanonicalRelationsRepository
+from .tracker.work import CanonicalWorkRepository
+from .tracker.runtime import CanonicalWorkRuntime
 from .contracts import (
     AppendResult,
     ClosedModel,
@@ -31,7 +31,7 @@ from .contracts import (
     WorkSearchItem,
 )
 from .core import Controller
-from .effects import CanonicalAppendGateway
+from .tracker.appends import CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
     CodeReconciliation,
@@ -78,7 +78,7 @@ from .task_runs import (
     TaskRunState,
     task_request_operation_id,
 )
-from .work_events import WorkEventRepository
+from .tracker.events import WorkEventRepository
 
 TechnicalResolver = Callable[..., Awaitable[ac.TechnicalBasis | None]]
 ProofResolver = Callable[..., Awaitable[ac.TransitionProof | None]]

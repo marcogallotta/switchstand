@@ -8,7 +8,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from .canonical_work import CanonicalWorkRepository
+from .tracker.work import CanonicalWorkRepository
 from .failure_journal import redact_environment
 from .provision import require_current_schema
 from .run import RunReceipt

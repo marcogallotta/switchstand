@@ -11,8 +11,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_relations import work_dependencies
-from .canonical_work import CanonicalWorkRepository, canonical_revision
+from .tracker.relations import work_dependencies
+from .tracker.work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
 from .grant_state import work_grants
 from .grants import PrincipalContext, WorkGrant

@@ -7,9 +7,9 @@ from datetime import UTC, datetime
 from sqlalchemy import insert, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from .canonical_work import canonical_revision, canonical_work
-from .canonical_work_runtime import confirmation_message, pending_review_id
-from .core import (
+from .work import canonical_revision, canonical_work
+from .runtime import confirmation_message, pending_review_id
+from ..core import (
     Provider,
     ProviderError,
     State,
@@ -17,8 +17,8 @@ from .core import (
     observed_revision_matches,
     provider_rejection_reason,
 )
-from .grant_state import GrantState, effect_intents
-from .grants import (
+from ..grant_state import GrantState, effect_intents
+from ..grants import (
     EffectBlocker,
     EffectOutcomeView,
     EffectReceipt,
@@ -28,7 +28,7 @@ from .grants import (
     WorkGrant,
 )
 from .mutation_effect import blocked_effect_next_action
-from .work_events import OperationConflictError, StaleWorkVersion, WorkEventRepository
+from .events import OperationConflictError, StaleWorkVersion, WorkEventRepository
 
 
 class AppendGateway:

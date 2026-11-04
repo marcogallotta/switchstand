@@ -22,7 +22,7 @@ from .bootstrap_adapters import (
     PostgresMigrationReceiptReader,
 )
 from .bootstrap_identity import resolve_and_admit_pre_migration_launch
-from .canonical_work import CanonicalWorkRepository
+from .tracker.work import CanonicalWorkRepository
 from .contracts import LaunchAuthority
 from .failure_journal import FailureJournal, FailureRecord, redact_environment
 from .grant_state import GrantState

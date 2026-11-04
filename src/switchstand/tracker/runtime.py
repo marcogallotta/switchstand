@@ -1,4 +1,4 @@
-"""Inert DB-only projection for current work reads, search, and scalar updates."""
+"""DB-only projection for current work reads, search, and scalar updates."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from sqlalchemy import cast as sql_cast
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from . import pull_requests
-from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
-from .canonical_relations import (
+from .. import pull_requests
+from ..agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
+from .relations import (
     CanonicalRelationsRepository,
     WorkRelations,
     project_memberships,
@@ -23,14 +23,14 @@ from .canonical_relations import (
     work_dependencies,
     work_parents,
 )
-from .canonical_work import (
+from .work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_revision,
     canonical_work,
     normalize_title,
 )
-from .contracts import (
+from ..contracts import (
     Routing,
     WorkContext,
     WorkItem,
@@ -43,8 +43,8 @@ from .contracts import (
     WorkUpdateRequest,
 )
 from .creates import CreateGateway
-from .grant_state import GrantState, effect_intents
-from .grants import (
+from ..grant_state import GrantState, effect_intents
+from ..grants import (
     CreateReceipt,
     EffectBlocker,
     EffectOutcomeView,
@@ -59,16 +59,16 @@ from .grants import (
     ScalarPatch,
     UpdateReceipt,
 )
-from .human_reviews import (
+from ..human_reviews import (
     HumanReviewRecord,
     agent_notes_fit,
     current_approved_baseline_in_transaction,
 )
-from .messages import messages
+from ..messages import messages
 from .mutation_effect import blocked_effect_next_action
-from .relations import RelationGateway
-from .state import work_handles
-from .work_policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
+from .provider_relations import RelationGateway
+from ..state import work_handles
+from .policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",

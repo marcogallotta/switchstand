@@ -6,8 +6,8 @@ from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .canonical_relations import CanonicalRelationsRepository, WorkRelations
-from .canonical_work import CanonicalWorkRepository, CurrentWork
+from .tracker.relations import CanonicalRelationsRepository, WorkRelations
+from .tracker.work import CanonicalWorkRepository, CurrentWork
 from .contracts import ClosedModel
 from .priority_claim_service import (
     PriorityClaimReadResult,

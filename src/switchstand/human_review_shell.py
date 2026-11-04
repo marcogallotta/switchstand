@@ -18,7 +18,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.routing import Route
 
-from .canonical_work import CanonicalWorkRepository
+from .tracker.work import CanonicalWorkRepository
 from .human_reviews import HumanDecision, HumanReviewResult, HumanReviewState
 
 MAX_FORM_BYTES = 8192

@@ -10,11 +10,11 @@ from uuid import UUID, uuid5
 from pydantic import Field, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
-from .canonical_work import CanonicalWorkRepository, canonical_revision
+from .tracker.work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
 from .grant_state import EffectRecord, GrantState
 from .grants import GuardOutcome, PrincipalContext, PriorityClaimReceipt, WorkGrant
-from .mutation_effect import PreparedMutation, run_update_or_relation
+from .tracker.mutation_effect import PreparedMutation, run_update_or_relation
 from .priority_claims import (
     NewPriorityClaim,
     PriorityBand,

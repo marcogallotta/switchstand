@@ -26,7 +26,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .agent_mailboxes import AgentMailbox, agent_mailboxes
-from .canonical_work import canonical_metadata, canonical_revision, canonical_work
+from .tracker.work import canonical_metadata, canonical_revision, canonical_work
 from .contracts import ClosedModel
 
 pull_requests = Table(

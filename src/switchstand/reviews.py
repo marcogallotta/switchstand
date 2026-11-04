@@ -16,8 +16,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState, agent_mailboxes
-from .canonical_relations import work_parents
-from .canonical_work import (
+from .tracker.relations import work_parents
+from .tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_revision,
