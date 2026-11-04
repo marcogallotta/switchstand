@@ -9,13 +9,13 @@ from pydantic import Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .canonical_work import CanonicalWorkRepository, CurrentWork, canonical_revision
 from .contracts import ClosedModel
 from .durable_capture import FindingRef, durable_capture_guidance
 from .grant_state import GrantState
 from .messages import MessageState
 from .reviews import ReviewService
 from .task_control import TaskControlReadResult, TaskControlState
+from .tracker.work import CanonicalWorkRepository, CurrentWork, canonical_revision
 from .work_policy import validate_resultant_state
 
 HygieneGate = Literal[

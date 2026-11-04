@@ -8,17 +8,17 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_work import (
-    CanonicalWorkRepository,
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.human_reviews import (
     HumanReviewConsequence,
     HumanReviewState,
     approved_baseline_in_transaction,
     human_review_consequences,
+)
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
 )
 
 PACKAGE = UUID("60000000-0000-4000-8000-000000000001")

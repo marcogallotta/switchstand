@@ -27,11 +27,11 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ApiVersion, ClosedModel
 from .messages import RuntimeCurrentness
 from .run import RunReceipt
 from .state import metadata, work_handles
+from .tracker.work import CanonicalWorkRepository, canonical_revision
 
 REQUEST_NAMESPACE = UUID("286bcc60-8887-5b76-97c1-19c18484df74")
 REQUEST_OPERATION_NAMESPACE = UUID("8a598960-f8b0-57f2-95ba-f86fc24c436c")

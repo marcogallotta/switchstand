@@ -39,9 +39,6 @@ from .activation_continuity import (
 from .activation_continuity_store import ActivationContinuity
 from .activation_contract_loader import load_activation_contracts_from_environment
 from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox, AgentMailboxState
-from .canonical_event_reads import CanonicalEventReader
-from .canonical_relations import CanonicalRelationsRepository
-from .canonical_work import CanonicalWorkRepository, CurrentWork
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
@@ -85,7 +82,10 @@ from .stable_auth import (
 from .state import PostgresState
 from .task_control import TaskControlState
 from .task_runs import TaskRunState
-from .work_events import WorkEventRepository
+from .tracker.event_reads import CanonicalEventReader
+from .tracker.events import WorkEventRepository
+from .tracker.relations import CanonicalRelationsRepository
+from .tracker.work import CanonicalWorkRepository, CurrentWork
 from .work_hygiene import WorkHygieneState
 from .work_policy import validate_resultant_state
 from .workspace_admission import WorkspaceAdmissionState

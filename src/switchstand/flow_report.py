@@ -16,8 +16,6 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .activation_continuity import ActivationContract, Obligation, seal_obligation
-from .canonical_relations import work_dependencies
-from .canonical_work import canonical_revision, canonical_work
 from .failure_journal import (
     FailureRecord,
     FailureResolution,
@@ -44,7 +42,9 @@ from .task_runs import (
     validated_task_run_request,
     validated_task_run_result,
 )
-from .work_events import work_events
+from .tracker.events import work_events
+from .tracker.relations import work_dependencies
+from .tracker.work import canonical_revision, canonical_work
 
 OUTCOME_REVISION_LIMIT = 64
 TRAJECTORY_REVISION_LIMIT = 64
