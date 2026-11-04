@@ -1,5 +1,7 @@
+import io
 import json
 import os
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -8,6 +10,25 @@ import pytest
 import switchstand.edge_deploy as subject
 
 SHA = "a" * 40
+
+
+def test_failed_step_preserves_real_child_diagnostics(tmp_path: Path) -> None:
+    log = io.StringIO()
+    target = subject.Deployer(tmp_path, SHA, log)
+    with pytest.raises(subject.subprocess.CalledProcessError):
+        target.step(
+            "migrate",
+            lambda: subject.command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; print('preflight'); print('other database clients', file=sys.stderr); sys.exit(1)",
+                ]
+            ),
+        )
+    assert "preflight\n" in log.getvalue()
+    assert "other database clients\n" in log.getvalue()
+    assert "result=FAIL" in log.getvalue()
 
 
 def launcher(runtime: Path) -> str:
