@@ -320,6 +320,13 @@ class InboundWake:
                         self.outcomes[recipient] = ("UNKNOWN_AGENT_TYPE" if result.mailbox.agent_type is None
                                                     else "NON_CODEX")
                         LOG.info("inbound wake skipped evidence=%s", json.dumps(evidence))
+                        # Skipped runtimes cannot consume these wake payloads. Keep the
+                        # observation IDs, but release the full message bodies.
+                        skipped = [delivery for delivery, message in self.fresh_messages.items()
+                                   if message.recipient_work_id == recipient]
+                        self.fresh.difference_update(skipped)
+                        for delivery in skipped:
+                            self.fresh_messages.pop(delivery, None)
                         return
                     reader = getattr(rpc, "reader", None)
                     dead = reader is not None and reader.done()
