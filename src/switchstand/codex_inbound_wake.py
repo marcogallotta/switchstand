@@ -13,6 +13,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from websockets.asyncio.client import unix_connect
+from websockets.exceptions import ConnectionClosed
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
 from .mailbox_wake import delivery_marker, delivery_notice, marker_receipts
@@ -298,7 +299,7 @@ class InboundWake:
             self.outcomes[recipient] = f"DENIED: {error}"
             LOG.warning("inbound wake rejected for %s: %s", recipient, error)
         except Exception as error:
-            if isinstance(error, (ConnectionError, OSError)):
+            if isinstance(error, (ConnectionError, OSError, ConnectionClosed)):
                 # turn/start transport ambiguity is wrapped as UncertainTurn,
                 # so it deliberately cannot reopen this observer.
                 self.reconnectable.add(recipient)

@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+from websockets.frames import Close
 
 import switchstand.codex_inbound_wake as module
 from switchstand.agent_mailboxes import AgentMailbox, chat_session_key
@@ -245,7 +247,12 @@ async def test_only_unique_owning_daemon_is_attached(subject, monkeypatch, owner
     await wake.close()
 
 
-@pytest.mark.parametrize("failure", [ConnectionError("disconnect"), module.UncertainTurn("unknown turn")])
+@pytest.mark.parametrize("failure", [
+    ConnectionError("disconnect"),
+    ConnectionClosedOK(Close(1000, ""), Close(1000, ""), True),
+    ConnectionClosedError(Close(1011, ""), Close(1011, ""), True),
+    module.UncertainTurn("unknown turn"),
+])
 @pytest.mark.parametrize("delivery_races_disconnect", [False, True])
 async def test_new_delivery_reconnects_only_definite_transport_failure(subject, monkeypatch, failure,
                                                                       delivery_races_disconnect):
@@ -278,5 +285,5 @@ async def test_new_delivery_reconnects_only_definite_transport_failure(subject, 
         wake.signal(message, True)
     await asyncio.sleep(0)
     await asyncio.sleep(0)
-    assert attempts == (2 if isinstance(failure, ConnectionError) else 1)
+    assert attempts == (1 if isinstance(failure, module.UncertainTurn) else 2)
     await wake.close()
