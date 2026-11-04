@@ -1696,7 +1696,7 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         delivery_ids: Annotated[list[UUID], Field(min_length=1, max_length=10)],
     ) -> MessageAcknowledgeResult:
-        """Acknowledge processed ordinary notifications; this is not completion or reply."""
+        """Dismiss received deliveries, including reserved review mail; this is not completion, a review verdict, or a reply."""
         context = await agent_context()
         if isinstance(context, tuple):
             return MessageAcknowledgeResult(status=context[0], reason=context[1])

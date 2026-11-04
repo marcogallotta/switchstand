@@ -216,3 +216,30 @@ async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatc
     await wake.close()
     assert seen == set(bindings) and peak == 1
     assert sum(c.args[0] == "thread/resume" for c in rpc.call.call_args_list) == resume_calls
+
+
+@pytest.mark.parametrize("owner", ["first", "second", "neither", "both"])
+async def test_only_unique_owning_daemon_is_attached(subject, monkeypatch, owner):
+    wake, _rpc, binding, identity, delivery = subject
+    wake.control.write_text('{"enabled":true,"sockets":["/first","/second"]}')
+    wake.sockets = ("/first", "/second")
+    wake.mailboxes = NS(by_endpoint_id=AsyncMock(return_value=NS(mailbox=binding)))
+    peers = {}
+    @asynccontextmanager
+    async def connect(socket, dirty):
+        async def call(method, params):
+            if method in {"thread/list", "thread/loaded/list"}:
+                owns = owner == "both" or socket == "/" + owner
+                return {"data": [identity] if owns else []}
+            return {"thread": {"parentThreadId": None, "canAcceptDirectInput": True}}
+        peers[socket] = NS(call=AsyncMock(side_effect=call))
+        yield peers[socket]
+    monkeypatch.setattr(module, "DaemonConnection", connect)
+    wake._reconcile = AsyncMock(side_effect=module.UncertainTurn("test ends after unique attachment"))
+    wake.signal(NS(delivery_id=delivery, recipient_work_id=binding.endpoint_id), True)
+    await asyncio.wait_for(wake.tasks[binding.endpoint_id], 1)
+    for socket, rpc in peers.items():
+        attached = any(c.args[0] == "thread/resume" for c in rpc.call.call_args_list)
+        assert attached == (socket == "/" + owner)
+    assert wake._reconcile.await_count == (1 if owner in {"first", "second"} else 0)
+    await wake.close()

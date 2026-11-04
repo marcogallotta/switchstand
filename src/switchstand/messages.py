@@ -919,11 +919,14 @@ class MessageState:
     async def _pending(
         self, work_id: UUID, request: MessagePendingRequest,
         agent_binding: AgentMailbox | None = None,
+        ordinary_only: bool = False,
     ) -> MessagePendingResult:
         query = self._pending_query().where(
             message_deliveries.c.recipient_work_id == work_id,
             message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
         )
+        if ordinary_only:
+            query = query.where(messages.c.route_ref.not_in(REVIEW_ROUTE_REFS))
         # Newest first, so fresh deliveries are never buried behind an old backlog.
         key = tuple_(messages.c.created_at, message_deliveries.c.delivery_id)
         if request.cursor is not None:
@@ -967,9 +970,10 @@ class MessageState:
     async def pending_admitted(
         self, work_id: UUID, request: MessagePendingRequest,
         *, agent_binding: AgentMailbox | None = None,
+        ordinary_only: bool = False,
     ) -> MessagePendingResult:
         try:
-            return await self._pending(work_id, request, agent_binding)
+            return await self._pending(work_id, request, agent_binding, ordinary_only)
         except (SQLAlchemyError, ValueError):
             return MessagePendingResult(status="recovery_required", reason="state_unavailable")
 
@@ -977,7 +981,7 @@ class MessageState:
         self, work_id: UUID, binding_version: int, request: MessageAcknowledgeRequest,
         *, agent_binding: AgentMailbox,
     ) -> MessageAcknowledgeResult:
-        """Clear ordinary notifications while preserving open request/reply semantics."""
+        """Dismiss recipient deliveries without resolving their request or review."""
         try:
             async with self.engine.begin() as connection:
                 if not await self._current_agent_binding(connection, agent_binding):
@@ -1003,10 +1007,6 @@ class MessageState:
                         results.append(MessageAcknowledgeItem(
                             delivery_id=delivery_id, status="denied",
                             reason="delivery_not_for_current_work",
-                        ))
-                    elif row["route_ref"] in REVIEW_ROUTE_REFS:
-                        results.append(MessageAcknowledgeItem(
-                            delivery_id=delivery_id, status="denied", reason="reserved_route",
                         ))
                     elif row["state"] == "DISPOSITIONED":
                         results.append(MessageAcknowledgeItem(

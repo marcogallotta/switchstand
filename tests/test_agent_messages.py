@@ -1091,7 +1091,7 @@ async def test_acknowledge_batch_is_per_delivery_and_preserves_open_reply(agent_
     assert mixed.status == "ok"
     assert [(item.status, item.reason) for item in mixed.results] == [
         ("ok", None), ("denied", "delivery_not_for_current_work"),
-        ("denied", "delivery_not_found"), ("denied", "reserved_route"),
+        ("denied", "delivery_not_found"), ("ok", None),
     ]
     repeated = await tools["agent_message_acknowledge"]("1", [sent.message.delivery_id])
     assert repeated.results[0].state == "ACKNOWLEDGED"
@@ -1182,3 +1182,56 @@ async def test_result_and_disposition_roll_back_together(agent_messaging, monkey
         assert await connection.scalar(select(message_deliveries.c.state).where(
             message_deliveries.c.delivery_id == sent.message.delivery_id
         )) == "RECEIVED"
+
+
+async def test_stop_filters_reserved_before_pagination_and_recipient_can_dismiss(agent_messaging):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "codex:stop-test"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    ordinary = [await tools["agent_message_send"]("1", "Beta", uuid4(), {}) for _ in range(11)]
+    assert service.messages is not None
+    mailboxes = AgentMailboxState(service.messages.engine)
+    alpha, beta = (await mailboxes.by_name("Alpha")).mailbox, (await mailboxes.by_name("Beta")).mailbox
+    assert alpha is not None and beta is not None
+    reserved = []
+    async with service.messages.engine.begin() as connection:
+        for route in ("review.request", "review.acquisition", "review.outcome") * 4:
+            message_id, delivery = uuid4(), uuid4()
+            reserved.append(delivery)
+            await connection.execute(insert(messages).values(
+                sender_work_id=alpha.endpoint_id, message_id=message_id,
+                route_ref=route, kind="request", payload={}, digest="test",
+            ))
+            await connection.execute(insert(message_deliveries).values(
+                delivery_id=delivery, sender_work_id=alpha.endpoint_id,
+                message_id=message_id, recipient_work_id=beta.endpoint_id,
+                recipient_grant_version=beta.generation,
+            ))
+    first = await _codex_stop_mailbox_page(service, "stop-test", None)
+    assert len(first["delivery_ids"]) == 10 and first["has_more"] is True
+    second = await _codex_stop_mailbox_page(service, "stop-test", UUID(first["next_cursor"]))
+    expected = {str(item.message.delivery_id) for item in ordinary}
+    assert set(first["delivery_ids"] + second["delivery_ids"]) == expected
+    assert second["has_more"] is False
+    session[0] = "codex:stop-test"
+    for item in ordinary:
+        assert (await tools["agent_message_acknowledge"]("1", [item.message.delivery_id])).results[0].status == "ok"
+    for _ in range(2):  # A later Stop turn must not resurrect the reserved backlog.
+        assert (await _codex_stop_mailbox_page(service, "stop-test", None))["delivery_ids"] == []
+    # Public pending retains visibility so the recipient can explicitly dismiss it.
+    page = await tools["agent_message_pending"]("1")
+    assert page.has_more and {item.delivery_id for item in page.messages} <= set(reserved)
+    session[0] = "chat-a"
+    assert (await tools["agent_message_acknowledge"]("1", reserved[:1])).results[0].reason == "delivery_not_for_current_work"
+    session[0] = "codex:stop-test"
+    for delivery in reserved:
+        assert (await tools["agent_message_acknowledge"]("1", [delivery])).results[0].state == "ACKNOWLEDGED"
+    assert (await tools["agent_message_pending"]("1")).messages == ()
+    async with service.messages.engine.begin() as connection:
+        rows = (await connection.execute(select(message_deliveries.c.state).where(
+            message_deliveries.c.delivery_id.in_(reserved)))).scalars().all()
+        assert rows == ["ACKNOWLEDGED"] * len(reserved)
+        assert not (await connection.execute(select(messages.c.message_id).where(
+            messages.c.kind == "result"))).all()
