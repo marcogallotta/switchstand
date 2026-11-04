@@ -130,7 +130,7 @@ async function incidentReport(binding, kind, ids, save, fresh) {
     if (!response.ok) { reportToken = undefined; throw new Error(`HTTP ${response.status}`); }
     const receipt = await response.json();
     if (receipt.alert?.status === 'queued') {
-      binding.report = `Codex Coordinator ${phase} alert queued; delivery ${receipt.alert.delivery_id}`;
+      binding.report = `${receipt.recipient || "Configured recipient"} ${phase} alert queued; delivery ${receipt.alert.delivery_id}`;
       if (phase === 'blocked') incident.state = 'queued';
       else { binding.lastIncident = incident.evidence.incident_id; delete binding.incident; }
     } else {
@@ -168,9 +168,9 @@ async function record(binding, outcome, ids = [], save, fresh = false) {
   } catch (error) { binding.report = 'backend report unavailable: ' + error.message; }
 }
 async function checkBinding(binding, save) {
-  const note = (outcome, ids = []) => record(binding, outcome, ids, save, true);
-  if (!binding.armed || stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   let observation;
+  const note = (outcome, ids = observation?.delivery_ids || []) => record(binding, outcome, ids, save, true);
+  if (!binding.armed || stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   try { observation = await mailbox(binding.name); }
   catch (error) { return note('source-unavailable: ' + error.message); }
   if (observation.endpoint !== binding.endpoint || observation.generation !== binding.generation) {
@@ -179,15 +179,16 @@ async function checkBinding(binding, save) {
   }
   const pending = observation.delivery_ids.filter(id => !binding.seen.includes(id));
   binding.pending = pending;
+  binding.observedPending = observation.delivery_ids;
   let tab;
   try { tab = await chrome.tabs.get(binding.tabId); }
-  catch { binding.availability = 'closed'; return note('bound-tab-missing', pending); }
+  catch { binding.availability = 'closed'; return note('bound-tab-missing'); }
   binding.availability = 'open';
-  if (binding.halted) return note('attempt-outcome-unknown', pending);
+  if (binding.halted) return note('attempt-outcome-unknown');
   if (!pending.length) return note('idle');
-  if (tab.url !== binding.url) return note('wrong-conversation', pending);
-  if (tab.discarded) return note('tab-discarded', pending);
-  if (tab.frozen) return note('tab-frozen', pending);
+  if (tab.url !== binding.url) return note('wrong-conversation');
+  if (tab.discarded) return note('tab-discarded');
+  if (tab.frozen) return note('tab-frozen');
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   // Persist a halt before DOM mutation. A crash cannot silently retry these IDs.
   binding.halted = true;
@@ -208,17 +209,22 @@ async function checkBinding(binding, save) {
       binding.pending = [];
       binding.halted = false;
     }
-    await note(outcome, pending);
-  } catch (error) { await note('attempt-outcome-unknown: ' + error.message, pending); }
+    await note(outcome);
+  } catch (error) { await note('attempt-outcome-unknown: ' + error.message); }
 }
 async function check() {
+  try {
+    const config = await source('/config');
+    reportToken = config.report_token;
+    await chrome.storage.local.set({escalation: config.escalation, alertRecipient: config.recipient});
+  } catch { await chrome.storage.local.set({escalation: 'unavailable'}); }
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
   const save = () => chrome.storage.local.set({wakeBindings});
   for (const binding of wakeBindings) {
     await checkBinding(binding, save);
     await save();
   }
-  return status(wakeBindings.length ? 'checked; escalation unconfigured' : 'no V1 pairings; escalation unconfigured');
+  return status(wakeBindings.length ? 'checked' : 'no V1 pairings');
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
@@ -248,11 +254,11 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       if (stopAll === stopSnapshot.all) stopAll = 0;
       if (stopEndpoints.get(endpoint) === stopSnapshot.endpoint) stopEndpoints.delete(endpoint);
       const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
-        seen: prior?.seen || [], pending: [], status: 'armed', report: 'escalation unconfigured', incident: prior?.incident};
+        seen: prior?.seen || [], pending: [], status: 'armed', report: 'not checked', incident: prior?.incident};
       if (prior) wakeBindings[wakeBindings.indexOf(prior)] = binding;
       else wakeBindings.push(binding);
       await chrome.storage.local.set({wakeBindings});
-      return status('armed; escalation unconfigured');
+      return status('armed');
     }
     if (message.type === 'disarm') {
       const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
@@ -271,7 +277,7 @@ chrome.tabs.onRemoved.addListener(tabId => exclusive(async () => {
   const save = () => chrome.storage.local.set({wakeBindings});
   for (const binding of wakeBindings) if (binding.tabId === tabId && binding.armed && !stopRequested(binding)) {
     binding.availability = 'closed';
-    await record(binding, 'bound-tab-missing', binding.pending || [], save);
+    await record(binding, 'bound-tab-missing', binding.observedPending || binding.pending || [], save);
   }
   await chrome.storage.local.set({wakeBindings});
 }).catch(error => status(error.message)));

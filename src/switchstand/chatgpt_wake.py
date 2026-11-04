@@ -53,7 +53,8 @@ def install_browser_wake(
         if not _local(request):
             return JSONResponse({"status": "denied"}, status_code=403)
         return JSONResponse({"status": "ok", "report_token": report_token,
-                             "escalation": "configured" if reporter else "unconfigured"}, headers={"Cache-Control": "no-store"})
+                             "escalation": "configured" if reporter else "unconfigured",
+                             "recipient": reporter.manifest.recipient if reporter else None}, headers={"Cache-Control": "no-store"})
 
     @server.custom_route(PATH + "/poll", methods=["GET"])
     async def poll(request: Request) -> JSONResponse:
@@ -101,18 +102,20 @@ def install_browser_wake(
             references = [str(identity) for identity in payload.delivery_ids]
         except (ValueError, TypeError, KeyError):
             return JSONResponse({"status": "invalid_report"}, status_code=400)
-        LOG.warning("browser_wake name=%s outcome=%s delivery_ids=%s escalation=unconfigured",
-                    name, outcome, references)
+        LOG.warning("browser_wake name=%s outcome=%s delivery_ids=%s escalation=%s",
+                    name, outcome, references, "configured" if reporter else "unconfigured")
         if reporter is not None and payload.incident is not None:
             if payload.incident.name != name:
                 return JSONResponse({"status": "invalid_report"}, status_code=400)
             try:
                 receipt = await reporter.send(payload.incident)
-                return JSONResponse({"status": "logged", "escalation": "configured", "alert": receipt})
+                return JSONResponse({"status": "logged", "escalation": "configured",
+                                     "recipient": reporter.manifest.recipient, "alert": receipt})
             except Exception:
                 LOG.exception("browser_wake alert outcome unknown; retain same incident identity")
                 return JSONResponse({"status": "logged", "escalation": "unknown"}, status_code=503)
-        return JSONResponse({"status": "logged", "escalation": "unconfigured"})
+        return JSONResponse({"status": "logged",
+                             "escalation": "configured" if reporter else "unconfigured"})
 
     # Route decorators register these local handlers with FastMCP.
     _ = config, poll, report

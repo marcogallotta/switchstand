@@ -3,14 +3,17 @@ const pair = document.querySelector('#pairing');
 const arm = document.querySelector('#bind');
 let verified;
 async function show() {
-  const state = await chrome.storage.local.get(['status', 'wakeBindings']);
+  const state = await chrome.storage.local.get(['status', 'wakeBindings', 'escalation', 'alertRecipient']);
+  document.querySelector('#escalation').textContent = state.escalation === 'configured'
+    ? `Alerts configured to ${state.alertRecipient || 'the fixed recipient'}.`
+    : `Alerts ${state.escalation || 'not checked yet'}.`;
   output.textContent = state.status || 'No V1 pairings. Existing mock bindings are not imported.';
   const list = document.querySelector('#bindings');
   list.replaceChildren();
   for (const binding of state.wakeBindings || []) {
     const row = document.createElement('p');
     row.style.overflowWrap = 'anywhere';
-    row.textContent = `${binding.name}: ${binding.armed ? 'armed' : 'stopped'}${binding.halted ? '; HALTED — reconcile attempt before retry' : ''}\n${binding.url}\n${binding.status}; tab ${binding.availability || 'unchecked'}; last checked ${binding.checkedAt || 'never'}\n${binding.report || 'escalation unconfigured'}${binding.blockSince ? `; blocker observed ${Math.max(0, Math.floor((Date.now() - binding.blockSince) / 1000))}s` : ''}`;
+    row.textContent = `${binding.name}: ${binding.armed ? 'armed' : 'stopped'}${binding.halted ? '; HALTED — reconcile attempt before retry' : ''}\n${binding.url}\n${binding.status}; tab ${binding.availability || 'unchecked'}; last checked ${binding.checkedAt || 'never'}\n${binding.report || 'not checked'}${binding.blockSince ? `; blocker observed ${Math.max(0, Math.floor((Date.now() - binding.blockSince) / 1000))}s` : ''}`;
     const stop = document.createElement('button');
     stop.textContent = 'Stop this chat';
     stop.onclick = async () => { await chrome.runtime.sendMessage({type: 'disarm', endpoint: binding.endpoint}); await show(); };

@@ -26,7 +26,7 @@ function load() {
     alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
   };
   runInNewContext(code, {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
-    if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only'})};
+    if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only', escalation: 'configured', recipient: 'ChatGPT Wake Setup 2026-11-04'})};
     if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); if (alertMode === 'expired' && report.incident) { alertMode = true; return {ok: true, json: async () => ({status: 'logged', alert: {status: 'denied', reason: 'observation_expired'}})}; } return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
     const name = new URL(url).searchParams.get('name');
     if (name === blockName) await new Promise(resolve => { releasePoll = resolve; });
@@ -210,3 +210,26 @@ await message({type: 'check'});
 assert.equal(state('A').incident.state, 'queued');
 assert.notEqual(state('A').incident.evidence.incident_id, expiredId);
 console.log('PASS: closed+fresh-empty recovery, short restart reset, qualified identity persistence, expired-uncommitted requalification');
+
+// Wake acceptance is not mailbox pickup: seen IDs still qualify closed-tab alerts.
+saved = {}; reports.length = 0; attempts.length = 0; alertMode = true;
+tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+observations.get('A').delivery_ids = [id(400)]; outcome = 'click-attempted';
+load(); await bind('A', 1); await message({type: 'check'});
+assert.deepEqual(state('A').seen, [id(400)]);
+assert.equal(saved.escalation, 'configured');
+assert.equal(saved.alertRecipient, 'ChatGPT Wake Setup 2026-11-04');
+assert.equal(saved.status, 'checked');
+await message({type: 'check'});
+assert.equal(attempts.length, 1, 'seen but AVAILABLE mail is never blindly nudged again');
+tabs.delete(1); await removed(1);
+const seenIncident = reports.filter(item => item.incident).at(-1).incident;
+assert.deepEqual(seenIncident.delivery_ids, [id(400)], 'incident uses all authoritative pending IDs');
+assert.equal(state('A').incident.state, 'queued');
+await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 1, 'fresh closed poll dedupes same episode');
+assert.equal(attempts.length, 1);
+observations.get('A').delivery_ids = []; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).at(-1).incident.phase, 'recovered');
+assert.equal(reports.filter(item => item.incident).at(-1).incident.incident_id, seenIncident.incident_id);
+console.log('PASS seen-but-still-pending closed incident, unchanged DOM dedupe, recovery, actual backend configuration display state');
