@@ -1,4 +1,5 @@
-# Project-level config for the recovery coordinator when it runs on the shared wake-enabled Codex daemon.
+# Project-level config for the recovery coordinator on the dedicated Codex daemon.
+# Root discovery is configured in CODEX_HOME before this trusted project is loaded.
 [features]
 hooks = true
 multi_agent = true
@@ -38,3 +39,7 @@ enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_ge
 [mcp_servers.switchstand_oauth_proof]
 enabled = false
 url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+
+# Exclude the observed remote Test connector even if remote apps are enabled elsewhere.
+[apps.asdk_app_6ad75caa7b108191abdd036d618b352e]
+enabled = false
