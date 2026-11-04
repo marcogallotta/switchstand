@@ -931,3 +931,20 @@ launch path. It performs only a constant-time filesystem capacity probe, records
 SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
 It does not start Codex or deliver into Codex sessions. Without the optional inbound adapter, stock Codex consumes durable mailbox
 messages only while the user is actively running and prompting that session.
+
+### Opt-in local ChatGPT browser wake V1
+
+`SWITCHSTAND_CHATGPT_BROWSER_WAKE=1` adds the loopback-only `chatgpt_wake`
+adapter to the edge. Its poll route resolves an existing registered mailbox and
+uses the shared fenced `MessageState.all_pending_delivery_ids` collector; it
+returns endpoint/generation/IDs without mailbox content or delivery mutations.
+The extension manually pairs each mailbox with an exact open conversation tab.
+Per-binding pending/seen and a persisted pre-mutation halt prevent blind retries.
+Closed tabs remain observed without auto-reopening. The candidate uses owned
+TEST loopback18766, independently from the original mock18765.
+
+The local config route supplies an ephemeral report-only bearer capability. JSON
+reports require that capability and loopback peer/Host; ordinary web origins get
+no CORS access. Reports go only to existing runtime logging. Escalation is visibly
+unconfigured: there is no admitted reporting actor and no coordinator message
+dispatch. The flag is off by default; landing does not activate a service.
