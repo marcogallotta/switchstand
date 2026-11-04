@@ -30,10 +30,12 @@ if(!fixture.retain){editor.textContent='';model='';send.disabled=true;}});
 const test = base.extend({
   wake: async ({}, use, info) => {
     const directory = await mkdtemp(join(tmpdir(), 'wake-playwright-'));
+    let context, server;
+    try {
     const original = await readFile(join(extension, 'worker.js'), 'utf8');
     const metadata = {status:'ok',name:'Fixture',endpoint:identity,generation:1,delivery_ids:[]};
     const reports = [];
-    const server = createServer(async (request, response) => {
+    server = createServer(async (request, response) => {
       let body=''; for await (const chunk of request) body+=chunk;
       response.setHeader('Content-Type','application/json');
       if(request.url.endsWith('/config')) response.end(JSON.stringify({status:'ok',report_token:'fixture',escalation:'unconfigured',recipient:'Fixture'}));
@@ -48,8 +50,6 @@ const test = base.extend({
     expect(original.split(literal)).toHaveLength(2);
     await writeFile(join(directory,'worker.js'),original.replace(literal,`const SOURCE = 'http://127.0.0.1:${port}/internal/chatgpt-wake';`));
     for(const file of ['manifest.json','popup.html','popup.js']) await copyFile(join(extension,file),join(directory,file));
-    let context;
-    try {
       context=await chromium.launchPersistentContext(join(directory,'profile'),{channel:'chromium',headless:true,
         args:[`--disable-extensions-except=${directory}`,`--load-extension=${directory}`,'--disable-background-networking']});
       // Deny every external request, including ChatGPT. Fixture documents have no resources.
@@ -73,7 +73,11 @@ const test = base.extend({
       await use({context,page,open,check,message,metadata,reports,popup});
       expect(hash(await readFile(join(extension,'worker.js')))).toBe(hash(original));
     } finally {
-      await context?.close();await new Promise(resolve=>server.close(resolve));await rm(directory,{recursive:true,force:true});
+      try { await context?.close(); }
+      finally {
+        try { if(server?.listening) await new Promise(resolve=>server.close(resolve)); }
+        finally { await rm(directory,{recursive:true,force:true}); }
+      }
     }
   }
 });
