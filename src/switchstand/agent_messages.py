@@ -14,7 +14,13 @@ from .durable_capture import (
     message_capture_guidance,
 )
 from .grants import PrincipalContext
-from .messages import AGENT_MESSAGE_PAYLOAD_LIMIT, PendingMessage, canonical_payload_chars
+from .messages import (
+    AGENT_MESSAGE_PAYLOAD_LIMIT,
+    WAKE_SERVICE_ENDPOINT,
+    WAKE_SERVICE_NAME,
+    PendingMessage,
+    canonical_payload_chars,
+)
 
 
 @dataclass(frozen=True)
@@ -108,19 +114,23 @@ class AgentMessagePendingResult(ClosedModel):
 async def public_message(
     mailboxes: AgentMailboxState, message: PendingMessage,
 ) -> AgentPendingMessage | None:
-    sender = await mailboxes.by_endpoint_id(message.sender_work_id)
+    # Wake failure notices have a fixed service identity, not an agent registration.
+    # This display-only projection grants no actor, reply route, or work authority.
+    sender_name = WAKE_SERVICE_NAME if message.sender_work_id == WAKE_SERVICE_ENDPOINT else None
+    if sender_name is None:
+        sender = await mailboxes.by_endpoint_id(message.sender_work_id)
+        if sender.status != "ok" or sender.mailbox is None:
+            return None
+        sender_name = sender.mailbox.name
     recipient = await mailboxes.by_endpoint_id(message.recipient_work_id)
-    if (
-        sender.status != "ok" or sender.mailbox is None
-        or recipient.status != "ok" or recipient.mailbox is None
-    ):
+    if recipient.status != "ok" or recipient.mailbox is None:
         return None
     payload_chars = canonical_payload_chars(message.payload)
     payload_omitted = payload_chars > AGENT_MESSAGE_PAYLOAD_LIMIT
     return AgentPendingMessage(
         delivery_id=message.delivery_id,
         message_id=message.message_id,
-        sender_name=sender.mailbox.name,
+        sender_name=sender_name,
         recipient_name=recipient.mailbox.name,
         kind=message.kind,
         payload=None if payload_omitted else message.payload,
