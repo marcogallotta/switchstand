@@ -7,9 +7,9 @@ import json
 import logging
 import secrets
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import AsyncExitStack, suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 from websockets.asyncio.client import unix_connect
@@ -25,6 +25,10 @@ SOURCES = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
 
 class DaemonRejected(RuntimeError):
     """The owning runtime definitively rejected this request; no effect was accepted."""
+
+
+class ThreadNotFound(RuntimeError):
+    """No recipient matches in this daemon; safe to inspect another daemon."""
 
 
 class UncertainTurn(RuntimeError):
@@ -110,6 +114,8 @@ async def resolve_thread(rpc: DaemonConnection, binding: AgentMailbox) -> str:
                 break
     matches = [identity for identity in candidates
                if chat_session_key(f"codex:{identity}") == binding.session_key]
+    if not matches:
+        raise ThreadNotFound("recipient not in this daemon")
     if len(matches) != 1:
         raise RuntimeError("UNKNOWN: no unique recipient in configured owning daemon")
     return matches[0]
@@ -141,7 +147,7 @@ class InboundWake:
     def __init__(self, messages: MessageState, control: Path, admission: Path):
         self.messages, self.control, self.admission = messages, control, admission
         self.mailboxes = AgentMailboxState(messages.engine)
-        self.socket = str(json.loads(control.read_text())["socket"])
+        self.sockets = self._sockets(json.loads(control.read_text()))
         self.tasks: dict[UUID, asyncio.Task[None]] = {}
         self.events: dict[UUID, asyncio.Event] = {}
         self.fresh: set[UUID] = set()
@@ -186,10 +192,19 @@ class InboundWake:
         LOG.info("wake admission: %s", output.decode().strip())
         return process.returncode == 0
 
+    @staticmethod
+    def _sockets(config: dict[str, Any]) -> tuple[str, ...]:
+        sockets: Any = config.get("sockets", [config.get("socket")])
+        if (not isinstance(sockets, list) or not sockets
+                or any(not isinstance(socket, str) or not socket.startswith("/") for socket in cast(list[Any], sockets))
+                or len(set(cast(list[Any], sockets))) != len(cast(list[Any], sockets))):
+            raise ValueError("wake requires distinct absolute daemon socket paths")
+        return tuple(cast(list[str], sockets))
+
     def enabled(self) -> bool:
         try:
             config = json.loads(self.control.read_text())
-            return config.get("enabled") is True and config.get("socket") == self.socket
+            return config.get("enabled") is True and self._sockets(config) == self.sockets
         except (OSError, ValueError):
             return False
 
@@ -211,9 +226,12 @@ class InboundWake:
 
     async def _run(self, recipient: UUID, event: asyncio.Event):
         try:
-            async with DaemonConnection(self.socket, event.set) as rpc:
+            async with AsyncExitStack() as stack:
+                connections = [await stack.enter_async_context(DaemonConnection(socket, event.set))
+                               for socket in self.sockets]
                 binding = None
                 identity = ""
+                rpc = connections[0]
                 attached = ""
                 while True:
                     await event.wait()
@@ -222,7 +240,15 @@ class InboundWake:
                     if result.mailbox is None:
                         raise RuntimeError("UNKNOWN: recipient binding unavailable")
                     if result.mailbox != binding:
-                        identity = await resolve_thread(rpc, result.mailbox)
+                        matches: list[tuple[DaemonConnection, str]] = []
+                        for connection in connections:
+                            try:
+                                matches.append((connection, await resolve_thread(connection, result.mailbox)))
+                            except ThreadNotFound:
+                                continue
+                        if len(matches) != 1:
+                            raise RuntimeError("UNKNOWN: no unique recipient across configured daemons")
+                        rpc, identity = matches[0]
                     binding = result.mailbox
                     thread = (await rpc.call("thread/read", {
                         "threadId": identity, "includeTurns": False,
