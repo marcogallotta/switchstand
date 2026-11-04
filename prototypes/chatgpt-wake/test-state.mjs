@@ -117,3 +117,19 @@ for (const stopOnlyB of [true, false]) {
   assert.deepEqual(attempts, stopOnlyB ? [1] : [], 'Stop preempts not-started sends during another mailbox await');
 }
 console.log('PASS immediate per-chat/all STOP during asynchronous check; unknown closed binding continues observing new IDs and retains closure when empty.');
+
+for (const stopOnlyB of [true, false]) {
+  saved = {}; attempts.length = 0;
+  for (const name of ['A', 'B']) Object.assign(observations.get(name), {generation: 1, delivery_ids: []});
+  load(); await bind('A', 1); await bind('B', 2);
+  observations.get('B').delivery_ids = [id(30)];
+  blockName = 'B'; releasePoll = undefined;
+  const arming = message({type: 'bind', ...observations.get('B'), tabId: 2, url: tabs.get(2).url});
+  while (!releasePoll) await new Promise(resolve => setTimeout(resolve, 0));
+  const checking = message({type: 'check'});
+  const stopping = message({type: 'disarm', ...(stopOnlyB ? {endpoint: id(2)} : {})});
+  blockName = undefined; releasePoll();
+  await arming; await checking; await stopping;
+  assert.deepEqual(attempts, [], 'earlier rearm cannot clear a later Stop intent before queued check');
+}
+console.log('PASS rearm await → queued check → later per-chat/all Stop preserves stop ordering.');

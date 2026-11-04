@@ -7,8 +7,9 @@ function validConversation(value) {
   } catch { return false; }
 }
 let serial = Promise.resolve();
-let stopAll = false;
-const stopEndpoints = new Set();
+let stopAll = 0;
+let stopVersion = 0;
+const stopEndpoints = new Map();
 const stopRequested = binding => stopAll || stopEndpoints.has(binding.endpoint);
 function exclusive(action) {
   const result = serial.then(action);
@@ -164,10 +165,12 @@ async function check() {
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
+  const stopSnapshot = {all: stopAll, endpoint: stopEndpoints.get(message.endpoint)};
   // Stop intent preempts asynchronous checks before its persisted update is queued.
   if (message.type === 'disarm') {
-    if (message.endpoint) stopEndpoints.add(message.endpoint);
-    else stopAll = true;
+    const version = ++stopVersion;
+    if (message.endpoint) stopEndpoints.set(message.endpoint, version);
+    else stopAll = version;
   }
   exclusive(async () => {
     if (message.type === 'verify') return mailbox(message.name);
@@ -184,8 +187,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       const prior = wakeBindings.find(item => item.endpoint === endpoint);
       if (prior?.halted) throw new Error('Previous attempt is unresolved; reconcile before rearming.');
       if (prior && prior.generation !== generation) throw new Error('Mailbox generation changed; operator reconciliation required.');
-      stopAll = false;
-      stopEndpoints.delete(endpoint);
+      // Explicit rearm may clear only intents already present when it arrived.
+      if (stopAll === stopSnapshot.all) stopAll = 0;
+      if (stopEndpoints.get(endpoint) === stopSnapshot.endpoint) stopEndpoints.delete(endpoint);
       const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
         seen: prior?.seen || [], pending: [], status: 'armed', report: 'escalation unconfigured'};
       if (prior) wakeBindings[wakeBindings.indexOf(prior)] = binding;
