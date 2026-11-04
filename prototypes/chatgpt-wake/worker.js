@@ -7,6 +7,9 @@ function validConversation(value) {
   } catch { return false; }
 }
 let serial = Promise.resolve();
+let stopAll = false;
+const stopEndpoints = new Set();
+const stopRequested = binding => stopAll || stopEndpoints.has(binding.endpoint);
 function exclusive(action) {
   const result = serial.then(action);
   serial = result.catch(() => {});
@@ -108,8 +111,7 @@ async function record(binding, outcome, ids = []) {
   } catch (error) { binding.report = 'backend report unavailable: ' + error.message; }
 }
 async function checkBinding(binding, save) {
-  if (!binding.armed) return record(binding, 'stopped');
-  if (binding.halted) return; // Includes persisted crash/uncertain-send reservation.
+  if (!binding.armed || stopRequested(binding)) { binding.armed = false; return record(binding, 'stopped'); }
   let observation;
   try { observation = await mailbox(binding.name); }
   catch (error) { return record(binding, 'source-unavailable: ' + error.message); }
@@ -119,18 +121,25 @@ async function checkBinding(binding, save) {
   }
   const pending = observation.delivery_ids.filter(id => !binding.seen.includes(id));
   binding.pending = pending;
-  if (!pending.length) return record(binding, 'idle');
   let tab;
   try { tab = await chrome.tabs.get(binding.tabId); }
-  catch { return record(binding, 'bound-tab-missing', pending); }
+  catch { binding.availability = 'closed'; return record(binding, 'bound-tab-missing', pending); }
+  binding.availability = 'open';
+  if (binding.halted) return record(binding, 'attempt-outcome-unknown', pending);
+  if (!pending.length) return record(binding, 'idle');
   if (tab.url !== binding.url) return record(binding, 'wrong-conversation', pending);
   if (tab.discarded) return record(binding, 'tab-discarded', pending);
   if (tab.frozen) return record(binding, 'tab-frozen', pending);
+  if (stopRequested(binding)) { binding.armed = false; return record(binding, 'stopped'); }
   // Persist a halt before DOM mutation. A crash cannot silently retry these IDs.
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
   binding.attemptIds = pending;
   await save();
+  if (stopRequested(binding)) {
+    binding.armed = false; binding.halted = false; binding.attemptIds = [];
+    return record(binding, 'stopped');
+  }
   try {
     const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url]});
     const outcome = result?.result || 'attempt-outcome-unknown';
@@ -155,6 +164,11 @@ async function check() {
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
+  // Stop intent preempts asynchronous checks before its persisted update is queued.
+  if (message.type === 'disarm') {
+    if (message.endpoint) stopEndpoints.add(message.endpoint);
+    else stopAll = true;
+  }
   exclusive(async () => {
     if (message.type === 'verify') return mailbox(message.name);
     if (message.type === 'bind') {
@@ -170,6 +184,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       const prior = wakeBindings.find(item => item.endpoint === endpoint);
       if (prior?.halted) throw new Error('Previous attempt is unresolved; reconcile before rearming.');
       if (prior && prior.generation !== generation) throw new Error('Mailbox generation changed; operator reconciliation required.');
+      stopAll = false;
+      stopEndpoints.delete(endpoint);
       const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
         seen: prior?.seen || [], pending: [], status: 'armed', report: 'escalation unconfigured'};
       if (prior) wakeBindings[wakeBindings.indexOf(prior)] = binding;
@@ -192,6 +208,7 @@ chrome.alarms.onAlarm.addListener(() => exclusive(check).catch(error => status('
 chrome.tabs.onRemoved.addListener(tabId => exclusive(async () => {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
   for (const binding of wakeBindings) if (binding.tabId === tabId) {
+    binding.availability = 'closed';
     await record(binding, 'bound-tab-missing', binding.pending || []);
   }
   await chrome.storage.local.set({wakeBindings});

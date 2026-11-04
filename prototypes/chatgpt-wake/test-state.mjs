@@ -3,7 +3,7 @@ import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 const code = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
 const id = number => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
-let saved = {}, handler, removed, outcome = 'click-attempted';
+let saved = {}, handler, removed, outcome = 'click-attempted', blockName, releasePoll;
 const observations = new Map(['A', 'B'].map((name, index) => [name,
   {status: 'ok', name, endpoint: id(index + 1), generation: 1, delivery_ids: []}]));
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
@@ -23,7 +23,9 @@ function load() {
   runInNewContext(code, {chrome, URL, Date, AbortSignal, fetch: async (url, options) => {
     if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only'})};
     if (url.endsWith('/report')) { reports.push(JSON.parse(options.body)); return {ok: true, json: async () => ({status: 'logged'})}; }
-    const observed = observations.get(new URL(url).searchParams.get('name'));
+    const name = new URL(url).searchParams.get('name');
+    if (name === blockName) await new Promise(resolve => { releasePoll = resolve; });
+    const observed = observations.get(name);
     return {ok: Boolean(observed), status: observed ? 200 : 403, json: async () => structuredClone(observed)};
   }});
 }
@@ -74,6 +76,17 @@ assert.equal(state('A').armed, true, 'closed binding remains observed');
 assert.deepEqual(state('A').pending, [id(14)]);
 assert.equal(attempts.length, beforeClosed, 'closed tab never receives DOM attempt');
 assert.ok(reports.some(report => report.outcome === 'bound-tab-missing' && report.delivery_ids.includes(id(14))), 'new undeliverable mail reported after close');
+tabs.delete(2);
+await removed(2);
+observations.get('B').delivery_ids.push(id(15));
+await message({type: 'check'});
+assert.equal(state('B').halted, true);
+assert.equal(state('B').availability, 'closed');
+assert.ok(reports.some(report => report.outcome === 'bound-tab-missing' && report.delivery_ids.includes(id(15))));
+observations.get('B').delivery_ids = [];
+await message({type: 'check'});
+assert.equal(state('B').status, 'bound-tab-missing', 'empty mailbox does not erase closure');
+assert.equal(state('B').halted, true, 'observation never clears uncertainty');
 observations.get('A').generation = 2;
 await message({type: 'check'});
 assert.equal(state('A').armed, false);
@@ -86,3 +99,21 @@ await message({type: 'disarm'});
 assert.ok(saved.wakeBindings.every(binding => !binding.armed));
 assert.deepEqual(state('A').seen, [id(10)], 'stopping retains delivery history');
 console.log('PASS two mailboxes, same-count new IDs, draft/busy deferral, stale pending cancellation, uncertain restart halt, generation fencing, native tab closure and STOP.');
+
+for (const stopOnlyB of [true, false]) {
+  saved = {}; attempts.length = 0;
+  tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+  tabs.set(2, {url: 'https://chatgpt.com/g/g-project/c/b'});
+  for (const name of ['A', 'B']) Object.assign(observations.get(name), {generation: 1, delivery_ids: []});
+  load();
+  await bind('A', 1); await bind('B', 2);
+  observations.get('A').delivery_ids = [id(20)]; observations.get('B').delivery_ids = [id(21)];
+  outcome = 'click-attempted'; blockName = 'A'; releasePoll = undefined;
+  const checking = message({type: 'check'});
+  while (!releasePoll) await new Promise(resolve => setTimeout(resolve, 0));
+  const stopping = message({type: 'disarm', ...(stopOnlyB ? {endpoint: id(2)} : {})});
+  blockName = undefined; releasePoll();
+  await checking; await stopping;
+  assert.deepEqual(attempts, stopOnlyB ? [1] : [], 'Stop preempts not-started sends during another mailbox await');
+}
+console.log('PASS immediate per-chat/all STOP during asynchronous check; unknown closed binding continues observing new IDs and retains closure when empty.');
