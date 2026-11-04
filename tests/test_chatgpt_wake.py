@@ -86,7 +86,7 @@ async def test_configured_reporter_without_incident_reports_actual_configuration
             config = await client.get(PATH + "/config")
             value = config.json()
             assert value["escalation"] == "configured"
-            assert value["recipient"] == "ChatGPT Wake Setup 2026-11-04"
+            assert value["recipient"] == "browser extension"
             assert config.headers["cache-control"] == "no-store"
             assert "access-control-allow-origin" not in config.headers
             payload = {"name": "fixture", "delivery_ids": [], "outcome": "bound-tab-missing"}

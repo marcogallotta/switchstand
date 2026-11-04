@@ -19,13 +19,16 @@ from .messages import MessageState, MessageSubmitResult
 
 WORK = UUID("662bd6ec-ed4e-5ee7-b02a-34311a42d6ca")
 NAME = "ChatGPT Wake Reporter"
-RECIPIENT = "ChatGPT Wake Setup 2026-11-04"
+ISSUED_RECIPIENT = "ChatGPT Wake Setup 2026-11-04"
+RECIPIENT = "browser extension"
+RECIPIENT_ENDPOINT = UUID("f23abc36-d48d-46a4-aab3-01c1e608f469")
+RECIPIENT_GENERATION = 1
 
 
 class ReporterManifest(ClosedModel):
     version: Literal[1] = 1
     name: Literal["ChatGPT Wake Reporter"] = NAME
-    recipient: Literal["ChatGPT Wake Setup 2026-11-04"] = RECIPIENT
+    recipient: Literal["ChatGPT Wake Setup 2026-11-04"] = ISSUED_RECIPIENT
     work_id: Literal["662bd6ec-ed4e-5ee7-b02a-34311a42d6ca"] = "662bd6ec-ed4e-5ee7-b02a-34311a42d6ca"
     service_id: UUID
     grant_id: UUID
@@ -140,10 +143,18 @@ class ExpiredObservation(ClosedModel):
 
 class HostReporter:
     """No caller-selected actor, recipient, body or grant. Host injection is opt-in."""
+    recipient = RECIPIENT
+
     def __init__(self, manifest: ReporterManifest, messages: MessageState):
         self.manifest, self.messages = manifest, messages
         self.grants = GrantState(messages.engine)
         self.mailboxes = AgentMailboxState(messages.engine)
+
+    async def check_recipient(self) -> bool:
+        """The renamed parent must retain its exact admitted endpoint/generation."""
+        target = (await self.mailboxes.by_name(self.recipient)).mailbox
+        return (target is not None and target.endpoint_id == RECIPIENT_ENDPOINT
+                and target.generation == RECIPIENT_GENERATION)
 
     async def send(self, report: AlertReport) -> dict[str, JsonValue]:
         async with self.grants.locked(self.manifest.principal.key) as grant:
@@ -181,8 +192,11 @@ class HostReporter:
                         return {"status": "stale", "reason": "pending_evidence_changed"}
                     if (await self.mailboxes.by_name(report.name)).mailbox != target:
                         return {"status": "stale", "reason": "observed_binding_changed"}
+                if not await self.check_recipient():
+                    return {"status": "stale", "reason": "recipient_binding_changed"}
                 result = await send_agent_request(self.mailboxes, self.messages, sender,
-                    RECIPIENT, report.message_id(), payload)
+                    self.recipient, report.message_id(), payload,
+                    expected_recipient=(RECIPIENT_ENDPOINT, RECIPIENT_GENERATION))
             if isinstance(result, MessageSubmitResult) and result.status == "ok" and result.message:
                 return {"status": "queued", "message_id": str(result.message.message_id),
                         "delivery_id": str(result.message.delivery_id)}

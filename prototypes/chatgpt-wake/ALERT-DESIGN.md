@@ -41,3 +41,13 @@ USED `chatgpt_mcp.py:1548-1610` and `agent_mailboxes.py:142-220`: existing named
 ## Current recipient amendment
 
 Marco directed “make it msg you for now” then “then setup”. Parent independently registered its actual session as `ChatGPT Wake Setup 2026-11-04` and supplied definitive registration receipt. This exact fixed recipient supersedes the former Coordinator destination. No configurable recipient or expanded authority. Current direction authorizes the reviewed bounded local message-only reporter issuance/registration/activation; independent amended-candidate review precedes effects. Generate fresh service/grant identities and exact package hashes; never execute superseded manifests. No synthetic blocker or extra source mail for qualification; live alert delivery remains NOT_RUN without genuine qualified evidence.
+
+## Approved local extras amendment
+
+The extras grant now targets `browser extension`, the renamed same parent endpoint
+`f23abc36-d48d-46a4-aab3-01c1e608f469` generation1. Runtime sends and /config use
+that fixed name; the legacy manifest recipient remains immutable issuance provenance.
+Sender identity/grant are unchanged. First sends require exact destination continuity;
+committed replay still precedes current destination/evidence checks. EXTRAS-DESIGN.md
+binds the bounded local restart service and OFF documentation-only startup note.
+Main landing and held PR1110 remain HOLD pending explicit composition disposition.
