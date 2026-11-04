@@ -76,6 +76,8 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
 async def test_configured_reporter_without_incident_reports_actual_configuration(state_database_schema):
     engine = create_async_engine(state_database_schema)
     try:
+        async with engine.connect() as connection:
+            before = (await connection.execute(select(message_deliveries))).all()
         state = MessageState(engine, GrantState(engine))
         server = FastMCP("configured-browser-test")
         install_browser_wake(server, state, HostReporter(plan("a" * 40), state))
@@ -93,6 +95,6 @@ async def test_configured_reporter_without_incident_reports_actual_configuration
                 headers={"Authorization": "Bearer " + value["report_token"]})
             assert response.json() == {"status": "logged", "escalation": "configured"}
             async with engine.connect() as connection:
-                assert (await connection.execute(select(message_deliveries))).all() == []
+                assert (await connection.execute(select(message_deliveries))).all() == before
     finally:
         await engine.dispose()
