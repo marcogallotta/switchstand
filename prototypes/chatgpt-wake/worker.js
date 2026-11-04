@@ -62,7 +62,7 @@ async function nudge(expectedUrl, observeOnly = false, attempt) {
     const send = sendControl();
     const canClick = owned(witness) && enabled(send);
     witness?.retire();
-    if (!canClick) return 'retry-exhausted: ownership or send control unavailable';
+    if (!canClick) return 'attempt-outcome-unknown: retry exhausted; ownership or send control unavailable';
     send.click();
     return 'click-attempted';
   }

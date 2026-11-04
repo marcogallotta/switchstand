@@ -940,6 +940,10 @@ uses the shared fenced `MessageState.all_pending_delivery_ids` collector; it
 returns endpoint/generation/IDs without mailbox content or delivery mutations.
 The extension manually pairs each mailbox with an exact open conversation tab.
 Per-binding pending/seen and a persisted pre-mutation halt prevent blind retries.
+An explicit no-click receipt permits one retry of the exact extension-owned wake,
+without reinsertion, using a consumed storage allowance and an isolated-world
+ownership witness invalidated by edits or submission actions. Changed identity,
+pending IDs, STOP, restart, prior clicks and legacy UNKNOWN remain fenced.
 Closed tabs remain observed without auto-reopening. The candidate uses owned
 TEST loopback18766, independently from the original mock18765.
 

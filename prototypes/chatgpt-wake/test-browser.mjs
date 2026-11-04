@@ -132,7 +132,7 @@ try {
     assert.equal(await invoke({...attempt, retry: true}), 'click-attempted');
     assert.deepEqual(await evaluate(session, 'submissions'), ['Process your mailbox']);
     assert.equal(await evaluate(session, 'insertions'), 1, 'retry never reinserts text');
-    assert.match(await invoke({...attempt, retry: true}), /retry-exhausted/);
+    assert.match(await invoke({...attempt, retry: true}), /attempt-outcome-unknown: retry exhausted/);
     assert.equal(await evaluate(session, 'submissions.length'), 1, 'consumed token cannot click twice');
   }
   for (const change of [
@@ -148,28 +148,28 @@ try {
     await evaluate(session, change);
     const before = await evaluate(session, 'submissions.length');
     const result = await invoke({...attempt, retry: true});
-    assert.ok(result === 'busy' || result.startsWith('retry-exhausted'), result);
+    assert.ok(result === 'busy' || result.startsWith('attempt-outcome-unknown: retry exhausted'), result);
     assert.equal(await evaluate(session, 'submissions.length'), before, 'edit/submit/replacement/attachment/busy never retries');
   }
   const edited = await reserve('contenteditable');
   await evaluate(session, `currentEditor().textContent='edited';currentEditor().textContent='Process your mailbox'`);
   await enableSend();
-  assert.match(await invoke({...edited, retry: true}), /retry-exhausted/, 'mutation edit/revert revokes ownership');
+  assert.match(await invoke({...edited, retry: true}), /attempt-outcome-unknown: retry exhausted/, 'mutation edit/revert revokes ownership');
   await prepare();
   await evaluate(session, `currentEditor().value='Process your mailbox'`);
   await enableSend();
-  assert.match(await invoke({token: 'never-owned', retry: true}), /retry-exhausted/);
+  assert.match(await invoke({token: 'never-owned', retry: true}), /attempt-outcome-unknown: retry exhausted/);
   await prepare(); await enableSend();
   await evaluate(session, `send.onclick=()=>submissions.push(text())`);
   const clicked = {token: 'clicked-with-retained-text'};
   assert.equal(await invoke(clicked), 'click-attempted');
   assert.equal(await evaluate(session, 'text()'), 'Process your mailbox');
-  assert.match(await invoke({...clicked, retry: true}), /retry-exhausted/, 'matching retained text after click is not no-send evidence');
+  assert.match(await invoke({...clicked, retry: true}), /attempt-outcome-unknown: retry exhausted/, 'matching retained text after click is not no-send evidence');
   assert.equal(await evaluate(session, 'submissions.length'), 1);
   const unavailable = await reserve('textarea');
-  assert.match(await invoke({...unavailable, retry: true}), /retry-exhausted/);
+  assert.match(await invoke({...unavailable, retry: true}), /attempt-outcome-unknown: retry exhausted/);
   await enableSend();
-  assert.match(await invoke({...unavailable, retry: true}), /retry-exhausted/);
+  assert.match(await invoke({...unavailable, retry: true}), /attempt-outcome-unknown: retry exhausted/);
   assert.equal(await evaluate(session, 'submissions.length'), 0);
   console.log('PASS owned no-click one retry without reinsertion; edit/revert, submitted, prior click with retained text, missing witness/control, replacement and attachments remain fenced.');
   console.log('PASS isolated MV3 composer: delayed voice-to-send, draft/busy, no-ID editor, ambiguity, textarea, exact URL and retained unsent draft. Real ChatGPT/background operation: NOT_RUN.');

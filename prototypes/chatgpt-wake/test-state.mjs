@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 const code = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
+const backend = await readFile(new URL('../../src/switchstand/chatgpt_wake.py', import.meta.url), 'utf8');
+const acceptedOutcomes = new Set([...backend.match(/OUTCOMES = frozenset\(\{([\s\S]*?)\}\)/)[1].matchAll(/"([a-z-]+)"/g)].map(match => match[1]));
 const id = number => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
 let saved = {}, handler, removed, outcome = 'click-attempted', blockName, releasePoll;
 const observations = new Map(['A', 'B'].map((name, index) => [name,
@@ -364,7 +366,7 @@ onSave = () => {
 await message({type: 'check'}); await stopping; onSave = undefined;
 assert.equal(attempts.length, 1, 'STOP during retry consumption preempts DOM dispatch');
 
-for (const failed of ['retry-exhausted: control unavailable', 'throw', undefined, 'busy']) {
+for (const failed of ['attempt-outcome-unknown: retry exhausted; control unavailable', 'throw', undefined, 'busy']) {
   await unsentWake();
   outcome = failed;
   await message({type: 'check'});
@@ -375,3 +377,6 @@ for (const failed of ['retry-exhausted: control unavailable', 'throw', undefined
   assert.equal(state('A').retry, undefined);
 }
 console.log('PASS explicit no-click single retry; consume-before-dispatch, no insertion, legacy/restart/binding/pending/STOP fences and terminal retry failure.');
+assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
+for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
+console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
