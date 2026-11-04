@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import AgentMailboxState, agent_mailboxes, chat_session_key
 from switchstand.chatgpt_alerts import (
+    RECIPIENT_ENDPOINT,
     AlertReport,
     HostReporter,
     bootstrap,
@@ -60,7 +61,7 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
     # The reserved recipient is a real fixture registry row, never a takeover of a live role.
     async with engine.begin() as connection:
         await connection.execute(agent_mailboxes.insert().values(
-            name_key="chatgpt-wake-setup-2026-11-04", display_name="ChatGPT Wake Setup 2026-11-04", endpoint_id=uuid4(),
+            name_key="browser-extension", display_name="browser extension", endpoint_id=RECIPIENT_ENDPOINT,
             principal_key="fixture-coordinator", session_key=chat_session_key("fixture"), generation=1))
     target = (await mailboxes.register_agent("Fixture tracker", "fixture-target", "fixture-chat")).mailbox
     assert target
@@ -81,13 +82,26 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
     expired = evidence.model_copy(update={"incident_id": uuid4(),
         "started_at": now - timedelta(seconds=152), "observed_at": now - timedelta(seconds=91)})
     assert await reporter.send(expired) == {"status": "denied", "reason": "observation_expired"}
+    async with engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == RECIPIENT_ENDPOINT).values(generation=2))
+    assert (await reporter.send(evidence))["reason"] == "recipient_binding_changed"
+    async with engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == RECIPIENT_ENDPOINT).values(generation=1))
     receipt = await reporter.send(evidence)  # Simulate its response being lost to the extension.
     assert receipt["status"] == "queued"
+    async with engine.connect() as connection:
+        destination = (await connection.execute(select(message_deliveries.c.recipient_work_id).where(
+            message_deliveries.c.delivery_id == receipt["delivery_id"]))).scalar_one()
+    assert destination == RECIPIENT_ENDPOINT
     async with engine.begin() as connection:
         await connection.execute(update(message_deliveries).where(
             message_deliveries.c.delivery_id == delivery).values(state="DISPOSITIONED"))
         await connection.execute(update(agent_mailboxes).where(
             agent_mailboxes.c.endpoint_id == target.endpoint_id).values(generation=2))
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == RECIPIENT_ENDPOINT).values(generation=2))
     # A committed operation is replayable even beyond the first-observation freshness window.
     class FutureDateTime(datetime):
         @classmethod
@@ -98,6 +112,9 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
         assert await reporter.send(evidence) == receipt  # Replay before stale/cleared evidence checks.
     changed = evidence.model_copy(update={"delivery_ids": [uuid4()]})
     assert (await reporter.send(changed))["status"] == "conflict"
+    async with engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == RECIPIENT_ENDPOINT).values(generation=1))
     recovered = evidence.model_copy(update={"phase": "recovered"})
     recovery = await reporter.send(recovered)
     assert recovery["status"] == "queued"

@@ -109,3 +109,21 @@ Focused add-on qualification: `scripts/check tests/test_chatgpt_alerts.py
  tests/test_agent_messages.py tests/test_chatgpt_wake.py` plus
 `node prototypes/chatgpt-wake/test-state.mjs`. Only disposable PostgreSQL is used.
 Live Coordinator alert delivery remains NOT_RUN until separately activated/tested.
+
+## Local extras (main landing HOLD)
+
+`chatgpt-wake.service.in` is the bounded local user-service template. Render
+`@WRITER@` and `@LAUNCHER@` only from the independently reviewed exact-head
+activation package; verify with `systemd-analyze --user verify`. Install/start
+only under this Work's current local activation grant. There is no login enablement.
+Three starts per minute bound permanent startup failures; transient failures restart
+after three seconds. Health is `GET http://127.0.0.1:18766/internal/chatgpt-wake/config`:
+require HTTP200, configured escalation, and recipient `browser extension`.
+The launcher checks exact package HEAD, read-only observation and existing reporter
+grant; it never issues/registers. The original manifest remains immutable issuance
+provenance; current sends require the renamed parent's pinned endpoint/generation.
+Stop the user service and restore the reviewed previous launcher to roll back.
+
+Startup-note template — **OFF, unused until Marco decides** (documentation only):
+`WorkId: <exact Tracker WorkId>; role: <Coordinator or Worker>.`
+This template is not injected or automatic. Tracker owns assignments.

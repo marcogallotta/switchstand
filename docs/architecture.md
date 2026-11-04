@@ -947,7 +947,7 @@ The local config route supplies an ephemeral report-only bearer capability. JSON
 reports require that capability and loopback peer/Host; ordinary web origins get
 no CORS access. By default reports go only to existing runtime logging and
 escalation remains unconfigured. An explicitly injected `HostReporter` adds the
-fixed ChatGPT Wake Setup 2026-11-04 alert path; it never registers or issues a grant on startup.
+fixed `browser extension` alert path; it never registers or issues a grant on startup.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed
@@ -974,3 +974,11 @@ identity, while ambiguous and committed operations keep their frozen arguments. 
 copied or overwritten. A queued durable alert is not proof of Coordinator pickup.
 No new persistence table, OAuth flow, background Worker or native-input route is
 introduced.
+
+The wake prototype's local extras use a user-service template with restart-on-failure,
+three-second delay and three-starts-per-minute limit; no login enablement. The exact
+reviewed launcher preserves read-only observation and the existing admitted reporter.
+The sole current alert target is `browser extension`, fenced to its existing parent
+endpoint/generation; /config reports this runtime target while the immutable issued
+manifest retains its historical name. No new grant, registry identity or ChatGPT
+startup automation is introduced; the optional startup note is documentation only/OFF.

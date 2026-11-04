@@ -54,7 +54,7 @@ def install_browser_wake(
             return JSONResponse({"status": "denied"}, status_code=403)
         return JSONResponse({"status": "ok", "report_token": report_token,
                              "escalation": "configured" if reporter else "unconfigured",
-                             "recipient": reporter.manifest.recipient if reporter else None}, headers={"Cache-Control": "no-store"})
+                             "recipient": reporter.recipient if reporter else None}, headers={"Cache-Control": "no-store"})
 
     @server.custom_route(PATH + "/poll", methods=["GET"])
     async def poll(request: Request) -> JSONResponse:
