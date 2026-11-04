@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Literal, Self
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, JsonValue, model_validator
 from sqlalchemy import (
@@ -44,6 +44,8 @@ PROCESSING_EFFECT_NAMESPACE = UUID("c790d50e-5ed0-4fac-aed3-09051a14d8df")
 REVIEW_CUTOFF_RECEIPT = "typed-review-v1-cutoff"
 REVIEW_ROUTE_REFS = frozenset({"review.request", "review.acquisition", "review.outcome"})
 AGENT_MESSAGE_PAYLOAD_LIMIT = 800
+WAKE_SERVICE_ENDPOINT = uuid5(NAMESPACE_URL, "switchstand:codex-inbound-wake")
+WAKE_SERVICE_NAME = "switchstand-inbound-wake"
 OPEN_REQUEST_STATES = ("AVAILABLE", "RECEIVED", "ACKNOWLEDGED")
 
 
