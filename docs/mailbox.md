@@ -7,16 +7,19 @@ owns agent procedure and authority. [ChatGPT MCP edge](chatgpt-mcp-edge.md) owns
 
 ## Find the owner
 
-Paths below are under `src/switchstand/`; test paths are under `tests/`.
+Implementation lives in `src/switchstand/mailbox/`. The former root modules under
+`src/switchstand/` retain public compatibility imports; change behavior in the package owner,
+then check the existing callers through those imports. Edge and managed adapters remain outside
+the package. Test paths below are under `tests/`.
 
 | Change or investigation | Code owner | Existing evidence |
 | --- | --- | --- |
-| Delivery persistence, replay, receive/recover, ACK, correlated result and disposition | `messages.py`: `MessageState`; `_store`, `_disposition_result`, `*_admitted` transitions | `test_messages.py`; `test_agent_messages.py` for ordinary public behavior |
-| Registered name, hidden session binding, generation fencing and takeover | `agent_mailboxes.py`: `AgentMailboxState`; host transfer command in `agent_mailbox_transfer.py` | `test_agent_mailboxes.py` |
-| Ordinary `agent_message_*` tool admission and response shape | `chatgpt_mcp.py`: `agent_context`, `agent_message_*`; `agent_messages.py`: public views | `test_agent_messages.py` |
+| Delivery persistence, replay, receive/recover, ACK, correlated result and disposition | [`mailbox/messages.py`](../src/switchstand/mailbox/messages.py): `MessageState`; `_store`, `_disposition_result`, `*_admitted` transitions | `test_messages.py`; `test_agent_messages.py` for ordinary public behavior |
+| Registered name, hidden session binding, generation fencing and takeover | [`mailbox/agent_mailboxes.py`](../src/switchstand/mailbox/agent_mailboxes.py): `AgentMailboxState`; host transfer command in [`mailbox/agent_mailbox_transfer.py`](../src/switchstand/mailbox/agent_mailbox_transfer.py) | `test_agent_mailboxes.py` |
+| Ordinary `agent_message_*` tool admission and response shape | `chatgpt_mcp.py`: `agent_context`, `agent_message_*`; [`mailbox/agent_messages.py`](../src/switchstand/mailbox/agent_messages.py): public views | `test_agent_messages.py` |
 | Managed WorkId-addressed `message_*` calls | `chatgpt.py`: `ChatGPTService`; `mcp.py`: managed tool adapters | `test_chatgpt_messages.py`, `test_managed_messages.py` |
-| Committed delivery does not produce a Codex turn | `codex_inbound_wake.py`: `InboundWake`; edge construction/lifespan in `chatgpt_edge.py` | `test_codex_inbound_wake.py` |
-| Notice markers, typed-review hints or Claude summary rendering | `mailbox_wake.py`: pure projections; `chatgpt_edge.py`: `/internal/claude-mail-summary`; `scripts/claude-mail-watch` | `test_mailbox_wake.py`, `test_claude_mail_watch.py` |
+| Committed delivery does not produce a Codex turn | [`mailbox/codex_inbound_wake.py`](../src/switchstand/mailbox/codex_inbound_wake.py): `InboundWake`; edge construction/lifespan in `chatgpt_edge.py` | `test_codex_inbound_wake.py` |
+| Notice markers, typed-review hints or Claude summary rendering | [`mailbox/mailbox_wake.py`](../src/switchstand/mailbox/mailbox_wake.py): pure projections; `chatgpt_edge.py`: `/internal/claude-mail-summary`; `scripts/claude-mail-watch` | `test_mailbox_wake.py`, `test_claude_mail_watch.py` |
 
 `wakeful.py` and the edge-monitor prototypes own a separate event/outbox contract, described in
 [Wakeful](wakeful.md). The Codex mailbox wake adapter does not dispatch through that outbox.
@@ -36,7 +39,7 @@ ordinary result/disposition tools reject reserved review routes.
 
 Keep the original delivery and result identity when reconciling uncertainty. ACK is useful for a
 processed notification, but open request watches still include ACKNOWLEDGED until disposition.
-`agent_messages.public_message` maps ACKNOWLEDGED to RECEIVED for the older public message shape;
+`mailbox.agent_messages.public_message` maps ACKNOWLEDGED to RECEIVED for the older public message shape;
 that projection does not reopen a dismissed delivery.
 
 Start validation with `test_agent_messages.py` cases
