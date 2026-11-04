@@ -10,6 +10,7 @@ import pytest
 
 import switchstand.codex_inbound_wake as module
 from switchstand.agent_mailboxes import AgentMailbox, chat_session_key
+from switchstand.mailbox_wake import MARKER
 
 
 @pytest.fixture
@@ -22,7 +23,7 @@ def subject(tmp_path):
     @asynccontextmanager
     async def fence(*_args):
         yield True
-    messages = NS(engine=None, pending_delivery_ids=AsyncMock(return_value=(delivery,)),
+    messages = NS(engine=None, all_pending_delivery_ids=AsyncMock(return_value=(delivery,)),
                   pending_delivery=AsyncMock(return_value=True), pending_delivery_fence=fence)
     wake = module.InboundWake(messages, control, tmp_path / "admit")
     wake.fresh.add(delivery)
@@ -40,7 +41,7 @@ def subject(tmp_path):
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
     if boundary == "oldnew":
-        wake.messages.pending_delivery_ids.return_value = (uuid4(), delivery)
+        wake.messages.all_pending_delivery_ids.return_value = (uuid4(), delivery)
     if boundary in {"review", "review_result"}:
         review_id = str(uuid4())
         wake.fresh_messages[delivery] = NS(route_ref="review.request",
@@ -60,7 +61,7 @@ async def test_dispatch_boundaries(subject, boundary):
             return {"thread": {"status": {"type": "active"}}}
         if method == "thread/turns/list" and boundary in {"receipt", "routed"}:
             return {"data": [{"items": [{"type": "userMessage", "content": [
-                {"type": "text", "text": module.MARKER + json.dumps([str(delivery)])}]}]}]}
+            {"type": "text", "text": MARKER + json.dumps([str(delivery)])}]}]}]}
         if method == "turn/start" and boundary == "unknown":
             raise ConnectionError("acceptance lost")
         return await original(method, params)
@@ -68,7 +69,7 @@ async def test_dispatch_boundaries(subject, boundary):
     if boundary == "stop":
         wake.control.write_text('{"enabled":false}')
     if boundary == "stale":
-        wake.messages.pending_delivery_ids.return_value = None
+        wake.messages.all_pending_delivery_ids.return_value = None
     if boundary == "old":
         wake.fresh.clear()
     if boundary == "unknown":
@@ -79,7 +80,7 @@ async def test_dispatch_boundaries(subject, boundary):
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
     assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown"} else 0)
     if boundary == "oldnew":
-        assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(module.MARKER):]) == [str(delivery)]
+        assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(MARKER):]) == [str(delivery)]
     if boundary == "old":
         assert wake.outcomes[binding.endpoint_id] == "OLDER_UNCERTAIN"
     if boundary == "review":
@@ -123,7 +124,7 @@ async def test_gate_rechecks_after_admission(subject, boundary):
 
 async def test_receipts_ignore_nonuser_text_and_follow_pages(subject):
     _, rpc, _, identity, delivery = subject
-    marker = {"type": "text", "text": module.MARKER + json.dumps([str(delivery)])}
+    marker = {"type": "text", "text": MARKER + json.dumps([str(delivery)])}
     rpc.call.side_effect = [{"data": [{"items": [{"type": "agentMessage", "content": [marker]}]}],
                              "nextCursor": "next"},
                             {"data": [{"items": [{"type": "userMessage", "content": [marker]}]}]}]

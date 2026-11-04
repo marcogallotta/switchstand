@@ -51,6 +51,7 @@ from .grants import PrincipalContext, WorkGrant
 from .human_reviews import HumanReviewState
 from .implementation_requests import ImplementationRequestState
 from .lifecycle import LifecycleRepository, RequiredResultPersistence
+from .mailbox_wake import MailboxSummary
 from .messages import MessagePendingRequest, MessageState
 from .oauth_continuity import (
     FASTMCP_ACCESS_TOKEN_LIFETIME_SECONDS,
@@ -767,11 +768,7 @@ def _create_resource_app(
             attention = None
         if attention is None:
             return JSONResponse({"status": "recovery_required", "reason": "stale_or_unavailable"}, status_code=503)
-        return JSONResponse({
-            "status": "ok", "name": binding.mailbox.name,
-            "count": sum(count for _, count in attention.groups),
-            "senders": [{"name": sender, "count": count} for sender, count in attention.groups],
-        })
+        return JSONResponse(MailboxSummary(attention.groups).response(binding.mailbox.name))
 
     @server.custom_route(CODEX_STOP_MAILBOX_PATH, methods=["POST"], include_in_schema=False)
     async def _codex_stop_mailbox(  # pyright: ignore[reportUnusedFunction]

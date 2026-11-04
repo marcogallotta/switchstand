@@ -535,7 +535,7 @@ messaging, and required continuation:
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
+  checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
