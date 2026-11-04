@@ -13,6 +13,7 @@ from typing import Any, cast
 from uuid import UUID
 
 from websockets.asyncio.client import unix_connect
+from websockets.exceptions import ConnectionClosed
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
 from .mailbox_wake import delivery_marker, delivery_notice, marker_receipts
@@ -150,6 +151,7 @@ class InboundWake:
         self.sockets = self._sockets(json.loads(control.read_text()))
         self.tasks: dict[UUID, asyncio.Task[None]] = {}
         self.events: dict[UUID, asyncio.Event] = {}
+        self.reconnectable: set[UUID] = set()
         self.fresh: set[UUID] = set()
         self.fresh_messages: dict[UUID, PendingMessage] = {}
         self.outcomes: dict[UUID, str] = {}
@@ -215,8 +217,19 @@ class InboundWake:
         recipient = message.recipient_work_id
         event = self.events.setdefault(recipient, asyncio.Event())
         event.set()
-        if recipient not in self.tasks:
+        task = self.tasks.get(recipient)
+        if task is None:
             self.tasks[recipient] = asyncio.create_task(self._run(recipient, event))
+        elif fresh:
+            # A delivery can race the old observer's disconnect. Waiting for its
+            # completion avoids losing that delivery or running two observers.
+            def reconnect(completed: asyncio.Task[None]):
+                if (self.tasks.get(recipient) is completed
+                        and recipient in self.reconnectable and self.enabled()):
+                    self.reconnectable.remove(recipient)
+                    event.set()
+                    self.tasks[recipient] = asyncio.create_task(self._run(recipient, event))
+            task.add_done_callback(reconnect)
 
     async def close(self):
         self.messages.on_delivery = None
@@ -286,6 +299,10 @@ class InboundWake:
             self.outcomes[recipient] = f"DENIED: {error}"
             LOG.warning("inbound wake rejected for %s: %s", recipient, error)
         except Exception as error:
+            if isinstance(error, (ConnectionError, OSError, ConnectionClosed)):
+                # turn/start transport ambiguity is wrapped as UncertainTurn,
+                # so it deliberately cannot reopen this observer.
+                self.reconnectable.add(recipient)
             self.outcomes[recipient] = f"UNKNOWN: {error}"
             LOG.exception("inbound wake suspended for %s", recipient)
             # Retain a terminal task: a new signal cannot blindly retry ambiguous turn/start.

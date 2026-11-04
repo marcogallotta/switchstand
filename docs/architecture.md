@@ -536,6 +536,24 @@ messaging, and required continuation:
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
+  The source-owned `recovery/coordinator/systemd/switchstand-codex-coordinator.service`
+  oneshot unit requires and follows the existing dedicated `switchstand-codex.service`.
+  Both login and daemon startup want this unit, and `PartOf` propagates daemon restarts.
+  It runs `scripts/codex-coordinator-resume` without requiring a daemon restart on install. The helper reads the
+  exact existing thread UUID from the dedicated CODEX_HOME's `background-thread-id`,
+  resumes it in the recovery workspace with the two approved additional writable roots,
+  and creates no replacement thread; a TUI is optional. On every start it requires
+  the actual loaded recovery instruction source, runs the restoration hook within the
+  15 KB budget, and uses one idle/admitted verification turn to elicit the loaded title
+  and restored-note labels. A dedicated pending marker blocks later submissions after
+  any unresolved verification send; only a definitive matching completion clears it.
+  Existing active work is never interrupted. Durable mailbox binding remains tied to
+  that same thread. A fresh delivery may reconnect a terminated
+  observer after definite transport failure, including websocket close; a delivery racing
+  observer shutdown waits for it to finish. Existing receipt, currentness, admission and
+  idle checks still govern dispatch. Ambiguous `turn/start` acceptance remains terminal
+  `UncertainTurn` and is never automatically replayed.
+
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
