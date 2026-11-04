@@ -5,6 +5,5 @@ from .mailbox.agent_mailbox_transfer import (
 )
 
 __all__ = [
-    "_approve",
     "run",
 ]
