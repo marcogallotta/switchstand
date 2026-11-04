@@ -91,13 +91,18 @@ class EffectState(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+_TEXT_LIMIT = 2000
+_RESULT_LIMIT = 4000
+_EVIDENCE_LIMIT = 512
+
+
 class FailureRecord(ClosedModel):
     schema_version: Literal[1] = 1
     attempt_id: UUID
     operation_id: UUID
-    attempted_claim: str = Field(min_length=1, max_length=2000)
-    observed_result: str = Field(min_length=1, max_length=4000)
-    clearing_action: str = Field(min_length=1, max_length=2000)
+    attempted_claim: str = Field(min_length=1, max_length=_TEXT_LIMIT)
+    observed_result: str = Field(min_length=1, max_length=_RESULT_LIMIT)
+    clearing_action: str = Field(min_length=1, max_length=_TEXT_LIMIT)
     effect_state: EffectState
     owner: str = Field(min_length=1, max_length=36)
     occurred_at: datetime
@@ -121,19 +126,19 @@ class FailureRecord(ClosedModel):
 
     @model_validator(mode="after")
     def bounded_evidence(self) -> Self:
-        if any(not item or len(item) > 512 for item in self.evidence):
+        if any(not item or len(item) > _EVIDENCE_LIMIT for item in self.evidence):
             raise ValueError("evidence pointers must contain 1..512 characters")
         return self
 
     def sanitized(self) -> Self:
-        return self.model_copy(
-            update={
-                "attempted_claim": redact(self.attempted_claim),
-                "observed_result": redact(self.observed_result),
-                "clearing_action": redact(self.clearing_action),
-                "evidence": tuple(redact(item) for item in self.evidence),
-            }
-        )
+        """Redact complete values, then bound diagnostics, possibly losing reference suffixes."""
+        return self.model_validate({
+            **self.model_dump(),
+            "attempted_claim": redact(self.attempted_claim)[:_TEXT_LIMIT],
+            "observed_result": redact(self.observed_result)[:_RESULT_LIMIT],
+            "clearing_action": redact(self.clearing_action)[:_TEXT_LIMIT],
+            "evidence": tuple(redact(item)[:_EVIDENCE_LIMIT] for item in self.evidence),
+        })
 
     def canonical(self) -> dict[str, object]:
         return self.sanitized().model_dump(mode="json")
@@ -144,7 +149,7 @@ class FailureResolution(ClosedModel):
     operation_id: UUID
     attempt_id: UUID
     resolved_at: datetime
-    summary: str = Field(min_length=1, max_length=2000)
+    summary: str = Field(min_length=1, max_length=_TEXT_LIMIT)
     evidence: tuple[str, ...] = Field(default=(), max_length=16)
 
     @field_validator("resolved_at")
@@ -155,14 +160,14 @@ class FailureResolution(ClosedModel):
         return value.astimezone(UTC)
 
     def canonical(self) -> dict[str, object]:
-        if any(not item or len(item) > 512 for item in self.evidence):
+        if any(not item or len(item) > _EVIDENCE_LIMIT for item in self.evidence):
             raise ValueError("evidence pointers must contain 1..512 characters")
-        return self.model_copy(
-            update={
-                "summary": redact(self.summary),
-                "evidence": tuple(map(redact, self.evidence)),
-            }
-        ).model_dump(mode="json")
+        # As with records, redaction precedes bounding and may shorten diagnostic references.
+        return self.model_validate({
+            **self.model_dump(),
+            "summary": redact(self.summary)[:_TEXT_LIMIT],
+            "evidence": tuple(redact(item)[:_EVIDENCE_LIMIT] for item in self.evidence),
+        }).model_dump(mode="json")
 
 
 @dataclass(frozen=True)

@@ -328,7 +328,9 @@ messaging, and required continuation:
   project unresolved clearing actions, but the journal remains authoritative. The
   `observability_get` exact-owner failure projection keeps details private by default;
   `include_failure_detail=true` includes bounded, validated, redacted failure and resolution
-  evidence. Recorded clearing establishes a fact at its timestamp, not continuing health or
+  evidence. Complete diagnostic values are redacted before bounding to their existing field
+  limits; this can discard nonsecret suffixes or shorten evidence references, which are not
+  guaranteed lossless pointers. Recorded clearing establishes a fact at its timestamp, not continuing health or
   complete production coverage. The legacy
   `friction.md` source cannot be archived until import, read parity, queue synchronization, and an
   explicit cutoff all pass.
