@@ -1,27 +1,43 @@
 // Real MV3/browser boundary, intercepted fixture only. No ChatGPT network calls.
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, readFile, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, writeFile, copyFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {once} from 'node:events';
+import {createServer} from 'node:http';
 
-const extension = dirname(fileURLToPath(import.meta.url));
+const sourceExtension = dirname(fileURLToPath(import.meta.url));
 const profile = await mkdtemp(join(tmpdir(), 'switch-wake-fixture-'));
-const browser = spawn(process.env.BROWSER || '/snap/brave/current/opt/brave.com/brave/brave', [
-  '--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-dev-shm-usage',
-  '--disable-background-networking', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-  `--disable-extensions-except=${extension}`, `--load-extension=${extension}`, 'about:blank'
-], {stdio: ['ignore', 'ignore', 'pipe']});
-let stderr = '';
-browser.stderr.on('data', data => { stderr += data; });
-const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
-let socket;
+let browser, socket, backend;
+const metadata = {status:'ok',name:'Fixture',endpoint:'00000000-0000-4000-8000-000000000001',generation:1,delivery_ids:[]};
 try {
+  const extension=join(profile,'extension');
+  await (await import('node:fs/promises')).mkdir(extension);
+  backend=createServer(async(request,response)=>{
+    for await(const chunk of request){} // No external effects; only metadata/report receipts.
+    response.setHeader('Content-Type','application/json');
+    response.end(JSON.stringify(request.url.includes('/poll?')?metadata:request.url.endsWith('/config')
+      ?{status:'ok',report_token:'fixture',escalation:'unconfigured',recipient:'Fixture'}
+      :{status:'logged',escalation:'unconfigured'}));
+  });
+  await new Promise(resolve=>backend.listen(0,'127.0.0.1',resolve));
+  const original=await readFile(join(sourceExtension,'worker.js'),'utf8');
+  const literal="const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';";
+  assert.equal(original.split(literal).length,2);
+  await writeFile(join(extension,'worker.js'),original.replace(literal,`const SOURCE = 'http://127.0.0.1:${backend.address().port}/internal/chatgpt-wake';`));
+  for(const file of ['manifest.json','popup.html','popup.js'])await copyFile(join(sourceExtension,file),join(extension,file));
+  browser=spawn(process.env.BROWSER || '/snap/brave/current/opt/brave.com/brave/brave', [
+    '--headless=new','--no-sandbox','--disable-gpu','--no-first-run','--disable-dev-shm-usage',
+    '--disable-background-networking','--remote-debugging-port=0',`--user-data-dir=${profile}/browser`,
+    `--disable-extensions-except=${extension}`,`--load-extension=${extension}`,'about:blank'
+  ],{stdio:['ignore','ignore','pipe']});
+  let stderr='';browser.stderr.on('data',data=>{stderr+=data;});
+  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   let lines;
   for (let attempt = 0; attempt < 100; attempt++) {
-    try { lines = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).trim().split('\n'); break; }
+    try { lines = (await readFile(join(profile,'browser','DevToolsActivePort'), 'utf8')).trim().split('\n'); break; }
     catch { if (browser.exitCode !== null) throw new Error(stderr); await pause(100); }
   }
   if (!lines) throw new Error(`browser startup timeout: ${stderr}`);
@@ -83,6 +99,7 @@ try {
     await pause(100);
   }
   const workerSession = await attach(worker.targetId);
+  await evaluate(workerSession,'chrome.alarms.clearAll()');
   const nudge = () => evaluate(workerSession, `(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});globalThis.fixtureTabId=tab.id;return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:nudge,args:[${JSON.stringify(url)}]}))[0].result})()`);
   assert.equal(await nudge(), 'click-attempted');
   assert.deepEqual(await evaluate(session, 'submissions'), ['Process your mailbox']);
@@ -215,14 +232,55 @@ try {
   await command('Target.closeTarget', {targetId: reopened.target.targetId});
   await command('Target.closeTarget', {targetId: duplicate.target.targetId});
   console.log('PASS actual isolated browser routing: same-tab away/back, different matching tab, close/reopen, deterministic duplicate single target; no unrelated editor mutation.');
+  // Public popup/runtime/storage boundary: explicit Pair reconciles only drained UNKNOWN.
+  const paired=await openFixture();
+  const popupTarget=await command('Target.createTarget',{url:'about:blank'});
+  const popupSession=await attach(popupTarget.targetId);
+  await command('Page.navigate',{url:worker.url.replace('/worker.js','/popup.html')},popupSession);
+  for(let i=0;i<50;i++){if(await evaluate(popupSession,'typeof globalThis.chrome?.runtime?.sendMessage === "function"'))break;await pause(20);}
+  assert.equal(await evaluate(popupSession,'typeof globalThis.chrome?.runtime?.sendMessage'), 'function');
+  const message=value=>evaluate(popupSession,`chrome.runtime.sendMessage(${JSON.stringify(value)})`);
+  const bind=async()=>{
+    const verified=(await message({type:'verify',name:'Fixture'})).status;
+    const tabId=await evaluate(workerSession,`chrome.tabs.query({}).then(t=>t.find(x=>x.url===${JSON.stringify(url)}).id)`);
+    return message({type:'bind',...verified,tabId,url});
+  };
+  const binding=()=>evaluate(popupSession,'chrome.storage.local.get("wakeBindings").then(s=>s.wakeBindings[0])');
+  assert.equal((await bind()).error,undefined);
+  metadata.delivery_ids=['00000000-0000-4000-8000-000000000101'];
+  await message({type:'check'});
+  assert.equal((await evaluate(paired.session,'submissions')).length,1);
+  metadata.delivery_ids=['00000000-0000-4000-8000-000000000102'];
+  await evaluate(paired.session,'window.suppressSend=true');
+  await message({type:'check'});
+  assert.equal((await binding()).halted,true);
+  assert.ok((await bind()).error,'nonempty mailbox cannot reconcile');
+  metadata.delivery_ids=[];
+  await message({type:'verify',name:'Fixture'});await message({type:'check'});
+  assert.equal((await binding()).halted,true,'Verify/Check do not clear a drained halt');
+  await message({type:'disarm',endpoint:metadata.endpoint});
+  const before=await evaluate(paired.session,'submissions.length');
+  const draftBefore=await evaluate(paired.session,'currentEditor().textContent');
+  assert.equal((await bind()).error,undefined);
+  const reconciled=await binding();
+  assert.equal(reconciled.armed,true);assert.equal(Boolean(reconciled.halted),false);
+  assert.deepEqual(reconciled.seen,['00000000-0000-4000-8000-000000000101']);
+  assert.equal(reconciled.lastReconciledAttempt.outcome,'attempt-outcome-unknown');
+  assert.deepEqual(reconciled.lastReconciledAttempt.delivery_ids,['00000000-0000-4000-8000-000000000102']);
+  assert.equal(await evaluate(paired.session,'submissions.length'),before,'Pair submits nothing');
+  assert.equal(await evaluate(paired.session,'currentEditor().textContent'),draftBefore,'Pair never edits owned draft');
+  assert.equal(await readFile(join(sourceExtension,'worker.js'),'utf8'),original);
+  console.log('PASS actual MV3 popup/runtime/storage Pair: nonempty rejects; Verify/Check preserve halt; explicit drained sameidentity Pair preserves seen/UNKNOWN and draft without submission.');
   console.log('PASS isolated MV3 composer: delayed voice-to-send, draft/busy, no-ID editor, ambiguity, textarea, exact URL and retained unsent draft. Real ChatGPT/background operation: NOT_RUN.');
 } catch (error) {
   console.error(error);
   throw error;
 } finally {
   socket?.close();
-  const ended = browser.exitCode === null ? once(browser, 'exit') : Promise.resolve();
-  browser.kill('SIGTERM');
-  await ended;
-  await rm(profile, {recursive: true, force: true, maxRetries: 10, retryDelay: 100});
+  try {
+    if(browser){const ended=browser.exitCode===null?once(browser,'exit'):Promise.resolve();browser.kill('SIGTERM');await ended;}
+  } finally {
+    try {if(backend?.listening)await new Promise(resolve=>backend.close(resolve));}
+    finally {await rm(profile,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
+  }
 }

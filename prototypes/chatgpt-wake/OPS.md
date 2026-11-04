@@ -105,3 +105,11 @@ Never run two backends on18766 or change the reporter manifest/grant as rollback
 The preserved older de12ecf launcher restores observation but targets the former
 parent name, so it does not prove current alert delivery. Extension rollback is
 separate and must preserve existing pairings/storage/drafts.
+
+Explicit drained-halt reconciliation: after independently reconciling an uncertain
+attempt and confirming an empty mailbox, use Verify mailbox then Pair and arm
+this chat. Pair rechecks the same endpoint/generation and complete empty mailbox;
+any pending ID (even seen), unavailable observation or concurrent Stop refuses
+rearming. It preserves seen IDs and lastReconciledAttempt UNKNOWN history,
+including null IDs for legacy attempts. It does not edit or submit a draft.
+Check, Verify and alarms never clear HALTED automatically.

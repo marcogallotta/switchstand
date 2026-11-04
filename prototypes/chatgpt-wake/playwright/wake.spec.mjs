@@ -70,7 +70,8 @@ const test = base.extend({
       expect((await message({type:'bind',...verified.status,tabId,url})).error).toBeUndefined();
       const check=async()=>{expect((await message({type:'check'})).error).toBeUndefined();};
       await info.attach('extension-source.json',{body:JSON.stringify({worker_sha256:hash(original),backend_port:port,seam:'SOURCE literal only'}),contentType:'application/json'});
-      await use({context,page,open,check,message,metadata,reports,popup});
+      const pair=()=>message({type:'bind',...metadata,tabId,url});
+      await use({context,page,open,check,message,pair,metadata,reports,popup});
       expect(hash(await readFile(join(extension,'worker.js')))).toBe(hash(original));
     } finally {
       try { await context?.close(); }
@@ -145,4 +146,24 @@ test('persistent blocked Send stays halted after its sole retry',async({wake})=>
   await expect(wake.page.locator('#turns li')).toHaveCount(0);
   expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(1);
   expect(wake.reports.some(report=>report.outcome==='attempt-outcome-unknown')).toBe(true);
+});
+
+test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft and UNKNOWN',async({wake})=>{
+  wake.metadata.delivery_ids=[delivery(1)];await wake.check();
+  await wake.page.evaluate(()=>fixture.blocked=true);
+  wake.metadata.delivery_ids=[delivery(2)];await wake.check();
+  wake.metadata.delivery_ids=[delivery(1)];
+  expect((await wake.pair()).error).toMatch(/must be empty/);
+  wake.metadata.delivery_ids=[];
+  await wake.message({type:'verify',name:'Fixture'});await wake.check();
+  const binding=()=>wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
+  expect((await binding()).halted).toBe(true);
+  await wake.message({type:'disarm',endpoint:identity});
+  expect((await wake.pair()).error).toBeUndefined();
+  const reconciled=await binding();
+  expect(reconciled.armed).toBe(true);expect(reconciled.halted).toBeFalsy();
+  expect(reconciled.seen).toEqual([delivery(1)]);
+  expect(reconciled.lastReconciledAttempt).toMatchObject({outcome:'attempt-outcome-unknown',delivery_ids:[delivery(2)]});
+  await expect(wake.page.locator('#turns li')).toHaveCount(1);
+  await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
 });

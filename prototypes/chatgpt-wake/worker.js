@@ -324,13 +324,19 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
       if (wakeBindings.some(item => item.endpoint !== endpoint && item.url === url)) throw new Error('This chat is already paired with another mailbox.');
       const prior = wakeBindings.find(item => item.endpoint === endpoint);
-      if (prior?.halted) throw new Error('Previous attempt is unresolved; reconcile before rearming.');
       if (prior && prior.generation !== generation) throw new Error('Mailbox generation changed; operator reconciliation required.');
+      if (prior?.halted && observed.delivery_ids.length) throw new Error('Previous attempt is unresolved; mailbox must be empty before explicitly rearming.');
+      if (stopAll !== stopSnapshot.all || stopEndpoints.get(endpoint) !== stopSnapshot.endpoint) {
+        throw new Error('Stop requested during pairing; verify again.');
+      }
       // Explicit rearm may clear only intents already present when it arrived.
       if (stopAll === stopSnapshot.all) stopAll = 0;
       if (stopEndpoints.get(endpoint) === stopSnapshot.endpoint) stopEndpoints.delete(endpoint);
       const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
-        seen: prior?.seen || [], pending: [], status: 'armed', report: 'not checked', incident: prior?.incident};
+        seen: prior?.seen || [], pending: [], status: 'armed', report: 'not checked', incident: prior?.incident,
+        lastReconciledAttempt: prior?.halted ? {outcome: 'attempt-outcome-unknown',
+          status: prior.status, delivery_ids: prior.attemptIds || null, checkedAt: prior.checkedAt || null}
+          : prior?.lastReconciledAttempt};
       if (prior) wakeBindings[wakeBindings.indexOf(prior)] = binding;
       else wakeBindings.push(binding);
       await chrome.storage.local.set({wakeBindings});

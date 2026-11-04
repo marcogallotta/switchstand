@@ -947,6 +947,11 @@ An explicit no-click receipt permits one retry of the exact extension-owned wake
 without reinsertion, using a consumed storage allowance and an isolated-world
 ownership witness invalidated by edits or submission actions. Changed identity,
 pending IDs, STOP, restart, prior clicks and legacy UNKNOWN remain fenced.
+Only explicit Pair and arm can reconcile a halted binding after a fresh complete
+mailbox observation is empty and endpoint/generation still match. It retains seen
+IDs and the last reconciled UNKNOWN attempt (including missing legacy IDs), does
+not touch the page, and refuses a Stop received during pairing; polling never
+clears a halt automatically.
 Closed tabs remain observed without auto-reopening. The candidate uses owned
 TEST loopback18766, independently from the original mock18765.
 

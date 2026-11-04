@@ -45,3 +45,12 @@ execution by automatic approval (`approval required by policy, but AskForApprova
 is set to Never`); browser installation and suite execution are NOT_RUN. Syntax
 checks pass. Feedback: 30971582-fec6-5549-9abf-bffc137351d1. No alternative installer
 or directory is used to bypass that rejection.
+
+Pair add-on candidate: the suite now includes a tenth case for explicit Pair
+reconciliation after a complete empty-mailbox observation. Existing unit tests
+cover malformed/unavailable/identity/Stop and legacy-history edges. The separate
+existing CDP/MV3 harness passed actual popup/runtime/storage reconciliation
+without new dependencies; this is complementary evidence, not a Playwright run.
+Parent has assigned dependency installation in the original test writer to the
+host coordinator. This writer does not retry the rejected install. Pair remains
+uninstalled until executed qualification and independent review are dispositioned.

@@ -139,3 +139,11 @@ Stop the user service and restore the reviewed previous launcher to roll back.
 Startup-note template — **OFF, unused until Marco decides** (documentation only):
 `WorkId: <exact Tracker WorkId>; role: <Coordinator or Worker>.`
 This template is not injected or automatic. Tracker owns assignments.
+
+Explicit drained-halt reconciliation: after independently reconciling an uncertain
+attempt and confirming an empty mailbox, use Verify mailbox then Pair and arm
+this chat. Pair rechecks the same endpoint/generation and complete empty mailbox;
+any pending ID (even seen), unavailable observation or concurrent Stop refuses
+rearming. It preserves seen IDs and lastReconciledAttempt UNKNOWN history,
+including null IDs for legacy attempts. It does not edit or submit a draft.
+Check, Verify and alarms never clear HALTED automatically.

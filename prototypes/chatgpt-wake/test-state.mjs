@@ -382,6 +382,52 @@ assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
 for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
 console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
 
+// Only explicit Pair can reconcile a drained halt; observation never clears it.
+for (const legacy of [false, true]) {
+  await unsentWake();
+  delete state('A').retry;
+  state('A').seen = [id(699)];
+  if (legacy) delete state('A').attemptIds;
+  const prior = structuredClone(state('A'));
+  observations.get('A').delivery_ids = [];
+  const count = attempts.length;
+  await message({type:'verify', name:'A'}); await message({type:'check'});
+  assert.equal(state('A').halted, true, 'empty observation cannot release a halt');
+  await message({type:'disarm',endpoint:id(1)});
+  assert.equal((await bind('A',1)).error, undefined);
+  assert.equal(state('A').armed, true);
+  assert.equal(Boolean(state('A').halted), false);
+  assert.deepEqual(state('A').seen, prior.seen);
+  assert.equal(state('A').lastReconciledAttempt.outcome,'attempt-outcome-unknown');
+  assert.deepEqual(state('A').lastReconciledAttempt.delivery_ids,legacy ? null : prior.attemptIds);
+  assert.equal(attempts.length,count,'Pair does not execute a page script');
+}
+for (const invalid of ['pending-seen','unavailable','malformed','generation','endpoint']) {
+  await unsentWake();delete state('A').retry;
+  const observed=observations.get('A');const original=structuredClone(observed);
+  const verified={...observed,tabId:1,url:tabs.get(1).url};
+  observed.delivery_ids=[];
+  if(invalid==='pending-seen'){state('A').seen=[id(700)];observed.delivery_ids=[id(700)];}
+  if(invalid==='unavailable')observations.delete('A');
+  if(invalid==='malformed')observed.delivery_ids=['not-a-uuid'];
+  if(invalid==='generation')observed.generation++;
+  if(invalid==='endpoint')observed.endpoint=id(9998);
+  const count=attempts.length;
+  assert.ok((await message({type:'bind',...verified})).error,invalid);
+  assert.equal(state('A').halted,true,invalid);
+  assert.equal(attempts.length,count);
+  observations.set('A',original);
+}
+await unsentWake();delete state('A').retry;observations.get('A').delivery_ids=[];
+blockName='A';releasePoll=undefined;
+const reconciling=message({type:'bind',...observations.get('A'),tabId:1,url:tabs.get(1).url});
+while(!releasePoll)await new Promise(resolve=>setTimeout(resolve,0));
+const stopReconcile=message({type:'disarm',endpoint:id(1)});
+blockName=undefined;releasePoll();
+assert.match((await reconciling).error,/Stop requested/);await stopReconcile;
+assert.equal(state('A').halted,true);assert.equal(state('A').armed,false);
+console.log('PASS explicit drained Pair only; preserves seen/UNKNOWN including legacy missing IDs, rejects seen-pending/malformed/unavailable/drift/Stop, and executes no page script.');
+
 // Conversation routing, with one retained pending delivery per distinct case.
 async function routingWake() {
   saved = {}; attempts.length = 0; reports.length = 0; onSave = undefined;
