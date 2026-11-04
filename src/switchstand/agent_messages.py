@@ -5,6 +5,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import Field, JsonValue, model_validator
+from sqlalchemy import select
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState
 from .contracts import ClosedModel
@@ -14,7 +15,18 @@ from .durable_capture import (
     message_capture_guidance,
 )
 from .grants import PrincipalContext
-from .messages import AGENT_MESSAGE_PAYLOAD_LIMIT, PendingMessage, canonical_payload_chars
+from .messages import (
+    AGENT_MESSAGE_PAYLOAD_LIMIT,
+    MessageRoute,
+    MessageSendRequest,
+    MessageState,
+    MessageSubmitRequest,
+    MessageSubmitResult,
+    PendingMessage,
+    canonical_payload_chars,
+    message_deliveries,
+    messages,
+)
 
 
 @dataclass(frozen=True)
@@ -131,3 +143,54 @@ async def public_message(
             else message_capture_guidance(message.payload)
         ),
     )
+
+
+async def replay_agent_request(
+    state: MessageState, sender: AgentMailbox, message_id: UUID, payload: JsonValue,
+) -> MessageSubmitResult | None:
+    """Exact committed envelope before current evidence/recipient lookup; sender still fenced."""
+    async with state.engine.connect() as connection:
+        row = (await connection.execute(select(
+            message_deliveries.c.recipient_work_id, messages.c.route_ref,
+        ).join(messages, (messages.c.sender_work_id == message_deliveries.c.sender_work_id)
+               & (messages.c.message_id == message_deliveries.c.message_id)).where(
+            messages.c.sender_work_id == sender.endpoint_id,
+            messages.c.message_id == message_id,
+        ))).mappings().one_or_none()
+    if row is None:
+        return None
+    return await state.committed_public_replay(sender.endpoint_id, MessageSendRequest(
+        api_version="1", work_id=sender.endpoint_id, grant_version=sender.generation,
+        message_id=message_id, route_ref=row["route_ref"], payload=payload,
+        recipient_work_id=row["recipient_work_id"],
+    ), agent_binding=sender)
+
+
+async def send_agent_request(
+    mailboxes: AgentMailboxState, state: MessageState, sender: AgentMailbox,
+    recipient_name: str, message_id: UUID, payload: JsonValue,
+) -> MessageSubmitResult | AgentMessageSubmitResult:
+    """Shared named-send owner. Caller MUST derive sender from its admitted actor context."""
+    recipient = await mailboxes.by_name(recipient_name)
+    if recipient.status == "recovery_required":
+        return AgentMessageSubmitResult(status="recovery_required", reason="state_unavailable")
+    if recipient.status != "ok" or recipient.mailbox is None:
+        return AgentMessageSubmitResult(status="denied", reason="recipient_not_registered")
+    replay = await state.committed_public_replay(sender.endpoint_id, MessageSendRequest(
+        api_version="1", work_id=sender.endpoint_id, grant_version=sender.generation,
+        message_id=message_id, route_ref=f"agent.{recipient.mailbox.name_key}", payload=payload,
+        recipient_work_id=recipient.mailbox.endpoint_id,
+    ), agent_binding=sender)
+    if replay is not None:
+        return replay
+    if canonical_payload_chars(payload) > AGENT_MESSAGE_PAYLOAD_LIMIT:
+        return AgentMessageSubmitResult(status="denied", reason="payload_too_large", next_action=(
+            "Keep this mailbox notification within 800 canonical JSON characters; "
+            "put detail on the exact tracker WorkId and send only the bounded pointer."
+        ))
+    return await state.submit_admitted(sender.endpoint_id, MessageRoute(
+        recipient_work_id=recipient.mailbox.endpoint_id,
+        recipient_grant_version=recipient.mailbox.generation,
+    ), MessageSubmitRequest(api_version="1", message_id=message_id,
+        grant_version=sender.generation, route_ref=f"agent.{recipient.mailbox.name_key}",
+        kind="request", payload=payload), agent_binding=sender)

@@ -64,3 +64,44 @@ It does not prove real ChatGPT background operation. The earlier single-chat moc
 was human-confirmed working; this new multi-chat real-mailbox candidate still
 requires the explicit manual live test. `mock-source.mjs` is retained solely for
 the original demo and does not feed this candidate.
+
+
+## Separate inactive coordinator-alert add-on
+
+`ALERT-DESIGN.md` governs the optional reporter. Building this branch does not
+change the running V1 service or create an identity. Live bootstrap and writable
+reporter activation remain held until the exact reviewed manifest is approved.
+The browser keeps drafts intact. Pending mail plus60 seconds of continuously
+observed draft blocking, or a closed tab, qualifies one Codex Coordinator alert;
+clear observation qualifies one recovery. STOP/disarm does not emit a recovery.
+A service observation gap resets an unqualified draft timer. The sender persists
+exact incident evidence; ambiguous requests keep the same identity and arguments.
+
+The trusted host bootstrap commands are below. `plan` is local-file-only; the
+other commands require the separately approved exact host effect and its existing
+explicit DATABASE_URL capability. They never run Compose or migrations. Preserve
+the generated manifest, its SHA and all result receipts; do not generate a new
+identity to retry a partial operation.
+
+```sh
+PYTHONPATH=src .venv/bin/python scripts/chatgpt-wake-reporter plan --package EXACT_REVIEWED_COMMIT --manifest /owned/task/reporter.json
+PYTHONPATH=src .venv/bin/python scripts/chatgpt-wake-reporter issue --manifest /owned/task/reporter.json --manifest-sha256 EXACT_SHA
+PYTHONPATH=src .venv/bin/python scripts/chatgpt-wake-reporter check --manifest /owned/task/reporter.json --manifest-sha256 EXACT_SHA
+PYTHONPATH=src .venv/bin/python scripts/chatgpt-wake-reporter revoke --manifest /owned/task/reporter.json --manifest-sha256 EXACT_SHA
+```
+
+The issuer admits only this Work, the fixed service/session and the message-only
+grant. Exact existing manifest grants finish registration idempotently; mismatched,
+revoked or advanced grants HOLD. Revocation affects only that exact reporter grant.
+Host activation explicitly constructs `HostReporter(manifest, MessageState(writer,
+GrantState(writer)))` and injects it into `install_browser_wake(server, reader,
+reporter)` (or the edge's optional `browser_wake_reporter` parameter). `reader`
+retains startup transaction-read-only enforcement; `writer` is a separately owned
+engine. Neither constructor issues grants or registers agents. No actor credential
+is returned to the extension; its existing report-only bearer and loopback/Host/
+JSON/no-CORS guards remain.
+
+Focused add-on qualification: `scripts/check tests/test_chatgpt_alerts.py
+ tests/test_agent_messages.py tests/test_chatgpt_wake.py` plus
+`node prototypes/chatgpt-wake/test-state.mjs`. Only disposable PostgreSQL is used.
+Live Coordinator alert delivery remains NOT_RUN until separately activated/tested.

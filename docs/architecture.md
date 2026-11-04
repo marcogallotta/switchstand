@@ -945,6 +945,28 @@ TEST loopback18766, independently from the original mock18765.
 
 The local config route supplies an ephemeral report-only bearer capability. JSON
 reports require that capability and loopback peer/Host; ordinary web origins get
-no CORS access. Reports go only to existing runtime logging. Escalation is visibly
-unconfigured: there is no admitted reporting actor and no coordinator message
-dispatch. The flag is off by default; landing does not activate a service.
+no CORS access. By default reports go only to existing runtime logging and
+escalation remains unconfigured. An explicitly injected `HostReporter` adds the
+fixed Codex Coordinator alert path; it never registers or issues a grant on startup.
+The flag is off by default; landing does not activate a service.
+
+`chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed
+incident envelope, message-only host grant checks and bootstrap manifest. The
+trusted `scripts/chatgpt-wake-reporter` plan/issue/check/revoke control path uses
+existing grant CAS and agent registration, with no takeover, schema or provider
+change. Live issuance/registration/activation are separate protected effects.
+A current host grant and actual session binding admit every alert; existing
+`agent_messages.py` owns the shared ordinary named-send path, preserving durable
+message replay and binding fences. Exact committed alert replay precedes fresh
+pending-evidence checks; changed arguments conflict. No caller chooses a sender,
+recipient, message body or grant. The browser's report-only capability exposes no
+actor credentials. Read-only observation and optional writable alert transport
+use separately owned engines.
+
+Existing Chrome binding storage reserves an incident before its report. Actual
+pending IDs plus a continuous observed draft block of60 seconds, or a closed tab,
+qualify one incident; one observed recovery follows. Gaps reset unqualified draft
+timers. STOP, busy and uncertain original sends remain distinct; no draft is
+copied or overwritten. A queued durable alert is not proof of Coordinator pickup.
+No new persistence table, OAuth flow, background Worker or native-input route is
+introduced.

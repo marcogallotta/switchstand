@@ -28,6 +28,7 @@ from .agent_messages import (
     AgentRegistrationResult,
     AgentTransferRequestResult,
     public_message,
+    send_agent_request,
 )
 from .chatgpt import (
     ChatGPTService,
@@ -1561,45 +1562,11 @@ def build_ordinary_tools(
             )
         sender = context.mailbox
         assert mailboxes is not None and service.messages is not None
-        recipient = await mailboxes.by_name(recipient_name)
-        if recipient.status == "recovery_required":
-            return AgentMessageSubmitResult(
-                status="recovery_required", reason="state_unavailable"
-            )
-        if recipient.status != "ok" or recipient.mailbox is None:
-            return AgentMessageSubmitResult(
-                status="denied", reason="recipient_not_registered"
-            )
-        replay = await service.messages.committed_public_replay(
-            sender.endpoint_id,
-            MessageSendRequest(
-                api_version=api_version, work_id=sender.endpoint_id,
-                grant_version=sender.generation, message_id=message_id,
-                route_ref=f"agent.{recipient.mailbox.name_key}", payload=payload,
-                recipient_work_id=recipient.mailbox.endpoint_id,
-            ),
-            agent_binding=sender,
+        result = await send_agent_request(
+            mailboxes, service.messages, sender, recipient_name, message_id, payload,
         )
-        if replay is not None:
-            return await agent_submit_view(replay, request=True)
-        oversized = payload_too_large(payload)
-        if oversized is not None:
-            return oversized
-        route = MessageRoute(
-            recipient_work_id=recipient.mailbox.endpoint_id,
-            recipient_grant_version=recipient.mailbox.generation,
-        )
-        submitted = MessageSubmitRequest(
-            api_version=api_version,
-            message_id=message_id,
-            grant_version=sender.generation,
-            route_ref=f"agent.{recipient.mailbox.name_key}",
-            kind="request",
-            payload=payload,
-        )
-        result = await service.messages.submit_admitted(
-            sender.endpoint_id, route, submitted, agent_binding=sender,
-        )
+        if isinstance(result, AgentMessageSubmitResult):
+            return result
         return await agent_submit_view(result, request=True)
 
     async def agent_message_pending(

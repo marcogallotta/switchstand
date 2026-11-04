@@ -91,11 +91,58 @@ async function mailbox(name) {
   }
   return value;
 }
-async function record(binding, outcome, ids = []) {
+async function incidentReport(binding, kind, ids, save) {
+  const now = Date.now();
+  const blocked = ids.length && ['draft-present', 'bound-tab-missing'].includes(kind);
+  if (blocked) {
+    if (binding.blockReason !== kind || now - (binding.blockChecked || 0) > 60000) binding.blockSince = now;
+    binding.blockReason = kind;
+    binding.blockChecked = now;
+    if (!binding.incident && (kind === 'bound-tab-missing' || now - binding.blockSince >= 60000)) {
+      const evidence = {incident_id: crypto.randomUUID(), phase: 'blocked', name: binding.name,
+        endpoint: binding.endpoint, generation: binding.generation, delivery_ids: ids.slice(0, 50),
+        reason: kind, started_at: new Date(binding.blockSince).toISOString(), observed_at: new Date(now).toISOString()};
+      binding.incident = {evidence, state: 'pending'};
+    }
+  } else {
+    delete binding.blockSince; delete binding.blockReason; delete binding.blockChecked;
+    // UNKNOWN, explicit STOP and observation errors are not evidence of recovery.
+    if (binding.incident?.state === 'stale' && ['idle', 'click-attempted', 'busy'].includes(kind)) delete binding.incident;
+    if (binding.incident?.state === 'queued' && ['idle', 'click-attempted', 'busy'].includes(kind)) {
+      binding.incident.state = 'recovery-pending';
+    }
+  }
+  const incident = binding.incident;
+  if (!incident || !['pending', 'recovery-pending'].includes(incident.state) || kind === 'stopped') return;
+  const phase = incident.state === 'pending' ? 'blocked' : 'recovered';
+  // Reserve immutable arguments in persistent binding state BEFORE any possible mail effect.
+  await save();
+  if (stopRequested(binding)) return;
+  try {
+    if (!reportToken) reportToken = (await source('/config')).report_token;
+    const response = await fetch(SOURCE + '/report', {method: 'POST',
+      headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + reportToken},
+      body: JSON.stringify({name: binding.name, delivery_ids: ids.slice(0, 50), outcome: kind,
+        incident: {...incident.evidence, phase}}), signal: AbortSignal.timeout(3000)});
+    if (!response.ok) { reportToken = undefined; throw new Error(`HTTP ${response.status}`); }
+    const receipt = await response.json();
+    if (receipt.alert?.status === 'queued') {
+      binding.report = `Codex Coordinator ${phase} alert queued; delivery ${receipt.alert.delivery_id}`;
+      if (phase === 'blocked') incident.state = 'queued';
+      else { binding.lastIncident = incident.evidence.incident_id; delete binding.incident; }
+    } else {
+      binding.report = `alert ${receipt.alert?.status || receipt.escalation || 'unknown'}: ${receipt.alert?.reason || 'not queued'}`;
+      // Definitive stale evidence is not ambiguous acceptance; do not recreate it under a new ID.
+      if (receipt.alert?.status === 'stale') incident.state = 'stale';
+    }
+  } catch (error) { binding.report = 'alert outcome unknown; same identity retained: ' + error.message; }
+}
+async function record(binding, outcome, ids = [], save) {
   binding.status = outcome;
   binding.checkedAt = new Date().toISOString();
   const kind = outcome.split(':')[0];
-  if (['idle', 'armed', 'click-attempted', 'stopped'].includes(kind)) return;
+  if (save) await incidentReport(binding, kind, ids, save);
+  if (binding.incident || ['idle', 'armed', 'click-attempted', 'stopped'].includes(kind)) return;
   const reportKey = JSON.stringify([outcome, ids.slice(0, 50)]);
   if (binding.lastReport === reportKey && binding.report === 'logged; escalation unconfigured') return;
   try {
@@ -107,31 +154,32 @@ async function record(binding, outcome, ids = []) {
     if (!response.ok) { reportToken = undefined; throw new Error(`HTTP ${response.status}`); }
     const receipt = await response.json();
     if (receipt.status !== 'logged') throw new Error('missing log receipt');
-    binding.report = 'logged; escalation unconfigured';
+    binding.report = `logged; escalation ${receipt.escalation || 'unconfigured'}`;
     binding.lastReport = reportKey;
   } catch (error) { binding.report = 'backend report unavailable: ' + error.message; }
 }
 async function checkBinding(binding, save) {
-  if (!binding.armed || stopRequested(binding)) { binding.armed = false; return record(binding, 'stopped'); }
+  const note = (outcome, ids = []) => record(binding, outcome, ids, save);
+  if (!binding.armed || stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   let observation;
   try { observation = await mailbox(binding.name); }
-  catch (error) { return record(binding, 'source-unavailable: ' + error.message); }
+  catch (error) { return note('source-unavailable: ' + error.message); }
   if (observation.endpoint !== binding.endpoint || observation.generation !== binding.generation) {
     binding.armed = false;
-    return record(binding, 'mailbox-binding-changed');
+    return note('mailbox-binding-changed');
   }
   const pending = observation.delivery_ids.filter(id => !binding.seen.includes(id));
   binding.pending = pending;
   let tab;
   try { tab = await chrome.tabs.get(binding.tabId); }
-  catch { binding.availability = 'closed'; return record(binding, 'bound-tab-missing', pending); }
+  catch { binding.availability = 'closed'; return note('bound-tab-missing', pending); }
   binding.availability = 'open';
-  if (binding.halted) return record(binding, 'attempt-outcome-unknown', pending);
-  if (!pending.length) return record(binding, 'idle');
-  if (tab.url !== binding.url) return record(binding, 'wrong-conversation', pending);
-  if (tab.discarded) return record(binding, 'tab-discarded', pending);
-  if (tab.frozen) return record(binding, 'tab-frozen', pending);
-  if (stopRequested(binding)) { binding.armed = false; return record(binding, 'stopped'); }
+  if (binding.halted) return note('attempt-outcome-unknown', pending);
+  if (!pending.length) return note('idle');
+  if (tab.url !== binding.url) return note('wrong-conversation', pending);
+  if (tab.discarded) return note('tab-discarded', pending);
+  if (tab.frozen) return note('tab-frozen', pending);
+  if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   // Persist a halt before DOM mutation. A crash cannot silently retry these IDs.
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
@@ -139,7 +187,7 @@ async function checkBinding(binding, save) {
   await save();
   if (stopRequested(binding)) {
     binding.armed = false; binding.halted = false; binding.attemptIds = [];
-    return record(binding, 'stopped');
+    return note('stopped');
   }
   try {
     const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url]});
@@ -151,8 +199,8 @@ async function checkBinding(binding, save) {
       binding.pending = [];
       binding.halted = false;
     }
-    await record(binding, outcome, pending);
-  } catch (error) { await record(binding, 'attempt-outcome-unknown: ' + error.message, pending); }
+    await note(outcome, pending);
+  } catch (error) { await note('attempt-outcome-unknown: ' + error.message, pending); }
 }
 async function check() {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
@@ -191,7 +239,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       if (stopAll === stopSnapshot.all) stopAll = 0;
       if (stopEndpoints.get(endpoint) === stopSnapshot.endpoint) stopEndpoints.delete(endpoint);
       const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
-        seen: prior?.seen || [], pending: [], status: 'armed', report: 'escalation unconfigured'};
+        seen: prior?.seen || [], pending: [], status: 'armed', report: 'escalation unconfigured', incident: prior?.incident};
       if (prior) wakeBindings[wakeBindings.indexOf(prior)] = binding;
       else wakeBindings.push(binding);
       await chrome.storage.local.set({wakeBindings});
@@ -211,9 +259,10 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 chrome.alarms.onAlarm.addListener(() => exclusive(check).catch(error => status('source-unavailable: ' + error.message)));
 chrome.tabs.onRemoved.addListener(tabId => exclusive(async () => {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
-  for (const binding of wakeBindings) if (binding.tabId === tabId) {
+  const save = () => chrome.storage.local.set({wakeBindings});
+  for (const binding of wakeBindings) if (binding.tabId === tabId && binding.armed && !stopRequested(binding)) {
     binding.availability = 'closed';
-    await record(binding, 'bound-tab-missing', binding.pending || []);
+    await record(binding, 'bound-tab-missing', binding.pending || [], save);
   }
   await chrome.storage.local.set({wakeBindings});
 }).catch(error => status(error.message)));

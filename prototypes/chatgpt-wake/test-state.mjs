@@ -8,6 +8,11 @@ const observations = new Map(['A', 'B'].map((name, index) => [name,
   {status: 'ok', name, endpoint: id(index + 1), generation: 1, delivery_ids: []}]));
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
 const attempts = [], reports = [];
+let clock = Date.now(), alertMode = false;
+class ClockDate extends Date {
+  constructor(value = clock) { super(value); }
+  static now() { return clock; }
+}
 function load() {
   const chrome = {
     runtime: {id: 'test', onMessage: {addListener(value) { handler = value; }}},
@@ -20,9 +25,9 @@ function load() {
     scripting: {async executeScript(options) { attempts.push(options.target.tabId); if (outcome === 'throw') throw Error('interrupted'); return [{result: outcome}]; }},
     alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
   };
-  runInNewContext(code, {chrome, URL, Date, AbortSignal, fetch: async (url, options) => {
+  runInNewContext(code, {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
     if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only'})};
-    if (url.endsWith('/report')) { reports.push(JSON.parse(options.body)); return {ok: true, json: async () => ({status: 'logged'})}; }
+    if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
     const name = new URL(url).searchParams.get('name');
     if (name === blockName) await new Promise(resolve => { releasePoll = resolve; });
     const observed = observations.get(name);
@@ -93,7 +98,7 @@ assert.equal(state('A').armed, false);
 assert.equal(state('A').status, 'mailbox-binding-changed');
 assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
 await removed(1);
-assert.equal(state('A').status, 'bound-tab-missing');
+assert.equal(state('A').status, 'mailbox-binding-changed', 'closure does not overwrite a stopped stale pairing');
 assert.equal(saved.wakeBindings.length, 2, 'closed chat pairing retained');
 await message({type: 'disarm'});
 assert.ok(saved.wakeBindings.every(binding => !binding.armed));
@@ -133,3 +138,40 @@ for (const stopOnlyB of [true, false]) {
   assert.deepEqual(attempts, [], 'earlier rearm cannot clear a later Stop intent before queued check');
 }
 console.log('PASS rearm await → queued check → later per-chat/all Stop preserves stop ordering.');
+
+// Continuous draft qualification, persisted episode, one alert/recovery, no draft modification.
+saved = {}; attempts.length = 0; reports.length = 0; alertMode = true;
+tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+observations.get('A').delivery_ids = [id(200)];
+outcome = 'draft-present'; load(); await bind('A', 1);
+await message({type: 'check'});
+clock += 30000; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 0, 'draft shorter than60s is not alerted');
+clock += 30000; await message({type: 'check'});
+const firstAlert = reports.find(item => item.incident).incident;
+assert.equal(firstAlert.phase, 'blocked');
+assert.equal(state('A').incident.state, 'queued');
+clock += 30000; load(); await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 1, 'restart/ongoing blocker does not spam');
+observations.get('A').delivery_ids = [];
+await message({type: 'check'});
+const incidents = reports.filter(item => item.incident).map(item => item.incident);
+assert.equal(incidents.length, 2);
+assert.equal(incidents[1].phase, 'recovered');
+assert.equal(incidents[1].incident_id, firstAlert.incident_id);
+await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 2, 'one recovery');
+// A gap cannot manufacture continuous60seconds of draft evidence.
+observations.get('A').delivery_ids = [id(201)];
+await message({type: 'check'});
+clock += 61000; load(); await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 2);
+// Closed + pending qualifies immediately, retained exact evidence before the POST.
+tabs.delete(1); await removed(1);
+const closedAlert = reports.filter(item => item.incident).at(-1).incident;
+assert.equal(closedAlert.reason, 'bound-tab-missing');
+assert.equal(state('A').incident.state, 'queued');
+const alertsBeforeStop = reports.filter(item => item.incident).length;
+await message({type: 'disarm'}); await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, alertsBeforeStop, 'STOP does not alert/recover');
+console.log('PASS: incident60s/gap/restart/closed/dedupe/recovery/STOP');

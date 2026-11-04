@@ -19,6 +19,7 @@ from switchstand.agent_messages import (
     AgentMessagePendingResult,
     AgentMessageSubmitResult,
     AgentPendingMessage,
+    send_agent_request,
 )
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_edge import _codex_stop_mailbox_page
@@ -1182,3 +1183,22 @@ async def test_result_and_disposition_roll_back_together(agent_messaging, monkey
         assert await connection.scalar(select(message_deliveries.c.state).where(
             message_deliveries.c.delivery_id == sent.message.delivery_id
         )) == "RECEIVED"
+
+
+async def test_shared_named_send_replay_limit_and_sender_fence(state_database_schema):
+    engine = create_async_engine(state_database_schema)
+    boxes = AgentMailboxState(engine)
+    sender = (await boxes.register_agent("Shared sender", "sender", "sender-session")).mailbox
+    target = (await boxes.register_agent("Shared target", "target", "target-session")).mailbox
+    assert sender and target
+    state = MessageState(engine, GrantState(engine))
+    identity = uuid4()
+    result = await send_agent_request(boxes, state, sender, target.name, identity, {"x": 1})
+    assert result.status == "ok"
+    assert await send_agent_request(boxes, state, sender, target.name, identity, {"x": 1}) == result
+    assert (await send_agent_request(boxes, state, sender, target.name, identity, {"x": 2})).status == "conflict"
+    assert (await send_agent_request(boxes, state, sender, target.name, uuid4(), "x" * 801)).reason == "payload_too_large"
+    assert (await send_agent_request(boxes, state, sender.model_copy(update={"generation": 2}),
+        target.name, uuid4(), {})).reason == "sender_binding_changed"
+    assert (await send_agent_request(boxes, state, sender, "missing", uuid4(), {})).reason == "recipient_not_registered"
+    await engine.dispose()

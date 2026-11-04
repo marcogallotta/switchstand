@@ -12,6 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from .agent_mailboxes import AgentMailboxState
+from .chatgpt_alerts import AlertReport, HostReporter
 from .messages import MessageState
 
 PATH = "/internal/chatgpt-wake"
@@ -20,7 +21,7 @@ OUTCOMES = frozenset({
     "busy", "draft-present", "stopped", "bound-tab-missing", "wrong-conversation",
     "tab-frozen", "tab-discarded", "composer-unavailable", "insert-failed",
     "inserted-not-submitted", "attempt-outcome-unknown", "source-unavailable",
-    "mailbox-binding-changed",
+    "mailbox-binding-changed", "idle", "click-attempted",
 })
 
 
@@ -29,6 +30,7 @@ class _Report(BaseModel):
     name: Annotated[str, Field(strict=True, min_length=1, max_length=80)]
     delivery_ids: Annotated[list[UUID], Field(max_length=50)]
     outcome: str
+    incident: AlertReport | None = None
 
 
 def _local(request: Request) -> bool:
@@ -40,8 +42,10 @@ def _local(request: Request) -> bool:
         return False
 
 
-def install_browser_wake(server: FastMCP, messages: MessageState | None) -> None:
-    """Caller opts in at launch; never creates an actor or dispatches a message."""
+def install_browser_wake(
+    server: FastMCP, messages: MessageState | None, reporter: HostReporter | None = None,
+) -> None:
+    """Default report-only; an explicitly injected host reporter owns admitted alert dispatch."""
     report_token = secrets.token_urlsafe(32)
 
     @server.custom_route(PATH + "/config", methods=["GET"])
@@ -49,7 +53,7 @@ def install_browser_wake(server: FastMCP, messages: MessageState | None) -> None
         if not _local(request):
             return JSONResponse({"status": "denied"}, status_code=403)
         return JSONResponse({"status": "ok", "report_token": report_token,
-                             "escalation": "unconfigured"}, headers={"Cache-Control": "no-store"})
+                             "escalation": "configured" if reporter else "unconfigured"}, headers={"Cache-Control": "no-store"})
 
     @server.custom_route(PATH + "/poll", methods=["GET"])
     async def poll(request: Request) -> JSONResponse:
@@ -99,6 +103,15 @@ def install_browser_wake(server: FastMCP, messages: MessageState | None) -> None
             return JSONResponse({"status": "invalid_report"}, status_code=400)
         LOG.warning("browser_wake name=%s outcome=%s delivery_ids=%s escalation=unconfigured",
                     name, outcome, references)
+        if reporter is not None and payload.incident is not None:
+            if payload.incident.name != name:
+                return JSONResponse({"status": "invalid_report"}, status_code=400)
+            try:
+                receipt = await reporter.send(payload.incident)
+                return JSONResponse({"status": "logged", "escalation": "configured", "alert": receipt})
+            except Exception:
+                LOG.exception("browser_wake alert outcome unknown; retain same incident identity")
+                return JSONResponse({"status": "logged", "escalation": "unknown"}, status_code=503)
         return JSONResponse({"status": "logged", "escalation": "unconfigured"})
 
     # Route decorators register these local handlers with FastMCP.
