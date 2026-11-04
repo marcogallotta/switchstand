@@ -536,10 +536,11 @@ messaging, and required continuation:
 - `grant_state.py` owns `work_grants` and `effect_intents`. `WorkGrant` in `grants.py` is the current
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - [Mailbox maintenance](mailbox.md) maps the send/receive/reply/ACK/wake paths to source owners
-  and tests for a fresh maintainer.
-- `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
+  and tests for a fresh maintainer. Their implementations live in `src/switchstand/mailbox/`;
+  the former root modules retain public compatibility imports for existing callers.
+- `mailbox/messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
+  checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox/mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `mailbox/codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
   The wake owner scans committed AVAILABLE mailbox deliveries once per second, including non-edge
   senders, and deduplicates callback signals by delivery ID. Its startup baseline excludes old mail;
   restart does not authorize replay. Only uncertain turn acceptance suspends a recipient; definite
@@ -547,7 +548,7 @@ messaging, and required continuation:
   one alert to `claude-coordinator`.
   The historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
-- `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
+- `mailbox/agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
@@ -575,7 +576,7 @@ messaging, and required continuation:
   changed. Ordinary same-principal `agent_takeover` is replay-safe for the exact replacement session;
   its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
   arguments and requires an actor-binding readback before returning success. Explicit denial or
-  conflict is not retried. There is no public approval tool. `agent_messages.py` supplies
+  conflict is not retried. There is no public approval tool. `mailbox/agent_messages.py` supplies
   public name-based views over `MessageState`; its server-returned exact sender name
   `claude-coordinator` can relay Marco's approval/orders within the recipient's assigned Work
   under the [messaging relay rule](source-history-feedback.md#durable-messaging-and-feedback).
@@ -910,7 +911,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation, bounded digest-validated failure/activation reads, and source coverage; no external inference, mutation, or process control |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
-| Change message lifecycle/currentness | `messages.py` | managed and ordinary adapters; `agent_mailboxes.py` for name/principal/generation binding changes |
+| Change message lifecycle/currentness | `mailbox/messages.py` | managed and ordinary adapters; `mailbox/agent_mailboxes.py` for name/principal/generation binding changes |
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |
 | Change repository bundle freshness or publication | `repository_bundle.py`, `.github/workflows/repository-bundle.yml` | `repository_bundle_get`, bundle resolver tests, and bootstrap guidance |
 | Change development workloads or cleanup | `development.py` | `docker.py`, development MCP scripts, and real-Docker qualification when the claim crosses that boundary |
