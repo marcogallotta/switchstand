@@ -1,7 +1,7 @@
 # Isolated extension browser tests
 
 Marco requested Playwright tests on 4 November. This is one test-only slice on
-7293ed1025; production behavior, installed bytes, and the stopped live backend stay
+the reviewed Pair candidate; production behavior, installed bytes, and the live backend stay
 unchanged. No PR publication or landing is included. Existing state tests retain
 STOP/restart/identity coverage; this suite adds the browser boundary rather than
 porting that state-machine fixture. Expected surface: one small spec/fixture,
@@ -35,22 +35,37 @@ turn plus insertion count, not the extension's `click-attempted` result alone.
 
 The small editor model updates after render frames and a configurable delay. It
 does **not** implement ChatGPT's rich-editor model, busy/timeout recovery, or prove
-provider acceptance. Real navigation tests remain NOT_RUN. The known missing
-drained-HALTED reconciliation remains pending; tests do not reset it to force a
-pass. Failures must be recorded without changing production code to make tests
+provider acceptance. Real navigation tests remain NOT_RUN. The tenth case exercises explicit drained-HALTED Pair reconciliation without
+resetting storage to force a pass. Failures must be recorded without changing production code to make tests
 green. Traces are retained on test failure in the isolated test output directory.
 
-Current execution checkpoint: dependency installation was rejected before process
-execution by automatic approval (`approval required by policy, but AskForApproval
-is set to Never`); browser installation and suite execution are NOT_RUN. Syntax
-checks pass. Feedback: 30971582-fec6-5549-9abf-bffc137351d1. No alternative installer
-or directory is used to bypass that rejection.
+Current qualification: all ten Playwright cases passed using existing Playwright
+1.64.1 packages and Brave 703 in disposable profiles (15.8 seconds). The source
+worker remains unchanged; this is local fixture qualification, not real ChatGPT
+acceptance or the three human navigation proofs. Marco reported an extension
+Reload; the loaded worker hash is not independently attested.
 
-Pair add-on candidate: the suite now includes a tenth case for explicit Pair
-reconciliation after a complete empty-mailbox observation. Existing unit tests
-cover malformed/unavailable/identity/Stop and legacy-history edges. The separate
-existing CDP/MV3 harness passed actual popup/runtime/storage reconciliation
-without new dependencies; this is complementary evidence, not a Playwright run.
-Parent has assigned dependency installation in the original test writer to the
-host coordinator. This writer does not retry the rejected install. Pair remains
-uninstalled until executed qualification and independent review are dispositioned.
+For an already installed compatible Chromium executable, the optional test-only
+`WAKE_TEST_BROWSER` overrides the default bundled Chromium launch. From this
+folder, the repeatable command on this host is:
+
+```sh
+WAKE_TEST_BROWSER=/snap/brave/703/opt/brave.com/brave/brave ./node_modules/.bin/playwright test --config=playwright.config.mjs
+```
+
+The Pair writer can use the existing dependency tree without installing anything:
+
+```sh
+ln -s /home/marco/.local/state/switchstand/worktrees/chatgpt-wake-playwright-20261104/prototypes/chatgpt-wake/node_modules node_modules
+```
+
+Only create that link if `node_modules` is absent. Dependency installation remains
+on HOLD; do not run the setup commands above until Marco resumes installation.
+The earlier host npm action was interrupted despite its UI rejection; the existing
+CLI and packages were usable, but full installation completion and Chromium
+download are not claimed. Local test execution was explicitly resumed by Marco.
+
+The [executablePath API](https://playwright.dev/docs/api/class-browsertype#browser-type-launch-persistent-context-option-executable-path)
+allows an existing browser; compatibility with arbitrary versions is not guaranteed.
+No existing browser profile, live ChatGPT request, credential, or backend is used.
+The separate Node and CDP/MV3 suites also passed Pair safety checks.

@@ -50,7 +50,7 @@ const test = base.extend({
     expect(original.split(literal)).toHaveLength(2);
     await writeFile(join(directory,'worker.js'),original.replace(literal,`const SOURCE = 'http://127.0.0.1:${port}/internal/chatgpt-wake';`));
     for(const file of ['manifest.json','popup.html','popup.js']) await copyFile(join(extension,file),join(directory,file));
-      context=await chromium.launchPersistentContext(join(directory,'profile'),{channel:'chromium',headless:true,
+      context=await chromium.launchPersistentContext(join(directory,'profile'),{...(process.env.WAKE_TEST_BROWSER ? {executablePath:process.env.WAKE_TEST_BROWSER} : {channel:'chromium'}),headless:true,
         args:[`--disable-extensions-except=${directory}`,`--load-extension=${directory}`,'--disable-background-networking']});
       // Deny every external request, including ChatGPT. Fixture documents have no resources.
       await context.route('**/*',route=>route.request().url().startsWith('https://chatgpt.com/')
