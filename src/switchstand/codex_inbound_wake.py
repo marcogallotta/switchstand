@@ -10,7 +10,7 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any, cast
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+from uuid import UUID, uuid4
 
 from websockets.asyncio.client import unix_connect
 
@@ -18,6 +18,7 @@ from .agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
 from .mailbox_wake import delivery_marker, delivery_notice, marker_receipts
 from .messages import (
     REVIEW_ROUTE_REFS,
+    WAKE_SERVICE_ENDPOINT,
     MessageRoute,
     MessageState,
     MessageSubmitRequest,
@@ -188,12 +189,14 @@ class InboundWake:
             if target is None:
                 raise RuntimeError("alert recipient unavailable")
             result = await self.messages.submit_admitted(
-                uuid5(NAMESPACE_URL, "switchstand:codex-inbound-wake"),
+                WAKE_SERVICE_ENDPOINT,
                 MessageRoute(recipient_work_id=target.endpoint_id,
                              recipient_grant_version=target.generation),
                 MessageSubmitRequest(api_version="1", message_id=uuid4(), grant_version=1,
                     route_ref="agent.claude-coordinator", kind="request",
-                    payload={"wake_failure": evidence, "error": str(error)[:500]}),
+                    payload={"wake_failure": {
+                        key: evidence.get(key) for key in ("recipient", "generation", "phase")
+                    }, "error": str(error)[:200]}),
             )
             if result.status != "ok":
                 raise RuntimeError(f"alert commit {result.status}: {result.reason}")
