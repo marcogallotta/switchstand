@@ -52,8 +52,18 @@ async function nudge(expectedUrl, observeOnly = false, attempt) {
   if (!attempt?.retry && (draft().trim() || attached())) return 'draft-present';
   if (observeOnly) return 'idle';
   const form = editor.closest('form');
-  const sendControl = () => form?.querySelector('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[type="submit"], button[aria-label="Send prompt"]');
-  const enabled = send => send && !send.disabled && !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
+  const sendControl = () => {
+    const controls = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])]
+      .filter(control => {
+        const rect = control.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
+      });
+    // Count before checking enabled state: two visible Send controls are ambiguous.
+    return controls.length === 1 ? controls[0] : undefined;
+  };
+  const enabled = send => send && !send.disabled && !send.matches(':disabled') &&
+    send.getAttribute('aria-disabled')?.toLowerCase() !== 'true' &&
+    !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
   const owned = witness => witness && witness.token === attempt?.token && witness.editor === editor &&
     witness.url === expectedUrl && witness.valid && editor.isConnected && location.href === expectedUrl &&
     draft() === text && !attached() && !witness.observer.takeRecords().length;
@@ -95,8 +105,9 @@ async function nudge(expectedUrl, observeOnly = false, attempt) {
     send = sendControl();
     if (enabled(send)) break;
   }
+  send = sendControl(); // Recheck uniqueness and state after the render wait.
   if (location.href !== expectedUrl || draft().trim() !== text ||
-      !send || send.disabled || /voice|dictat/i.test(send.getAttribute('aria-label') || '') ||
+      !enabled(send) ||
       document.querySelector('[data-testid="stop-button"]')) {
     const controls = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
       .map(button => `id=${button.id},testid=${button.getAttribute('data-testid') || ''},type=${button.type},label=${button.getAttribute('aria-label') || ''},disabled=${button.disabled}`);

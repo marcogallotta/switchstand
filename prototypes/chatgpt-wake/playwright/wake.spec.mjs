@@ -167,3 +167,34 @@ test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft a
   await expect(wake.page.locator('#turns li')).toHaveCount(1);
   await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
 });
+
+
+for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'disabled', 'aria-disabled', 'voice']) {
+  test(`Send selection: ${variant}`, async ({wake}) => {
+    await wake.page.evaluate(variant => {
+      const form=document.querySelector('form'), send=document.querySelector('[data-testid="send-button"]');
+      form.addEventListener('submit', event=>event.preventDefault());
+      window.wrongClicks=0;
+      if (variant.startsWith('hidden') || variant.startsWith('multiple')) {
+        const other=document.createElement('button');other.type='submit';
+        other.hidden=variant.startsWith('hidden');
+        if(variant!=='hidden-generic') other.dataset.testid='composer-submit-button';
+        other.disabled=variant==='multiple-disabled';
+        other.addEventListener('click',()=>window.wrongClicks++);form.prepend(other);
+      }
+      if(variant==='missing') {send.removeAttribute('data-testid');send.removeAttribute('aria-label');send.type='submit';}
+      if(variant==='disabled') {fixture.blocked=true;send.disabled=true;}
+      if(variant==='aria-disabled') send.setAttribute('aria-disabled','true');
+      if(variant==='voice') send.setAttribute('aria-label','Start dictation');
+    },variant);
+    wake.metadata.delivery_ids=[delivery(902)];await wake.check();await wake.check();
+    expect(await wake.page.evaluate(()=>window.wrongClicks)).toBe(0);
+    const submits=variant.startsWith('hidden');
+    await expect(wake.page.locator('#turns li')).toHaveCount(submits ? 1 : 0);
+    if(!submits) {
+      await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
+      const binding=await wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
+      expect(binding.seen).not.toContain(delivery(902));expect(binding.halted).toBe(true);
+    }
+  });
+}

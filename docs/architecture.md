@@ -943,6 +943,8 @@ Each poll resolves one matching open tab, preferring the stored tab hint then th
 lowest tab ID. Closure checks remaining matches; page-owned retries and UNKNOWN
 never transfer to a replacement page. No tab is opened or focused automatically.
 Per-binding pending/seen and a persisted pre-mutation halt prevent blind retries.
+Send targets must be the unique visible explicit Send control in the composer form;
+generic submit buttons, ambiguity, disabled/ARIA-disabled and voice controls do not qualify.
 An explicit no-click receipt permits one retry of the exact extension-owned wake,
 without reinsertion, using a consumed storage allowance and an isolated-world
 ownership witness invalidated by edits or submission actions. Changed identity,
