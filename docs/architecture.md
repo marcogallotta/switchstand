@@ -950,7 +950,8 @@ escalation remains unconfigured. An explicitly injected `HostReporter` adds the
 fixed `browser extension` alert path; it never registers or issues a grant on startup.
 Optional typed diagnostic metadata on the same report route logs independently of alerts.
 Each binding retains only its latest attempt and Pair result, with executing release/boot IDs;
-HALTED polls preserve the original cause. A started-only receipt means no durable result,
+HALTED polls preserve the original cause. A separate optional fixed-enum current control snapshot
+uses read-only observation without input or retry; it is neither the original cause nor a freshness guarantee. A started-only receipt means no durable result,
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
 The combined candidate retains conversation routing, explicit empty-mailbox Pair reconciliation,
