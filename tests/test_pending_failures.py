@@ -1,8 +1,12 @@
+import hashlib
 import json
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from uuid import uuid4
+
+import pytest
+from pydantic import ValidationError
 
 from switchstand.failure_journal import EffectState, FailureRecord, JournalWrite
 from switchstand.pending_failures import (
@@ -148,3 +152,47 @@ def test_identical_queue_replay_syncs_file_and_directory_before_handoff(tmp_path
     ))
     assert queue.enqueue(value) == "PENDING_SYNC"
     assert synchronized == ["file", "directory"]
+
+
+@pytest.mark.parametrize("length", [3991, 3992, 4000])
+def test_expanding_redaction_survives_queue_reopen_frames_and_exact_ack(tmp_path, length):
+    queue = PendingFailureQueue(tmp_path / "pending")
+    value = failure("界" * (length - 8) + " token=q")
+    assert queue.enqueue(value) == "PENDING_SYNC"
+    assert queue.enqueue(value) == "PENDING_SYNC"
+    path = queue._path(value.attempt_id)
+    persisted = path.read_bytes()
+    assert b"token=q" not in persisted
+    queue = PendingFailureQueue(queue.directory)
+    (stored,) = queue.pending()
+    assert stored.observed_result == ("界" * (length - 8) + " token=[redacted]")[:4000]
+    assert stored.attempt_id == value.attempt_id
+    assert stored.operation_id == value.operation_id
+    (frame_text,) = queue.frames()
+    assert "token=q" not in frame_text
+    frame = json.loads(frame_text)
+    decoded = FailureRecord.model_validate(frame["record"])
+    assert decoded == stored
+    assert decoded.canonical() == frame["record"]
+    canonical_bytes = json.dumps(decoded.canonical(), sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(canonical_bytes).hexdigest() == frame["digest"]
+    assert queue.frames() == (frame_text,)
+    assert queue.enqueue(decoded) == "PENDING_SYNC"
+    assert path.read_bytes() == persisted
+    assert not queue.acknowledge(value.attempt_id, value.operation_id, "0" * 64)
+    assert path.exists()
+    assert queue.acknowledge(value.attempt_id, value.operation_id, frame["digest"])
+    assert queue.pending() == ()
+
+
+@pytest.mark.parametrize("patch", [
+    {"observed_result": "x" * 4001}, {"attempted_claim": "x" * 2001},
+    {"clearing_action": "x" * 2001}, {"evidence": ("x" * 513,)},
+    {"evidence": ("",)}, {"evidence": ("x",) * 17},
+])
+def test_invalid_raw_record_is_refused_without_pending_file(tmp_path, patch):
+    queue = PendingFailureQueue(tmp_path / "pending")
+    with pytest.raises(ValidationError):
+        queue.enqueue(FailureRecord.model_validate({**failure().model_dump(), **patch}))
+    assert queue.pending() == ()
+    assert not tuple(queue.directory.glob("*.json"))

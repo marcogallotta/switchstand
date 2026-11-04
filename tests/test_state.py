@@ -35,13 +35,15 @@ async def test_bind_has_stable_opaque_identity(state):
 async def test_bind_many_rolls_back_earlier_insert_on_later_conflict(state, monkeypatch):
     occupied = uuid4()
     await state.bind_reserved(occupied, "other", "existing")
-    generated = iter((uuid4(), occupied))
+    first_id = uuid4()
+    generated = iter((first_id, occupied))
     monkeypatch.setattr(state_module, "uuid4", lambda: next(generated))
 
     with pytest.raises(ValueError, match="binding conflict"):
         await state.bind_many("asana", ("parent", "child"))
 
     assert await state.get(occupied) is not None
+    assert await state.get(first_id) is None
 
 
 async def test_concurrent_bind_converges_on_one_durable_identity(state):

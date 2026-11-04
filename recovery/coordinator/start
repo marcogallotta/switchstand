@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+import asyncio
+from pathlib import Path
+from switchstand.codex_inbound_wake import DaemonConnection
+
+ROOT = "/home/marco/switchstand-recovery/coordinator"
+THREAD_FILE = Path(ROOT, "thread-id")
+
+async def start():
+    rpc = DaemonConnection("/run/user/1000/switchstand-codex.sock", lambda: None)
+    for attempt in range(30):
+        try:
+            await rpc.__aenter__()
+            break
+        except OSError:
+            if attempt == 29:
+                raise
+            await asyncio.sleep(0.1)
+    try:
+        if THREAD_FILE.exists():
+            thread = THREAD_FILE.read_text().strip()
+            await rpc.call("thread/resume", {"threadId": thread, "cwd": ROOT, "excludeTurns": True})
+        else:
+            result = await rpc.call("thread/start", {"cwd": ROOT})
+            thread = result["thread"]["id"]
+            THREAD_FILE.write_text(thread + "\n")
+        await rpc.call("turn/start", {"threadId": thread, "input": [{"type": "text", "text": "Start the coordinator: read GOAL.md and recovery AGENTS.md, check mail, and continue authorized work."}]})
+    finally:
+        await rpc.__aexit__(None, None, None)
+asyncio.run(start())
