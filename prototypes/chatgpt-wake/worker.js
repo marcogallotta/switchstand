@@ -24,7 +24,7 @@ async function status(value) {
 async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = false) {
   const facts = {};
   const selectControl = form => {
-      const explicit = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])];
+      const explicit = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"], button[aria-label="Send" i]') || [])];
       const controls = explicit.filter(control => {
           const rect = control.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
@@ -155,7 +155,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = 'c3de7930-394d-4a32-b02d-98923e1ce79a';
+const releaseId = '195b3191-7d9c-4651-9f21-527a941085c9';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,

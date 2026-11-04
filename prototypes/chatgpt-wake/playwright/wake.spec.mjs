@@ -169,7 +169,7 @@ test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft a
 });
 
 
-for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'missing-form', 'all-hidden', 'disabled', 'aria-disabled', 'voice']) {
+for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'missing-form', 'all-hidden', 'disabled', 'aria-disabled', 'voice', 'send-label']) {
   test(`Send selection: ${variant}`, async ({wake}) => {
     await wake.page.evaluate(variant => {
       const form=document.querySelector('form'), send=document.querySelector('[data-testid="send-button"]');
@@ -181,6 +181,10 @@ for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multipl
         if(variant!=='hidden-generic') other.dataset.testid='composer-submit-button';
         other.disabled=variant==='multiple-disabled';
         other.addEventListener('click',()=>window.wrongClicks++);form.prepend(other);
+      }
+      if(variant==='send-label') {
+        const editor=document.querySelector('#prompt-textarea');editor.removeAttribute('id');editor.setAttribute('role','textbox');editor.setAttribute('aria-label','Ask ChatGPT');
+        send.removeAttribute('id');send.removeAttribute('data-testid');send.type='submit';send.setAttribute('aria-label','Send');
       }
       if(variant==='missing') {send.removeAttribute('data-testid');send.removeAttribute('aria-label');send.type='submit';}
       if(variant==='missing-form') document.body.append(document.querySelector('#prompt-textarea'));
@@ -195,7 +199,7 @@ for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multipl
     const reason=variant==='missing-form' ? 'missing-form' : variant==='missing' ? 'no-explicit'
       : variant==='all-hidden' ? 'all-hidden' : variant.startsWith('multiple') ? 'ambiguous' : 'unique';
     expect(binding.diagnostic.facts.controlSelection).toBe(reason);
-    const submits=variant.startsWith('hidden');
+    const submits=variant.startsWith('hidden') || variant==='send-label';
     await expect(wake.page.locator('#turns li')).toHaveCount(submits ? 1 : 0);
     if(!submits) {
       await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
