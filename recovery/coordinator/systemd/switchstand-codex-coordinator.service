@@ -1,0 +1,14 @@
+[Unit]
+Description=Resume the existing Switchstand Codex Coordinator
+Requires=switchstand-codex.service
+After=switchstand-codex.service
+PartOf=switchstand-codex.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/marco/switchstand/scripts/codex-coordinator-resume
+RemainAfterExit=yes
+TimeoutStartSec=90
+
+[Install]
+WantedBy=default.target switchstand-codex.service

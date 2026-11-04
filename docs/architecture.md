@@ -536,9 +536,10 @@ messaging, and required continuation:
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
-  The recovery Coordinator's existing dedicated `switchstand-codex.service` uses the
-  source-owned `recovery/coordinator/systemd/switchstand-codex.service.d/background.conf`
-  drop-in and `scripts/codex-coordinator-resume` after daemon start. The helper reads the
+  The source-owned `recovery/coordinator/systemd/switchstand-codex-coordinator.service`
+  oneshot unit requires and follows the existing dedicated `switchstand-codex.service`.
+  Both login and daemon startup want this unit, and `PartOf` propagates daemon restarts.
+  It runs `scripts/codex-coordinator-resume` without requiring a daemon restart on install. The helper reads the
   exact existing thread UUID from the dedicated CODEX_HOME's `background-thread-id`,
   resumes it, and creates neither a thread nor a turn; a TUI is optional. Durable mailbox
   binding remains tied to that same thread. A fresh delivery may reconnect a terminated
