@@ -169,7 +169,7 @@ test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft a
 });
 
 
-for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'disabled', 'aria-disabled', 'voice']) {
+for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'missing-form', 'all-hidden', 'disabled', 'aria-disabled', 'voice']) {
   test(`Send selection: ${variant}`, async ({wake}) => {
     await wake.page.evaluate(variant => {
       const form=document.querySelector('form'), send=document.querySelector('[data-testid="send-button"]');
@@ -183,17 +183,22 @@ for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multipl
         other.addEventListener('click',()=>window.wrongClicks++);form.prepend(other);
       }
       if(variant==='missing') {send.removeAttribute('data-testid');send.removeAttribute('aria-label');send.type='submit';}
+      if(variant==='missing-form') document.body.append(document.querySelector('#prompt-textarea'));
+      if(variant==='all-hidden') send.hidden=true;
       if(variant==='disabled') {fixture.blocked=true;send.disabled=true;}
       if(variant==='aria-disabled') send.setAttribute('aria-disabled','true');
       if(variant==='voice') send.setAttribute('aria-label','Start dictation');
     },variant);
     wake.metadata.delivery_ids=[delivery(902)];await wake.check();await wake.check();
     expect(await wake.page.evaluate(()=>window.wrongClicks)).toBe(0);
+    const binding=await wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
+    const reason=variant==='missing-form' ? 'missing-form' : variant==='missing' ? 'no-explicit'
+      : variant==='all-hidden' ? 'all-hidden' : variant.startsWith('multiple') ? 'ambiguous' : 'unique';
+    expect(binding.diagnostic.facts.controlSelection).toBe(reason);
     const submits=variant.startsWith('hidden');
     await expect(wake.page.locator('#turns li')).toHaveCount(submits ? 1 : 0);
     if(!submits) {
       await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
-      const binding=await wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
       expect(binding.seen).not.toContain(delivery(902));expect(binding.halted).toBe(true);
     }
   });

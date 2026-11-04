@@ -129,6 +129,13 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         fenced["diagnostics"]["block"] = "retry-evidence-not-current"
         fenced["diagnostics"]["pair"]["reason"] = "stop-requested"
         assert (await client.post(PATH + "/report", json=fenced, headers=headers)).json() == {"status": "logged"}
+        for selection in ["missing-form", "no-explicit", "all-hidden", "ambiguous", "unique"]:
+            selected = deepcopy(payload)
+            selected["diagnostics"]["attempt"]["facts"]["controlSelection"] = selection
+            assert (await client.post(PATH + "/report", json=selected, headers=headers)).json() == {"status": "logged"}
+        invalid_selection = deepcopy(payload)
+        invalid_selection["diagnostics"]["attempt"]["facts"]["controlSelection"] = "private draft sentinel"
+        assert (await client.post(PATH + "/report", json=invalid_selection, headers=headers)).status_code == 400
         legacy = {**diagnostic, "legacy_halt": True, "attempt": None, "pair": None}
         assert (await client.post(PATH + "/report", json={**payload, "diagnostics": legacy},
                                   headers=headers)).json() == {"status": "logged"}
@@ -157,6 +164,7 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         maximum["diagnostics"]["attempt"]["facts"] = dict.fromkeys([
             "urlMatched", "editorFound", "busy", "draftPresent", "inserted",
             "controlPresent", "controlEnabled", "clickDispatched"], False)
+        maximum["diagnostics"]["attempt"]["facts"]["controlSelection"] = "missing-form"
         maximum["diagnostics"]["pair"]["reason"] = "conversation-already-bound"
         request = client.build_request("POST", PATH + "/report", json=maximum, headers=headers)
         assert len(request.content) < 4096, "all 50 IDs occur only inside the attempt, not twice"

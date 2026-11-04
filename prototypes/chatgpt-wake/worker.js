@@ -60,11 +60,13 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (observeOnly) return 'idle';
     const form = editor.closest('form');
     const sendControl = () => {
-      const controls = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])]
-        .filter(control => {
+      const explicit = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])];
+      const controls = explicit.filter(control => {
           const rect = control.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
         });
+      facts.controlSelection = !form ? 'missing-form' : !explicit.length ? 'no-explicit'
+        : !controls.length ? 'all-hidden' : controls.length > 1 ? 'ambiguous' : 'unique';
       // Count before checking enabled state: two visible Send controls are ambiguous.
       return controls.length === 1 ? controls[0] : undefined;
     };
@@ -122,7 +124,7 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (location.href !== expectedUrl || draft().trim() !== text ||
         !enabled(send) ||
         document.querySelector('[data-testid="stop-button"]')) {
-      const controls = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
+      const explicit = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
         .map(button => `id=${button.id},testid=${button.getAttribute('data-testid') || ''},type=${button.type},label=${button.getAttribute('aria-label') || ''},disabled=${button.disabled}`);
       const outcome = `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
       if (owned(witness)) return {outcome, noClickToken: attempt.token};
@@ -151,7 +153,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = 'a9dd8d2f-3693-4cc0-8b49-128b092e907c';
+const releaseId = 'c3de7930-394d-4a32-b02d-98923e1ce79a';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null,

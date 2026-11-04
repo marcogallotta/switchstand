@@ -35,6 +35,7 @@ class _Facts(_DiagnosticModel):
     busy: StrictBool | None = None
     draftPresent: StrictBool | None = None
     inserted: StrictBool | None = None
+    controlSelection: Literal["missing-form", "no-explicit", "all-hidden", "ambiguous", "unique"] | None = None
     controlPresent: StrictBool | None = None
     controlEnabled: StrictBool | None = None
     clickDispatched: StrictBool | None = None
