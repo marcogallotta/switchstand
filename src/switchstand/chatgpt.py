@@ -19,7 +19,6 @@ from .activation_continuity import (
 )
 from .activation_continuity_store import ActivationContinuity
 from .agent_mailboxes import AgentMailbox
-from .canonical_work_runtime import CanonicalWorkRuntime
 from .contracts import (
     ClosedModel,
     LaunchAuthority,
@@ -101,6 +100,7 @@ from .tracker.appends import AppendGateway, CanonicalAppendGateway
 from .tracker.creates import CreateGateway
 from .tracker.event_reads import CanonicalEventReader
 from .tracker.provider_relations import RelationGateway
+from .tracker.runtime import CanonicalWorkRuntime
 from .tracker.updates import UpdateGateway
 from .work_hygiene import HygieneGate, WorkHygieneResult, WorkHygieneState, evaluate_work_hygiene
 from .workspace_admission import WorkspaceAdmissionState

@@ -11,12 +11,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from switchstand import canonical_work_runtime, chatgpt_edge
+from switchstand import chatgpt_edge
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState
-from switchstand.canonical_work_runtime import (
-    CONFIRM_CANCELS_REVIEW_MESSAGE,
-    CanonicalWorkRuntime,
-)
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import (
@@ -58,6 +54,7 @@ from switchstand.reviews import (
     ReviewSubmit,
 )
 from switchstand.state import PostgresState, metadata, work_handles
+from switchstand.tracker import runtime as canonical_work_runtime
 from switchstand.tracker.event_reads import CanonicalEventReader
 from switchstand.tracker.events import WorkEventRepository, work_events
 from switchstand.tracker.relations import (
@@ -66,6 +63,10 @@ from switchstand.tracker.relations import (
     projects,
     work_dependencies,
     work_parents,
+)
+from switchstand.tracker.runtime import (
+    CONFIRM_CANCELS_REVIEW_MESSAGE,
+    CanonicalWorkRuntime,
 )
 from switchstand.tracker.work import (
     CanonicalWorkRepository,
@@ -1612,7 +1613,7 @@ async def test_stop_obligations_reads_real_canonical_assignments(subject: Subjec
         agent_mailboxes,
     )
     from switchstand.chatgpt_edge import _codex_stop_obligations
-    from switchstand.work_policy import validate_resultant_state
+    from switchstand.tracker.policy import validate_resultant_state
 
     binding = await AgentMailboxState(subject.engine).register_agent(
         "Acceptance", subject.principal.key, "codex:acceptance-session",

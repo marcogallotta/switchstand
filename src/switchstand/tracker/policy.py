@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from .agent_mailboxes import CODEX_COORDINATOR_NAME
+from ..agent_mailboxes import CODEX_COORDINATOR_NAME
 
 SEMANTIC_FIELDS = frozenset({
     "completed", "priority", "work_type", "lifecycle_state", "canonical_root", "owner_key",

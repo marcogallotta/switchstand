@@ -1,5 +1,5 @@
-"""Tracker storage, history reads, and durable command gateways.
+"""Canonical Tracker storage, reads, policy, and durable mutation gateways.
 
-Protected current-work runtime and lifecycle policy remain at their existing
-owners; public contracts and admission remain outside this package.
+Public tool contracts and shared authority remain in switchstand.contracts and
+switchstand.grants; MCP transports compose these owners directly.
 """

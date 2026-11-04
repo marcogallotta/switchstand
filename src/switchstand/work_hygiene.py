@@ -15,8 +15,8 @@ from .grant_state import GrantState
 from .messages import MessageState
 from .reviews import ReviewService
 from .task_control import TaskControlReadResult, TaskControlState
+from .tracker.policy import validate_resultant_state
 from .tracker.work import CanonicalWorkRepository, CurrentWork, canonical_revision
-from .work_policy import validate_resultant_state
 
 HygieneGate = Literal[
     "HANDOFF", "ASSIGNMENT_COMPLETE", "READY_FOR_REVIEW", "RESUME_REENTRY",
