@@ -42,12 +42,14 @@ def repository(path: Path, origin: str = "https://example.test/switchstand.git")
     return path, git(path, "rev-parse", "HEAD")
 
 
-def test_candidate_is_persistent_and_reuses_dirty_progress(tmp_path: Path) -> None:
+@pytest.mark.parametrize("state_directory", ["state", "tmp/switchstand-workspace/state"])
+def test_candidate_is_persistent_and_reuses_dirty_progress(
+    tmp_path: Path, state_directory: str,
+) -> None:
     repo, base = repository(tmp_path / "repo")
-    state = tmp_path / "state"
+    state = tmp_path / state_directory
     first = prepare_candidate(repo, WORK_ID, base, state_home=state)
     assert first.path.is_relative_to(state)
-    assert "/tmp/switchstand-" not in str(first.path)
     assert first.branch == f"switchstand/work-{WORK_ID}"
 
     (first.path / "untracked.txt").write_text("progress\n")

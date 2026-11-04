@@ -12,7 +12,10 @@ If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002
 the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may
 identify current routes or candidate WorkIds, but it cannot assign work, select focus, transfer
 ownership, or grant an effect. When Marco directly assigns new substantive work but supplies no
-WorkId, resolve and read `START HERE` as its provider-neutral parent. If the parent exposes an exact
+WorkId, first register this MCP session's unique durable agent name with `agent_register`
+(reuse an existing binding on resume; do not take over `Codex Coordinator` unless Marco assigned
+that role). Assigned `owner_key="SELF"` creation requires that registration. Then resolve and
+read `START HERE` as its provider-neutral parent. If the parent exposes an exact
 `canonical_root`, the child inherits it; because `START HERE` is an imported navigation-only
 `Context` without one, each child starts a new exact canonical root while retaining `START HERE`
 only as its placement parent. In either case create a minimally titled child with `work_type="Task"`,
