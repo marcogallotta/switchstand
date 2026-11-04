@@ -33,7 +33,10 @@ def current_section(notes):
 def render(notes, agents_bytes):
     labels = ('Situation (FULL)', 'Priorities focus-now (FULL)',
               'Coordinator notes CURRENT section (FULL)')
-    goal = Path('/home/marco/switchstand-recovery/coordinator/GOAL.md').read_text()
+    try:
+        goal = Path('/home/marco/switchstand-recovery/coordinator/GOAL.md').read_text()
+    except OSError:
+        goal = 'GOAL.md UNREADABLE: tell Marco'
     output = ('GOAL (read first):\n' + goal + '\n\nTHREE FULL RESTORED STARTUP NOTES\n'
               'All three required startup reads are restored below in one message. '
               'Use these notes; they are not missing because they share a message.\n\n'
