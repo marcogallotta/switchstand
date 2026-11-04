@@ -528,6 +528,19 @@ class MessageState:
             ))).scalar_one_or_none() if current else None
         return row is not None
 
+    async def all_pending_delivery_ids(self, binding: AgentMailbox) -> tuple[UUID, ...] | None:
+        """Collect bounded wake observations; stale pages never become an empty mailbox."""
+        pending: list[UUID] = []
+        cursor = None
+        while True:
+            page = await self.pending_delivery_ids(binding, cursor)
+            if page is None:
+                return None
+            pending.extend(page)
+            if len(page) < 50:
+                return tuple(pending)
+            cursor = page[-1]
+
     @asynccontextmanager
     async def pending_delivery_fence(
         self, binding: AgentMailbox, delivery_id: UUID,

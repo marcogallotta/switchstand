@@ -1,6 +1,6 @@
 # Shared mailbox wake observations — V1 design and execution plan
 
-Status: provisional, design review required before implementation.
+Status: design PASS at `0dde6617e`, occurrence `shared-wake-design-v1`, independent reviewer `/root/shared_wake_design_review`; implementation awaiting independent code review.
 WorkId: `b72a785f-a459-51f2-8a01-0b2560021a8e`.
 Immutable package base: `582b5dced4110e4b651365695136964aace1bb82`.
 Owner: Worker `/root/research_chatgpt_control`; integration/review owner: parent `/root`.
@@ -9,13 +9,13 @@ Owner: Worker `/root/research_chatgpt_control`; integration/review owner: parent
 
 Marco asked to share code between Codex, Claude and a future ChatGPT extension, then explicitly directed: design the restructure, review until passing, implement, review, merge. This package restructures the two existing paths without changing their operating behavior. The extension prototype has a separate owner and writer. No extension implementation, new external endpoint, activation, deployment, migration or credential effect belongs here.
 
-Baseline: #1106/#1107 implement default-off Codex daemon wake; #1108 implements a loopback-only read-only Claude summary and a polling script. Codex starts a turn. The Claude script reports mail and exits; it neither starts a turn nor acknowledges mail. The design preserves that difference. `BASELINE_PRESERVED` is the proposed classification, to be checked independently against this artifact and the existing source.
+Baseline: #1106/#1107 implement default-off Codex daemon wake; #1108 implements a loopback-only read-only Claude summary and a polling script. Codex starts a turn. The Claude script reports mail and exits; it neither starts a turn nor acknowledges mail. Independent design review classified this package `BASELINE_PRESERVED`, danger check clear, with no material findings or human-owned choice.
 
 ## Smallest useful shared boundary
 
 Keep `MessageState` and `AgentMailboxState` as the sole durable mailbox/currentness owners. Introduce one small `mailbox_wake.py` module for read-only observation and pure notice projection. This is shared code used by the existing Codex adapter and Claude endpoint/watcher, not a new scheduling service.
 
-1. A `MailboxWakeSource` wraps the existing `MessageState`. Its `pending_ids(binding)` follows the existing bounded ID pages and returns the complete tuple, or `None` if currentness fails. Its `attention(binding)` delegates to the existing fenced aggregate query. It never consumes, acknowledges, marks delivery, starts execution or acquires effect authority. Separate ID and aggregate projections avoid making Claude fetch every delivery merely to count mail.
+1. The selected smaller existing-owner route adds `MessageState.all_pending_delivery_ids(binding)`: it follows existing bounded ID pages and returns the complete tuple, or `None` if currentness fails. Claude retains the existing fenced `attention(binding)` aggregate query. Neither observation consumes, acknowledges, marks delivery, starts execution or acquires effect authority. Separate ID and aggregate projections avoid making Claude fetch every delivery merely to count mail. A forwarding-only `MailboxWakeSource` wrapper is unnecessary.
 2. Pure notice helpers own the existing delivery-ID marker encoding/decoding and the existing ordinary/review nudge formatting. They accept already-selected delivery metadata. Missing typed review identity remains an error; assistant text is never a receipt. The Codex adapter still decides which exact user inputs are eligible receipt evidence and follows transcript pages itself.
 3. A small pure summary value/parser validates the existing `status`, count and sender shape and provides the existing human notice text. The Claude endpoint constructs that projection from `attention`; its script uses the same parser/formatter. Keep this module importable without database/web dependencies, using type-only imports for observation interfaces where necessary. The standalone script remains usable through its current invocation and needs no new environment setup.
 
