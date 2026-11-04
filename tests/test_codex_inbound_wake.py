@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-import switchstand.mailbox.codex_inbound_wake as module
 
+import switchstand.mailbox.codex_inbound_wake as module
 from switchstand.agent_mailboxes import AgentMailbox, chat_session_key
 from switchstand.mailbox_wake import MARKER
 
