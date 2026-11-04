@@ -21,7 +21,7 @@ from switchstand.managed_identity import managed_principal, rotate_managed_grant
 from switchstand.mcp import build_server
 from switchstand.provider import AsanaProvider
 from switchstand.state import PostgresState, metadata
-from switchstand.updates import UpdateGateway
+from switchstand.tracker.updates import UpdateGateway
 
 PROJECT = "9999999999999999"
 PRIORITY = "1217653169990249"

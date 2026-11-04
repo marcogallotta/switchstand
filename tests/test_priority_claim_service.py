@@ -8,8 +8,8 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import projects
-from switchstand.canonical_work import (
+from switchstand.tracker.relations import projects
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     canonical_metadata,
     canonical_revision,

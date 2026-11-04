@@ -7,7 +7,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from switchstand.chatgpt import ChatGPTService
 from switchstand.contracts import Routing, WorkContext
 from switchstand.core import Handle, ProviderError, ProviderSourceTask, ProviderWork, UnknownEffect
-from switchstand.creates import CreateGateway
+from switchstand.tracker.creates import CreateGateway
 from switchstand.grants import PrincipalContext, ProtectedCreate
 
 

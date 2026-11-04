@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 
 from switchstand import provision
-from switchstand.canonical_work import CurrentWork
+from switchstand.tracker.work import CurrentWork
 from switchstand.task_ref import asana_task_id
 
 

@@ -8,7 +8,7 @@ from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.testclient import TestClient
 
-from switchstand.canonical_work import (
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     canonical_metadata,
     canonical_revision,

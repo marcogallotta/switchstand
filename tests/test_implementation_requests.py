@@ -11,8 +11,8 @@ from sqlalchemy import func, insert, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import work_dependencies
-from switchstand.canonical_work import (
+from switchstand.tracker.relations import work_dependencies
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_revision,

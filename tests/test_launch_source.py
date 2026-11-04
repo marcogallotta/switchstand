@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from switchstand import launch_source
-from switchstand.canonical_work import CurrentWork
+from switchstand.tracker.work import CurrentWork
 from switchstand.launch_source import LaunchSource, LaunchSourceError, load_asana_token, parse_notes
 
 BASE = "a" * 40

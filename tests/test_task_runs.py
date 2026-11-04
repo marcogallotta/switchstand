@@ -13,7 +13,7 @@ from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_work import (
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_revision,

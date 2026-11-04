@@ -5,13 +5,13 @@ import pytest
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import (
+from switchstand.tracker.relations import (
     CanonicalRelationsRepository,
     project_memberships,
     projects,
     work_dependencies,
 )
-from switchstand.canonical_work import (
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     canonical_metadata,
     canonical_revision,
