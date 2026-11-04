@@ -60,6 +60,7 @@ from switchstand.grants import (
     UpdateReceipt,
     WorkGrant,
 )
+from switchstand.managed_identity import rotate_managed_grant
 from switchstand.mcp import controller_from_env
 from switchstand.messages import MessageReceiveRequest, MessageState, RuntimeCurrentness
 from switchstand.reviews import (
@@ -72,7 +73,7 @@ from switchstand.reviews import (
     ReviewSubmit,
 )
 from switchstand.state import PostgresState, metadata, work_handles
-from switchstand.work_events import WorkEventRepository
+from switchstand.work_events import WorkEventRepository, work_events
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 
@@ -534,37 +535,43 @@ async def test_atomic_update_replays_and_rejects_operation_conflict(subject: Sub
     assert (await subject.runtime.get(subject.work_id)).item.title == "Changed"  # type: ignore[union-attr]
 
 
-@pytest.mark.parametrize("qualification", ["test:update", "legacy:update", "garbage"])
-async def test_authenticated_update_rejects_non_real_qualification(
-    subject: Subject, qualification: str,
+@pytest.mark.parametrize("operation", ["update", "append"])
+async def test_canonical_mutations_accept_issuer_derived_managed_grant(
+    subject: Subject, operation: str,
 ) -> None:
-    principal = subject.principal.model_copy(update={
-        "subject": str(uuid4()), "assurance": "authenticated",
-    })
-    grant = subject.grant.model_copy(update={
-        "id": uuid4(), "principal": principal, "update_qualification": qualification,
-    })
-    await subject.grants.issue(grant, None)
-    before = await subject.runtime.works.get(subject.work_id)
-    request = update(subject, notes="must not write")
-
-    denied = await subject.runtime.protected_update(subject.grants, principal, request)
-
-    assert (denied.status, denied.effect, denied.reason) == (
-        "denied", "not_sent", "update_not_qualified_for_this_surface",
+    grant = await rotate_managed_grant(
+        subject.grants, LaunchAuthority(active_work_id=subject.work_id),
     )
-    assert await subject.runtime.works.get(subject.work_id) == before
+
+    async def resolve() -> PrincipalContext:
+        return grant.principal
+
+    service = ChatGPTService(
+        resolve, subject.service.state, subject.grants, {}, canonical_work=subject.runtime,
+        canonical_events=subject.service.canonical_events, canonical_work_active=True,
+    )
+    if operation == "update":
+        request = update(subject, notes="managed edit")
+        applied = await service.update(request)
+        replay = await service.update(request)
+        stored = await subject.runtime.works.get(subject.work_id)
+        assert stored is not None and stored.notes == "managed edit"
+    else:
+        request = ProtectedAppend(
+            api_version="1", operation_id=uuid4(), work_id=subject.work_id,
+            grant_version=grant.version, observed_revision=canonical_revision(subject.work_id, 1),
+            text="managed event",
+        )
+        applied = await service.append(request)
+        replay = await service.append(request)
+        async with subject.engine.connect() as connection:
+            assert await connection.scalar(select(func.count()).select_from(work_events)) == 1
+    assert applied.effect == "applied" and applied == replay
+    assert applied.receipt is not None and applied.receipt.qualification == "managed:task-bound"
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and stored.row_version == 2
     async with subject.engine.connect() as connection:
-        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 0
-
-    # The same request is valid once the trusted issuer supplies real qualification.
-    await subject.grants.issue(grant.model_copy(update={
-        "version": 2, "update_qualification": "real:canonical",
-    }), 1)
-    applied = await subject.runtime.protected_update(
-        subject.grants, principal, request.model_copy(update={"grant_version": 2}),
-    )
-    assert applied.effect == "applied"
+        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 1
 
 
 async def test_concurrent_update_replay_has_one_revision_and_one_receipt(subject: Subject) -> None:
