@@ -45,6 +45,7 @@ from .canonical_work import CanonicalWorkRepository, CurrentWork
 from .canonical_work_runtime import CanonicalWorkRuntime
 from .chatgpt import ChatGPTService
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
+from .chatgpt_wake import install_browser_wake
 from .codex_inbound_wake import InboundWake
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
@@ -742,6 +743,9 @@ def _create_resource_app(
     ))
     for name, tool in ordinary_tools:
         server.tool(tool, annotations=ordinary_tool_annotations(name))
+
+    if os.getenv("SWITCHSTAND_CHATGPT_BROWSER_WAKE") == "1":
+        install_browser_wake(server, service.messages)
 
     @server.custom_route(CLAUDE_MAIL_SUMMARY_PATH, methods=["GET"], include_in_schema=False)
     async def _claude_mail_summary(  # pyright: ignore[reportUnusedFunction]
