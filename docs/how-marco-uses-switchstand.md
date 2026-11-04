@@ -262,6 +262,9 @@ Keep one semantic owner for each real concern. Preserve the same task GID and Wo
 
 ## Work, messages, and feedback
 
+For mailbox code changes or missing-wake diagnosis, use the [mailbox maintenance guide](mailbox.md)
+to find current source owners, lifecycle semantics and tests.
+
 **Tracker portfolio/handoff:** For an assigned multi-WorkId Tracker portfolio or named agent replacement, read the current Tracker guide `b974bf05-5397-53b5-ab5a-0932dbea1310` through authenticated MCP. It owns lightweight recovery, handoff and outstanding-obligation rules; it does not grant ownership or add a portfolio ceremony for narrow single-task workers.
 
 Tracker Issues V1-A owns Feedback V1's shared reporting function and its code/tests; agents use it rather than adding another reporting path. The always-loaded draw, mandatory-report, and reply-mark behavior lives in [AGENTS.md](../AGENTS.md).
