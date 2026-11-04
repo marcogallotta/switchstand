@@ -41,9 +41,13 @@ No coordinator message is sent; no legitimate reporting actor is configured.
 Browser exit or machine sleep cannot reliably self-report; last-check time exposes
 stale observation, without a new monitoring service.
 
-Closed tabs retain their pairings and mailbox observation, report undeliverable
-mail, and never reopen automatically. Drafts/busy/frozen/discarded/wrong-URL tabs
-are deferred. Uncertain outcomes halt that binding, including across extension
+Registered conversation URLs retain their pairings and mailbox observation.
+Each check resolves one exact matching open tab: the original hint if present,
+otherwise the lowest tab ID. Away/back, another tab or close/reopen needs no
+re-pairing. No match reports unavailable; closing a duplicate is not absence
+while another match remains. Tabs never reopen automatically. Drafts, busy,
+frozen and discarded targets are deferred; the page checks the exact URL again
+before editing. Uncertain outcomes halt that binding, including across extension
 reload; a new delivery cannot clear that halt. Reconcile the actual conversation
 before any operator recovery. `click-attempted` is not provider acceptance or proof
 that the chat processed its mailbox. A draft inserted without a send is retained.

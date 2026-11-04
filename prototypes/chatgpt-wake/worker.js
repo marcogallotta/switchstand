@@ -206,6 +206,14 @@ async function record(binding, outcome, ids = [], save, fresh = false) {
     binding.lastReport = reportKey;
   } catch (error) { binding.report = 'backend report unavailable: ' + error.message; }
 }
+// The registered conversation is durable; tab IDs are only current delivery routes.
+async function conversationTab(binding) {
+  const tabs = (await chrome.tabs.query({url: 'https://chatgpt.com/*'}))
+    .filter(tab => Number.isInteger(tab.id) && tab.url === binding.url);
+  // Page-owned retries cannot move, even when a preferred/duplicate tab exists.
+  return tabs.find(tab => tab.id === binding.retry?.tabId) ||
+    tabs.find(tab => tab.id === binding.tabId) || tabs.sort((a, b) => a.id - b.id)[0];
+}
 async function checkBinding(binding, save) {
   let observation;
   const note = (outcome, ids = observation?.delivery_ids || []) => record(binding, outcome, ids, save, true);
@@ -220,14 +228,19 @@ async function checkBinding(binding, save) {
   binding.pending = pending;
   binding.observedPending = observation.delivery_ids;
   let tab;
-  try { tab = await chrome.tabs.get(binding.tabId); }
-  catch { binding.availability = 'closed'; return note('bound-tab-missing'); }
+  try { tab = await conversationTab(binding); }
+  catch (error) { return note('composer-unavailable: tab lookup failed: ' + error.message); }
+  if (!tab) {
+    delete binding.retry; // No current page can retain this page-owned allowance.
+    binding.availability = 'closed';
+    return note('bound-tab-missing');
+  }
   binding.availability = 'open';
   if (binding.halted && !binding.retry) return note('attempt-outcome-unknown');
   const retry = binding.retry;
   if (retry && (retry.boot !== bootId || retry.stop !== stopVersion ||
       retry.endpoint !== binding.endpoint || retry.generation !== binding.generation ||
-      retry.tabId !== binding.tabId || retry.url !== binding.url || tab.url !== binding.url ||
+      retry.tabId !== tab.id || retry.url !== binding.url || tab.url !== binding.url ||
       JSON.stringify(retry.ids) !== JSON.stringify(pending))) {
     delete binding.retry;
     return note('attempt-outcome-unknown: retry evidence no longer current');
@@ -239,7 +252,7 @@ async function checkBinding(binding, save) {
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   if (!pending.length) {
     try {
-      const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url, true]});
+      const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, true]});
       return note(result?.result || 'composer-unavailable: observation returned no result');
     } catch (error) { return note('composer-unavailable: observation failed: ' + error.message); }
   }
@@ -257,13 +270,13 @@ async function checkBinding(binding, save) {
     return note('stopped');
   }
   try {
-    const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url, false, attempt]});
+    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, false, attempt]});
     const receipt = result?.result;
     const outcome = (typeof receipt === 'string' ? receipt : receipt?.outcome) || 'attempt-outcome-unknown';
     if (!retry && receipt?.noClickToken === attempt.token && outcome.startsWith('inserted-not-submitted:') &&
         !stopRequested(binding) && stopVersion === attemptStop) {
       binding.retry = {token: attempt.token, boot: bootId, stop: attemptStop, endpoint: binding.endpoint,
-        generation: binding.generation, tabId: binding.tabId, url: binding.url, ids: pending.slice()};
+        generation: binding.generation, tabId: tab.id, url: binding.url, ids: pending.slice()};
     }
     const safe = ['busy', 'draft-present', 'wrong-conversation', 'insert-failed'].includes(outcome) || outcome.startsWith('composer-unavailable');
     if (safe && !retry) binding.halted = false;
@@ -338,7 +351,12 @@ chrome.alarms.onAlarm.addListener(() => exclusive(check).catch(error => status('
 chrome.tabs.onRemoved.addListener(tabId => exclusive(async () => {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
   const save = () => chrome.storage.local.set({wakeBindings});
-  for (const binding of wakeBindings) if (binding.tabId === tabId && binding.armed && !stopRequested(binding)) {
+  for (const binding of wakeBindings) if (binding.armed && !stopRequested(binding)) {
+    if (binding.retry?.tabId === tabId) delete binding.retry;
+    let tab;
+    try { tab = await conversationTab(binding); }
+    catch { continue; } // Failed lookup is not evidence the conversation is closed.
+    if (tab) { binding.availability = 'open'; continue; }
     binding.availability = 'closed';
     await record(binding, 'bound-tab-missing', binding.observedPending || binding.pending || [], save);
   }

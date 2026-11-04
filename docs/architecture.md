@@ -938,7 +938,10 @@ messages only while the user is actively running and prompting that session.
 adapter to the edge. Its poll route resolves an existing registered mailbox and
 uses the shared fenced `MessageState.all_pending_delivery_ids` collector; it
 returns endpoint/generation/IDs without mailbox content or delivery mutations.
-The extension manually pairs each mailbox with an exact open conversation tab.
+The extension manually registers each mailbox's exact supported conversation URL.
+Each poll resolves one matching open tab, preferring the stored tab hint then the
+lowest tab ID. Closure checks remaining matches; page-owned retries and UNKNOWN
+never transfer to a replacement page. No tab is opened or focused automatically.
 Per-binding pending/seen and a persisted pre-mutation halt prevent blind retries.
 An explicit no-click receipt permits one retry of the exact extension-owned wake,
 without reinsertion, using a consumed storage allowance and an isolated-world

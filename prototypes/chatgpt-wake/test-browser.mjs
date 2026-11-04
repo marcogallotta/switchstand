@@ -172,6 +172,49 @@ try {
   assert.match(await invoke({...unavailable, retry: true}), /attempt-outcome-unknown: retry exhausted/);
   assert.equal(await evaluate(session, 'submissions.length'), 0);
   console.log('PASS owned no-click one retry without reinsertion; edit/revert, submitted, prior click with retained text, missing witness/control, replacement and attachments remain fenced.');
+  // Actual browser tab resolution and script targeting, still intercepted fixtures only.
+  const route = () => evaluate(workerSession, `conversationTab({url:${JSON.stringify(url)},tabId:globalThis.fixtureTabId}).then(tab=>tab?{id:tab.id,url:tab.url}:null)`);
+  const routeNudge = () => evaluate(workerSession, `(async()=>{const tab=await conversationTab({url:${JSON.stringify(url)},tabId:globalThis.fixtureTabId});if(!tab)return 'no-match';return(await chrome.scripting.executeScript({target:{tabId:tab.id},func:nudge,args:[${JSON.stringify(url)}]}))[0].result})()`);
+  async function openFixture() {
+    const target = await command('Target.createTarget', {url: 'about:blank'});
+    const attached = await attach(target.targetId);
+    await command('Fetch.enable', {patterns: [{urlPattern: '*'}]}, attached);
+    await command('Page.navigate', {url}, attached);
+    for (let i = 0; i < 50; i++) {
+      if (await evaluate(attached, 'typeof submissions !== "undefined"')) return {target, session: attached};
+      await pause(100);
+    }
+    throw Error('replacement fixture did not load');
+  }
+  await prepare(); await enableSend();
+  const originalRoute = await route();
+  await evaluate(session, `history.pushState({},'', '/c/away')`);
+  assert.equal(await routeNudge(), 'no-match');
+  await evaluate(session, `history.pushState({},'',${JSON.stringify(url)})`);
+  assert.equal((await route()).id, originalRoute.id);
+  assert.equal(await routeNudge(), 'click-attempted');
+  assert.deepEqual(await evaluate(session, 'submissions'), ['Process your mailbox']);
+  await prepare();
+  await evaluate(session, `history.pushState({},'', '/c/away')`);
+  const replacement = await openFixture();
+  assert.notEqual((await route()).id, originalRoute.id);
+  assert.equal(await routeNudge(), 'click-attempted');
+  assert.deepEqual(await evaluate(replacement.session, 'submissions'), ['Process your mailbox']);
+  assert.deepEqual(await evaluate(session, 'submissions'), [], 'original unrelated chat was not edited');
+  await command('Target.closeTarget', {targetId: replacement.target.targetId});
+  assert.equal(await routeNudge(), 'no-match');
+  const reopened = await openFixture();
+  assert.equal(await routeNudge(), 'click-attempted');
+  assert.deepEqual(await evaluate(reopened.session, 'submissions'), ['Process your mailbox']);
+  const duplicate = await openFixture();
+  await evaluate(reopened.session, 'submissions.length=0');
+  const chosen = await route();
+  assert.equal(chosen.id, (await route()).id, 'duplicate selection remains deterministic');
+  assert.equal(await routeNudge(), 'click-attempted');
+  assert.equal((await evaluate(reopened.session, 'submissions.length')) + (await evaluate(duplicate.session, 'submissions.length')), 1);
+  await command('Target.closeTarget', {targetId: reopened.target.targetId});
+  await command('Target.closeTarget', {targetId: duplicate.target.targetId});
+  console.log('PASS actual isolated browser routing: same-tab away/back, different matching tab, close/reopen, deterministic duplicate single target; no unrelated editor mutation.');
   console.log('PASS isolated MV3 composer: delayed voice-to-send, draft/busy, no-ID editor, ambiguity, textarea, exact URL and retained unsent draft. Real ChatGPT/background operation: NOT_RUN.');
 } catch (error) {
   console.error(error);

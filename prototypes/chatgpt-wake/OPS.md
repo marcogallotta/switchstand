@@ -73,6 +73,10 @@ and one consumed retry allowance. It never inserts again. Existing UNKNOWN,
 clicked attempts and evidence lost on worker restart still require reconciliation;
 matching composer text alone is insufficient. This candidate is not installed by
 editing these docs or the backend unit.
+The routing candidate follows the registered exact conversation URL across open
+tabs, using one target per check. Away/back, another matching tab and close/reopen
+need no re-pairing. It never opens or focuses a tab. A page-owned retry stays on
+its original page; moving/reopening the chat cannot clear an unresolved halt.
 A queued alert is not received until the parent actually receives it. A recovery
 requires observed cleared pending IDs or a positively cleared former blocker.
 The honest reporter TEST already received/acknowledged proves routing only;

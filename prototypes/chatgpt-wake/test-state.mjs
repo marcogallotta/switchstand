@@ -24,6 +24,7 @@ function load() {
       async set(value) { saved = structuredClone({...saved, ...value}); if (onSave) await onSave(value); }
     }},
     tabs: {async get(number) { if (!tabs.has(number)) throw Error('closed'); return tabs.get(number); },
+      async query() { return [...tabs].map(([id, tab]) => ({id, ...tab})); },
       onRemoved: {addListener(value) { removed = value; }}},
     scripting: {async executeScript(options) {
       const observeOnly = options.args[1] === true;
@@ -305,7 +306,7 @@ observations.get('A').delivery_ids = [id(501)];
 observations.get('C').delivery_ids = [id(502)]; attempts.length = 0;
 await message({type: 'check'});
 assert.deepEqual(attempts, [1], 'only the exact current C conversation may receive a wake');
-assert.equal(state('A').status, 'wrong-conversation');
+assert.equal(state('A').status, 'bound-tab-missing', 'registered conversation is not open in any tab');
 assert.deepEqual(state('A').seen, [id(500)]);
 assert.deepEqual(state('C').seen, [id(502)]);
 tabs.set(1, {url: originalA.url}); attempts.length = 0;
@@ -314,7 +315,7 @@ await message({type: 'check'});
 assert.deepEqual(attempts, [1], 'navigating back allows only original A pending mail');
 assert.deepEqual(state('A').seen, [id(500), id(501)]);
 assert.deepEqual(state('C').seen, [id(502)], 'other chat unseen mail is preserved');
-assert.equal(state('C').status, 'wrong-conversation');
+assert.equal(state('C').status, 'bound-tab-missing');
 console.log('PASS three pairings, reused tab, retained binding/dedupe state, duplicate URL refusal and exact-chat isolation');
 
 async function unsentWake() {
@@ -380,3 +381,66 @@ console.log('PASS explicit no-click single retry; consume-before-dispatch, no in
 assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
 for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
 console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
+
+// Conversation routing, with one retained pending delivery per distinct case.
+async function routingWake() {
+  saved = {}; attempts.length = 0; reports.length = 0; onSave = undefined;
+  tabs.clear(); tabs.set(10, {url: 'https://chatgpt.com/c/routing'});
+  Object.assign(observations.get('A'), {endpoint: id(1), generation: 1, delivery_ids: []});
+  outcome = 'click-attempted'; load(); await bind('A', 10);
+  observations.get('A').delivery_ids = [id(800)];
+}
+await routingWake();
+tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'});
+await message({type: 'check'});
+assert.deepEqual(attempts, []);
+tabs.set(10, {url: state('A').url});
+await message({type: 'check'});
+assert.deepEqual(attempts, [10], 'same tab away/back wakes retained fresh pending');
+await message({type: 'check'});
+assert.deepEqual(attempts, [10], 'return never resets seen delivery IDs');
+
+await routingWake();
+tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'});
+tabs.set(12, {url: state('A').url}); tabs.set(11, {url: state('A').url});
+await message({type: 'check'});
+assert.deepEqual(attempts, [11], 'different matching tab: deterministic one target despite duplicate');
+observations.get('A').delivery_ids = [id(801)];
+tabs.delete(11); await removed(11);
+assert.equal(state('A').availability, 'open', 'fallback removal resolves another matching tab');
+assert.notEqual(state('A').status, 'bound-tab-missing', 'duplicate closure never claims conversation absent');
+await message({type: 'check'});
+assert.deepEqual(attempts, [11, 12]);
+tabs.set(10, {url: state('A').url});
+observations.get('A').delivery_ids = [id(802)];
+await message({type: 'check'});
+assert.deepEqual(attempts, [11, 12, 10], 'registered hint preferred when it matches again');
+
+await routingWake();
+tabs.delete(10); await removed(10); await message({type: 'check'});
+assert.equal(state('A').availability, 'closed');
+assert.deepEqual(attempts, []);
+tabs.set(20, {url: state('A').url});
+await message({type: 'check'});
+assert.deepEqual(attempts, [20], 'close/reopen uses new tab without re-pair');
+assert.deepEqual(state('A').seen, [id(800)]);
+
+await routingWake();
+tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'}); tabs.set(11, {url: state('A').url});
+outcome = options => ({outcome: 'inserted-not-submitted: no click', noClickToken: options.args[2].token});
+await message({type: 'check'});
+assert.equal(state('A').retry.tabId, 11, 'retry owns actual fallback page, not stored hint');
+tabs.delete(11); tabs.set(12, {url: state('A').url}); await removed(11);
+assert.equal(state('A').retry, undefined, 'lost page forfeits retry immediately');
+const beforeLost = attempts.length; await message({type: 'check'});
+assert.equal(attempts.length, beforeLost, 'replacement cannot inherit retry or clear UNKNOWN');
+assert.equal(state('A').halted, true);
+
+for (const interruption of ['wrong-conversation', 'throw', 'draft-present']) {
+  await routingWake(); tabs.set(11, {url: state('A').url});
+  outcome = interruption; await message({type: 'check'});
+  assert.deepEqual(attempts, [10], 'URL race/draft/uncertainty cannot fallback immediately');
+  assert.deepEqual(state('A').seen, []);
+  assert.equal(state('A').halted, interruption === 'throw');
+}
+console.log('PASS three conversation routing cases; duplicate single target, fallback removal, retained IDs, page-owned retry loss, URL race/draft/UNKNOWN fences.');
