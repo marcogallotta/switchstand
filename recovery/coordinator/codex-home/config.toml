@@ -5,6 +5,9 @@ project_root_markers = [".git", ".recovery-root"]
 project_doc_max_bytes = 32768
 mcp_oauth_credentials_store = "keyring"
 
+[sandbox_workspace_write]
+writable_roots = ["/home/marco/switchstand/.git", "/home/marco/.local/state/switchstand/worktrees"]
+
 [features]
 hooks = true
 multi_agent = true
