@@ -1,6 +1,7 @@
 # Tracker implementation
 
-Start here when changing current work, its structure, or protected work effects. This describes
+Tracker owns `src/switchstand/tracker/`: canonical work/relations/events and protected command
+gateways. Start here when changing current work, its structure, or protected work effects. This describes
 repository wiring, not the deployed revision or permission to operate a service. For agent use of
 work tools and recovery, follow [source compatibility](source-history-feedback.md).
 
@@ -16,11 +17,11 @@ Asana writes on a canonical request.
 
 | Change | Owner under `src/switchstand/` |
 | --- | --- |
-| Current work create/get/search/scalar update and work-item projection | [`canonical_work_runtime.py::CanonicalWorkRuntime`](../src/switchstand/canonical_work_runtime.py) (`protected_create`, `get`, `search`, `protected_update`, `_item`) |
-| Current row storage, locking, optimistic version and legacy aliases | [`canonical_work.py::CanonicalWorkRepository`](../src/switchstand/canonical_work.py); `canonical_revision` produces the opaque `pg_` revision from WorkId and row version |
-| Resultant routing/completion rules | [`work_policy.py`](../src/switchstand/work_policy.py), called before protected mutation; reuse `validate_resultant_state` rather than adding caller-specific policy |
-| Parents, dependencies and project placements | [`canonical_relations.py`](../src/switchstand/canonical_relations.py); protected work relations enter through `CanonicalWorkRuntime.protected_relation` |
-| Append/history/event storage and projection | `effects.py::CanonicalAppendGateway`, `work_events.py`, `canonical_event_reads.py` |
+| Current work create/get/search/scalar update and work-item projection | [`tracker/runtime.py::CanonicalWorkRuntime`](../src/switchstand/tracker/runtime.py) (`protected_create`, `get`, `search`, `protected_update`, `_item`) |
+| Current row storage, locking, optimistic version and legacy aliases | [`tracker/work.py::CanonicalWorkRepository`](../src/switchstand/tracker/work.py); `canonical_revision` produces the opaque `pg_` revision from WorkId and row version |
+| Resultant routing/completion rules | [`tracker/policy.py`](../src/switchstand/tracker/policy.py), called before protected mutation; reuse `validate_resultant_state` rather than adding caller-specific policy |
+| Parents, dependencies and project placements | [`tracker/relations.py`](../src/switchstand/tracker/relations.py); protected work relations enter through `CanonicalWorkRuntime.protected_relation` |
+| Append/history/event storage and projection | `tracker/appends.py::CanonicalAppendGateway`, `tracker/events.py`, `tracker/event_reads.py` |
 | Public request/result shape and scalar patch validation | Shared `contracts.py` and `grants.py`; public note preview is [`chatgpt_mcp.py::project_ordinary_work`](../src/switchstand/chatgpt_mcp.py) → `mcp.py::project_work` |
 | Admission, grants and effect journal schema | Shared `workspace_admission.py`, `grant_state.py` and `grants.py`; identity and mailbox registration remain outside Tracker |
 
@@ -36,8 +37,7 @@ That method holds the grant context and opens one `grants.engine.begin()` transa
 locked current row, `replace_locked` row-version increment, resulting-revision receipt and
 `effect_intents` insert share the same connection. The successful return escapes only after
 commit. Create and relation operations likewise journal their canonical effects atomically.
-The repository is storage, not an authority gateway: direct `replace`/`replace_locked`, and the
-lower-level runtime `update(WorkUpdateRequest)`, do not provide protected grant/replay guarantees.
+The repository is storage, not an authority gateway: direct `replace`/`replace_locked` does not provide protected grant/replay guarantees.
 Use the protected boundary for ordinary writes.
 
 | Scalar update result | Meaning and recovery |

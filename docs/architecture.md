@@ -13,7 +13,7 @@ The ordinary authenticated flow is:
    the canonical ordinary tools produced by `chatgpt_mcp.py::build_ordinary_tools`.
 2. `chatgpt.py::ChatGPTService` resolves caller admission and routes ordinary work operations to
    the canonical PostgreSQL owners.
-3. `canonical_work_runtime.py`, `effects.py::CanonicalAppendGateway`, and the canonical event and
+3. `tracker/runtime.py`, `tracker/appends.py::CanonicalAppendGateway`, and the canonical event and
    relation repositories validate currentness and apply work mutations.
 4. Each canonical mutation owner records its outcome in `grant_state.py::effect_intents`
    in the same transaction as canonical state.
@@ -344,13 +344,13 @@ messaging, and required continuation:
   exact-principal launch grant. It never derives or rotates authority from provider content and is
   disabled by an authenticated migration-complete receipt.
 
-- `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, and `work_events.py` own the explicit
+- `tracker/work.py`, `tracker/relations.py`, `priority_claims.py`, and `tracker/events.py` own the explicit
   compact canonical PostgreSQL schema definitions and repositories for current rows, stable title/completion
   search pages, legacy task aliases,
-  dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
+  dependencies, parents, simple project placements, and event history. `tracker/event_reads.py`
   projects DB event storage through the existing public history/event contracts. The ordinary
   edge and managed MCP constructors wire these canonical owners directly.
-  `canonical_work_runtime.py` projects canonical current rows and relations through the
+  `tracker/runtime.py` projects canonical current rows and relations through the
   existing get, search, create, scalar-update, parent, and dependency contracts. Protected creates
   atomically persist the row, requested parent or project placement, and effect receipt; protected
   parent/dependency changes and canonical project-membership add/remove atomically persist the
@@ -372,7 +372,7 @@ messaging, and required continuation:
   values, `0015_work_admission_time` adds nullable admission time, and `0017_priority_claims`
   adds inert, occurrence-based priority provenance without replacing the legacy scalar. Native PostgreSQL creates
   set it from the server clock; preexisting and source-imported rows retain explicit `NULL` unless
-  the import carries a trustworthy timestamp. `work_policy.py` validates affected invariant
+  the import carries a trustworthy timestamp. `tracker/policy.py` validates affected invariant
   groups for protected scalar updates, preserving unrelated legacy metadata. One-field FINISH
   atomically couples completion/TERMINAL and clears waits/actions; explicit contradictions and
   implicit reopening are denied. Other semantic writes retain strict resultant-state validation.
@@ -633,7 +633,7 @@ transition. A new session or caller must not silently continue a RECEIVED delive
 
 ## Protected effects and UNKNOWN
 
-The canonical runtime and `effects.py::CanonicalAppendGateway` own ordinary PostgreSQL work
+The canonical runtime and `tracker/appends.py::CanonicalAppendGateway` own ordinary PostgreSQL work
 mutations. A parented create normally inherits its parent's exact canonical root. The exact
 imported `START HERE` `1218327002478382` rootless `Context` is a navigation-only placement
 boundary for the documented direct-assignment `Task` shape: each such child remains parented
@@ -641,10 +641,10 @@ there but starts its own exact canonical root. Other parents and child shapes fa
 The following legacy gateways remain only for managed/source compatibility and the
 frozen-cutover disposition of provider-era effects; they are not ordinary PostgreSQL write owners:
 
-- `effects.py::AppendGateway` owns append intent, send, and exact story/task readback;
-- `creates.py::CreateGateway` owns creation and binding of the resulting provider work;
-- `updates.py::UpdateGateway` owns scalar work updates;
-- `relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
+- `tracker/appends.py::AppendGateway` owns append intent, send, and exact story/task readback;
+- `tracker/creates.py::CreateGateway` owns creation and binding of the resulting provider work;
+- `tracker/updates.py::UpdateGateway` owns scalar work updates;
+- `tracker/provider_relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
 - `provider.py::AsanaProvider` owns how each operation is expressed and verified in Asana.
 
 Asana provider reads retry only bounded transient transport, throttling, and server failures. They
@@ -911,10 +911,10 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
-| Change canonical Tracker work/relations/event behavior | `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, ordinary/managed wiring, and protected create/update/relation atomicity |
+| Change canonical Tracker work/relations/event behavior | `tracker/work.py`, `tracker/relations.py`, `priority_claims.py`, `tracker/events.py`, `tracker/event_reads.py`, `tracker/runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, ordinary/managed wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation, bounded digest-validated failure/activation reads, and source coverage; no external inference, mutation, or process control |
-| Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
+| Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `tracker/provider_relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `mailbox/messages.py` | managed and ordinary adapters; `mailbox/agent_mailboxes.py` for name/principal/generation binding changes |
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |
