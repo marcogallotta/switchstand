@@ -46,6 +46,7 @@ from switchstand.grant_state import GrantState, effect_intents, work_grants
 from switchstand.grants import (
     CreateReceipt,
     EffectReceipt,
+    GuardOutcome,
     PrincipalContext,
     ProjectCreateReceipt,
     ProtectedAppend,
@@ -531,6 +532,56 @@ async def test_atomic_update_replays_and_rejects_operation_conflict(subject: Sub
     assert first.receipt.resulting_revision == canonical_revision(subject.work_id, 2)
     assert conflict.reason == "operation_identity_conflict"
     assert (await subject.runtime.get(subject.work_id)).item.title == "Changed"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("qualification", ["test:update", "legacy:update", "garbage"])
+async def test_authenticated_update_rejects_non_real_qualification(
+    subject: Subject, qualification: str,
+) -> None:
+    principal = subject.principal.model_copy(update={
+        "subject": str(uuid4()), "assurance": "authenticated",
+    })
+    grant = subject.grant.model_copy(update={
+        "id": uuid4(), "principal": principal, "update_qualification": qualification,
+    })
+    await subject.grants.issue(grant, None)
+    before = await subject.runtime.works.get(subject.work_id)
+    request = update(subject, notes="must not write")
+
+    denied = await subject.runtime.protected_update(subject.grants, principal, request)
+
+    assert (denied.status, denied.effect, denied.reason) == (
+        "denied", "not_sent", "update_not_qualified_for_this_surface",
+    )
+    assert await subject.runtime.works.get(subject.work_id) == before
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 0
+
+    # The same request is valid once the trusted issuer supplies real qualification.
+    await subject.grants.issue(grant.model_copy(update={
+        "version": 2, "update_qualification": "real:canonical",
+    }), 1)
+    applied = await subject.runtime.protected_update(
+        subject.grants, principal, request.model_copy(update={"grant_version": 2}),
+    )
+    assert applied.effect == "applied"
+
+
+async def test_concurrent_update_replay_has_one_revision_and_one_receipt(subject: Subject) -> None:
+    request = update(subject, notes="concurrent retry")
+
+    first, replay = await asyncio.gather(
+        subject.service.update(request), subject.service.update(request),
+    )
+
+    assert first == replay and first.effect == "applied"
+    stored = await subject.runtime.works.get(subject.work_id)
+    assert stored is not None and (stored.notes, stored.row_version) == ("concurrent retry", 2)
+    async with subject.engine.connect() as connection:
+        rows = (await connection.execute(select(effect_intents))).mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["operation_id"] == str(request.operation_id)
+    assert GuardOutcome.model_validate(rows[0]["outcome"]) == first
 
 
 async def test_approved_task_survives_supported_notes_replacement(subject: Subject):
