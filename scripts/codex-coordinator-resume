@@ -47,8 +47,17 @@ async def resume(socket: str, thread_id: str) -> None:
         thread = result["thread"]
         if thread["id"] != thread_id:
             raise RuntimeError("daemon resumed a different thread")
+        cwd = "/home/marco/switchstand-recovery/coordinator"
+        policy = result.get("sandbox", {})
+        roots = policy.get("writableRoots", [])
+        expected_roots = {"/home/marco/switchstand/.git",
+                          "/home/marco/.local/state/switchstand/worktrees"}
+        if (result.get("cwd") != cwd or policy.get("type") != "workspaceWrite"
+                or not isinstance(roots, list) or not all(isinstance(root, str) for root in roots)
+                or set(roots) - {cwd} != expected_roots):
+            raise RuntimeError("resumed Coordinator workspace/sandbox readback mismatch")
         print(json.dumps({"thread_id": thread_id, "status": thread["status"], "resumed": True,
-                          "cwd": thread.get("cwd"), "sandbox": result.get("sandbox")}))
+                          "cwd": result["cwd"], "sandbox": policy}))
     finally:
         await connection.close()
 

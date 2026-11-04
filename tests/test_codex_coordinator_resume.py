@@ -15,8 +15,8 @@ module = importlib.util.module_from_spec(spec)
 loader.exec_module(module)
 
 
-@pytest.mark.parametrize("reject", [False, True])
-async def test_exact_resume_without_turn_or_new_thread(tmp_path, reject):
+@pytest.mark.parametrize("mode", ["ok", "rejected", "missing", "cwd", "danger", "roots", "extra", "identity"])
+async def test_exact_resume_without_turn_or_new_thread(tmp_path, mode):
     identity, requests = str(uuid4()), []
     socket = str(tmp_path / "daemon.sock")
     async def daemon(connection):
@@ -26,14 +26,31 @@ async def test_exact_resume_without_turn_or_new_thread(tmp_path, reject):
             if packet["method"] == "initialized":
                 continue
             result = {} if packet["method"] == "initialize" else {
-                "thread": {"id": identity, "status": {"type": "idle"}}}
+                "thread": {"id": identity, "status": {"type": "idle"}},
+                "cwd": "/home/marco/switchstand-recovery/coordinator",
+                "sandbox": {"type": "workspaceWrite", "writableRoots": [
+                    "/home/marco/switchstand/.git",
+                    "/home/marco/.local/state/switchstand/worktrees"]}}
+            if packet["method"] == "thread/resume":
+                if mode == "missing":
+                    result.pop("sandbox")
+                elif mode == "cwd":
+                    result["cwd"] = "/home/marco/switchstand"
+                elif mode == "danger":
+                    result["sandbox"]["type"] = "dangerFullAccess"
+                elif mode == "roots":
+                    result["sandbox"]["writableRoots"].pop()
+                elif mode == "extra":
+                    result["sandbox"]["writableRoots"].append("/home/marco")
+                elif mode == "identity":
+                    result["thread"]["id"] = str(uuid4())
             response = {"id": packet["id"], "result": result}
-            if reject and packet["method"] == "thread/resume":
+            if mode == "rejected" and packet["method"] == "thread/resume":
                 response = {"id": packet["id"], "error": {"message": "missing thread"}}
             await connection.send(json.dumps(response))
     async with unix_serve(daemon, socket):
-        if reject:
-            with pytest.raises(RuntimeError, match="rejected"):
+        if mode != "ok":
+            with pytest.raises(RuntimeError):
                 await module.resume(socket, identity)
         else:
             await module.resume(socket, identity)
