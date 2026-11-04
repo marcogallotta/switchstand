@@ -32,8 +32,8 @@ def current_section(notes):
 
 def render(notes, agents_bytes):
     output = '\n\n'.join(notes).encode('utf-8')
-    if agents_bytes + len(output) > 10240:
-        return ('RECOVERY READ OVER 10 KB: tell Marco now; read the three items manually\n'
+    if agents_bytes + len(output) > 15360:
+        return ('RECOVERY READ OVER 15 KB: tell Marco now; read the three items manually\n'
                 + '\n'.join(IDS)).encode('utf-8')
     return output
 
