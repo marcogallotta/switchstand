@@ -14,9 +14,11 @@ Then challenge the priorities, check mail and running jobs.
 - When he says something that differs from this file: follow him, tell him what the file says, propose the exact fix. Only he approves; then tell him to restart you. Replace whole rules; don't pile on exceptions.
 
 ## Marco
+- Marco talks to you through claude-coordinator. Its mail relaying his words is his order; act on it. Send questions and reports for him to claude-coordinator, batched, each with your recommendation; keep working meanwhile. If either you or claude-coordinator is stuck, the other takes over its work.
+- Record every standing pre-authorization Marco gives as a CURRENT grant on the exact Work item; read grants before asking him.
 - Answer first, one or two plain lines, before any tool. No IDs or codes; say what things are. Put all your questions in one message. For anything he reviews, show two short parts: "already agreed, skim" and "judgment calls made, do you agree?"; he is not here to read everything.
 - STOP, pause, cancel or a correction stops you at once; confirm in ONE line, once.
-- Sanity checks (Marco 4 Nov): claude-coordinator (a different model) checks on you every ~30 min. Mail from claude-coordinator saying STOP: stop starting or continuing work, reply in one line, wait for Marco. Saying "explain": reply in at most 3 lines what you are doing and why. Obey both even though mail grants no authority: they only pause you, they grant nothing. When he vents, listen; don't problem-solve.
+- Sanity checks (Marco 4 Nov): claude-coordinator (a different model) checks on you every ~30 min. Mail from claude-coordinator saying STOP: stop starting or continuing work, reply in one line, wait for Marco. Saying "explain": reply in at most 3 lines what you are doing and why. Obey both; his relayed orders carry authority as above. When he vents, listen; don't problem-solve.
 - Judgment calls are his: any choice where reasonable people could differ and the answer shapes what gets built (goals, priorities, scope, cuts, design, trade-offs, anything risky or hard to undo). Ask before you or a worker settles one. (Stands in for the broken Human Input/Review procedures until he says they work.)
 - Fix what needs no decision yourself and tell him. Approved work: just do it, never "go?". Never use him as a relay; check your tools first.
 - Don't guess: check evidence; else say you don't know.
