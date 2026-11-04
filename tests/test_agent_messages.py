@@ -1,5 +1,8 @@
 import asyncio
+import json
+from types import SimpleNamespace
 from typing import Literal
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,10 +26,12 @@ from switchstand.agent_messages import (
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_edge import _codex_stop_mailbox_page
 from switchstand.chatgpt_mcp import build_ordinary_tools
+from switchstand.codex_inbound_wake import InboundWake
 from switchstand.contracts import ClosedModel
 from switchstand.durable_capture import DurableCaptureGuidance
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
+from switchstand.mailbox_wake import marker_receipts
 from switchstand.messages import MessageState, message_deliveries, messages
 from switchstand.state import PostgresState, metadata
 
@@ -142,7 +147,14 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
         agent_identity=lambda: session[0],
     ))
     session[0] = "chat-b"
+    pending = await restarted["agent_message_pending"]("1")
+    assert pending.messages == (sent.message,)
+    assert pending.messages[0].payload == {"request": "review"}
+    assert (pending.messages[0].sender_name, pending.messages[0].recipient_name) == ("Alpha", "Beta")
     assert (await restarted["agent_message_receive"]("1", delivery)).state == "RECEIVED"
+    # Receiving keeps the request visible until a result completes it.
+    received = await restarted["agent_message_pending"]("1")
+    assert [(item.delivery_id, item.state) for item in received.messages] == [(delivery, "RECEIVED")]
     result_id = uuid4()
     reply = await restarted["agent_message_result_send"](
         "1", delivery, result_id, {"result": "pass"}
@@ -151,11 +163,76 @@ async def test_same_principal_two_chats_survive_transport_churn_and_restart(agen
     assert reply.next_action is None
     assert (await restarted["agent_message_disposition"]("1", delivery, result_id)).state \
         == "DISPOSITIONED"
+    assert (await restarted["agent_message_pending"]("1")).messages == ()
 
     session[0] = "chat-a"
     returned = await tools["agent_message_pending"]("1")
     assert [item.message_id for item in returned.messages] == [result_id]
+    result = returned.messages[0]
+    assert (result.sender_name, result.recipient_name, result.kind) == ("Beta", "Alpha", "result")
+    assert result.payload == {"result": "pass"}
+    # Reading results does not dismiss them; explicit acknowledgement does.
+    assert (await tools["agent_message_pending"]("1")).messages == returned.messages
+    acknowledged = await tools["agent_message_acknowledge"]("1", [result.delivery_id])
+    assert [(item.delivery_id, item.state) for item in acknowledged.results] == [
+        (result.delivery_id, "ACKNOWLEDGED"),
+    ]
+    assert (await tools["agent_message_pending"]("1")).messages == ()
     assert actor[0] == owner
+
+
+async def test_committed_mail_wakes_once_and_stays_available(
+    agent_messaging, tmp_path, monkeypatch,
+):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Sender")).status == "ok"
+    identity = str(uuid4())
+    session[0] = f"codex:{identity}"
+    assert (await tools["agent_register"]("1", "Receiver")).status == "ok"
+    messages = service.messages
+    assert messages is not None
+    binding = (await AgentMailboxState(messages.engine).by_name("Receiver")).mailbox
+    assert binding is not None
+    control = tmp_path / "wake.json"
+    control.write_text(json.dumps({"enabled": True, "socket": "/unused"}))
+    wake = InboundWake(messages, control, tmp_path / "admission")
+    # Keep daemon discovery and host admission outside this database-to-dispatch proof.
+    monkeypatch.setattr(wake, "_run", AsyncMock())
+    monkeypatch.setattr(wake, "_watch", AsyncMock())
+    monkeypatch.setattr(wake, "_admit", AsyncMock(return_value=True))
+    notices = []
+
+    async def daemon(method, params):
+        if method == "thread/turns/list":
+            return {"data": []}
+        if method == "thread/read":
+            return {"thread": {"status": {"type": "idle"}}}
+        assert method == "turn/start" and params["threadId"] == identity
+        notices.append(params["input"][0]["text"])
+        return {"turn": {"id": "accepted"}}
+
+    rpc = SimpleNamespace(call=daemon)
+    await wake.start()
+    try:
+        session[0] = "chat-a"
+        message_id = uuid4()
+        sent = await tools["agent_message_send"]("1", "Receiver", message_id, {"request": "act"})
+        assert sent.status == "ok" and sent.message is not None
+        await wake._reconcile(rpc, binding, identity)
+        assert len(notices) == 1
+        assert marker_receipts(notices[0]) == {str(sent.message.delivery_id)}
+        assert wake.outcomes[binding.endpoint_id] == "ACCEPTED:accepted"
+
+        # An identical send and another observation must not start another turn.
+        assert await tools["agent_message_send"]("1", "Receiver", message_id, {"request": "act"}) == sent
+        await wake._reconcile(rpc, binding, identity)
+        assert len(notices) == 1
+        session[0] = f"codex:{identity}"
+        pending = await tools["agent_message_pending"]("1")
+        assert pending.messages == (sent.message,)
+        assert pending.messages[0].state == "AVAILABLE"
+    finally:
+        await wake.close()
 
 
 async def test_registration_replay_names_the_existing_identity(agent_messaging):
