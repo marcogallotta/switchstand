@@ -253,7 +253,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       const observed = await mailbox(name);
       if (observed.endpoint !== endpoint || observed.generation !== generation) throw new Error('Mailbox changed; verify again.');
       const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
-      if (wakeBindings.some(item => item.endpoint !== endpoint && (item.url === url || item.tabId === tabId))) throw new Error('This chat is already paired with another mailbox.');
+      if (wakeBindings.some(item => item.endpoint !== endpoint && item.url === url)) throw new Error('This chat is already paired with another mailbox.');
       const prior = wakeBindings.find(item => item.endpoint === endpoint);
       if (prior?.halted) throw new Error('Previous attempt is unresolved; reconcile before rearming.');
       if (prior && prior.generation !== generation) throw new Error('Mailbox generation changed; operator reconciliation required.');
