@@ -8,13 +8,6 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.tracker.relations import projects
-from switchstand.tracker.work import (
-    CanonicalWorkRepository,
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext, WorkGrant
 from switchstand.priority_claim_service import (
@@ -29,6 +22,13 @@ from switchstand.priority_claims import (
     priority_claims,
 )
 from switchstand.state import metadata, work_handles
+from switchstand.tracker.relations import projects
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+)
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 

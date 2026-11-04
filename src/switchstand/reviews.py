@@ -16,14 +16,6 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState, agent_mailboxes
-from .tracker.relations import work_parents
-from .tracker.work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_revision,
-    canonical_work,
-    normalize_title,
-)
 from .contracts import ClosedModel
 from .durable_capture import DurableCaptureGuidance, FindingRef, durable_capture_guidance
 from .human_reviews import approved_baseline_in_transaction
@@ -36,6 +28,14 @@ from .messages import (
     messages,
 )
 from .state import work_handles
+from .tracker.relations import work_parents
+from .tracker.work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
+    normalize_title,
+)
 
 REVIEW_NAMESPACE = UUID("d966cd4f-9994-4f6f-99cc-6ccca873542d")
 REVIEW_PROTOCOL = "switchstand.review.v1"

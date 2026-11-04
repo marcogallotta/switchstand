@@ -10,8 +10,8 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from .candidate import CandidateError, prepare_launch_source
-from .tracker.work import CanonicalWorkRepository, CurrentWork
 from .task_ref import asana_task_id
+from .tracker.work import CanonicalWorkRepository, CurrentWork
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}\Z")
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")

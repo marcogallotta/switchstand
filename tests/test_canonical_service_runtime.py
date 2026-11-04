@@ -12,27 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from switchstand import chatgpt_edge
-from switchstand.tracker import runtime as canonical_work_runtime
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState
-from switchstand.tracker.event_reads import CanonicalEventReader
-from switchstand.tracker.relations import (
-    CanonicalRelationsRepository,
-    project_memberships,
-    projects,
-    work_dependencies,
-    work_parents,
-)
-from switchstand.tracker.work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-)
-from switchstand.tracker.runtime import (
-    CONFIRM_CANCELS_REVIEW_MESSAGE,
-    CanonicalWorkRuntime,
-)
 from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import (
@@ -74,7 +54,27 @@ from switchstand.reviews import (
     ReviewSubmit,
 )
 from switchstand.state import PostgresState, metadata, work_handles
+from switchstand.tracker import runtime as canonical_work_runtime
+from switchstand.tracker.event_reads import CanonicalEventReader
 from switchstand.tracker.events import WorkEventRepository, work_events
+from switchstand.tracker.relations import (
+    CanonicalRelationsRepository,
+    project_memberships,
+    projects,
+    work_dependencies,
+    work_parents,
+)
+from switchstand.tracker.runtime import (
+    CONFIRM_CANCELS_REVIEW_MESSAGE,
+    CanonicalWorkRuntime,
+)
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+)
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 

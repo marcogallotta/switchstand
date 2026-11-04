@@ -22,7 +22,6 @@ from .bootstrap_adapters import (
     PostgresMigrationReceiptReader,
 )
 from .bootstrap_identity import resolve_and_admit_pre_migration_launch
-from .tracker.work import CanonicalWorkRepository
 from .contracts import LaunchAuthority
 from .failure_journal import FailureJournal, FailureRecord, redact_environment
 from .grant_state import GrantState
@@ -30,6 +29,7 @@ from .launch_source import canonical_work, repository_marker
 from .managed_identity import managed_principal, rotate_managed_grant
 from .provider import AsanaProvider
 from .state import PostgresState
+from .tracker.work import CanonicalWorkRepository
 
 
 def parser() -> argparse.ArgumentParser:

@@ -11,7 +11,6 @@ from test_canonical_service_runtime import relation
 from test_canonical_service_runtime import subject as service_subject_fixture
 
 from switchstand.agent_mailboxes import AgentMailboxResult, AgentMailboxState
-from switchstand.tracker.work import CurrentWork, canonical_revision
 from switchstand.chatgpt_mcp import OrdinaryRelationPatch, build_ordinary_tools
 from switchstand.grants import RelationPatch, RelationReceipt
 from switchstand.messages import MessageRoute, MessageState, MessageSubmitRequest
@@ -22,6 +21,7 @@ from switchstand.pull_requests import (
     project,
     pull_requests,
 )
+from switchstand.tracker.work import CurrentWork, canonical_revision
 
 canonical_subject = service_subject_fixture
 

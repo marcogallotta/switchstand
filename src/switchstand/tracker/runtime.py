@@ -15,21 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from .. import pull_requests
 from ..agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox
-from .relations import (
-    CanonicalRelationsRepository,
-    WorkRelations,
-    project_memberships,
-    projects,
-    work_dependencies,
-    work_parents,
-)
-from .work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_revision,
-    canonical_work,
-    normalize_title,
-)
 from ..contracts import (
     Routing,
     WorkContext,
@@ -40,7 +25,6 @@ from ..contracts import (
     WorkSearchRequest,
     WorkSearchResult,
 )
-from .creates import CreateGateway
 from ..grant_state import GrantState, effect_intents
 from ..grants import (
     CreateReceipt,
@@ -63,10 +47,26 @@ from ..human_reviews import (
     current_approved_baseline_in_transaction,
 )
 from ..messages import messages
-from .mutation_effect import blocked_effect_next_action
-from .provider_relations import RelationGateway
 from ..state import work_handles
+from .creates import CreateGateway
+from .mutation_effect import blocked_effect_next_action
 from .policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
+from .provider_relations import RelationGateway
+from .relations import (
+    CanonicalRelationsRepository,
+    WorkRelations,
+    project_memberships,
+    projects,
+    work_dependencies,
+    work_parents,
+)
+from .work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
+    normalize_title,
+)
 
 _SCALAR_FIELDS = frozenset({
     "title", "notes", "completed", "priority", "work_type", "lifecycle_state",

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from .work import CanonicalWorkRepository, canonical_revision
 from ..contracts import (
     WorkEvent,
     WorkEventRequest,
@@ -13,6 +12,7 @@ from ..contracts import (
     WorkHistoryResult,
 )
 from .events import StoredWorkEvent, WorkEventRepository
+from .work import CanonicalWorkRepository, canonical_revision
 
 
 def _public_event(event: StoredWorkEvent) -> WorkEvent:

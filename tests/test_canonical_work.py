@@ -9,6 +9,9 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.launch_source import LaunchSourceError
+from switchstand.launch_source import canonical_work as launch_work
+from switchstand.state import metadata as shared_metadata
 from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
@@ -17,9 +20,6 @@ from switchstand.tracker.work import (
     legacy_work_aliases,
     normalize_title,
 )
-from switchstand.launch_source import LaunchSourceError
-from switchstand.launch_source import canonical_work as launch_work
-from switchstand.state import metadata as shared_metadata
 
 
 @pytest.fixture

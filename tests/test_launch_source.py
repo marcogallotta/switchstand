@@ -7,8 +7,8 @@ from uuid import UUID
 import pytest
 
 from switchstand import launch_source
-from switchstand.tracker.work import CurrentWork
 from switchstand.launch_source import LaunchSource, LaunchSourceError, load_asana_token, parse_notes
+from switchstand.tracker.work import CurrentWork
 
 BASE = "a" * 40
 CANDIDATE = "b" * 40

@@ -18,7 +18,6 @@ from switchstand.chatgpt import ChatGPTService
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.contracts import LaunchAuthority
 from switchstand.core import ProviderError
-from switchstand.tracker.appends import AppendGateway
 from switchstand.grant_state import GrantState, effect_intents
 from switchstand.grants import (
     PrincipalContext,
@@ -28,6 +27,7 @@ from switchstand.grants import (
 )
 from switchstand.provider import PROJECT
 from switchstand.state import PostgresState, metadata
+from switchstand.tracker.appends import AppendGateway
 
 
 @pytest.fixture

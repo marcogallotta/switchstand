@@ -5,6 +5,14 @@ import pytest
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.priority_claim_service import PriorityClaimService
+from switchstand.priority_claims import (
+    ClaimKind,
+    NewPriorityClaim,
+    PriorityClaimRepository,
+    RelationKind,
+)
+from switchstand.priority_context import PriorityContextProjection
 from switchstand.tracker.relations import (
     CanonicalRelationsRepository,
     project_memberships,
@@ -17,14 +25,6 @@ from switchstand.tracker.work import (
     canonical_revision,
     canonical_work,
 )
-from switchstand.priority_claim_service import PriorityClaimService
-from switchstand.priority_claims import (
-    ClaimKind,
-    NewPriorityClaim,
-    PriorityClaimRepository,
-    RelationKind,
-)
-from switchstand.priority_context import PriorityContextProjection
 
 
 @pytest.fixture

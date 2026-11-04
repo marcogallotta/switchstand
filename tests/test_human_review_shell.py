@@ -8,12 +8,6 @@ from sqlalchemy import insert, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.testclient import TestClient
 
-from switchstand.tracker.work import (
-    CanonicalWorkRepository,
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.human_review_shell import (
     create_human_review_shell,
     create_persistent_human_review_shell,
@@ -25,6 +19,12 @@ from switchstand.human_reviews import (
     HumanReviewResult,
     HumanReviewState,
     human_review_consequences,
+)
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
 )
 
 WORK = UUID("60000000-0000-4000-8000-000000000001")

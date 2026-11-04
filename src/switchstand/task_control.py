@@ -28,6 +28,10 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
+from .contracts import ClosedModel
+from .durable_capture import FindingCapture
+from .grants import PrincipalContext, WorkGrant
+from .task_control_refs import ReferenceProjection, project_references
 from .tracker.relations import work_dependencies, work_parents
 from .tracker.work import (
     CanonicalWorkRepository,
@@ -35,10 +39,6 @@ from .tracker.work import (
     canonical_metadata,
     canonical_revision,
 )
-from .contracts import ClosedModel
-from .durable_capture import FindingCapture
-from .grants import PrincipalContext, WorkGrant
-from .task_control_refs import ReferenceProjection, project_references
 
 task_control_checkpoints = Table(
     "task_control_checkpoints", canonical_metadata,

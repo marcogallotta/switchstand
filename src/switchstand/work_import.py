@@ -18,6 +18,8 @@ from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from .bootstrap_identity import MIGRATION_COMPLETE_RECEIPT
+from .state import work_event_handles, work_handles, work_migration_receipts
+from .tracker.events import work_events
 from .tracker.relations import (
     project_memberships,
     projects,
@@ -25,9 +27,7 @@ from .tracker.relations import (
     work_parents,
 )
 from .tracker.work import canonical_work, legacy_work_aliases
-from .state import work_event_handles, work_handles, work_migration_receipts
 from .work_corpus import load_manifest, parity_manifest, parity_value, write_manifest
-from .tracker.events import work_events
 
 TableSpec = tuple[str, Table, tuple[str, ...]]
 TABLES: tuple[TableSpec, ...] = (

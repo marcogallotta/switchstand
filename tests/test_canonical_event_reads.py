@@ -5,10 +5,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from switchstand.tracker.event_reads import CanonicalEventReader
-from switchstand.tracker.work import CurrentWork, canonical_revision
 from switchstand.contracts import WorkEventRequest, WorkHistoryRequest
+from switchstand.tracker.event_reads import CanonicalEventReader
 from switchstand.tracker.events import StoredWorkEvent, WorkEventPage
+from switchstand.tracker.work import CurrentWork, canonical_revision
 
 
 def _work(work_id: UUID, version: int = 1) -> CurrentWork:

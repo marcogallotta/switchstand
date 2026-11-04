@@ -4,10 +4,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from switchstand.tracker.relations import ProjectPlacement, WorkRelations
-from switchstand.tracker.work import CurrentWork, CurrentWorkPage, canonical_revision
-from switchstand.tracker.runtime import CanonicalWorkRuntime
 from switchstand.contracts import WorkSearchRequest
+from switchstand.tracker.relations import ProjectPlacement, WorkRelations
+from switchstand.tracker.runtime import CanonicalWorkRuntime
+from switchstand.tracker.work import CurrentWork, CurrentWorkPage, canonical_revision
 
 
 def _work(work_id: UUID, version: int = 1) -> CurrentWork:
@@ -113,5 +113,3 @@ async def test_search_retries_whole_page_when_placements_cross_a_row_version() -
     assert result.next_cursor == "new-cursor"
     assert result.items[0].revision == canonical_revision(work_id, 2)
     assert result.items[0].context.placements[0].area == new_relations.placements[0].name
-
-

@@ -6,8 +6,8 @@ from uuid import UUID
 import pytest
 
 from switchstand import provision
-from switchstand.tracker.work import CurrentWork
 from switchstand.task_ref import asana_task_id
+from switchstand.tracker.work import CurrentWork
 
 
 @pytest.mark.parametrize(

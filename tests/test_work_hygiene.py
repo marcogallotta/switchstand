@@ -9,12 +9,6 @@ from sqlalchemy import insert, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.tracker.work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_metadata,
-    canonical_revision,
-)
 from switchstand.contracts import LaunchAuthority
 from switchstand.durable_capture import AcceptedFindingRoute, FindingCapture, FindingRef
 from switchstand.grant_state import GrantState
@@ -28,6 +22,12 @@ from switchstand.task_control import (
     TaskControlCheckpoint,
     TaskControlReadResult,
     TaskControlState,
+)
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_metadata,
+    canonical_revision,
 )
 from switchstand.work_hygiene import WorkHygieneState, evaluate_work_hygiene
 

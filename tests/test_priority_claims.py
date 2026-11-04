@@ -7,13 +7,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.tracker.relations import projects
-from switchstand.tracker.work import canonical_metadata, canonical_work
 from switchstand.priority_claims import (
     NewPriorityClaim,
     PriorityClaimRepository,
     priority_claims,
 )
+from switchstand.tracker.relations import projects
+from switchstand.tracker.work import canonical_metadata, canonical_work
 
 
 @pytest.fixture

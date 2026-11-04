@@ -9,12 +9,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
 from switchstand.agent_mailboxes import AgentMailboxState
-from switchstand.tracker.work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_metadata,
-    canonical_revision,
-)
 from switchstand.contracts import LaunchAuthority
 from switchstand.flow_report import report
 from switchstand.grant_state import GrantState
@@ -52,6 +46,12 @@ from switchstand.reviews import (
     _stable,
 )
 from switchstand.state import work_handles, work_migration_receipts
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_metadata,
+    canonical_revision,
+)
 
 
 def test_review_result_guidance_preserves_role_and_authority_boundaries():

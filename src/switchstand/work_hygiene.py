@@ -9,7 +9,6 @@ from pydantic import Field
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from .tracker.work import CanonicalWorkRepository, CurrentWork, canonical_revision
 from .contracts import ClosedModel
 from .durable_capture import FindingRef, durable_capture_guidance
 from .grant_state import GrantState
@@ -17,6 +16,7 @@ from .messages import MessageState
 from .reviews import ReviewService
 from .task_control import TaskControlReadResult, TaskControlState
 from .tracker.policy import validate_resultant_state
+from .tracker.work import CanonicalWorkRepository, CurrentWork, canonical_revision
 
 HygieneGate = Literal[
     "HANDOFF", "ASSIGNMENT_COMPLETE", "READY_FOR_REVIEW", "RESUME_REENTRY",

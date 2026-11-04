@@ -10,11 +10,9 @@ from uuid import UUID, uuid5
 from pydantic import Field, model_validator
 from sqlalchemy.exc import SQLAlchemyError
 
-from .tracker.work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
 from .grant_state import EffectRecord, GrantState
 from .grants import GuardOutcome, PrincipalContext, PriorityClaimReceipt, WorkGrant
-from .tracker.mutation_effect import PreparedMutation, run_update_or_relation
 from .priority_claims import (
     NewPriorityClaim,
     PriorityBand,
@@ -24,6 +22,8 @@ from .priority_claims import (
     StalePriorityClaim,
     SubjectKind,
 )
+from .tracker.mutation_effect import PreparedMutation, run_update_or_relation
+from .tracker.work import CanonicalWorkRepository, canonical_revision
 
 CLAIM_NAMESPACE = UUID("43e26bcc-bd6e-446c-baa7-9babe6d15412")
 HUMAN_CLAIM_NAMESPACE = UUID("33741195-b41c-47a6-a782-ff56310f8433")

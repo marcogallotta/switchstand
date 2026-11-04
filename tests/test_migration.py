@@ -7,6 +7,9 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
+from switchstand.priority_claims import priority_claims
+from switchstand.provision import require_current_schema
+from switchstand.tracker.events import work_events
 from switchstand.tracker.relations import (
     project_memberships,
     projects,
@@ -14,9 +17,6 @@ from switchstand.tracker.relations import (
     work_parents,
 )
 from switchstand.tracker.work import canonical_work, legacy_work_aliases
-from switchstand.priority_claims import priority_claims
-from switchstand.provision import require_current_schema
-from switchstand.tracker.events import work_events
 
 
 @pytest.fixture(autouse=True)
