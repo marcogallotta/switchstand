@@ -7,16 +7,16 @@ from uuid import UUID, uuid5
 
 from sqlalchemy.exc import SQLAlchemyError
 
-from .canonical_work import normalize_title
-from .core import (
+from ..core import (
     Provider,
     ProviderError,
     State,
     UnknownEffect,
     provider_rejection_reason,
 )
-from .grant_state import EffectRecord, GrantState
-from .grants import CreateReceipt, GuardOutcome, PrincipalContext, ProtectedCreate
+from ..grant_state import EffectRecord, GrantState
+from ..grants import CreateReceipt, GuardOutcome, PrincipalContext, ProtectedCreate
+from .work import normalize_title
 
 CREATE_NAMESPACE = UUID("238ea5f0-fb67-4f46-81b1-560fa39375ce")
 

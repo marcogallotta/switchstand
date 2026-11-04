@@ -8,9 +8,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from switchstand.canonical_relations import CanonicalRelationsRepository
-from switchstand.canonical_work import CanonicalWorkRepository, CurrentWork, canonical_metadata
-from switchstand.canonical_work_runtime import CanonicalWorkRuntime
 from switchstand.chatgpt import ChatGPTService, RequiredResultSaveRequest
 from switchstand.contracts import LaunchAuthority
 from switchstand.core import ProviderError, ProviderSourceStory
@@ -23,7 +20,10 @@ from switchstand.lifecycle import (
     RequiredResultPersistence,
 )
 from switchstand.state import PostgresState, metadata
-from switchstand.updates import UpdateGateway
+from switchstand.tracker.relations import CanonicalRelationsRepository
+from switchstand.tracker.runtime import CanonicalWorkRuntime
+from switchstand.tracker.updates import UpdateGateway
+from switchstand.tracker.work import CanonicalWorkRepository, CurrentWork, canonical_metadata
 
 
 @pytest.fixture

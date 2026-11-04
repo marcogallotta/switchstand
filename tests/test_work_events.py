@@ -8,16 +8,10 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_event_reads import CanonicalEventReader
-from switchstand.canonical_work import (
-    CanonicalWorkRepository,
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.contracts import WorkEventRequest, WorkHistoryRequest
 from switchstand.state import metadata as shared_metadata
-from switchstand.work_events import (
+from switchstand.tracker.event_reads import CanonicalEventReader
+from switchstand.tracker.events import (
     OperationConflictError,
     StaleWorkVersion,
     UnknownWorkError,
@@ -25,6 +19,12 @@ from switchstand.work_events import (
     _decode_cursor,
     _encode_cursor,
     work_events,
+)
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
 )
 
 WORK_ID = UUID("10000000-0000-4000-8000-000000000001")

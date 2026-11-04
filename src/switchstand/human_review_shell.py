@@ -18,8 +18,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, Response
 from starlette.routing import Route
 
-from .canonical_work import CanonicalWorkRepository
 from .human_reviews import HumanDecision, HumanReviewResult, HumanReviewState
+from .tracker.work import CanonicalWorkRepository
 
 MAX_FORM_BYTES = 8192
 DECISIONS: tuple[HumanDecision, ...] = ("APPROVED", "NO_DISPATCH")

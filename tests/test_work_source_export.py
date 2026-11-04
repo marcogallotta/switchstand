@@ -10,12 +10,12 @@ import pytest
 from sqlalchemy import insert, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from switchstand.canonical_work import canonical_metadata, canonical_work
 from switchstand.contracts import Routing, WorkContext, WorkPlacement
 from switchstand.core import ProviderSourceStory, ProviderStoriesPage, ProviderWork
 from switchstand.discovery import ProviderSearchItem, ProviderSearchPage
 from switchstand.provider import ProviderWorkDecodeError
 from switchstand.state import metadata, work_event_handles, work_handles
+from switchstand.tracker.work import canonical_metadata, canonical_work
 from switchstand.work_corpus import (
     capture_manifest,
     capture_manifest_connection,

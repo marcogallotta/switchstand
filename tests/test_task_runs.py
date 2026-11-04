@@ -13,12 +13,6 @@ from sqlalchemy import create_engine, func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_work import (
-    CanonicalWorkRepository,
-    CurrentWork,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.contracts import LaunchAuthority
 from switchstand.grant_state import GrantState
 from switchstand.managed_identity import managed_principal, rotate_managed_grant
@@ -40,6 +34,12 @@ from switchstand.task_runs import (
     task_run_executions,
     task_run_requests,
     task_run_results,
+)
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    CurrentWork,
+    canonical_revision,
+    canonical_work,
 )
 
 
