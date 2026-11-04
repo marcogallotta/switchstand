@@ -78,11 +78,13 @@ assignment or an explicit current grant for the exact WorkId.
 
 WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
 
-Codex: ALL work executes in context-free native forks, except [basic parent checks when OOM/memory blocks a fork](docs/how-marco-uses-switchstand.md#native-fork-operating-boundary). The parent otherwise only talks with Marco
+Codex: ALL work executes in context-free native forks, except parent-session mail operations and [basic parent checks when OOM/memory blocks a fork](docs/how-marco-uses-switchstand.md#native-fork-operating-boundary). The parent otherwise only talks with Marco
 and dispatches, actively supervises, and receives concise fork results. Document/WorkId
-reads, Tracker/mailbox/feedback operations, investigation, design, implementation, testing,
+reads, Tracker/feedback operations, investigation, design, implementation, testing,
 review, and integration belong in forks; requirements elsewhere to read or act are fulfilled
-there. Workers execute their bounded assignments directly; recursive forks are not required.
+there. Mailbox registration, takeover, and all mail calls (pending, receive, send, reply,
+acknowledge, disposition) stay in the parent session, never in a fork, because forks are not
+registered to the parent's mailbox. Workers execute their bounded assignments directly; recursive forks are not required.
 Dispatch includes existing required resource admission, returning only GO/WAIT. Follow
 [active supervision and concise Fork Management checkpoints](docs/coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence)
 for periodic checks, intervention, and checkpoint/exception/outcome feedback. Reviews
