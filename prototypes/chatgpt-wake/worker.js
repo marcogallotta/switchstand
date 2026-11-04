@@ -23,6 +23,17 @@ async function status(value) {
 // Isolated extension world: check exact identity immediately before editing.
 async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = false) {
   const facts = {};
+  const selectControl = form => {
+      const explicit = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])];
+      const controls = explicit.filter(control => {
+          const rect = control.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
+        });
+      facts.controlSelection = !form ? 'missing-form' : !explicit.length ? 'no-explicit'
+        : !controls.length ? 'all-hidden' : controls.length > 1 ? 'ambiguous' : 'unique';
+      // Count before checking enabled state: two visible Send controls are ambiguous.
+      return controls.length === 1 ? controls[0] : undefined;
+    };
   async function run() {
     facts.urlMatched = location.href === expectedUrl;
     if (!facts.urlMatched) return 'wrong-conversation';
@@ -50,6 +61,7 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (!textarea && !editor.isContentEditable) return `composer-unavailable: ${editor.tagName} is not editable`;
     if (!editor.getClientRects().length) return 'composer-unavailable: #prompt-textarea is hidden';
     if (textarea && (editor.disabled || editor.readOnly)) return 'composer-unavailable: textarea is disabled or read-only';
+    if (observeOnly === 'control') { selectControl(editor.closest('form')); return 'idle'; }
     facts.busy = Boolean(document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"]'));
     if (facts.busy) return 'busy';
     const draft = () => textarea ? editor.value : editor.textContent;
@@ -59,17 +71,7 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (!attempt?.retry && facts.draftPresent) return 'draft-present';
     if (observeOnly) return 'idle';
     const form = editor.closest('form');
-    const sendControl = () => {
-      const explicit = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])];
-      const controls = explicit.filter(control => {
-          const rect = control.getBoundingClientRect();
-          return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
-        });
-      facts.controlSelection = !form ? 'missing-form' : !explicit.length ? 'no-explicit'
-        : !controls.length ? 'all-hidden' : controls.length > 1 ? 'ambiguous' : 'unique';
-      // Count before checking enabled state: two visible Send controls are ambiguous.
-      return controls.length === 1 ? controls[0] : undefined;
-    };
+    const sendControl = () => selectControl(form);
     const enabled = send => send && !send.disabled && !send.matches(':disabled') &&
       send.getAttribute('aria-disabled')?.toLowerCase() !== 'true' &&
       !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
@@ -124,7 +126,7 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (location.href !== expectedUrl || draft().trim() !== text ||
         !enabled(send) ||
         document.querySelector('[data-testid="stop-button"]')) {
-      const explicit = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
+      const controls = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
         .map(button => `id=${button.id},testid=${button.getAttribute('data-testid') || ''},type=${button.type},label=${button.getAttribute('aria-label') || ''},disabled=${button.disabled}`);
       const outcome = `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
       if (owned(witness)) return {outcome, noClickToken: attempt.token};
@@ -156,7 +158,7 @@ const bootId = crypto.randomUUID();
 const releaseId = 'c3de7930-394d-4a32-b02d-98923e1ce79a';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
-    attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null,
+    attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
     block: binding.status === 'attempt-outcome-unknown: retry evidence no longer current'
       ? 'retry-evidence-not-current' : null};
   if (!diagnostics.attempt && !diagnostics.pair && !diagnostics.legacy_halt) return;
@@ -287,6 +289,7 @@ async function conversationTab(binding) {
     tabs.find(tab => tab.id === binding.tabId) || tabs.sort((a, b) => a.id - b.id)[0];
 }
 async function checkBinding(binding, save) {
+  if (binding.halted) binding.currentControl = {release: releaseId, boot: bootId, reason: 'unavailable'};
   let observation;
   const note = (outcome, ids = observation?.delivery_ids || []) => record(binding, outcome, ids, save, true);
   if (!binding.armed || stopRequested(binding)) { binding.armed = false; return note('stopped'); }
@@ -308,8 +311,18 @@ async function checkBinding(binding, save) {
     return note('bound-tab-missing');
   }
   binding.availability = 'open';
-  if (binding.halted && !binding.retry) return note(binding.status?.startsWith('attempt-outcome-unknown') ||
-    binding.status?.startsWith('inserted-not-submitted') ? binding.status : 'attempt-outcome-unknown');
+  if (binding.halted && !binding.retry) {
+    if (!tab.discarded && !tab.frozen) {
+      try {
+        const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
+          args: [binding.url, 'control', null, true]});
+        binding.currentControl.reason = !result?.result || result.result.reason === 'dom-exception' ? 'unavailable'
+          : result.result.facts?.controlSelection || (result.result.outcome === 'wrong-conversation' ? 'url-mismatch' : 'editor-unavailable');
+      } catch { /* Unavailable replaces the prior snapshot. */ }
+    }
+    return note(binding.status?.startsWith('attempt-outcome-unknown') ||
+      binding.status?.startsWith('inserted-not-submitted') ? binding.status : 'attempt-outcome-unknown');
+  }
   const retry = binding.retry;
   if (retry && (retry.boot !== bootId || retry.stop !== stopVersion ||
       retry.endpoint !== binding.endpoint || retry.generation !== binding.generation ||

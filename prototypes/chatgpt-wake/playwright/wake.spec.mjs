@@ -203,3 +203,26 @@ for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multipl
     }
   });
 }
+
+
+test('HALTED current control snapshot preserves draft, busy state and legacy cause without input', async ({wake}) => {
+  await wake.popup.evaluate(async()=>{const s=await chrome.storage.local.get('wakeBindings');
+    s.wakeBindings[0].halted=true;await chrome.storage.local.set(s);
+    await chrome.scripting.executeScript({target:{tabId:s.wakeBindings[0].tabId},func:()=>{
+      globalThis.switchstandWakeWitness={get token(){throw new Error('observation touched ownership');}};
+    }});
+  });
+  await wake.page.evaluate(()=>{document.querySelector('#prompt-textarea').textContent='private draft sentinel';
+    fixture.busy=true;const stop=document.createElement('button');stop.dataset.testid='stop-button';document.body.append(stop);
+    window.focuses=0;document.querySelector('#prompt-textarea').addEventListener('focus',()=>window.focuses++);
+  });
+  wake.metadata.delivery_ids=[delivery(903)];await wake.check();
+  const read=()=>wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
+  let binding=await read();expect(binding.currentControl.reason).toBe('unique');
+  expect(binding.halted).toBe(true);expect(binding.diagnostic).toBeUndefined();expect(binding.seen).toEqual([]);
+  await expect(wake.page.locator('#prompt-textarea')).toHaveText('private draft sentinel');
+  expect(await wake.page.evaluate(()=>[fixture.insertions,window.focuses,document.querySelectorAll('#turns li').length])).toEqual([0,0,0]);
+  await wake.page.goto(other);await wake.check();binding=await read();expect(binding.currentControl.reason).toBe('unavailable');
+  expect(wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.current_control.reason).toBe('unavailable');
+  expect(JSON.stringify(wake.reports)).not.toContain('private draft sentinel');
+});

@@ -27,6 +27,7 @@ function load() {
       async query() { return [...tabs].map(([id, tab]) => ({id, ...tab})); },
       onRemoved: {addListener(value) { removed = value; }}},
     scripting: {async executeScript(options) {
+      if (options.args[1] === 'control') { readOnlyChecks.push(options.target.tabId); return [{result: {outcome: 'idle', facts: {controlSelection: 'unique'}}}]; }
       const observeOnly = options.args[1] === true;
       (observeOnly ? readOnlyChecks : attempts).push(options.target.tabId);
       if (outcome === 'throw') throw Error('interrupted');

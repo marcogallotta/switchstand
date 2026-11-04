@@ -136,6 +136,11 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         invalid_selection = deepcopy(payload)
         invalid_selection["diagnostics"]["attempt"]["facts"]["controlSelection"] = "private draft sentinel"
         assert (await client.post(PATH + "/report", json=invalid_selection, headers=headers)).status_code == 400
+        current = deepcopy(payload)
+        current["diagnostics"]["current_control"] = {"release": identity, "boot": identity, "reason": "unique"}
+        assert (await client.post(PATH + "/report", json=current, headers=headers)).json() == {"status": "logged"}
+        current["diagnostics"]["current_control"]["reason"] = "private draft sentinel"
+        assert (await client.post(PATH + "/report", json=current, headers=headers)).status_code == 400
         legacy = {**diagnostic, "legacy_halt": True, "attempt": None, "pair": None}
         assert (await client.post(PATH + "/report", json={**payload, "diagnostics": legacy},
                                   headers=headers)).json() == {"status": "logged"}
@@ -165,6 +170,7 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
             "urlMatched", "editorFound", "busy", "draftPresent", "inserted",
             "controlPresent", "controlEnabled", "clickDispatched"], False)
         maximum["diagnostics"]["attempt"]["facts"]["controlSelection"] = "missing-form"
+        maximum["diagnostics"]["current_control"] = {"release": identity, "boot": identity, "reason": "editor-unavailable"}
         maximum["diagnostics"]["pair"]["reason"] = "conversation-already-bound"
         request = client.build_request("POST", PATH + "/report", json=maximum, headers=headers)
         assert len(request.content) < 4096, "all 50 IDs occur only inside the attempt, not twice"

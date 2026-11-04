@@ -69,9 +69,17 @@ class _Pair(_DiagnosticModel):
     attempt: UUID | None
 
 
+class _CurrentControl(_DiagnosticModel):
+    release: UUID
+    boot: UUID
+    reason: Literal["missing-form", "no-explicit", "all-hidden", "ambiguous", "unique",
+                    "url-mismatch", "editor-unavailable", "unavailable"]
+
+
 class _Diagnostics(_DiagnosticModel):
     release: UUID
     boot: UUID
+    current_control: _CurrentControl | None = None
     legacy_halt: StrictBool
     block: Literal["retry-evidence-not-current"] | None = None
     report_failure: Literal["report-unavailable"] | None = None
