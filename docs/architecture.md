@@ -953,6 +953,9 @@ Each binding retains only its latest attempt and Pair result, with executing rel
 HALTED polls preserve the original cause. A started-only receipt means no durable result,
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
+The combined candidate retains conversation routing, explicit empty-mailbox Pair reconciliation,
+page-owned one-no-click retry and unique visible explicit Send selection; logging does not
+grant another retry. Retry-fence rejection preserves the original attempt receipt.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed

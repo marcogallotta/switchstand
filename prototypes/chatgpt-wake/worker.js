@@ -21,7 +21,7 @@ async function status(value) {
   return value;
 }
 // Isolated extension world: check exact identity immediately before editing.
-async function nudge(expectedUrl, observeOnly = false, diagnostic = false) {
+async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = false) {
   const facts = {};
   async function run() {
     facts.urlMatched = location.href === expectedUrl;
@@ -53,40 +53,93 @@ async function nudge(expectedUrl, observeOnly = false, diagnostic = false) {
     facts.busy = Boolean(document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"]'));
     if (facts.busy) return 'busy';
     const draft = () => textarea ? editor.value : editor.textContent;
-    facts.draftPresent = Boolean(draft().trim() || editor.querySelector('img') ||
-        document.querySelector('[data-testid="remove-file-button"]'));
-    if (facts.draftPresent) return 'draft-present';
-    if (observeOnly) return 'idle';
     const text = 'Process your mailbox';
+    const attached = () => editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]');
+    facts.draftPresent = Boolean(draft().trim() || attached());
+    if (!attempt?.retry && facts.draftPresent) return 'draft-present';
+    if (observeOnly) return 'idle';
+    const form = editor.closest('form');
+    const sendControl = () => {
+      const controls = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])]
+        .filter(control => {
+          const rect = control.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
+        });
+      // Count before checking enabled state: two visible Send controls are ambiguous.
+      return controls.length === 1 ? controls[0] : undefined;
+    };
+    const enabled = send => send && !send.disabled && !send.matches(':disabled') &&
+      send.getAttribute('aria-disabled')?.toLowerCase() !== 'true' &&
+      !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
+    const owned = witness => witness && witness.token === attempt?.token && witness.editor === editor &&
+      witness.url === expectedUrl && witness.valid && editor.isConnected && location.href === expectedUrl &&
+      draft() === text && !attached() && !witness.observer.takeRecords().length;
+    if (attempt?.retry) {
+      const witness = globalThis.switchstandWakeWitness;
+      const send = sendControl();
+      facts.controlPresent = Boolean(send);
+      facts.controlEnabled = Boolean(enabled(send));
+      const canClick = owned(witness) && enabled(send);
+      witness?.retire();
+      if (!canClick) return 'attempt-outcome-unknown: retry exhausted; ownership or send control unavailable';
+      facts.clickDispatched = true;
+      send.click();
+      return 'click-attempted';
+    }
     editor.focus();
     if (textarea) {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
       editor.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: text}));
     } else if (!document.execCommand('insertText', false, text)) return 'insert-failed';
     facts.inserted = draft() === text;
-    const form = editor.closest('form');
+    let witness;
+    if (attempt?.token) {
+      globalThis.switchstandWakeWitness?.retire();
+      const events = ['input', 'beforeinput', 'paste', 'change', 'keydown', 'click', 'submit'];
+      const invalidate = () => witness.retire();
+      witness = {token: attempt.token, editor, url: expectedUrl, valid: true,
+        observer: new MutationObserver(invalidate), retire() {
+          this.valid = false; this.observer.disconnect();
+          for (const event of events) (form || editor).removeEventListener(event, invalidate, true);
+          window.removeEventListener('pagehide', invalidate);
+          window.removeEventListener('popstate', invalidate);
+        }};
+      witness.observer.observe(editor, {childList: true, characterData: true, subtree: true});
+      for (const event of events) (form || editor).addEventListener(event, invalidate, true);
+      window.addEventListener('pagehide', invalidate);
+      window.addEventListener('popstate', invalidate);
+      globalThis.switchstandWakeWitness = witness;
+    }
     let send;
     for (let attempt = 0; attempt < 15; attempt++) {
       await new Promise(resolve => setTimeout(resolve, 100));
-      send = form?.querySelector('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[type="submit"], button[aria-label="Send prompt"]');
-      if (send && !send.disabled && !/voice|dictat/i.test(send.getAttribute('aria-label') || '')) break;
+      send = sendControl();
+      if (enabled(send)) break;
     }
+    send = sendControl(); // Recheck uniqueness and state after the render wait.
     facts.controlPresent = Boolean(send);
-    facts.controlEnabled = send ? !send.disabled && !/voice|dictat/i.test(send.getAttribute('aria-label') || '') : null;
+    facts.controlEnabled = Boolean(enabled(send));
     if (location.href !== expectedUrl || draft().trim() !== text ||
-        !send || send.disabled || /voice|dictat/i.test(send.getAttribute('aria-label') || '') ||
+        !enabled(send) ||
         document.querySelector('[data-testid="stop-button"]')) {
       const controls = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
         .map(button => `id=${button.id},testid=${button.getAttribute('data-testid') || ''},type=${button.type},label=${button.getAttribute('aria-label') || ''},disabled=${button.disabled}`);
-      return `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
+      const outcome = `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
+      if (owned(witness)) return {outcome, noClickToken: attempt.token};
+      witness?.retire();
+      return outcome;
     }
-    facts.clickDispatched = true; // Invocation only, never provider acceptance.
+    // User actions during the wait for a send control revoke ownership permanently.
+    if (attempt && !owned(witness)) { witness?.retire(); return 'attempt-outcome-unknown: ownership changed'; }
+    witness?.retire();
+    facts.clickDispatched = true;
     send.click();
     return 'click-attempted'; // A click is not a provider acceptance receipt.
   }
   try {
-    const outcome = await run();
-    return diagnostic ? {outcome, facts} : outcome;
+    const receipt = await run();
+    if (!diagnostic) return receipt;
+    return typeof receipt === 'string' ? {outcome: receipt, facts} : {...receipt, facts};
   } catch (error) {
     if (!diagnostic) throw error;
     return {outcome: 'attempt-outcome-unknown: ' + error.message, facts, reason: 'dom-exception',
@@ -98,10 +151,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '521a7d8f-982d-4b16-a9ba-620038bf88bc';
+const releaseId = 'a9dd8d2f-3693-4cc0-8b49-128b092e907c';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
-    attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null};
+    attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null,
+    block: binding.status === 'attempt-outcome-unknown: retry evidence no longer current'
+      ? 'retry-evidence-not-current' : null};
   if (!diagnostics.attempt && !diagnostics.pair && !diagnostics.legacy_halt) return;
   const identity = JSON.stringify(diagnostics);
   if (binding.diagnosticAck?.identity === identity) return;
@@ -221,6 +276,14 @@ async function record(binding, outcome, ids = [], save, fresh = false) {
     binding.lastReport = reportKey;
   } catch (error) { binding.report = 'backend report unavailable: ' + error.message; }
 }
+// The registered conversation is durable; tab IDs are only current delivery routes.
+async function conversationTab(binding) {
+  const tabs = (await chrome.tabs.query({url: 'https://chatgpt.com/*'}))
+    .filter(tab => Number.isInteger(tab.id) && tab.url === binding.url);
+  // Page-owned retries cannot move, even when a preferred/duplicate tab exists.
+  return tabs.find(tab => tab.id === binding.retry?.tabId) ||
+    tabs.find(tab => tab.id === binding.tabId) || tabs.sort((a, b) => a.id - b.id)[0];
+}
 async function checkBinding(binding, save) {
   let observation;
   const note = (outcome, ids = observation?.delivery_ids || []) => record(binding, outcome, ids, save, true);
@@ -235,11 +298,24 @@ async function checkBinding(binding, save) {
   binding.pending = pending;
   binding.observedPending = observation.delivery_ids;
   let tab;
-  try { tab = await chrome.tabs.get(binding.tabId); }
-  catch { binding.availability = 'closed'; return note('bound-tab-missing'); }
+  try { tab = await conversationTab(binding); }
+  catch (error) { return note('composer-unavailable: tab lookup failed: ' + error.message); }
+  if (!tab) {
+    delete binding.retry; // No current page can retain this page-owned allowance.
+    binding.availability = 'closed';
+    return note('bound-tab-missing');
+  }
   binding.availability = 'open';
-  if (binding.halted) return note(binding.status?.startsWith('attempt-outcome-unknown') ||
+  if (binding.halted && !binding.retry) return note(binding.status?.startsWith('attempt-outcome-unknown') ||
     binding.status?.startsWith('inserted-not-submitted') ? binding.status : 'attempt-outcome-unknown');
+  const retry = binding.retry;
+  if (retry && (retry.boot !== bootId || retry.stop !== stopVersion ||
+      retry.endpoint !== binding.endpoint || retry.generation !== binding.generation ||
+      retry.tabId !== tab.id || retry.url !== binding.url || tab.url !== binding.url ||
+      JSON.stringify(retry.ids) !== JSON.stringify(pending))) {
+    delete binding.retry;
+    return note('attempt-outcome-unknown: retry evidence no longer current');
+  }
   if (!observation.delivery_ids.length) return note('idle');
   if (tab.url !== binding.url) return note('wrong-conversation');
   if (tab.discarded) return note('tab-discarded');
@@ -247,7 +323,7 @@ async function checkBinding(binding, save) {
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   if (!pending.length) {
     try {
-      const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url, true]});
+      const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, true]});
       return note(result?.result || 'composer-unavailable: observation returned no result');
     } catch (error) { return note('composer-unavailable: observation failed: ' + error.message); }
   }
@@ -255,22 +331,31 @@ async function checkBinding(binding, save) {
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
   binding.attemptIds = pending;
-  binding.diagnostic = {id: crypto.randomUUID(), boot: bootId, release: releaseId,
+  const attempt = retry ? {token: retry.token, retry: true} : {token: crypto.randomUUID()};
+  const attemptStop = stopVersion;
+  // Consume the sole retry durably before dispatch. Any crash thereafter stays halted.
+  delete binding.retry;
+  binding.diagnostic = {id: attempt.token, boot: bootId, release: releaseId,
     endpoint: binding.endpoint, generation: binding.generation, delivery_ids: pending.slice(0, 50),
     started: new Date().toISOString(), finished: null, outcome: null, reason: 'dispatch-start', facts: {}};
   await save();
-  if (stopRequested(binding)) {
+  if (stopRequested(binding) || stopVersion !== attemptStop) {
     binding.armed = false; binding.halted = false; binding.attemptIds = [];
     attemptResult(binding, 'stopped', null, 'stopped-before-dispatch');
     return note('stopped');
   }
   try {
-    const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url, false, true]});
+    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, false, attempt, true]});
     const receipt = result?.result;
-    const outcome = receipt?.outcome || 'attempt-outcome-unknown';
+    const outcome = (typeof receipt === 'string' ? receipt : receipt?.outcome) || 'attempt-outcome-unknown';
     attemptResult(binding, outcome, receipt, receipt ? undefined : 'missing-result');
+    if (!retry && receipt?.noClickToken === attempt.token && outcome.startsWith('inserted-not-submitted:') &&
+        !stopRequested(binding) && stopVersion === attemptStop) {
+      binding.retry = {token: attempt.token, boot: bootId, stop: attemptStop, endpoint: binding.endpoint,
+        generation: binding.generation, tabId: tab.id, url: binding.url, ids: pending.slice()};
+    }
     const safe = ['busy', 'draft-present', 'wrong-conversation', 'insert-failed'].includes(outcome) || outcome.startsWith('composer-unavailable');
-    if (safe) binding.halted = false;
+    if (safe && !retry) binding.halted = false;
     if (outcome === 'click-attempted') {
       binding.seen.push(...pending);
       binding.pending = [];
@@ -330,15 +415,22 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         pairReason = 'conversation-already-bound';
         if (wakeBindings.some(item => item.endpoint !== endpoint && item.url === url)) throw new Error('This chat is already paired with another mailbox.');
         const prior = wakeBindings.find(item => item.endpoint === endpoint);
-        pairReason = 'unresolved-attempt';
-        if (prior?.halted) throw new Error('Previous attempt is unresolved; reconcile before rearming.');
         pairReason = 'generation-changed';
         if (prior && prior.generation !== generation) throw new Error('Mailbox generation changed; operator reconciliation required.');
+        pairReason = 'unresolved-attempt';
+        if (prior?.halted && observed.delivery_ids.length) throw new Error('Previous attempt is unresolved; mailbox must be empty before explicitly rearming.');
+        pairReason = 'stop-requested';
+        if (stopAll !== stopSnapshot.all || stopEndpoints.get(endpoint) !== stopSnapshot.endpoint) {
+          throw new Error('Stop requested during pairing; verify again.');
+        }
         // Explicit rearm may clear only intents already present when it arrived.
         if (stopAll === stopSnapshot.all) stopAll = 0;
         if (stopEndpoints.get(endpoint) === stopSnapshot.endpoint) stopEndpoints.delete(endpoint);
         const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
           seen: prior?.seen || [], pending: [], status: 'armed', report: 'not checked', incident: prior?.incident,
+          lastReconciledAttempt: prior?.halted ? {outcome: 'attempt-outcome-unknown',
+            status: prior.status, delivery_ids: prior.attemptIds || null, checkedAt: prior.checkedAt || null}
+            : prior?.lastReconciledAttempt,
           diagnostic: prior?.diagnostic, diagnosticAck: prior?.diagnosticAck,
           pairDiagnostic: {id: crypto.randomUUID(), boot: bootId, release: releaseId,
             at: new Date().toISOString(), result: 'accepted', reason: 'accepted', attempt: prior?.diagnostic?.id || null}};
@@ -370,7 +462,12 @@ chrome.alarms.onAlarm.addListener(() => exclusive(check).catch(error => status('
 chrome.tabs.onRemoved.addListener(tabId => exclusive(async () => {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
   const save = () => chrome.storage.local.set({wakeBindings});
-  for (const binding of wakeBindings) if (binding.tabId === tabId && binding.armed && !stopRequested(binding)) {
+  for (const binding of wakeBindings) if (binding.armed && !stopRequested(binding)) {
+    if (binding.retry?.tabId === tabId) delete binding.retry;
+    let tab;
+    try { tab = await conversationTab(binding); }
+    catch { continue; } // Failed lookup is not evidence the conversation is closed.
+    if (tab) { binding.availability = 'open'; continue; }
     binding.availability = 'closed';
     await record(binding, 'bound-tab-missing', binding.observedPending || binding.pending || [], save);
   }

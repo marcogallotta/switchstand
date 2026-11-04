@@ -84,7 +84,7 @@ try {
   }
   const workerSession = await attach(worker.targetId);
   const nudge = () => evaluate(workerSession, `(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});globalThis.fixtureTabId=tab.id;return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:nudge,args:[${JSON.stringify(url)}]}))[0].result})()`);
-  const diagnostic = await evaluate(workerSession, `(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:nudge,args:[${JSON.stringify(url)},false,true]}))[0].result})()`);
+  const diagnostic = await evaluate(workerSession, `(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:nudge,args:[${JSON.stringify(url)},false,undefined,true]}))[0].result})()`);
   assert.equal(diagnostic.outcome, 'click-attempted');
   assert.deepEqual(diagnostic.facts, {urlMatched: true, editorFound: true, busy: false,
     draftPresent: false, inserted: true, controlPresent: true, controlEnabled: true, clickDispatched: true});

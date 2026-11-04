@@ -64,7 +64,7 @@ class _Pair(_DiagnosticModel):
     result: Literal["accepted", "refused"]
     reason: Literal["accepted", "invalid-url", "invalid-tab", "tab-unavailable", "tab-moved",
                     "mailbox-unavailable", "identity-changed", "conversation-already-bound",
-                    "unresolved-attempt", "generation-changed"]
+                    "unresolved-attempt", "generation-changed", "stop-requested"]
     attempt: UUID | None
 
 
@@ -72,6 +72,7 @@ class _Diagnostics(_DiagnosticModel):
     release: UUID
     boot: UUID
     legacy_halt: StrictBool
+    block: Literal["retry-evidence-not-current"] | None = None
     report_failure: Literal["report-unavailable"] | None = None
     attempt: _Attempt | None
     pair: _Pair | None

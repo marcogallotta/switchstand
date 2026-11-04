@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {runInNewContext} from 'node:vm';
 const code = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
+const backend = await readFile(new URL('../../src/switchstand/chatgpt_wake.py', import.meta.url), 'utf8');
+const acceptedOutcomes = new Set([...backend.match(/OUTCOMES = frozenset\(\{([\s\S]*?)\}\)/)[1].matchAll(/"([a-z-]+)"/g)].map(match => match[1]));
 const id = number => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
 let saved = {}, handler, removed, outcome = 'click-attempted', blockName, releasePoll;
 const observations = new Map(['A', 'B'].map((name, index) => [name,
@@ -9,6 +11,7 @@ const observations = new Map(['A', 'B'].map((name, index) => [name,
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
 const attempts = [], reports = [], readOnlyChecks = [];
 let clock = Date.now(), alertMode = false, diagnosticFailure = false, diagnosticWait, releaseDiagnostic, context;
+let onSave;
 class ClockDate extends Date {
   constructor(value = clock) { super(value); }
   static now() { return clock; }
@@ -18,16 +21,17 @@ function load() {
     runtime: {id: 'test', onMessage: {addListener(value) { handler = value; }}},
     storage: {local: {
       async get() { return structuredClone(saved); },
-      async set(value) { saved = structuredClone({...saved, ...value}); }
+      async set(value) { saved = structuredClone({...saved, ...value}); if (onSave) await onSave(value); }
     }},
     tabs: {async get(number) { if (!tabs.has(number)) throw Error('closed'); return tabs.get(number); },
+      async query() { return [...tabs].map(([id, tab]) => ({id, ...tab})); },
       onRemoved: {addListener(value) { removed = value; }}},
     scripting: {async executeScript(options) {
       const observeOnly = options.args[1] === true;
       (observeOnly ? readOnlyChecks : attempts).push(options.target.tabId);
       if (outcome === 'throw') throw Error('interrupted');
-      const value = observeOnly && outcome === 'click-attempted' ? 'idle' : outcome;
-      return [{result: options.args[2] ? {outcome: value, facts: {editorFound: true}} : value}];
+      const value = typeof outcome === 'function' ? outcome(options) : observeOnly && outcome === 'click-attempted' ? 'idle' : outcome;
+      return [{result: options.args[3] ? (typeof value === 'string' ? {outcome: value, facts: {editorFound: true}} : {...value, facts: {editorFound: true}}) : value}];
     }},
     alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
   };
@@ -304,7 +308,7 @@ observations.get('A').delivery_ids = [id(501)];
 observations.get('C').delivery_ids = [id(502)]; attempts.length = 0;
 await message({type: 'check'});
 assert.deepEqual(attempts, [1], 'only the exact current C conversation may receive a wake');
-assert.equal(state('A').status, 'wrong-conversation');
+assert.equal(state('A').status, 'bound-tab-missing', 'registered conversation is not open in any tab');
 assert.deepEqual(state('A').seen, [id(500)]);
 assert.deepEqual(state('C').seen, [id(502)]);
 tabs.set(1, {url: originalA.url}); attempts.length = 0;
@@ -313,9 +317,187 @@ await message({type: 'check'});
 assert.deepEqual(attempts, [1], 'navigating back allows only original A pending mail');
 assert.deepEqual(state('A').seen, [id(500), id(501)]);
 assert.deepEqual(state('C').seen, [id(502)], 'other chat unseen mail is preserved');
-assert.equal(state('C').status, 'wrong-conversation');
+assert.equal(state('C').status, 'bound-tab-missing');
 console.log('PASS three pairings, reused tab, retained binding/dedupe state, duplicate URL refusal and exact-chat isolation');
 
+async function unsentWake() {
+  saved = {}; attempts.length = 0; onSave = undefined;
+  tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+  Object.assign(observations.get('A'), {generation: 1, delivery_ids: []});
+  load(); await bind('A', 1);
+  observations.get('A').delivery_ids = [id(700)];
+  outcome = options => ({outcome: 'inserted-not-submitted: no click', noClickToken: options.args[2].token});
+  await message({type: 'check'});
+  assert.ok(state('A').retry, 'explicit no-click receipt durably retains one allowance');
+  assert.equal(state('A').halted, true);
+}
+await unsentWake();
+outcome = options => {
+  assert.equal(options.args[2].retry, true, 'retry requests no insertion');
+  assert.equal(state('A').retry, undefined, 'allowance consumed in storage before DOM dispatch');
+  assert.equal(state('A').halted, true, 'crash during retry stays fenced');
+  return 'click-attempted';
+};
+await message({type: 'check'});
+assert.deepEqual(state('A').seen, [id(700)]);
+await message({type: 'check'});
+assert.equal(attempts.length, 2, 'initial no-click and only one retry');
+
+for (const invalidate of [
+  () => load(),
+  () => { delete state('A').retry; }, // Legacy UNKNOWN has no evidence.
+  () => { observations.get('A').generation++; },
+  () => { observations.get('A').endpoint = id(9998); },
+  () => { observations.get('A').delivery_ids = [id(701)]; },
+  () => { observations.get('A').delivery_ids = []; },
+  () => { tabs.set(1, {url: 'https://chatgpt.com/c/other'}); },
+  async () => { await message({type: 'disarm'}); }
+]) {
+  observations.get('A').endpoint = id(1);
+  await unsentWake();
+  await invalidate();
+  const before = attempts.length;
+  const originalDiagnostic = structuredClone(state('A').diagnostic);
+  await message({type: 'check'});
+  assert.equal(attempts.length, before, 'stale/missing evidence never dispatches');
+  assert.deepEqual(state('A').diagnostic, originalDiagnostic, 'retry fence retains original cause');
+  if (state('A').status === 'attempt-outcome-unknown: retry evidence no longer current') {
+    assert.equal(reports.at(-1).diagnostics.block, 'retry-evidence-not-current');
+    assert.ok(reports.at(-1).diagnostics.release);
+  }
+}
+observations.get('A').endpoint = id(1);
+await unsentWake();
+let stopping;
+onSave = () => {
+  if (!state('A').retry && !stopping) stopping = message({type: 'disarm'});
+};
+await message({type: 'check'}); await stopping; onSave = undefined;
+assert.equal(attempts.length, 1, 'STOP during retry consumption preempts DOM dispatch');
+
+for (const failed of ['attempt-outcome-unknown: retry exhausted; control unavailable', 'throw', undefined, 'busy']) {
+  await unsentWake();
+  outcome = failed;
+  await message({type: 'check'});
+  const before = attempts.length;
+  await message({type: 'check'});
+  assert.equal(attempts.length, before, 'failed/ambiguous retry never becomes an endless loop');
+  assert.equal(state('A').halted, true);
+  assert.equal(state('A').retry, undefined);
+}
+console.log('PASS explicit no-click single retry; consume-before-dispatch, no insertion, legacy/restart/binding/pending/STOP fences and terminal retry failure.');
+assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
+for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
+console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
+
+// Only explicit Pair can reconcile a drained halt; observation never clears it.
+for (const legacy of [false, true]) {
+  await unsentWake();
+  delete state('A').retry;
+  state('A').seen = [id(699)];
+  if (legacy) delete state('A').attemptIds;
+  const prior = structuredClone(state('A'));
+  observations.get('A').delivery_ids = [];
+  const count = attempts.length;
+  await message({type:'verify', name:'A'}); await message({type:'check'});
+  assert.equal(state('A').halted, true, 'empty observation cannot release a halt');
+  await message({type:'disarm',endpoint:id(1)});
+  assert.equal((await bind('A',1)).error, undefined);
+  assert.equal(state('A').armed, true);
+  assert.equal(Boolean(state('A').halted), false);
+  assert.deepEqual(state('A').seen, prior.seen);
+  assert.equal(state('A').lastReconciledAttempt.outcome,'attempt-outcome-unknown');
+  assert.deepEqual(state('A').lastReconciledAttempt.delivery_ids,legacy ? null : prior.attemptIds);
+  assert.equal(attempts.length,count,'Pair does not execute a page script');
+}
+for (const invalid of ['pending-seen','unavailable','malformed','generation','endpoint']) {
+  await unsentWake();delete state('A').retry;
+  const observed=observations.get('A');const original=structuredClone(observed);
+  const verified={...observed,tabId:1,url:tabs.get(1).url};
+  observed.delivery_ids=[];
+  if(invalid==='pending-seen'){state('A').seen=[id(700)];observed.delivery_ids=[id(700)];}
+  if(invalid==='unavailable')observations.delete('A');
+  if(invalid==='malformed')observed.delivery_ids=['not-a-uuid'];
+  if(invalid==='generation')observed.generation++;
+  if(invalid==='endpoint')observed.endpoint=id(9998);
+  const count=attempts.length;
+  assert.ok((await message({type:'bind',...verified})).error,invalid);
+  assert.equal(state('A').halted,true,invalid);
+  assert.equal(attempts.length,count);
+  observations.set('A',original);
+}
+await unsentWake();delete state('A').retry;observations.get('A').delivery_ids=[];
+blockName='A';releasePoll=undefined;
+const reconciling=message({type:'bind',...observations.get('A'),tabId:1,url:tabs.get(1).url});
+while(!releasePoll)await new Promise(resolve=>setTimeout(resolve,0));
+const stopReconcile=message({type:'disarm',endpoint:id(1)});
+blockName=undefined;releasePoll();
+assert.match((await reconciling).error,/Stop requested/);await stopReconcile;
+assert.equal(state('A').halted,true);assert.equal(state('A').armed,false);
+console.log('PASS explicit drained Pair only; preserves seen/UNKNOWN including legacy missing IDs, rejects seen-pending/malformed/unavailable/drift/Stop, and executes no page script.');
+
+// Conversation routing, with one retained pending delivery per distinct case.
+async function routingWake() {
+  saved = {}; attempts.length = 0; reports.length = 0; onSave = undefined;
+  tabs.clear(); tabs.set(10, {url: 'https://chatgpt.com/c/routing'});
+  Object.assign(observations.get('A'), {endpoint: id(1), generation: 1, delivery_ids: []});
+  outcome = 'click-attempted'; load(); await bind('A', 10);
+  observations.get('A').delivery_ids = [id(800)];
+}
+await routingWake();
+tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'});
+await message({type: 'check'});
+assert.deepEqual(attempts, []);
+tabs.set(10, {url: state('A').url});
+await message({type: 'check'});
+assert.deepEqual(attempts, [10], 'same tab away/back wakes retained fresh pending');
+await message({type: 'check'});
+assert.deepEqual(attempts, [10], 'return never resets seen delivery IDs');
+
+await routingWake();
+tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'});
+tabs.set(12, {url: state('A').url}); tabs.set(11, {url: state('A').url});
+await message({type: 'check'});
+assert.deepEqual(attempts, [11], 'different matching tab: deterministic one target despite duplicate');
+observations.get('A').delivery_ids = [id(801)];
+tabs.delete(11); await removed(11);
+assert.equal(state('A').availability, 'open', 'fallback removal resolves another matching tab');
+assert.notEqual(state('A').status, 'bound-tab-missing', 'duplicate closure never claims conversation absent');
+await message({type: 'check'});
+assert.deepEqual(attempts, [11, 12]);
+tabs.set(10, {url: state('A').url});
+observations.get('A').delivery_ids = [id(802)];
+await message({type: 'check'});
+assert.deepEqual(attempts, [11, 12, 10], 'registered hint preferred when it matches again');
+
+await routingWake();
+tabs.delete(10); await removed(10); await message({type: 'check'});
+assert.equal(state('A').availability, 'closed');
+assert.deepEqual(attempts, []);
+tabs.set(20, {url: state('A').url});
+await message({type: 'check'});
+assert.deepEqual(attempts, [20], 'close/reopen uses new tab without re-pair');
+assert.deepEqual(state('A').seen, [id(800)]);
+
+await routingWake();
+tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'}); tabs.set(11, {url: state('A').url});
+outcome = options => ({outcome: 'inserted-not-submitted: no click', noClickToken: options.args[2].token});
+await message({type: 'check'});
+assert.equal(state('A').retry.tabId, 11, 'retry owns actual fallback page, not stored hint');
+tabs.delete(11); tabs.set(12, {url: state('A').url}); await removed(11);
+assert.equal(state('A').retry, undefined, 'lost page forfeits retry immediately');
+const beforeLost = attempts.length; await message({type: 'check'});
+assert.equal(attempts.length, beforeLost, 'replacement cannot inherit retry or clear UNKNOWN');
+assert.equal(state('A').halted, true);
+
+for (const interruption of ['wrong-conversation', 'throw', 'draft-present']) {
+  await routingWake(); tabs.set(11, {url: state('A').url});
+  outcome = interruption; await message({type: 'check'});
+  assert.deepEqual(attempts, [10], 'URL race/draft/uncertainty cannot fallback immediately');
+  assert.deepEqual(state('A').seen, []);
+  assert.equal(state('A').halted, interruption === 'throw');
+}
+console.log('PASS three conversation routing cases; duplicate single target, fallback removal, retained IDs, page-owned retry loss, URL race/draft/UNKNOWN fences.');
 // Persisted real-world failure states are distinct from a clean fixture binding.
 saved = {}; attempts.length = 0; reports.length = 0; alertMode = false;
 tabs.set(1, {url: 'https://chatgpt.com/c/a'});
@@ -341,7 +523,6 @@ assert.match((await bind('A', 1)).error, /unresolved/);
 assert.equal(state('A').pairDiagnostic.result, 'refused');
 assert.equal(state('A').pairDiagnostic.reason, 'unresolved-attempt');
 assert.deepEqual(state('A').diagnostic, failedAttempt, 'Pair refusal preserves original attempt');
-state('A').halted = false; // Controlled precondition only, not a supported product recovery.
 observations.get('A').delivery_ids = [];
 await bind('A', 1);
 assert.equal(state('A').pairDiagnostic.result, 'accepted');

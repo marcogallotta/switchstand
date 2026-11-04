@@ -104,8 +104,11 @@ exact artifact hashes in its activation proof. The envelope boot/release IDs des
 executing logger; the attempt retains its original boot/release IDs across reloads.
 A missing terminal result means only that no result was durably recorded; the DOM stage is
 UNKNOWN. `legacy_halt: true` means no attempt receipt exists, not a new attempt/interruption.
-Pair accepted/refused records preserve the attempt; they do not clear an unresolved halt.
+Pair accepted/refused records preserve the attempt. Explicit Pair may reconcile a halt only
+for the same endpoint/generation after a fresh complete empty mailbox observation.
 `clickDispatched` records click invocation, never ChatGPT acceptance or mailbox processing.
 Facts contain booleans/fixed reasons only, never drafts, URLs, labels or raw exceptions.
 The latest failed diagnostic report is retried during ordinary Check; there is no queue or
-history. A new attempt may replace an older unreported receipt. Logging does not repair HALT.
+history. A new attempt may replace an older unreported receipt. Logging does not itself repair HALT. The combined candidate retains conversation routing,
+page-owned one-no-click retry and unique visible explicit Send selection; retry-fence rejection
+is logged separately from the retained original attempt.

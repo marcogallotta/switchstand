@@ -125,6 +125,10 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         receipt = await client.post(PATH + "/report", json=payload, headers=headers)
         assert receipt.json() == {"status": "logged"}
         assert "dom-exception" in caplog.text and "TypeError" in caplog.text
+        fenced = deepcopy(payload)
+        fenced["diagnostics"]["block"] = "retry-evidence-not-current"
+        fenced["diagnostics"]["pair"]["reason"] = "stop-requested"
+        assert (await client.post(PATH + "/report", json=fenced, headers=headers)).json() == {"status": "logged"}
         legacy = {**diagnostic, "legacy_halt": True, "attempt": None, "pair": None}
         assert (await client.post(PATH + "/report", json={**payload, "diagnostics": legacy},
                                   headers=headers)).json() == {"status": "logged"}
