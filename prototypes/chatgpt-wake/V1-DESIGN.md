@@ -135,3 +135,33 @@ Aggregate actual production/support/diff counts must be reported before review.
 Any new actor/authenrollment/store/monitor or unexpectedly large support forces
 replan; no numeric allowance authorizes scope growth. Parent explicitly rejected
 a hard cap around this bundle under AGENTS.
+
+## Read-only runtime compatibility correction
+
+Actual startup97e449 runtime enforced PostgreSQL read-only mode but polling failed:
+shared `_current_agent_binding` uses SELECT FOR SHARE, forbidden in that mode
+(Feedback676d336d-a8d4-5770-8e9c-0db64b91de51). Runtime18766 is stopped.
+No writable fallback, schema/config/credential or actor change is permitted.
+
+Small shared-owner seam: add keyword `observation_only=False` to the existing
+`pending_delivery_ids` and `all_pending_delivery_ids` collectors. Only when true,
+the binding-existence SELECT omits its row lock through an explicit keyword on
+`_current_agent_binding`; the same exact endpoint/principal/session/generation
+predicates and delivery query/paging stay owned by MessageState. Default calls
+retain FOR SHARE. `pending_delivery`, `pending_delivery_fence`, and all mutation
+callers remain unchanged and locked. The browser adapter alone requests advisory
+observation; its existing post-collection by-name equality check remains mandatory.
+Each page still validates the pinned exact binding, and stale reads return None.
+These IDs never constitute an actor grant or admission fence; generation changes
+invalidate pairing, and the extension cannot execute mailbox effects.
+
+Focused PostgreSQL regression creates disposable data with a writable fixture,
+then reconnects with psycopg startup `default_transaction_read_only=on` and verifies
+SHOW transaction_read_only. The previous default collector must fail under that
+restriction; explicit advisory collection must return all51 IDs without bodies or
+delivery mutations and reject an obsolete generation. Existing default collector
+and native fence tests remain in qualification. This adds no new engine/table/actor
+and does not widen live runtime authority. Estimated delta: about20 shared-source
+lines plus focused regression additions, no hard cap. New exact surfaces authorized
+by parent: src/switchstand/messages.py and tests/test_mailbox_wake.py. Existing
+adapter regression is switched to use the startup-read-only engine as well.

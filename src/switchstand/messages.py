@@ -500,10 +500,11 @@ class MessageState:
 
     async def pending_delivery_ids(
         self, binding: AgentMailbox, cursor: UUID | None = None,
+        *, observation_only: bool = False,
     ) -> tuple[UUID, ...] | None:
-        """Read bounded committed references, never payloads, for an exact actor binding."""
+        """Read references; observation_only is advisory and never an admission fence."""
         async with self.engine.begin() as connection:
-            if not await self._current_agent_binding(connection, binding):
+            if not await self._current_agent_binding(connection, binding, lock=not observation_only):
                 return None
             query = select(message_deliveries.c.delivery_id).where(
                 message_deliveries.c.recipient_work_id == binding.endpoint_id,
@@ -528,12 +529,14 @@ class MessageState:
             ))).scalar_one_or_none() if current else None
         return row is not None
 
-    async def all_pending_delivery_ids(self, binding: AgentMailbox) -> tuple[UUID, ...] | None:
+    async def all_pending_delivery_ids(
+        self, binding: AgentMailbox, *, observation_only: bool = False,
+    ) -> tuple[UUID, ...] | None:
         """Collect bounded wake observations; stale pages never become an empty mailbox."""
         pending: list[UUID] = []
         cursor = None
         while True:
-            page = await self.pending_delivery_ids(binding, cursor)
+            page = await self.pending_delivery_ids(binding, cursor, observation_only=observation_only)
             if page is None:
                 return None
             pending.extend(page)
@@ -568,14 +571,19 @@ class MessageState:
         return MessageReplyContext(recipient_work_id=row[0], route_ref=row[1])
 
     @staticmethod
-    async def _current_agent_binding(connection: Any, binding: AgentMailbox) -> bool:
-        """Lock and validate the durable actor binding in the message transaction."""
-        row = (await connection.execute(select(agent_mailboxes.c.endpoint_id).where(
+    async def _current_agent_binding(
+        connection: Any, binding: AgentMailbox, *, lock: bool = True,
+    ) -> bool:
+        """Validate binding; only advisory observation may omit the default lock."""
+        query = select(agent_mailboxes.c.endpoint_id).where(
             agent_mailboxes.c.endpoint_id == binding.endpoint_id,
             agent_mailboxes.c.principal_key == binding.principal_key,
             agent_mailboxes.c.session_key == binding.session_key,
             agent_mailboxes.c.generation == binding.generation,
-        ).with_for_update(read=True))).scalar_one_or_none()
+        )
+        if lock:
+            query = query.with_for_update(read=True)
+        row = (await connection.execute(query)).scalar_one_or_none()
         return row is not None
 
     async def committed_public_replay(

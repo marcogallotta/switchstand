@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import httpx
 from fastmcp import FastMCP
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from switchstand.agent_mailboxes import AgentMailboxState
@@ -29,8 +29,12 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
                 recipient_work_id=receiver.endpoint_id, recipient_grant_version=1,
                 state="AVAILABLE"))
         before = (await connection.execute(select(message_deliveries))).all()
+    reader = create_async_engine(state_database_schema,
+        connect_args={"options": "-c default_transaction_read_only=on"})
+    async with reader.connect() as connection:
+        assert (await connection.execute(text("SHOW transaction_read_only"))).scalar_one() == "on"
     server = FastMCP("browser-test")
-    install_browser_wake(server, MessageState(engine, GrantState(engine)))
+    install_browser_wake(server, MessageState(reader, GrantState(reader)))
     app = server.http_app()
     transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 1234))
     try:
@@ -64,4 +68,5 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
         async with engine.connect() as connection:
             assert (await connection.execute(select(message_deliveries))).all() == before
     finally:
+        await reader.dispose()
         await engine.dispose()

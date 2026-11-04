@@ -67,7 +67,7 @@ def install_browser_wake(server: FastMCP, messages: MessageState | None) -> None
             if resolved.status != "ok" or binding is None:
                 return JSONResponse({"status": resolved.status, "reason": resolved.reason},
                                     status_code=403)
-            ids = await messages.all_pending_delivery_ids(binding)
+            ids = await messages.all_pending_delivery_ids(binding, observation_only=True)
             if ids is None or (await state.by_name(name)).mailbox != binding:
                 return JSONResponse({"status": "stale_or_unavailable"}, status_code=503)
             return JSONResponse({"status": "ok", "name": binding.name,
