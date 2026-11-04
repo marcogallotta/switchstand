@@ -5,9 +5,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from switchstand.canonical_relations import ProjectPlacement, WorkRelations
-from switchstand.canonical_work import CurrentWork, CurrentWorkPage, canonical_revision
-from switchstand.canonical_work_runtime import CanonicalWorkRuntime
+from switchstand.tracker.relations import ProjectPlacement, WorkRelations
+from switchstand.tracker.work import CurrentWork, CurrentWorkPage, canonical_revision
+from switchstand.tracker.runtime import CanonicalWorkRuntime
 from switchstand.contracts import WorkPatch, WorkSearchRequest, WorkUpdateRequest
 
 

@@ -8,8 +8,8 @@ from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_event_reads import CanonicalEventReader
-from switchstand.canonical_work import (
+from switchstand.tracker.event_reads import CanonicalEventReader
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     canonical_metadata,
     canonical_revision,
@@ -17,7 +17,7 @@ from switchstand.canonical_work import (
 )
 from switchstand.contracts import WorkEventRequest, WorkHistoryRequest
 from switchstand.state import metadata as shared_metadata
-from switchstand.work_events import (
+from switchstand.tracker.events import (
     OperationConflictError,
     StaleWorkVersion,
     UnknownWorkError,

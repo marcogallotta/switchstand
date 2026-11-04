@@ -5,13 +5,13 @@ import pytest
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.exc import ArgumentError
 
-from switchstand.canonical_relations import (
+from switchstand.tracker.relations import (
     project_memberships,
     projects,
     work_dependencies,
     work_parents,
 )
-from switchstand.canonical_work import canonical_metadata, canonical_work, legacy_work_aliases
+from switchstand.tracker.work import canonical_metadata, canonical_work, legacy_work_aliases
 from switchstand.database import validate_test_database_url
 from switchstand.human_reviews import human_review_consequences
 from switchstand.priority_claims import priority_claims
@@ -19,7 +19,7 @@ from switchstand.pull_requests import pull_requests, work_pull_requests
 from switchstand.state import metadata as state_metadata
 from switchstand.task_control import task_control_checkpoints
 from switchstand.task_runs import task_run_requests
-from switchstand.work_events import work_events
+from switchstand.tracker.events import work_events
 
 CANONICAL_TABLES = (
     work_pull_requests, pull_requests,

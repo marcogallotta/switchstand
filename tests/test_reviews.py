@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
 from switchstand.agent_mailboxes import AgentMailboxState
-from switchstand.canonical_work import (
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_metadata,

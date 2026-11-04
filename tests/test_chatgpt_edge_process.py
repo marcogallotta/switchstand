@@ -30,8 +30,8 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import project_memberships, work_parents
-from switchstand.canonical_work import (
+from switchstand.tracker.relations import project_memberships, work_parents
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_metadata,
@@ -45,7 +45,7 @@ from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
 from switchstand.messages import messages
 from switchstand.state import PostgresState, metadata
-from switchstand.work_events import WorkEventRepository
+from switchstand.tracker.events import WorkEventRepository
 from switchstand.workspace_admission import WorkspaceAdmissionState
 
 TOOLS = {
