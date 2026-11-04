@@ -349,7 +349,8 @@ messaging, and required continuation:
   search pages, legacy task aliases,
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
   projects DB event storage through the existing public history/event contracts. The ordinary
-  edge and managed MCP constructors wire these canonical owners directly. `canonical_work_runtime.py` projects canonical current rows and relations through the
+  edge and managed MCP constructors wire these canonical owners directly.
+  `canonical_work_runtime.py` projects canonical current rows and relations through the
   existing get, search, create, scalar-update, parent, and dependency contracts. Protected creates
   atomically persist the row, requested parent or project placement, and effect receipt; protected
   parent/dependency changes and canonical project-membership add/remove atomically persist the
