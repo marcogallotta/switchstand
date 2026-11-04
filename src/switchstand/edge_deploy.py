@@ -162,11 +162,7 @@ class Deployer:
         started = time.monotonic()
         try:
             action()
-        except BaseException as exc:
-            if isinstance(exc, subprocess.CalledProcessError):
-                for stream in (exc.stdout, exc.stderr):
-                    if stream:
-                        self.log.write(stream.rstrip() + "\n")
+        except BaseException:
             self.record(name, started, "FAIL")
             raise
         self.record(name, started, "PASS")

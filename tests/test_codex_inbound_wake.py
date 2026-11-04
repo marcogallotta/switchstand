@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-import switchstand.codex_inbound_wake as module
+import switchstand.mailbox.codex_inbound_wake as module
 from switchstand.agent_mailboxes import AgentMailbox, chat_session_key
 from switchstand.mailbox_wake import MARKER
 
@@ -261,6 +261,8 @@ async def test_other_runtime_never_discovers_or_suspends(subject, monkeypatch, a
     await wake.tasks[binding.endpoint_id]
     connect.assert_not_called()
     assert binding.endpoint_id not in wake.suspended
+    assert delivery not in wake.fresh
+    assert delivery not in wake.fresh_messages
     wake._alert.assert_not_awaited()
 
 
