@@ -25,11 +25,13 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
   const facts = {};
   const selectControl = form => {
       const explicit = [...(form?.querySelectorAll('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[aria-label="Send prompt"]') || [])];
-      const controls = explicit.filter(control => {
+      const candidates = explicit.length ? explicit : [...(form?.querySelectorAll('button[type="submit"]') || [])];
+      facts.controlSource = explicit.length ? 'explicit' : 'generic-submit';
+      const controls = candidates.filter(control => {
           const rect = control.getBoundingClientRect();
           return rect.width > 0 && rect.height > 0 && getComputedStyle(control).visibility === 'visible';
         });
-      facts.controlSelection = !form ? 'missing-form' : !explicit.length ? 'no-explicit'
+      facts.controlSelection = !form ? 'missing-form' : !candidates.length ? 'no-explicit'
         : !controls.length ? 'all-hidden' : controls.length > 1 ? 'ambiguous' : 'unique';
       // Count before checking enabled state: two visible Send controls are ambiguous.
       return controls.length === 1 ? controls[0] : undefined;
@@ -72,9 +74,9 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (observeOnly) return 'idle';
     const form = editor.closest('form');
     const sendControl = () => selectControl(form);
-    const enabled = send => send && !send.disabled && !send.matches(':disabled') &&
+    const enabled = send => send && send.form === form && !send.disabled && !send.matches(':disabled') &&
       send.getAttribute('aria-disabled')?.toLowerCase() !== 'true' &&
-      !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
+      !['aria-label', 'data-testid', 'id', 'title'].some(name => /voice|dictat/i.test(send.getAttribute(name) || ''));
     const owned = witness => witness && witness.token === attempt?.token && witness.editor === editor &&
       witness.url === expectedUrl && witness.valid && editor.isConnected && location.href === expectedUrl &&
       draft() === text && !attached() && !witness.observer.takeRecords().length;
@@ -155,7 +157,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = 'c3de7930-394d-4a32-b02d-98923e1ce79a';
+const releaseId = '41815af1-9b9e-43f9-b5f3-d89aca7a1928';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -316,6 +318,7 @@ async function checkBinding(binding, save) {
       try {
         const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
           args: [binding.url, 'control', null, true]});
+        if (result?.result?.facts?.controlSource) binding.currentControl.controlSource = result.result.facts.controlSource;
         binding.currentControl.reason = !result?.result || result.result.reason === 'dom-exception' ? 'unavailable'
           : result.result.facts?.controlSelection || (result.result.outcome === 'wrong-conversation' ? 'url-mismatch' : 'editor-unavailable');
       } catch { /* Unavailable replaces the prior snapshot. */ }

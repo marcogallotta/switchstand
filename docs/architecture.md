@@ -955,7 +955,7 @@ uses read-only observation without input or retry; it is neither the original ca
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
 The combined candidate retains conversation routing, explicit empty-mailbox Pair reconciliation,
-page-owned one-no-click retry and unique visible explicit Send selection; logging does not
+page-owned one-no-click retry and unique visible Send selection (explicit controls take precedence; only zero explicit matches allow a same-form generic submit); logging does not
 grant another retry. Retry-fence rejection preserves the original attempt receipt.
 The flag is off by default; landing does not activate a service.
 

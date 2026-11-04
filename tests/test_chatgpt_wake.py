@@ -141,6 +141,11 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         assert (await client.post(PATH + "/report", json=current, headers=headers)).json() == {"status": "logged"}
         current["diagnostics"]["current_control"]["reason"] = "private draft sentinel"
         assert (await client.post(PATH + "/report", json=current, headers=headers)).status_code == 400
+        for source in ["explicit", "generic-submit", "private draft sentinel"]:
+            sourced = deepcopy(payload)
+            sourced["diagnostics"]["attempt"]["facts"]["controlSource"] = source
+            sourced["diagnostics"]["current_control"] = {"release": identity, "boot": identity, "reason": "unique", "controlSource": source}
+            assert (await client.post(PATH + "/report", json=sourced, headers=headers)).status_code == (400 if source == "private draft sentinel" else 200)
         legacy = {**diagnostic, "legacy_halt": True, "attempt": None, "pair": None}
         assert (await client.post(PATH + "/report", json={**payload, "diagnostics": legacy},
                                   headers=headers)).json() == {"status": "logged"}

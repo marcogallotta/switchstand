@@ -36,6 +36,7 @@ class _Facts(_DiagnosticModel):
     draftPresent: StrictBool | None = None
     inserted: StrictBool | None = None
     controlSelection: Literal["missing-form", "no-explicit", "all-hidden", "ambiguous", "unique"] | None = None
+    controlSource: Literal["explicit", "generic-submit"] | None = None
     controlPresent: StrictBool | None = None
     controlEnabled: StrictBool | None = None
     clickDispatched: StrictBool | None = None
@@ -70,6 +71,7 @@ class _Pair(_DiagnosticModel):
 
 
 class _CurrentControl(_DiagnosticModel):
+    controlSource: Literal["explicit", "generic-submit"] | None = None
     release: UUID
     boot: UUID
     reason: Literal["missing-form", "no-explicit", "all-hidden", "ambiguous", "unique",

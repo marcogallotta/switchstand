@@ -169,7 +169,7 @@ test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft a
 });
 
 
-for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'missing-form', 'all-hidden', 'disabled', 'aria-disabled', 'voice']) {
+for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'missing-form', 'all-hidden', 'disabled', 'aria-disabled', 'voice', 'generic-hidden-first', 'generic-multiple', 'generic-disabled', 'generic-aria-disabled', 'generic-voice', 'generic-voice-testid', 'generic-voice-id', 'generic-voice-title', 'generic-foreign-form', 'generic-outside', 'hidden-explicit-blocks', 'explicit-precedence', 'disabled-explicit-blocks', 'aria-disabled-explicit-blocks']) {
   test(`Send selection: ${variant}`, async ({wake}) => {
     await wake.page.evaluate(variant => {
       const form=document.querySelector('form'), send=document.querySelector('[data-testid="send-button"]');
@@ -182,6 +182,18 @@ for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multipl
         other.disabled=variant==='multiple-disabled';
         other.addEventListener('click',()=>window.wrongClicks++);form.prepend(other);
       }
+      if(variant.startsWith('generic-')) {send.removeAttribute('data-testid');send.removeAttribute('aria-label');send.type='submit';}
+      if(variant==='generic-hidden-first' || variant==='generic-multiple' || variant==='explicit-precedence') {
+        const other=document.createElement('button');other.type='submit';other.hidden=variant==='generic-hidden-first';
+        other.addEventListener('click',()=>window.wrongClicks++);form.prepend(other);
+      }
+      if(variant==='hidden-explicit-blocks') {send.hidden=true;const other=document.createElement('button');other.type='submit';form.append(other);other.onclick=()=>window.wrongClicks++;}
+      if(variant.endsWith('disabled-explicit-blocks')) {const other=document.createElement('button');other.type='submit';form.append(other);other.onclick=()=>window.wrongClicks++;if(variant.startsWith('aria-')) send.setAttribute('aria-disabled','true');else {fixture.blocked=true;send.disabled=true;}}
+      if(variant==='generic-disabled') {fixture.blocked=true;send.disabled=true;}
+      if(variant==='generic-aria-disabled') send.setAttribute('aria-disabled','true');
+      if(variant.startsWith('generic-voice')) send.setAttribute({'generic-voice':'aria-label','generic-voice-testid':'data-testid','generic-voice-id':'id','generic-voice-title':'title'}[variant],'Start dictation');
+      if(variant==='generic-foreign-form') {const other=document.createElement('form');other.id='unrelated';document.body.append(other);send.setAttribute('form','unrelated');}
+      if(variant==='generic-outside') document.body.append(send);
       if(variant==='missing') {send.removeAttribute('data-testid');send.removeAttribute('aria-label');send.type='submit';}
       if(variant==='missing-form') document.body.append(document.querySelector('#prompt-textarea'));
       if(variant==='all-hidden') send.hidden=true;
@@ -192,10 +204,11 @@ for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multipl
     wake.metadata.delivery_ids=[delivery(902)];await wake.check();await wake.check();
     expect(await wake.page.evaluate(()=>window.wrongClicks)).toBe(0);
     const binding=await wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
-    const reason=variant==='missing-form' ? 'missing-form' : variant==='missing' ? 'no-explicit'
-      : variant==='all-hidden' ? 'all-hidden' : variant.startsWith('multiple') ? 'ambiguous' : 'unique';
+    const reason=variant==='missing-form' ? 'missing-form' : variant==='generic-outside' ? 'no-explicit'
+      : ['all-hidden','hidden-explicit-blocks'].includes(variant) ? 'all-hidden' : variant==='generic-multiple' || variant.startsWith('multiple') ? 'ambiguous' : 'unique';
     expect(binding.diagnostic.facts.controlSelection).toBe(reason);
-    const submits=variant.startsWith('hidden');
+    const submits=['hidden-generic','hidden-explicit','missing','generic-hidden-first','explicit-precedence'].includes(variant);
+    expect(binding.diagnostic.facts.controlSource).toBe(variant.startsWith('generic-') || ['missing','missing-form'].includes(variant) ? 'generic-submit' : 'explicit');
     await expect(wake.page.locator('#turns li')).toHaveCount(submits ? 1 : 0);
     if(!submits) {
       await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
@@ -218,7 +231,9 @@ test('HALTED current control snapshot preserves draft, busy state and legacy cau
   });
   wake.metadata.delivery_ids=[delivery(903)];await wake.check();
   const read=()=>wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
-  let binding=await read();expect(binding.currentControl.reason).toBe('unique');
+  let binding=await read();expect(binding.currentControl.reason).toBe('unique');expect(binding.currentControl.controlSource).toBe('explicit');
+  await wake.page.evaluate(()=>{const send=document.querySelector('form button');send.removeAttribute('data-testid');send.removeAttribute('aria-label');send.type='submit';});
+  await wake.check();binding=await read();expect(binding.currentControl.controlSource).toBe('generic-submit');
   expect(binding.halted).toBe(true);expect(binding.diagnostic).toBeUndefined();expect(binding.seen).toEqual([]);
   await expect(wake.page.locator('#prompt-textarea')).toHaveText('private draft sentinel');
   expect(await wake.page.evaluate(()=>[fixture.insertions,window.focuses,document.querySelectorAll('#turns li').length])).toEqual([0,0,0]);

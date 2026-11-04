@@ -110,5 +110,5 @@ for the same endpoint/generation after a fresh complete empty mailbox observatio
 Facts contain booleans/fixed reasons only, never drafts, URLs, labels or raw exceptions.
 The latest failed diagnostic report is retried during ordinary Check; there is no queue or
 history. A new attempt may replace an older unreported receipt. Logging does not itself repair HALT. The combined candidate retains conversation routing,
-page-owned one-no-click retry and unique visible explicit Send selection; retry-fence rejection
+page-owned one-no-click retry and unique visible Send selection (explicit controls take precedence; only zero explicit matches allow a same-form generic submit); retry-fence rejection
 is logged separately from the retained original attempt.

@@ -87,7 +87,7 @@ try {
   const diagnostic = await evaluate(workerSession, `(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:nudge,args:[${JSON.stringify(url)},false,null,true]}))[0].result})()`);
   assert.equal(diagnostic.outcome, 'click-attempted');
   assert.deepEqual(diagnostic.facts, {urlMatched: true, editorFound: true, busy: false,
-    draftPresent: false, inserted: true, controlSelection: 'unique', controlPresent: true, controlEnabled: true, clickDispatched: true});
+    draftPresent: false, inserted: true, controlSelection: 'unique', controlSource: 'explicit', controlPresent: true, controlEnabled: true, clickDispatched: true});
   // Original cases below still receive string outcomes through the unchanged default call.
   await evaluate(session, 'submissions=[]');
   assert.equal(await nudge(), 'click-attempted');
