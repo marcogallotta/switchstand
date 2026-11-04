@@ -21,7 +21,7 @@ async function status(value) {
   return value;
 }
 // Isolated extension world: check exact identity immediately before editing.
-async function nudge(expectedUrl) {
+async function nudge(expectedUrl, observeOnly = false) {
   if (location.href !== expectedUrl) return 'wrong-conversation';
   let editor = document.getElementById('prompt-textarea');
   if (!editor) {
@@ -49,6 +49,7 @@ async function nudge(expectedUrl) {
   const draft = () => textarea ? editor.value : editor.textContent;
   if (draft().trim() || editor.querySelector('img') ||
       document.querySelector('[data-testid="remove-file-button"]')) return 'draft-present';
+  if (observeOnly) return 'idle';
   const text = 'Process your mailbox';
   editor.focus();
   if (textarea) {
@@ -185,11 +186,17 @@ async function checkBinding(binding, save) {
   catch { binding.availability = 'closed'; return note('bound-tab-missing'); }
   binding.availability = 'open';
   if (binding.halted) return note('attempt-outcome-unknown');
-  if (!pending.length) return note('idle');
+  if (!observation.delivery_ids.length) return note('idle');
   if (tab.url !== binding.url) return note('wrong-conversation');
   if (tab.discarded) return note('tab-discarded');
   if (tab.frozen) return note('tab-frozen');
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
+  if (!pending.length) {
+    try {
+      const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url, true]});
+      return note(result?.result || 'composer-unavailable: observation returned no result');
+    } catch (error) { return note('composer-unavailable: observation failed: ' + error.message); }
+  }
   // Persist a halt before DOM mutation. A crash cannot silently retry these IDs.
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';

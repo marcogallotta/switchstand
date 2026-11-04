@@ -7,7 +7,7 @@ let saved = {}, handler, removed, outcome = 'click-attempted', blockName, releas
 const observations = new Map(['A', 'B'].map((name, index) => [name,
   {status: 'ok', name, endpoint: id(index + 1), generation: 1, delivery_ids: []}]));
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
-const attempts = [], reports = [];
+const attempts = [], reports = [], readOnlyChecks = [];
 let clock = Date.now(), alertMode = false;
 class ClockDate extends Date {
   constructor(value = clock) { super(value); }
@@ -22,7 +22,12 @@ function load() {
     }},
     tabs: {async get(number) { if (!tabs.has(number)) throw Error('closed'); return tabs.get(number); },
       onRemoved: {addListener(value) { removed = value; }}},
-    scripting: {async executeScript(options) { attempts.push(options.target.tabId); if (outcome === 'throw') throw Error('interrupted'); return [{result: outcome}]; }},
+    scripting: {async executeScript(options) {
+      const observeOnly = options.args[1] === true;
+      (observeOnly ? readOnlyChecks : attempts).push(options.target.tabId);
+      if (outcome === 'throw') throw Error('interrupted');
+      return [{result: observeOnly && outcome === 'click-attempted' ? 'idle' : outcome}];
+    }},
     alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
   };
   runInNewContext(code, {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
@@ -233,3 +238,47 @@ observations.get('A').delivery_ids = []; await message({type: 'check'});
 assert.equal(reports.filter(item => item.incident).at(-1).incident.phase, 'recovered');
 assert.equal(reports.filter(item => item.incident).at(-1).incident.incident_id, seenIncident.incident_id);
 console.log('PASS seen-but-still-pending closed incident, unchanged DOM dedupe, recovery, actual backend configuration display state');
+
+// Already nudged but still pending mail must also observe live draft blockers.
+saved = {}; reports.length = 0; attempts.length = 0; readOnlyChecks.length = 0;
+tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+observations.get('A').delivery_ids = [id(401)]; outcome = 'click-attempted';
+load(); await bind('A', 1); await message({type: 'check'});
+outcome = 'draft-present'; await message({type: 'check'});
+clock += 30000; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 0);
+outcome = 'busy'; await message({type: 'check'});
+outcome = 'draft-present'; await message({type: 'check'});
+clock += 30000; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 0, 'busy interrupts continuous draft qualification');
+clock += 30000; await message({type: 'check'});
+const draftIncident = reports.filter(item => item.incident).at(-1).incident;
+assert.equal(draftIncident.reason, 'draft-present');
+assert.deepEqual(draftIncident.delivery_ids, [id(401)]);
+assert.equal(state('A').halted, false);
+assert.deepEqual(state('A').attemptIds, [id(401)], 'read-only checks do not reserve a new mutation');
+await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 1, 'ongoing draft never falsely recovers');
+outcome = 'click-attempted'; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).at(-1).incident.phase, 'recovered');
+assert.equal(reports.filter(item => item.incident).at(-1).incident.incident_id, draftIncident.incident_id);
+assert.equal(attempts.length, 1, 'seen mail is observed without another DOM mutation');
+assert.ok(readOnlyChecks.length > 0);
+console.log('PASS seen-pending draft60s, busy resets continuity, read-only observation, dedupe and same-incident recovery');
+
+// Execute the actual page function: read-only mode must never focus or edit.
+const pageUrl = 'https://chatgpt.com/c/a';
+const editor = {isContentEditable: true, textContent: '', getClientRects: () => [{}],
+  querySelector: () => null, focus() { throw Error('read-only observation focused editor'); }};
+let pageBusy = false;
+const pageObserve = runInNewContext(code.slice(code.indexOf('async function nudge('), code.indexOf('const SOURCE')) + ';nudge', {
+  location: {href: pageUrl}, HTMLTextAreaElement: class {},
+  document: {getElementById: () => editor, querySelector: selector => pageBusy && selector.includes('stop-button') ? {} : null}
+});
+assert.equal(await pageObserve(pageUrl, true), 'idle');
+editor.textContent = 'private draft';
+assert.equal(await pageObserve(pageUrl, true), 'draft-present');
+pageBusy = true;
+assert.equal(await pageObserve(pageUrl, true), 'busy');
+assert.equal(await pageObserve('https://chatgpt.com/c/other', true), 'wrong-conversation');
+console.log('PASS actual page observer returns before focus/edit with exact URL, draft and busy guards');
