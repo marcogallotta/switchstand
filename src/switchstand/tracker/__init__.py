@@ -1,5 +1,5 @@
-"""Tracker durable command gateways.
+"""Tracker storage, history reads, and durable command gateways.
 
-Canonical storage and reads remain in their existing owners while the shared
-public contracts and admission remain outside this package.
+Protected current-work runtime and lifecycle policy remain at their existing
+owners; public contracts and admission remain outside this package.
 """

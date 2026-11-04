@@ -23,8 +23,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_relations import projects
-from .canonical_work import canonical_metadata, canonical_revision, canonical_work
+from .tracker.relations import projects
+from .tracker.work import canonical_metadata, canonical_revision, canonical_work
 
 ClaimKind = Literal["HUMAN_PRIORITY", "AGENT_RECOMMENDATION"]
 SubjectKind = Literal["WORK", "PROJECT"]

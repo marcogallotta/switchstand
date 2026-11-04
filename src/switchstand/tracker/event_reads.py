@@ -1,18 +1,18 @@
-"""Inert DB-only projection for work history and exact event reads."""
+"""DB-only projection for work history and exact event reads."""
 
 from __future__ import annotations
 
 from uuid import UUID
 
-from .canonical_work import CanonicalWorkRepository, canonical_revision
-from .contracts import (
+from ..contracts import (
     WorkEvent,
     WorkEventRequest,
     WorkEventResult,
     WorkHistoryRequest,
     WorkHistoryResult,
 )
-from .work_events import StoredWorkEvent, WorkEventRepository
+from .events import StoredWorkEvent, WorkEventRepository
+from .work import CanonicalWorkRepository, canonical_revision
 
 
 def _public_event(event: StoredWorkEvent) -> WorkEvent:

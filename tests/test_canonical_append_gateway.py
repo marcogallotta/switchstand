@@ -10,11 +10,6 @@ from sqlalchemy import delete, func, insert, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from switchstand.canonical_work import (
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-)
 from switchstand.contracts import LaunchAuthority
 from switchstand.grant_state import GrantState, effect_intents, work_grants
 from switchstand.grants import (
@@ -27,7 +22,12 @@ from switchstand.grants import (
 from switchstand.mcp import build_server
 from switchstand.state import metadata
 from switchstand.tracker.appends import CanonicalAppendGateway
-from switchstand.work_events import WorkEventRepository, work_events
+from switchstand.tracker.events import WorkEventRepository, work_events
+from switchstand.tracker.work import (
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+)
 
 
 @dataclass

@@ -11,8 +11,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from .canonical_relations import work_dependencies
-from .canonical_work import CanonicalWorkRepository, canonical_revision
 from .contracts import ClosedModel
 from .grant_state import work_grants
 from .grants import PrincipalContext, WorkGrant
@@ -26,6 +24,8 @@ from .human_trajectory import HumanTrajectoryStore
 from .priority_claims import priority_claims
 from .reviews import ReviewOccurrenceState
 from .task_runs import ImplementationTaskRequest, TaskRunRequest, TaskRunState
+from .tracker.relations import work_dependencies
+from .tracker.work import CanonicalWorkRepository, canonical_revision
 
 _HIHR_PREFIX = "hihr/"
 _HIHR_TRAJECTORY_PREFIX = "hihr/1.0/trajectory/"

@@ -16,14 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from switchstand import flow_report
 from switchstand.activation_continuity import ActivationContract, Obligation, seal_obligation
 from switchstand.agent_mailboxes import AgentMailboxState
-from switchstand.canonical_relations import work_dependencies, work_parents
-from switchstand.canonical_work import (
-    CanonicalWorkRepository,
-    canonical_metadata,
-    canonical_revision,
-    canonical_work,
-    normalize_title,
-)
 from switchstand.chatgpt_mcp import build_chatgpt_server
 from switchstand.failure_journal import (
     EffectState,
@@ -51,7 +43,15 @@ from switchstand.task_runs import (
     task_run_requests,
     task_run_results,
 )
-from switchstand.work_events import work_events
+from switchstand.tracker.events import work_events
+from switchstand.tracker.relations import work_dependencies, work_parents
+from switchstand.tracker.work import (
+    CanonicalWorkRepository,
+    canonical_metadata,
+    canonical_revision,
+    canonical_work,
+    normalize_title,
+)
 
 
 @pytest.fixture

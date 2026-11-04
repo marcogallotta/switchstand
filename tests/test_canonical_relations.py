@@ -6,7 +6,8 @@ import pytest
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from switchstand.canonical_relations import (
+from switchstand.state import metadata as shared_metadata
+from switchstand.tracker.relations import (
     CanonicalRelationsRepository,
     ProjectPlacement,
     project_memberships,
@@ -14,13 +15,12 @@ from switchstand.canonical_relations import (
     work_dependencies,
     work_parents,
 )
-from switchstand.canonical_work import (
+from switchstand.tracker.work import (
     CanonicalWorkRepository,
     CurrentWork,
     canonical_metadata,
     canonical_work,
 )
-from switchstand.state import metadata as shared_metadata
 
 RELATION_TABLES = [work_dependencies, work_parents, projects, project_memberships]
 REQUIRED_TABLES = [canonical_work, *RELATION_TABLES]
