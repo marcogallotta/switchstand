@@ -48,6 +48,13 @@ reload; a new delivery cannot clear that halt. Reconcile the actual conversation
 before any operator recovery. `click-attempted` is not provider acceptance or proof
 that the chat processed its mailbox. A draft inserted without a send is retained.
 
+The candidate [send recovery design](SEND-RECOVERY-DESIGN.md) permits one retry
+only after an explicit no-click receipt for the extension's exact owned wake.
+Binding storage consumes that allowance before dispatch; an isolated-world page
+witness detects edits/submission actions and is consumed before clicking. Retry
+never reinserts text. A changed binding/pending set, STOP, worker restart, missing
+witness or prior click leaves the attempt fenced, even if the composer text matches.
+
 ## Focused evidence
 
 ```sh

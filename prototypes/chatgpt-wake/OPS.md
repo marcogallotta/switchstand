@@ -67,6 +67,12 @@ Alternatively, an existing draft blocking a send must be continuously observed
 for 60 seconds; do not insert a draft just to manufacture proof. Busy, STOP,
 disarmed, unavailable source and `attempt-outcome-unknown` are separate states.
 Do not retry or overwrite the current Code Cleanup 3 UNKNOWN attempt/draft.
+The candidate single-retry recovery applies only to newly witnessed no-click
+attempts: exact owned text, unchanged pairing/pending IDs, no intervening edit,
+and one consumed retry allowance. It never inserts again. Existing UNKNOWN,
+clicked attempts and evidence lost on worker restart still require reconciliation;
+matching composer text alone is insufficient. This candidate is not installed by
+editing these docs or the backend unit.
 A queued alert is not received until the parent actually receives it. A recovery
 requires observed cleared pending IDs or a positively cleared former blocker.
 The honest reporter TEST already received/acknowledged proves routing only;

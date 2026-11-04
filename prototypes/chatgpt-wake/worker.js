@@ -21,7 +21,7 @@ async function status(value) {
   return value;
 }
 // Isolated extension world: check exact identity immediately before editing.
-async function nudge(expectedUrl, observeOnly = false) {
+async function nudge(expectedUrl, observeOnly = false, attempt) {
   if (location.href !== expectedUrl) return 'wrong-conversation';
   let editor = document.getElementById('prompt-textarea');
   if (!editor) {
@@ -47,29 +47,67 @@ async function nudge(expectedUrl, observeOnly = false) {
   if (textarea && (editor.disabled || editor.readOnly)) return 'composer-unavailable: textarea is disabled or read-only';
   if (document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"]')) return 'busy';
   const draft = () => textarea ? editor.value : editor.textContent;
-  if (draft().trim() || editor.querySelector('img') ||
-      document.querySelector('[data-testid="remove-file-button"]')) return 'draft-present';
-  if (observeOnly) return 'idle';
   const text = 'Process your mailbox';
+  const attached = () => editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]');
+  if (!attempt?.retry && (draft().trim() || attached())) return 'draft-present';
+  if (observeOnly) return 'idle';
+  const form = editor.closest('form');
+  const sendControl = () => form?.querySelector('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[type="submit"], button[aria-label="Send prompt"]');
+  const enabled = send => send && !send.disabled && !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
+  const owned = witness => witness && witness.token === attempt?.token && witness.editor === editor &&
+    witness.url === expectedUrl && witness.valid && editor.isConnected && location.href === expectedUrl &&
+    draft() === text && !attached() && !witness.observer.takeRecords().length;
+  if (attempt?.retry) {
+    const witness = globalThis.switchstandWakeWitness;
+    const send = sendControl();
+    const canClick = owned(witness) && enabled(send);
+    witness?.retire();
+    if (!canClick) return 'retry-exhausted: ownership or send control unavailable';
+    send.click();
+    return 'click-attempted';
+  }
   editor.focus();
   if (textarea) {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
     editor.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: text}));
   } else if (!document.execCommand('insertText', false, text)) return 'insert-failed';
-  const form = editor.closest('form');
+  let witness;
+  if (attempt?.token) {
+    globalThis.switchstandWakeWitness?.retire();
+    const events = ['input', 'beforeinput', 'paste', 'change', 'keydown', 'click', 'submit'];
+    const invalidate = () => witness.retire();
+    witness = {token: attempt.token, editor, url: expectedUrl, valid: true,
+      observer: new MutationObserver(invalidate), retire() {
+        this.valid = false; this.observer.disconnect();
+        for (const event of events) (form || editor).removeEventListener(event, invalidate, true);
+        window.removeEventListener('pagehide', invalidate);
+        window.removeEventListener('popstate', invalidate);
+      }};
+    witness.observer.observe(editor, {childList: true, characterData: true, subtree: true});
+    for (const event of events) (form || editor).addEventListener(event, invalidate, true);
+    window.addEventListener('pagehide', invalidate);
+    window.addEventListener('popstate', invalidate);
+    globalThis.switchstandWakeWitness = witness;
+  }
   let send;
   for (let attempt = 0; attempt < 15; attempt++) {
     await new Promise(resolve => setTimeout(resolve, 100));
-    send = form?.querySelector('[data-testid="send-button"], [data-testid="composer-submit-button"], #composer-submit-button, button[type="submit"], button[aria-label="Send prompt"]');
-    if (send && !send.disabled && !/voice|dictat/i.test(send.getAttribute('aria-label') || '')) break;
+    send = sendControl();
+    if (enabled(send)) break;
   }
   if (location.href !== expectedUrl || draft().trim() !== text ||
       !send || send.disabled || /voice|dictat/i.test(send.getAttribute('aria-label') || '') ||
       document.querySelector('[data-testid="stop-button"]')) {
     const controls = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
       .map(button => `id=${button.id},testid=${button.getAttribute('data-testid') || ''},type=${button.type},label=${button.getAttribute('aria-label') || ''},disabled=${button.disabled}`);
-    return `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
+    const outcome = `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
+    if (owned(witness)) return {outcome, noClickToken: attempt.token};
+    witness?.retire();
+    return outcome;
   }
+  // User actions during the wait for a send control revoke ownership permanently.
+  if (attempt && !owned(witness)) { witness?.retire(); return 'attempt-outcome-unknown: ownership changed'; }
+  witness?.retire();
   send.click();
   return 'click-attempted'; // A click is not a provider acceptance receipt.
 }
@@ -185,7 +223,15 @@ async function checkBinding(binding, save) {
   try { tab = await chrome.tabs.get(binding.tabId); }
   catch { binding.availability = 'closed'; return note('bound-tab-missing'); }
   binding.availability = 'open';
-  if (binding.halted) return note('attempt-outcome-unknown');
+  if (binding.halted && !binding.retry) return note('attempt-outcome-unknown');
+  const retry = binding.retry;
+  if (retry && (retry.boot !== bootId || retry.stop !== stopVersion ||
+      retry.endpoint !== binding.endpoint || retry.generation !== binding.generation ||
+      retry.tabId !== binding.tabId || retry.url !== binding.url || tab.url !== binding.url ||
+      JSON.stringify(retry.ids) !== JSON.stringify(pending))) {
+    delete binding.retry;
+    return note('attempt-outcome-unknown: retry evidence no longer current');
+  }
   if (!observation.delivery_ids.length) return note('idle');
   if (tab.url !== binding.url) return note('wrong-conversation');
   if (tab.discarded) return note('tab-discarded');
@@ -201,16 +247,26 @@ async function checkBinding(binding, save) {
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
   binding.attemptIds = pending;
+  const attempt = retry ? {token: retry.token, retry: true} : {token: crypto.randomUUID()};
+  const attemptStop = stopVersion;
+  // Consume the sole retry durably before dispatch. Any crash thereafter stays halted.
+  delete binding.retry;
   await save();
-  if (stopRequested(binding)) {
+  if (stopRequested(binding) || stopVersion !== attemptStop) {
     binding.armed = false; binding.halted = false; binding.attemptIds = [];
     return note('stopped');
   }
   try {
-    const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url]});
-    const outcome = result?.result || 'attempt-outcome-unknown';
+    const [result] = await chrome.scripting.executeScript({target: {tabId: binding.tabId}, func: nudge, args: [binding.url, false, attempt]});
+    const receipt = result?.result;
+    const outcome = (typeof receipt === 'string' ? receipt : receipt?.outcome) || 'attempt-outcome-unknown';
+    if (!retry && receipt?.noClickToken === attempt.token && outcome.startsWith('inserted-not-submitted:') &&
+        !stopRequested(binding) && stopVersion === attemptStop) {
+      binding.retry = {token: attempt.token, boot: bootId, stop: attemptStop, endpoint: binding.endpoint,
+        generation: binding.generation, tabId: binding.tabId, url: binding.url, ids: pending.slice()};
+    }
     const safe = ['busy', 'draft-present', 'wrong-conversation', 'insert-failed'].includes(outcome) || outcome.startsWith('composer-unavailable');
-    if (safe) binding.halted = false;
+    if (safe && !retry) binding.halted = false;
     if (outcome === 'click-attempted') {
       binding.seen.push(...pending);
       binding.pending = [];

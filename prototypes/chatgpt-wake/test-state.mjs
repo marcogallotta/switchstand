@@ -9,6 +9,7 @@ const observations = new Map(['A', 'B'].map((name, index) => [name,
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
 const attempts = [], reports = [], readOnlyChecks = [];
 let clock = Date.now(), alertMode = false;
+let onSave;
 class ClockDate extends Date {
   constructor(value = clock) { super(value); }
   static now() { return clock; }
@@ -18,7 +19,7 @@ function load() {
     runtime: {id: 'test', onMessage: {addListener(value) { handler = value; }}},
     storage: {local: {
       async get() { return structuredClone(saved); },
-      async set(value) { saved = structuredClone({...saved, ...value}); }
+      async set(value) { saved = structuredClone({...saved, ...value}); if (onSave) await onSave(value); }
     }},
     tabs: {async get(number) { if (!tabs.has(number)) throw Error('closed'); return tabs.get(number); },
       onRemoved: {addListener(value) { removed = value; }}},
@@ -26,7 +27,7 @@ function load() {
       const observeOnly = options.args[1] === true;
       (observeOnly ? readOnlyChecks : attempts).push(options.target.tabId);
       if (outcome === 'throw') throw Error('interrupted');
-      return [{result: observeOnly && outcome === 'click-attempted' ? 'idle' : outcome}];
+      return [{result: typeof outcome === 'function' ? outcome(options) : observeOnly && outcome === 'click-attempted' ? 'idle' : outcome}];
     }},
     alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
   };
@@ -313,3 +314,64 @@ assert.deepEqual(state('A').seen, [id(500), id(501)]);
 assert.deepEqual(state('C').seen, [id(502)], 'other chat unseen mail is preserved');
 assert.equal(state('C').status, 'wrong-conversation');
 console.log('PASS three pairings, reused tab, retained binding/dedupe state, duplicate URL refusal and exact-chat isolation');
+
+async function unsentWake() {
+  saved = {}; attempts.length = 0; onSave = undefined;
+  tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+  Object.assign(observations.get('A'), {generation: 1, delivery_ids: []});
+  load(); await bind('A', 1);
+  observations.get('A').delivery_ids = [id(700)];
+  outcome = options => ({outcome: 'inserted-not-submitted: no click', noClickToken: options.args[2].token});
+  await message({type: 'check'});
+  assert.ok(state('A').retry, 'explicit no-click receipt durably retains one allowance');
+  assert.equal(state('A').halted, true);
+}
+await unsentWake();
+outcome = options => {
+  assert.equal(options.args[2].retry, true, 'retry requests no insertion');
+  assert.equal(state('A').retry, undefined, 'allowance consumed in storage before DOM dispatch');
+  assert.equal(state('A').halted, true, 'crash during retry stays fenced');
+  return 'click-attempted';
+};
+await message({type: 'check'});
+assert.deepEqual(state('A').seen, [id(700)]);
+await message({type: 'check'});
+assert.equal(attempts.length, 2, 'initial no-click and only one retry');
+
+for (const invalidate of [
+  () => load(),
+  () => { delete state('A').retry; }, // Legacy UNKNOWN has no evidence.
+  () => { observations.get('A').generation++; },
+  () => { observations.get('A').endpoint = id(9998); },
+  () => { observations.get('A').delivery_ids = [id(701)]; },
+  () => { observations.get('A').delivery_ids = []; },
+  () => { tabs.set(1, {url: 'https://chatgpt.com/c/other'}); },
+  async () => { await message({type: 'disarm'}); }
+]) {
+  observations.get('A').endpoint = id(1);
+  await unsentWake();
+  await invalidate();
+  const before = attempts.length;
+  await message({type: 'check'});
+  assert.equal(attempts.length, before, 'stale/missing evidence never dispatches');
+}
+observations.get('A').endpoint = id(1);
+await unsentWake();
+let stopping;
+onSave = () => {
+  if (!state('A').retry && !stopping) stopping = message({type: 'disarm'});
+};
+await message({type: 'check'}); await stopping; onSave = undefined;
+assert.equal(attempts.length, 1, 'STOP during retry consumption preempts DOM dispatch');
+
+for (const failed of ['retry-exhausted: control unavailable', 'throw', undefined, 'busy']) {
+  await unsentWake();
+  outcome = failed;
+  await message({type: 'check'});
+  const before = attempts.length;
+  await message({type: 'check'});
+  assert.equal(attempts.length, before, 'failed/ambiguous retry never becomes an endless loop');
+  assert.equal(state('A').halted, true);
+  assert.equal(state('A').retry, undefined);
+}
+console.log('PASS explicit no-click single retry; consume-before-dispatch, no insertion, legacy/restart/binding/pending/STOP fences and terminal retry failure.');

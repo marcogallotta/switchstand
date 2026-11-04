@@ -68,7 +68,7 @@ try {
     const currentEditor=()=>document.querySelector('#prompt-textarea') || document.querySelector('form [role="textbox"]');
     const text=()=>currentEditor().tagName==='TEXTAREA'?currentEditor().value:currentEditor().textContent;
     const send=document.querySelector('button');
-    document.addEventListener('input',()=>setTimeout(()=>{send.disabled=!text().trim();send.dataset.testid=text().trim()?'send-button':'voice-button'},30));
+    document.addEventListener('input',()=>{if(!window.suppressSend)setTimeout(()=>{send.disabled=!text().trim();send.dataset.testid=text().trim()?'send-button':'voice-button'},30)});
     send.onclick=()=>{submissions.push(text());currentEditor().value='';currentEditor().textContent='';send.disabled=true;send.dataset.testid='voice-button'};
     </script>`;
   listeners.set('Fetch.requestPaused', (params, sessionId) => {
@@ -108,6 +108,70 @@ try {
   assert.match(await nudge(), /inserted-not-submitted: no click/);
   assert.equal(await evaluate(session, 'submissions.length'), 3);
   assert.equal(await evaluate(session, `document.querySelector('textarea').value`), 'Process your mailbox');
+  const invoke = attempt => evaluate(workerSession, `(async()=>{return (await chrome.scripting.executeScript({target:{tabId:globalThis.fixtureTabId},func:nudge,args:[${JSON.stringify(url)},false,${JSON.stringify(attempt)}]}))[0].result})()`);
+  async function prepare(type = 'textarea') {
+    await evaluate(session, `history.replaceState({},'',${JSON.stringify(url)});window.suppressSend=true;
+      document.querySelector('form').innerHTML=${JSON.stringify(type === 'textarea' ? '<textarea id="prompt-textarea"></textarea>' : '<div id="prompt-textarea" contenteditable="true"></div>')};
+      document.querySelector('form').append(send);send.disabled=true;send.dataset.testid='voice-button';send.setAttribute('aria-label','Voice');
+      submissions.length=0;window.insertions=0;currentEditor().addEventListener('input',()=>insertions++);
+      send.onclick=()=>{submissions.push(text());currentEditor().value='';currentEditor().textContent=''};`);
+  }
+  const enableSend = () => evaluate(session, `send.disabled=false;send.dataset.testid='send-button';send.setAttribute('aria-label','Send prompt')`);
+  let token = 0;
+  async function reserve(type) {
+    await prepare(type);
+    const attempt = {token: 'fixture-' + ++token};
+    const receipt = await invoke(attempt);
+    assert.equal(receipt.noClickToken, attempt.token, 'only explicit no-click ownership produces a receipt');
+    assert.equal(await evaluate(session, 'submissions.length'), 0);
+    return attempt;
+  }
+  for (const type of ['textarea', 'contenteditable']) {
+    const attempt = await reserve(type);
+    await enableSend();
+    assert.equal(await invoke({...attempt, retry: true}), 'click-attempted');
+    assert.deepEqual(await evaluate(session, 'submissions'), ['Process your mailbox']);
+    assert.equal(await evaluate(session, 'insertions'), 1, 'retry never reinserts text');
+    assert.match(await invoke({...attempt, retry: true}), /retry-exhausted/);
+    assert.equal(await evaluate(session, 'submissions.length'), 1, 'consumed token cannot click twice');
+  }
+  for (const change of [
+    `currentEditor().value='edited';currentEditor().dispatchEvent(new InputEvent('input',{bubbles:true}));currentEditor().value='Process your mailbox'`,
+    `currentEditor().outerHTML='<textarea id="prompt-textarea">Process your mailbox</textarea>'`,
+    `document.querySelector('form').dispatchEvent(new Event('submit',{bubbles:true}))`,
+    `send.click()`,
+    `document.querySelector('form').insertAdjacentHTML('beforeend','<button data-testid="remove-file-button"></button>')`,
+    `send.dataset.testid='stop-button'`
+  ]) {
+    const attempt = await reserve('textarea');
+    await enableSend();
+    await evaluate(session, change);
+    const before = await evaluate(session, 'submissions.length');
+    const result = await invoke({...attempt, retry: true});
+    assert.ok(result === 'busy' || result.startsWith('retry-exhausted'), result);
+    assert.equal(await evaluate(session, 'submissions.length'), before, 'edit/submit/replacement/attachment/busy never retries');
+  }
+  const edited = await reserve('contenteditable');
+  await evaluate(session, `currentEditor().textContent='edited';currentEditor().textContent='Process your mailbox'`);
+  await enableSend();
+  assert.match(await invoke({...edited, retry: true}), /retry-exhausted/, 'mutation edit/revert revokes ownership');
+  await prepare();
+  await evaluate(session, `currentEditor().value='Process your mailbox'`);
+  await enableSend();
+  assert.match(await invoke({token: 'never-owned', retry: true}), /retry-exhausted/);
+  await prepare(); await enableSend();
+  await evaluate(session, `send.onclick=()=>submissions.push(text())`);
+  const clicked = {token: 'clicked-with-retained-text'};
+  assert.equal(await invoke(clicked), 'click-attempted');
+  assert.equal(await evaluate(session, 'text()'), 'Process your mailbox');
+  assert.match(await invoke({...clicked, retry: true}), /retry-exhausted/, 'matching retained text after click is not no-send evidence');
+  assert.equal(await evaluate(session, 'submissions.length'), 1);
+  const unavailable = await reserve('textarea');
+  assert.match(await invoke({...unavailable, retry: true}), /retry-exhausted/);
+  await enableSend();
+  assert.match(await invoke({...unavailable, retry: true}), /retry-exhausted/);
+  assert.equal(await evaluate(session, 'submissions.length'), 0);
+  console.log('PASS owned no-click one retry without reinsertion; edit/revert, submitted, prior click with retained text, missing witness/control, replacement and attachments remain fenced.');
   console.log('PASS isolated MV3 composer: delayed voice-to-send, draft/busy, no-ID editor, ambiguity, textarea, exact URL and retained unsent draft. Real ChatGPT/background operation: NOT_RUN.');
 } catch (error) {
   console.error(error);
