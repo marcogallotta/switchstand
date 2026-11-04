@@ -31,7 +31,13 @@ def current_section(notes):
     return notes[heading.start():end].rstrip()
 
 def render(notes, agents_bytes):
-    output = '\n\n'.join(notes).encode('utf-8')
+    labels = ('Situation (FULL)', 'Priorities focus-now (FULL)',
+              'Coordinator notes CURRENT section (FULL)')
+    output = ('THREE FULL RESTORED STARTUP NOTES\n'
+              'All three required startup reads are restored below in one message. '
+              'Use these notes; they are not missing because they share a message.\n\n'
+              + '\n\n'.join(f'## RESTORED NOTE {index}: {label}\n{note}'
+                  for index, (label, note) in enumerate(zip(labels, notes), 1))).encode('utf-8')
     if agents_bytes + len(output) > 15360:
         return ('RECOVERY READ OVER 15 KB: tell Marco now; read the three items manually\n'
                 + '\n'.join(IDS)).encode('utf-8')
