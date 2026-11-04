@@ -5,7 +5,7 @@ from chatgpt_fixture import ACTIVE, PRINCIPAL, REFERENCE, Handles, MemoryGrants,
 
 from switchstand.core import ProviderRelation, UnknownEffect
 from switchstand.grants import ProtectedRelation, RelationPatch
-from switchstand.relations import RelationGateway
+from switchstand.tracker.provider_relations import RelationGateway
 
 
 class RelationProvider(Provider):

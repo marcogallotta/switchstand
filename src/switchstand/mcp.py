@@ -31,7 +31,6 @@ from .contracts import (
     WorkSearchItem,
 )
 from .core import Controller
-from .effects import CanonicalAppendGateway
 from .grant_state import GrantState
 from .grants import (
     CodeReconciliation,
@@ -78,6 +77,7 @@ from .task_runs import (
     TaskRunState,
     task_request_operation_id,
 )
+from .tracker.appends import CanonicalAppendGateway
 from .work_events import WorkEventRepository
 
 TechnicalResolver = Callable[..., Awaitable[ac.TechnicalBasis | None]]
