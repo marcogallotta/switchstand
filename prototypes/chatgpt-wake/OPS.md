@@ -8,7 +8,8 @@ The Chrome extension polls manually paired chats every 30 seconds. The local
 `chatgpt-wake.service` listens only on `127.0.0.1:18766`, observes mailbox IDs
 through a read-only database engine, and sends qualified incident/recovery alerts
 through the existing admitted `ChatGPT Wake Reporter` to `browser extension`.
-It never reads/copies draft text or automatically creates, renames or reopens chats.
+It checks draft presence locally; existing draft contents are never copied or
+transmitted. It never automatically creates, renames or reopens chats.
 
 ## Check, start, stop and logs
 
