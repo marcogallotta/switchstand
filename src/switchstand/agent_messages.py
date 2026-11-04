@@ -169,6 +169,7 @@ async def replay_agent_request(
 async def send_agent_request(
     mailboxes: AgentMailboxState, state: MessageState, sender: AgentMailbox,
     recipient_name: str, message_id: UUID, payload: JsonValue,
+    *, expected_recipient: tuple[UUID, int] | None = None,
 ) -> MessageSubmitResult | AgentMessageSubmitResult:
     """Shared named-send owner. Caller MUST derive sender from its admitted actor context."""
     recipient = await mailboxes.by_name(recipient_name)
@@ -183,6 +184,10 @@ async def send_agent_request(
     ), agent_binding=sender)
     if replay is not None:
         return replay
+    if expected_recipient is not None and (
+        recipient.mailbox.endpoint_id, recipient.mailbox.generation
+    ) != expected_recipient:
+        return AgentMessageSubmitResult(status="stale", reason="recipient_binding_changed")
     if canonical_payload_chars(payload) > AGENT_MESSAGE_PAYLOAD_LIMIT:
         return AgentMessageSubmitResult(status="denied", reason="payload_too_large", next_action=(
             "Keep this mailbox notification within 800 canonical JSON characters; "

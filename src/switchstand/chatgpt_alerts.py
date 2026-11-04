@@ -195,7 +195,8 @@ class HostReporter:
                 if not await self.check_recipient():
                     return {"status": "stale", "reason": "recipient_binding_changed"}
                 result = await send_agent_request(self.mailboxes, self.messages, sender,
-                    self.recipient, report.message_id(), payload)
+                    self.recipient, report.message_id(), payload,
+                    expected_recipient=(RECIPIENT_ENDPOINT, RECIPIENT_GENERATION))
             if isinstance(result, MessageSubmitResult) and result.status == "ok" and result.message:
                 return {"status": "queued", "message_id": str(result.message.message_id),
                         "delivery_id": str(result.message.delivery_id)}

@@ -89,6 +89,30 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
     async with engine.begin() as connection:
         await connection.execute(update(agent_mailboxes).where(
             agent_mailboxes.c.endpoint_id == RECIPIENT_ENDPOINT).values(generation=1))
+    # Change the actual send lookup after the standalone precheck. Both kinds of
+    # movement must fail before any delivery, rather than trusting the old check.
+    original_lookup = AgentMailboxState.by_name
+    for movement in ({"generation": 2}, {"endpoint_id": uuid4()}):
+        calls = 0
+
+        async def moved_lookup(self, name, movement=movement):
+            nonlocal calls
+            if name == "browser extension":
+                calls += 1
+                if calls == 2:
+                    async with engine.begin() as connection:
+                        await connection.execute(update(agent_mailboxes).where(
+                            agent_mailboxes.c.name_key == "browser-extension").values(**movement))
+            return await original_lookup(self, name)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(AgentMailboxState, "by_name", moved_lookup)
+            assert (await reporter.send(evidence))["reason"] == "recipient_binding_changed"
+        async with engine.begin() as connection:
+            assert len((await connection.execute(select(message_deliveries))).all()) == 1
+            await connection.execute(update(agent_mailboxes).where(
+                agent_mailboxes.c.name_key == "browser-extension").values(
+                    endpoint_id=RECIPIENT_ENDPOINT, generation=1))
     receipt = await reporter.send(evidence)  # Simulate its response being lost to the extension.
     assert receipt["status"] == "queued"
     async with engine.connect() as connection:
