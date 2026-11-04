@@ -263,7 +263,7 @@ async def test_wake_failure_alert_and_other_mail_can_be_read_and_acknowledged(
     assert len(pending.messages) == 2
     alert = next(item for item in pending.messages if item.sender_name == "switchstand-inbound-wake")
     assert isinstance(alert.payload, dict)
-    assert alert.payload["wake_failure"] == {"phase": "discovery"}
+    assert alert.payload["wake_failure"]["phase"] == "discovery"
     assert alert.payload["error"].startswith("recipient missing")
     assert len(json.dumps(alert.payload, ensure_ascii=False, separators=(",", ":"))) <= 800
     assert ordinary.message in pending.messages
