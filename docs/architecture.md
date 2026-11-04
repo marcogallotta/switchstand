@@ -13,7 +13,7 @@ The ordinary authenticated flow is:
    the canonical ordinary tools produced by `chatgpt_mcp.py::build_ordinary_tools`.
 2. `chatgpt.py::ChatGPTService` resolves caller admission and routes ordinary work operations to
    the canonical PostgreSQL owners.
-3. `canonical_work_runtime.py`, `effects.py::CanonicalAppendGateway`, and the canonical event and
+3. `canonical_work_runtime.py`, `tracker/appends.py::CanonicalAppendGateway`, and the canonical event and
    relation repositories validate currentness and apply work mutations.
 4. `grant_state.py` journals each protected mutation in the same transaction as canonical state.
 
@@ -628,7 +628,7 @@ transition. A new session or caller must not silently continue a RECEIVED delive
 
 ## Protected effects and UNKNOWN
 
-The canonical runtime and `effects.py::CanonicalAppendGateway` own ordinary PostgreSQL work
+The canonical runtime and `tracker/appends.py::CanonicalAppendGateway` own ordinary PostgreSQL work
 mutations. A parented create normally inherits its parent's exact canonical root. The exact
 imported `START HERE` `1218327002478382` rootless `Context` is a navigation-only placement
 boundary for the documented direct-assignment `Task` shape: each such child remains parented
@@ -636,10 +636,10 @@ there but starts its own exact canonical root. Other parents and child shapes fa
 The following legacy gateways remain only for managed/source compatibility and the
 frozen-cutover disposition of provider-era effects; they are not ordinary PostgreSQL write owners:
 
-- `effects.py::AppendGateway` owns append intent, send, and exact story/task readback;
-- `creates.py::CreateGateway` owns creation and binding of the resulting provider work;
-- `updates.py::UpdateGateway` owns scalar work updates;
-- `relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
+- `tracker/appends.py::AppendGateway` owns append intent, send, and exact story/task readback;
+- `tracker/creates.py::CreateGateway` owns creation and binding of the resulting provider work;
+- `tracker/updates.py::UpdateGateway` owns scalar work updates;
+- `tracker/provider_relations.py::RelationGateway` owns dependency, hierarchy, assignment, and placement changes;
 - `provider.py::AsanaProvider` owns how each operation is expressed and verified in Asana.
 
 Asana provider reads retry only bounded transient transport, throttling, and server failures. They
@@ -909,7 +909,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation, bounded digest-validated failure/activation reads, and source coverage; no external inference, mutation, or process control |
-| Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
+| Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `tracker/provider_relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `mailbox/messages.py` | managed and ordinary adapters; `mailbox/agent_mailboxes.py` for name/principal/generation binding changes |
 | Change managed launch or runtime behavior | `launch.py`, `codex_runtime.py`, `run.py` | `candidate.py`, `launch_source.py`, development lifecycle, and launch/runtime tests according to the boundary touched |

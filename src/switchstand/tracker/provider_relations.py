@@ -5,7 +5,7 @@ import json
 from typing import Protocol, cast
 from uuid import UUID
 
-from .core import (
+from ..core import (
     Provider,
     ProviderError,
     ProviderRelation,
@@ -13,8 +13,8 @@ from .core import (
     UnknownEffect,
     provider_rejection_reason,
 )
-from .grant_state import EffectRecord, GrantState
-from .grants import (
+from ..grant_state import EffectRecord, GrantState
+from ..grants import (
     GuardOutcome,
     PrincipalContext,
     ProtectedRelation,

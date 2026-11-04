@@ -2,8 +2,8 @@ import hashlib
 import json
 from uuid import UUID
 
-from .contracts import WorkPatch
-from .core import (
+from ..contracts import WorkPatch
+from ..core import (
     Provider,
     ProviderError,
     ProviderWork,
@@ -12,8 +12,8 @@ from .core import (
     apply_scalar,
     provider_rejection_reason,
 )
-from .grant_state import EffectRecord, GrantState
-from .grants import (
+from ..grant_state import EffectRecord, GrantState
+from ..grants import (
     GuardOutcome,
     PrincipalContext,
     ProtectedUpdate,
