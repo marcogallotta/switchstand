@@ -16,7 +16,6 @@ from switchstand.canonical_work import (
     canonical_work,
 )
 from switchstand.contracts import LaunchAuthority
-from switchstand.effects import CanonicalAppendGateway
 from switchstand.grant_state import GrantState, effect_intents, work_grants
 from switchstand.grants import (
     EffectReceipt,
@@ -27,6 +26,7 @@ from switchstand.grants import (
 )
 from switchstand.mcp import build_server
 from switchstand.state import metadata
+from switchstand.tracker.appends import CanonicalAppendGateway
 from switchstand.work_events import WorkEventRepository, work_events
 
 

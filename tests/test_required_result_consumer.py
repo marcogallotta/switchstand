@@ -23,7 +23,7 @@ from switchstand.lifecycle import (
     RequiredResultPersistence,
 )
 from switchstand.state import PostgresState, metadata
-from switchstand.updates import UpdateGateway
+from switchstand.tracker.updates import UpdateGateway
 
 
 @pytest.fixture
