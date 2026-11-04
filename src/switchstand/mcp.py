@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from . import activation_continuity as ac
 from .activation_continuity_store import ActivationContinuity
-from .canonical_work_runtime import CanonicalWorkRuntime
 from .contracts import (
     AppendResult,
     ClosedModel,
@@ -78,6 +77,7 @@ from .tracker.appends import CanonicalAppendGateway
 from .tracker.event_reads import CanonicalEventReader
 from .tracker.events import WorkEventRepository
 from .tracker.relations import CanonicalRelationsRepository
+from .tracker.runtime import CanonicalWorkRuntime
 from .tracker.work import CanonicalWorkRepository
 
 TechnicalResolver = Callable[..., Awaitable[ac.TechnicalBasis | None]]
