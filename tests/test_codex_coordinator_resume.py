@@ -38,4 +38,9 @@ async def test_exact_resume_without_turn_or_new_thread(tmp_path, reject):
         else:
             await module.resume(socket, identity)
     assert [p["method"] for p in requests] == ["initialize", "initialized", "thread/resume"]
-    assert requests[-1]["params"] == {"threadId": identity, "excludeTurns": True}
+    params = requests[-1]["params"]
+    assert params["threadId"] == identity and params["excludeTurns"] is True
+    assert params["cwd"] == "/home/marco/switchstand-recovery/coordinator"
+    assert params["sandbox"] == "workspace-write"
+    assert params["config"]["sandbox_workspace_write"]["writable_roots"] == [
+        "/home/marco/switchstand/.git", "/home/marco/.local/state/switchstand/worktrees"]

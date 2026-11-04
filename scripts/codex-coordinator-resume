@@ -35,11 +35,20 @@ async def resume(socket: str, thread_id: str) -> None:
             "capabilities": {"experimentalApi": True},
         })
         await connection.send(json.dumps({"method": "initialized", "params": {}}))
-        result = await call(2, "thread/resume", {"threadId": thread_id, "excludeTurns": True})
+        result = await call(2, "thread/resume", {
+            "threadId": thread_id, "excludeTurns": True,
+            "cwd": "/home/marco/switchstand-recovery/coordinator",
+            "sandbox": "workspace-write",
+            "config": {"sandbox_workspace_write": {"writable_roots": [
+                "/home/marco/switchstand/.git",
+                "/home/marco/.local/state/switchstand/worktrees",
+            ]}},
+        })
         thread = result["thread"]
         if thread["id"] != thread_id:
             raise RuntimeError("daemon resumed a different thread")
-        print(json.dumps({"thread_id": thread_id, "status": thread["status"], "resumed": True}))
+        print(json.dumps({"thread_id": thread_id, "status": thread["status"], "resumed": True,
+                          "cwd": thread.get("cwd"), "sandbox": result.get("sandbox")}))
     finally:
         await connection.close()
 
