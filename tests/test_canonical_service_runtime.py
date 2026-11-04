@@ -11,8 +11,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
-from switchstand import chatgpt_edge
-from switchstand.tracker import runtime as canonical_work_runtime
+from switchstand import canonical_work_runtime, chatgpt_edge
 from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxState
 from switchstand.canonical_event_reads import CanonicalEventReader
 from switchstand.canonical_relations import (
