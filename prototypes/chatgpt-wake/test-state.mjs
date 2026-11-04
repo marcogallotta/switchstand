@@ -8,7 +8,7 @@ const observations = new Map(['A', 'B'].map((name, index) => [name,
   {status: 'ok', name, endpoint: id(index + 1), generation: 1, delivery_ids: []}]));
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
 const attempts = [], reports = [], readOnlyChecks = [];
-let clock = Date.now(), alertMode = false;
+let clock = Date.now(), alertMode = false, diagnosticFailure = false, diagnosticWait, releaseDiagnostic, context;
 class ClockDate extends Date {
   constructor(value = clock) { super(value); }
   static now() { return clock; }
@@ -26,18 +26,20 @@ function load() {
       const observeOnly = options.args[1] === true;
       (observeOnly ? readOnlyChecks : attempts).push(options.target.tabId);
       if (outcome === 'throw') throw Error('interrupted');
-      return [{result: observeOnly && outcome === 'click-attempted' ? 'idle' : outcome}];
+      const value = observeOnly && outcome === 'click-attempted' ? 'idle' : outcome;
+      return [{result: options.args[2] ? {outcome: value, facts: {editorFound: true}} : value}];
     }},
     alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
   };
-  runInNewContext(code, {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
+  context = {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
     if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only', escalation: 'configured', recipient: 'ChatGPT Wake Setup 2026-11-04'})};
-    if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); if (alertMode === 'expired' && report.incident) { alertMode = true; return {ok: true, json: async () => ({status: 'logged', alert: {status: 'denied', reason: 'observation_expired'}})}; } return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
+    if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); if (report.diagnostics && diagnosticFailure) throw Error('offline'); if (report.diagnostics && diagnosticWait) await new Promise(resolve => { releaseDiagnostic = resolve; }); if (alertMode === 'expired' && report.incident) { alertMode = true; return {ok: true, json: async () => ({status: 'logged', alert: {status: 'denied', reason: 'observation_expired'}})}; } return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
     const name = new URL(url).searchParams.get('name');
     if (name === blockName) await new Promise(resolve => { releasePoll = resolve; });
     const observed = observations.get(name);
     return {ok: Boolean(observed), status: observed ? 200 : 403, json: async () => structuredClone(observed)};
-  }});
+  }};
+  runInNewContext(code, context);
 }
 function message(value) { return new Promise(resolve => handler(value, {id: 'test'}, resolve)); }
 async function bind(name, tabId) {
@@ -313,3 +315,65 @@ assert.deepEqual(state('A').seen, [id(500), id(501)]);
 assert.deepEqual(state('C').seen, [id(502)], 'other chat unseen mail is preserved');
 assert.equal(state('C').status, 'wrong-conversation');
 console.log('PASS three pairings, reused tab, retained binding/dedupe state, duplicate URL refusal and exact-chat isolation');
+
+// Persisted real-world failure states are distinct from a clean fixture binding.
+saved = {}; attempts.length = 0; reports.length = 0; alertMode = false;
+tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+Object.assign(observations.get('A'), {generation: 1, delivery_ids: []});
+load(); await bind('A', 1);
+observations.get('A').delivery_ids = [id(501)]; outcome = 'throw';
+diagnosticFailure = true;
+await message({type: 'check'});
+const failedAttempt = structuredClone(state('A').diagnostic);
+const failureStatus = state('A').status;
+assert.equal(failedAttempt.reason, 'execution-failed');
+assert.equal(state('A').diagnosticAck.identity, null, 'failed diagnostic POST is not acknowledged');
+assert.equal(state('A').diagnosticAck.failure, 'report-unavailable');
+const beforeDiagnosticRestart = attempts.length;
+load(); diagnosticFailure = false;
+await message({type: 'check'});
+assert.equal(attempts.length, beforeDiagnosticRestart, 'logging never retries unresolved DOM work');
+assert.equal(state('A').status, failureStatus, 'first detailed error survives HALTED Check and worker restart');
+assert.deepEqual(state('A').diagnostic, failedAttempt);
+assert.ok(state('A').diagnosticAck, 'same retained receipt logged on next ordinary Check');
+assert.equal(reports.filter(item => item.diagnostics?.attempt?.id === failedAttempt.id).length, 2);
+assert.match((await bind('A', 1)).error, /unresolved/);
+assert.equal(state('A').pairDiagnostic.result, 'refused');
+assert.equal(state('A').pairDiagnostic.reason, 'unresolved-attempt');
+assert.deepEqual(state('A').diagnostic, failedAttempt, 'Pair refusal preserves original attempt');
+state('A').halted = false; // Controlled precondition only, not a supported product recovery.
+observations.get('A').delivery_ids = [];
+await bind('A', 1);
+assert.equal(state('A').pairDiagnostic.result, 'accepted');
+assert.deepEqual(state('A').diagnostic, failedAttempt, 'Pair acceptance preserves original attempt');
+// An unfinished pre-dispatch record never implies that DOM insertion/click occurred.
+state('A').halted = true;
+Object.assign(state('A').diagnostic, {finished: null, outcome: null, reason: 'dispatch-start', facts: {}});
+state('A').incident = {state: 'queued', evidence: {incident_id: id(502)}};
+load(); reports.length = 0;
+await message({type: 'check'});
+const interrupted = reports.find(item => item.diagnostics).diagnostics;
+assert.notEqual(interrupted.boot, interrupted.attempt.boot);
+assert.equal(interrupted.attempt.finished, null);
+assert.deepEqual(interrupted.attempt.facts, {});
+assert.equal(reports.filter(item => item.incident).length, 0, 'diagnostics independent of inherited alert');
+assert.equal(interrupted.attempt.reason, 'dispatch-start', 'unfinished means no durable result; DOM stage unknown');
+delete state('A').diagnostic; delete state('A').diagnosticAck;
+load(); reports.length = 0;
+await message({type: 'check'});
+const legacy = reports.find(item => item.diagnostics).diagnostics;
+assert.equal(legacy.legacy_halt, true);
+assert.equal(legacy.attempt, null, 'legacy HALT does not acquire an invented attempt/cause');
+assert.ok(legacy.release && legacy.boot, 'executing diagnostic code identity available for legacy HALT');
+// A delayed older host acknowledgement cannot mark a later Pair result as reported.
+const binding = state('A');
+diagnosticWait = true; releaseDiagnostic = undefined;
+binding.pairDiagnostic.id = id(503);
+const flush = context.diagnosticReport(binding, async () => {});
+while (!releaseDiagnostic) await new Promise(resolve => setTimeout(resolve, 0));
+binding.pairDiagnostic = {...binding.pairDiagnostic, id: id(504)};
+diagnosticWait = false; releaseDiagnostic(); await flush;
+assert.equal(JSON.parse(binding.diagnosticAck.identity).pair.id, id(503));
+await context.diagnosticReport(binding, async () => {});
+assert.equal(JSON.parse(binding.diagnosticAck.identity).pair.id, id(504));
+console.log('PASS diagnostic terminal retention/restart, outage retry, exact ack, registered Pair accepted/refused, inherited incident independence, unfinished and legacy HALT distinction.');

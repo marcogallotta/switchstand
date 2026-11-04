@@ -95,3 +95,17 @@ Never run two backends on18766 or change the reporter manifest/grant as rollback
 The preserved older de12ecf launcher restores observation but targets the former
 parent name, so it does not prove current alert delivery. Extension rollback is
 separate and must preserve existing pairings/storage/drafts.
+
+## Diagnostic receipts (offline candidate; not installed by documentation)
+
+After separately authorized extension/backend deployment, existing service logs contain
+`browser_wake diagnostic` records. Match attempt UUID and delivery IDs; release UUID maps to
+exact artifact hashes in its activation proof. The envelope boot/release IDs describe the
+executing logger; the attempt retains its original boot/release IDs across reloads.
+A missing terminal result means only that no result was durably recorded; the DOM stage is
+UNKNOWN. `legacy_halt: true` means no attempt receipt exists, not a new attempt/interruption.
+Pair accepted/refused records preserve the attempt; they do not clear an unresolved halt.
+`clickDispatched` records click invocation, never ChatGPT acceptance or mailbox processing.
+Facts contain booleans/fixed reasons only, never drafts, URLs, labels or raw exceptions.
+The latest failed diagnostic report is retried during ordinary Check; there is no queue or
+history. A new attempt may replace an older unreported receipt. Logging does not repair HALT.

@@ -948,6 +948,11 @@ reports require that capability and loopback peer/Host; ordinary web origins get
 no CORS access. By default reports go only to existing runtime logging and
 escalation remains unconfigured. An explicitly injected `HostReporter` adds the
 fixed `browser extension` alert path; it never registers or issues a grant on startup.
+Optional typed diagnostic metadata on the same report route logs independently of alerts.
+Each binding retains only its latest attempt and Pair result, with executing release/boot IDs;
+HALTED polls preserve the original cause. A started-only receipt means no durable result,
+not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
+Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed

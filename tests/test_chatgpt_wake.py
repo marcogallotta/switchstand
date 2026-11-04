@@ -98,3 +98,55 @@ async def test_configured_reporter_without_incident_reports_actual_configuration
                 assert (await connection.execute(select(message_deliveries))).all() == before
     finally:
         await engine.dispose()
+
+
+async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    reporter = SimpleNamespace(recipient="browser extension", send=AsyncMock())
+    server = FastMCP("diagnostic-test")
+    install_browser_wake(server, None, reporter)
+    transport = httpx.ASGITransport(app=server.http_app(), client=("127.0.0.1", 1234))
+    identity, now = str(uuid4()), "2026-11-04T20:00:00Z"
+    diagnostic = {"release": identity, "boot": identity, "legacy_halt": False,
+        "attempt": {"id": identity, "boot": identity, "release": identity,
+            "endpoint": identity, "generation": 1, "delivery_ids": [identity],
+            "started": now, "finished": now, "outcome": "attempt-outcome-unknown",
+            "reason": "dom-exception", "facts": {"editorFound": True}, "exception": "TypeError"},
+        "pair": {"id": identity, "boot": identity, "release": identity, "at": now,
+            "result": "refused", "reason": "unresolved-attempt", "attempt": identity}}
+    payload = {"name": "fixture", "delivery_ids": [], "outcome": "attempt-outcome-unknown",
+               "diagnostics": diagnostic}
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        token = (await client.get(PATH + "/config")).json()["report_token"]
+        headers = {"Authorization": "Bearer " + token}
+        receipt = await client.post(PATH + "/report", json=payload, headers=headers)
+        assert receipt.json() == {"status": "logged"}
+        assert "dom-exception" in caplog.text and "TypeError" in caplog.text
+        legacy = {**diagnostic, "legacy_halt": True, "attempt": None, "pair": None}
+        assert (await client.post(PATH + "/report", json={**payload, "diagnostics": legacy},
+                                  headers=headers)).json() == {"status": "logged"}
+        assert (await client.post(PATH + "/report", json={**payload, "delivery_ids": [identity]},
+                                  headers=headers)).status_code == 400
+        incident = {"incident_id": identity, "phase": "blocked", "name": "fixture",
+            "endpoint": identity, "generation": 1, "delivery_ids": [identity],
+            "reason": "bound-tab-missing", "started_at": now, "observed_at": now}
+        assert (await client.post(PATH + "/report", json={**payload, "incident": incident},
+                                  headers=headers)).status_code == 400
+        for field, value in [("editorFound", "private draft sentinel"), ("draftText", "private draft sentinel")]:
+            invalid = deepcopy(payload)
+            invalid["diagnostics"]["attempt"]["facts"][field] = value
+            assert (await client.post(PATH + "/report", json=invalid, headers=headers)).status_code == 400
+        for field, value in [("outcome", "private draft sentinel"), ("reason", "private draft sentinel"),
+                             ("exception", "private draft sentinel"), ("delivery_ids", [identity] * 51)]:
+            invalid = deepcopy(payload)
+            invalid["diagnostics"]["attempt"][field] = value
+            assert (await client.post(PATH + "/report", json=invalid, headers=headers)).status_code == 400
+        assert "private draft sentinel" not in caplog.text and token not in caplog.text
+        reporter.send.assert_not_awaited()
+        # The preexisting HTTP payload still works, without diagnostics/schema migration.
+        ordinary = {"name": "fixture", "delivery_ids": [], "outcome": "draft-present"}
+        assert (await client.post(PATH + "/report", json=ordinary, headers=headers)).json() == {
+            "status": "logged", "escalation": "configured"}

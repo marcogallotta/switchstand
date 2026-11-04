@@ -3,11 +3,11 @@
 import ipaddress
 import logging
 import secrets
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, StrictBool
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
@@ -25,12 +25,65 @@ OUTCOMES = frozenset({
 })
 
 
+class _DiagnosticModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class _Facts(_DiagnosticModel):
+    urlMatched: StrictBool | None = None
+    editorFound: StrictBool | None = None
+    busy: StrictBool | None = None
+    draftPresent: StrictBool | None = None
+    inserted: StrictBool | None = None
+    controlPresent: StrictBool | None = None
+    controlEnabled: StrictBool | None = None
+    clickDispatched: StrictBool | None = None
+
+
+class _Attempt(_DiagnosticModel):
+    id: UUID
+    boot: UUID
+    release: UUID
+    endpoint: UUID
+    generation: Annotated[int, Field(strict=True, ge=1)]
+    delivery_ids: Annotated[list[UUID], Field(max_length=50)]
+    started: AwareDatetime
+    finished: AwareDatetime | None
+    outcome: Annotated[str, Field(max_length=40)] | None
+    reason: Literal["dispatch-start", "result", "dom-exception", "execution-failed",
+                    "missing-result", "stopped-before-dispatch"]
+    facts: _Facts
+    exception: Literal["Error", "TypeError", "ReferenceError", "DOMException", "Other"] | None = None
+
+
+class _Pair(_DiagnosticModel):
+    id: UUID
+    boot: UUID
+    release: UUID
+    at: AwareDatetime
+    result: Literal["accepted", "refused"]
+    reason: Literal["accepted", "invalid-url", "invalid-tab", "tab-unavailable", "tab-moved",
+                    "mailbox-unavailable", "identity-changed", "conversation-already-bound",
+                    "unresolved-attempt", "generation-changed"]
+    attempt: UUID | None
+
+
+class _Diagnostics(_DiagnosticModel):
+    release: UUID
+    boot: UUID
+    legacy_halt: StrictBool
+    report_failure: Literal["report-unavailable"] | None = None
+    attempt: _Attempt | None
+    pair: _Pair | None
+
+
 class _Report(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: Annotated[str, Field(strict=True, min_length=1, max_length=80)]
     delivery_ids: Annotated[list[UUID], Field(max_length=50)]
     outcome: str
     incident: AlertReport | None = None
+    diagnostics: _Diagnostics | None = None
 
 
 def _local(request: Request) -> bool:
@@ -100,8 +153,19 @@ def install_browser_wake(
             if any(ord(char) < 32 for char in name) or outcome not in OUTCOMES:
                 raise ValueError("invalid report")
             references = [str(identity) for identity in payload.delivery_ids]
+            if payload.diagnostics is not None:
+                if payload.incident is not None or references:
+                    raise ValueError("diagnostics cannot carry incident or mail references")
+                attempt = payload.diagnostics.attempt
+                if attempt and attempt.outcome is not None and attempt.outcome not in OUTCOMES:
+                    raise ValueError("invalid diagnostic outcome")
         except (ValueError, TypeError, KeyError):
             return JSONResponse({"status": "invalid_report"}, status_code=400)
+        if payload.diagnostics is not None:
+            # Metadata only. Never invoke the alert reporter for a diagnostic receipt.
+            LOG.warning("browser_wake diagnostic name=%s receipt=%s", name,
+                        payload.diagnostics.model_dump_json(exclude_none=True))
+            return JSONResponse({"status": "logged"})
         LOG.warning("browser_wake name=%s outcome=%s delivery_ids=%s escalation=%s",
                     name, outcome, references, "configured" if reporter else "unconfigured")
         if reporter is not None and payload.incident is not None:
