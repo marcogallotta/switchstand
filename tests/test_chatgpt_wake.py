@@ -144,6 +144,19 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
             invalid = deepcopy(payload)
             invalid["diagnostics"]["attempt"][field] = value
             assert (await client.post(PATH + "/report", json=invalid, headers=headers)).status_code == 400
+        maximum = deepcopy(payload)
+        maximum["name"] = "x" * 80
+        maximum["diagnostics"]["report_failure"] = "report-unavailable"
+        maximum["diagnostics"]["attempt"]["delivery_ids"] = [str(uuid4()) for _ in range(50)]
+        maximum["diagnostics"]["attempt"]["generation"] = 9007199254740991
+        maximum["diagnostics"]["attempt"]["exception"] = "ReferenceError"
+        maximum["diagnostics"]["attempt"]["facts"] = dict.fromkeys([
+            "urlMatched", "editorFound", "busy", "draftPresent", "inserted",
+            "controlPresent", "controlEnabled", "clickDispatched"], False)
+        maximum["diagnostics"]["pair"]["reason"] = "conversation-already-bound"
+        request = client.build_request("POST", PATH + "/report", json=maximum, headers=headers)
+        assert len(request.content) < 4096, "all 50 IDs occur only inside the attempt, not twice"
+        assert (await client.send(request)).json() == {"status": "logged"}
         assert "private draft sentinel" not in caplog.text and token not in caplog.text
         reporter.send.assert_not_awaited()
         # The preexisting HTTP payload still works, without diagnostics/schema migration.
