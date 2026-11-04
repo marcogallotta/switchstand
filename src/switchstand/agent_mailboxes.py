@@ -162,7 +162,7 @@ class AgentMailboxState:
                 prior = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.principal_key == principal_key,
                     agent_mailboxes.c.session_key == session_key,
-                ))).mappings().one_or_none()
+                ).with_for_update())).mappings().one_or_none()
                 if prior is not None:
                     prior = (await connection.execute(update(agent_mailboxes).where(
                         agent_mailboxes.c.name_key == prior["name_key"],

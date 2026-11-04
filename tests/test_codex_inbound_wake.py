@@ -38,7 +38,7 @@ def subject(tmp_path):
     return wake, rpc, binding, identity, delivery
 
 
-@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown"])
+@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown", "malformed"])
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
     if boundary == "oldnew":
@@ -63,6 +63,8 @@ async def test_dispatch_boundaries(subject, boundary):
         if method == "thread/turns/list" and boundary in {"receipt", "routed"}:
             return {"data": [{"items": [{"type": "userMessage", "content": [
             {"type": "text", "text": MARKER + json.dumps([str(delivery)])}]}]}]}
+        if method == "turn/start" and boundary == "malformed":
+            return {"turn": {"id": None}}
         if method == "turn/start" and boundary == "unknown":
             raise ConnectionError("acceptance lost")
         return await original(method, params)
@@ -73,13 +75,13 @@ async def test_dispatch_boundaries(subject, boundary):
         wake.messages.all_pending_delivery_ids.return_value = None
     if boundary == "old":
         wake.fresh.clear()
-    if boundary == "unknown":
-        with pytest.raises(RuntimeError):
+    if boundary in {"unknown", "malformed"}:
+        with pytest.raises(module.UncertainTurn):
             await wake._reconcile(rpc, binding, identity)
     else:
         await wake._reconcile(rpc, binding, identity, path="/root/head" if boundary == "routed" else None)
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
-    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown"} else 0)
+    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown", "malformed"} else 0)
     if boundary == "oldnew":
         assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(MARKER):]) == [str(delivery)]
     if boundary == "old":

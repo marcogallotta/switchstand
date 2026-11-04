@@ -538,13 +538,22 @@ messaging, and required continuation:
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
-  the historical projection table remains readable only for frozen-cutover disposition and later
+  The wake owner scans committed AVAILABLE mailbox deliveries once per second, including non-edge
+  senders, and deduplicates callback signals by delivery ID. Its startup baseline excludes old mail;
+  restart does not authorize replay. Only uncertain turn acceptance suspends a recipient; definite
+  pre-effect failures can retry on later signals. Failures log route/actor/effect evidence and mail
+  one alert to `claude-coordinator`.
+  The historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
   name to an authenticated principal and hidden chat-session hash, with an independently generated
   endpoint UUID and generation. Endpoint UUIDs are message addresses, not WorkId identity; new
   endpoints are not inserted into `work_handles`, although pre-migration handle rows can remain as
-  unreferenced legacy residue. Registration is read-or-create for that authenticated session, except
+  unreferenced legacy residue. Registration refreshes the current binding agent type (`codex`,
+  `claude`, or `chatgpt`) from the trusted runtime identity; takeover and transfer replace it with
+  the new runtime type. Legacy NULL types remain unknown until re-registration/takeover and are
+  logged and skipped by Codex wake, as are known non-Codex recipients. Registration otherwise
+  preserves or creates the authenticated session binding, except
   that the canonical `codex-coordinator` name key and temporary `root` alias are reserved: an
   unbound session cannot create either through `agent_register`. A resume returns the session's
   existing mailbox rather than renaming or taking it over. Every cross-principal `agent_takeover`,

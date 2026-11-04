@@ -465,6 +465,8 @@ class InboundWake:
                     "threadId": root, "input": [{"type": "text", "text": text}],
                 })
                 turn_id = result["turn"]["id"]
+                if not isinstance(turn_id, str) or not turn_id:
+                    raise ValueError("invalid turn acceptance identity")
             except DaemonRejected:
                 raise
             except Exception as error:

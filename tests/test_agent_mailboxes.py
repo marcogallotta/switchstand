@@ -182,3 +182,26 @@ async def test_runtime_type_tracks_registration_and_takeovers_both_directions(en
         await connection.execute(update(agent_mailboxes).values(agent_type=None))
     renewed = await endpoints.takeover("Moving", "owner", "chat-fourth")
     assert renewed.mailbox.agent_type == "chatgpt"
+
+
+async def test_old_registration_cannot_overwrite_uncommitted_takeover_type(endpoints):
+    from sqlalchemy import update
+    original = (await endpoints.register_agent("Racing", "owner", "codex:old")).mailbox
+    async with endpoints.engine.connect() as connection:
+        transaction = await connection.begin()
+        await connection.execute(update(agent_mailboxes).where(
+            agent_mailboxes.c.endpoint_id == original.endpoint_id,
+        ).values(session_key=chat_session_key("claude:new"), agent_type="claude", generation=2))
+        old_registration = asyncio.create_task(
+            endpoints.register_agent("Racing", "owner", "codex:old"))
+        for _ in range(100):
+            if await connection.scalar(text("SELECT count(*) FROM pg_locks WHERE NOT granted")):
+                break
+            await asyncio.sleep(.01)
+        else:
+            pytest.fail("registration did not reach binding lock")
+        assert not old_registration.done(), "registration must wait for binding lock"
+        await transaction.commit()
+    assert (await old_registration).status == "conflict"
+    current = (await endpoints.by_name("Racing")).mailbox
+    assert current.agent_type == "claude" and current.generation == 2
