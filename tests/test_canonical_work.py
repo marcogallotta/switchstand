@@ -144,3 +144,29 @@ async def test_search_pages_by_normalized_title_and_binds_cursor_to_criteria(
     )).items[0].work_id == first_id
     with pytest.raises(ValueError, match="invalid canonical work cursor"):
         await repository.search(owner_key="different", cursor=first_page.next_cursor)
+
+
+async def test_search_applies_every_filter_without_leaking_near_matches(
+    repository: CanonicalWorkRepository,
+) -> None:
+    wanted = CurrentWork(
+        uuid4(), "Alpha task", False, "", owner_key="agent:owner", priority="P1",
+        lifecycle_state="CURRENT", work_type="Task", canonical_root=str(uuid4()),
+    )
+    await repository.create(wanted)
+    # Each near match differs in exactly one criterion; dropping any predicate leaks it.
+    for field, value in (
+        ("title", "Other task"), ("completed", True), ("owner_key", "agent:other"),
+        ("priority", "P2"), ("lifecycle_state", "WAITING"),
+        ("work_type", "Evidence"), ("canonical_root", str(uuid4())),
+    ):
+        await repository.create(replace(wanted, work_id=uuid4(), **{field: value}))
+
+    page = await repository.search(
+        "alpha", completed=False, owner_key=wanted.owner_key, priority=wanted.priority,
+        lifecycle_state=wanted.lifecycle_state, work_type=wanted.work_type,
+        canonical_root=wanted.canonical_root,
+    )
+
+    assert [item.work_id for item in page.items] == [wanted.work_id]
+    assert page.next_cursor is None
