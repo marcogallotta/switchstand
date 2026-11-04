@@ -542,8 +542,13 @@ messaging, and required continuation:
   It runs `scripts/codex-coordinator-resume` without requiring a daemon restart on install. The helper reads the
   exact existing thread UUID from the dedicated CODEX_HOME's `background-thread-id`,
   resumes it in the recovery workspace with the two approved additional writable roots,
-  and creates neither a thread nor a turn; a TUI is optional. Durable mailbox
-  binding remains tied to that same thread. A fresh delivery may reconnect a terminated
+  and creates no replacement thread; a TUI is optional. On every start it requires
+  the actual loaded recovery instruction source, runs the restoration hook within the
+  15 KB budget, and uses one idle/admitted verification turn to elicit the loaded title
+  and restored-note labels. A dedicated pending marker blocks later submissions after
+  any unresolved verification send; only a definitive matching completion clears it.
+  Existing active work is never interrupted. Durable mailbox binding remains tied to
+  that same thread. A fresh delivery may reconnect a terminated
   observer after definite transport failure, including websocket close; a delivery racing
   observer shutdown waits for it to finish. Existing receipt, currentness, admission and
   idle checks still govern dispatch. Ambiguous `turn/start` acceptance remains terminal

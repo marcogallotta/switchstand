@@ -1,17 +1,51 @@
 #!/home/marco/switchstand/.venv/bin/python
-"""Load the exact existing Coordinator on its dedicated daemon, without a TUI."""
+"""Resume and verify the exact existing recovery Coordinator, without a TUI."""
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import os
+import subprocess
 from pathlib import Path
 from uuid import UUID
 
 from websockets.asyncio.client import unix_connect
 
+RECOVERY = Path("/home/marco/switchstand-recovery/coordinator")
+COORDINATOR_HOME = Path("/home/marco/.local/state/switchstand/codex/coordinator")
+ROOTS = {"/home/marco/switchstand/.git", "/home/marco/.local/state/switchstand/worktrees"}
+LABELS = ["Situation (FULL)", "Priorities focus-now (FULL)",
+          "Coordinator notes CURRENT section (FULL)"]
 
-async def resume(socket: str, thread_id: str) -> None:
+
+def restore_notes() -> str:
+    result = subprocess.run(
+        [str(RECOVERY / "codex-home/recovery-notes-hook")],
+        input=json.dumps({"hook_event_name": "SessionStart", "source": "compact"}),
+        text=True, capture_output=True, timeout=45, check=True,
+    )
+    notes = result.stdout
+    if (any(f"## RESTORED NOTE {index}: {label}" not in notes
+            for index, label in enumerate(LABELS, 1))
+            or (RECOVERY / "AGENTS.md").stat().st_size + len(notes.encode()) > 15360):
+        raise RuntimeError("startup recovery notes missing or over 15 KB")
+    return notes
+
+
+async def admit() -> None:
+    process = await asyncio.create_subprocess_exec(
+        "/home/marco/switchstand/scripts/agent-resource-admission", "512",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+    )
+    output, _ = await process.communicate()
+    if process.returncode:
+        raise RuntimeError("startup admission WAIT: " + output.decode().strip())
+
+
+async def resume(socket: str, thread_id: str, pending: Path) -> None:
+    if pending.exists():
+        raise RuntimeError("UNKNOWN: prior startup verification unresolved; reconcile exact thread first")
     # Only connection establishment may retry: no request has been sent yet.
     for attempt in range(50):
         try:
@@ -21,6 +55,7 @@ async def resume(socket: str, thread_id: str) -> None:
             if attempt == 49:
                 raise
             await asyncio.sleep(0.1)
+    notifications: list[dict] = []
     try:
         async def call(identity: int, method: str, params: dict) -> dict:
             await connection.send(json.dumps({"id": identity, "method": method, "params": params}))
@@ -30,34 +65,70 @@ async def resume(socket: str, thread_id: str) -> None:
                     if "error" in packet:
                         raise RuntimeError(f"{method} rejected: {packet['error']}")
                     return packet["result"]
+                notifications.append(packet)
         await call(1, "initialize", {
             "clientInfo": {"name": "switchstand-coordinator-resume", "version": "1"},
             "capabilities": {"experimentalApi": True},
         })
         await connection.send(json.dumps({"method": "initialized", "params": {}}))
         result = await call(2, "thread/resume", {
-            "threadId": thread_id, "excludeTurns": True,
-            "cwd": "/home/marco/switchstand-recovery/coordinator",
+            "threadId": thread_id, "excludeTurns": True, "cwd": str(RECOVERY),
             "sandbox": "workspace-write",
-            "config": {"sandbox_workspace_write": {"writable_roots": [
-                "/home/marco/switchstand/.git",
-                "/home/marco/.local/state/switchstand/worktrees",
-            ]}},
+            "config": {"sandbox_workspace_write": {"writable_roots": sorted(ROOTS)}},
         })
-        thread = result["thread"]
+        thread, policy = result["thread"], result.get("sandbox", {})
+        roots = policy.get("writableRoots", [])
         if thread["id"] != thread_id:
             raise RuntimeError("daemon resumed a different thread")
-        cwd = "/home/marco/switchstand-recovery/coordinator"
-        policy = result.get("sandbox", {})
-        roots = policy.get("writableRoots", [])
-        expected_roots = {"/home/marco/switchstand/.git",
-                          "/home/marco/.local/state/switchstand/worktrees"}
-        if (result.get("cwd") != cwd or policy.get("type") != "workspaceWrite"
+        if (result.get("cwd") != str(RECOVERY) or policy.get("type") != "workspaceWrite"
                 or not isinstance(roots, list) or not all(isinstance(root, str) for root in roots)
-                or set(roots) - {cwd} != expected_roots):
+                or set(roots) - {str(RECOVERY)} != ROOTS):
             raise RuntimeError("resumed Coordinator workspace/sandbox readback mismatch")
-        print(json.dumps({"thread_id": thread_id, "status": thread["status"], "resumed": True,
-                          "cwd": result["cwd"], "sandbox": policy}))
+        if not any(Path(source).resolve() == (RECOVERY / "AGENTS.md").resolve()
+                   for source in result.get("instructionSources", [])):
+            raise RuntimeError("recovery AGENTS is not a loaded instruction source")
+        if thread["status"]["type"] != "idle":
+            raise RuntimeError("WAIT: existing Coordinator is busy; never interrupt it")
+        notes = restore_notes()
+        await admit()
+        current = (await call(3, "thread/read", {"threadId": thread_id, "includeTurns": False}))["thread"]
+        if current["status"]["type"] != "idle":
+            raise RuntimeError("WAIT: Coordinator became busy; no verification submitted")
+        # This fence survives daemon/helper death and blocks all later submissions
+        # until an operator reconciles the exact thread. Never replay uncertainty.
+        with pending.open("x") as record:
+            record.write(thread_id + "\n")
+            record.flush()
+            os.fsync(record.fileno())
+        started = await call(4, "turn/start", {"threadId": thread_id, "input": [{
+            "type": "text", "text": notes + "\n\nStartup verification only. Do not use tools, "
+            "mail, subagents or perform business work. Reply ONLY with a JSON object: "
+            "agents_title = the exact first heading of your governing loaded AGENTS.md "
+            "without its # prefix; restored_notes = the three RESTORED NOTE labels above "
+            "without the numbered prefixes. This checks actual restored startup context.",
+        }]})
+        turn_id, receipt = started["turn"]["id"], None
+        async with asyncio.timeout(90):
+            while True:
+                packet = notifications.pop(0) if notifications else json.loads(await connection.recv())
+                params = packet.get("params", {})
+                if params.get("threadId") != thread_id or params.get("turnId", turn_id) != turn_id:
+                    continue
+                if packet.get("method") in {"item/started", "item/completed"}:
+                    item = params["item"]
+                    if item["type"] not in {"agentMessage", "reasoning", "userMessage"}:
+                        raise RuntimeError("startup verification used an unexpected tool; unresolved")
+                    if packet["method"] == "item/completed" and item["type"] == "agentMessage":
+                        receipt = json.loads(item["text"])
+                if packet.get("method") == "turn/completed" and params["turn"]["id"] == turn_id:
+                    if params["turn"]["status"] != "completed":
+                        raise RuntimeError("startup verification did not complete")
+                    break
+        if receipt != {"agents_title": "Recovery Coordinator", "restored_notes": LABELS}:
+            raise RuntimeError("startup loaded-context receipt mismatch; unresolved")
+        pending.unlink()
+        print(json.dumps({"thread_id": thread_id, "turn_id": turn_id, "verified": True,
+                          "cwd": result["cwd"], "sandbox": policy, "receipt": receipt}))
     finally:
         await connection.close()
 
@@ -65,12 +136,13 @@ async def resume(socket: str, thread_id: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", default="/run/user/1000/switchstand-codex.sock")
-    parser.add_argument("--thread-file", type=Path, default=Path(
-        "/home/marco/.local/state/switchstand/codex/coordinator/background-thread-id"))
+    parser.add_argument("--thread-file", type=Path, default=COORDINATOR_HOME / "background-thread-id")
     args = parser.parse_args()
+    if os.environ.get("CODEX_HOME") != str(COORDINATOR_HOME):
+        raise RuntimeError("dedicated Coordinator CODEX_HOME required")
     thread_id = args.thread_file.read_text().strip()
-    UUID(thread_id)  # Refuse missing/invalid identity; never create a replacement thread.
-    asyncio.run(resume(args.socket, thread_id))
+    UUID(thread_id)
+    asyncio.run(resume(args.socket, thread_id, args.thread_file.with_name("background-startup-pending")))
 
 
 if __name__ == "__main__":

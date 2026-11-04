@@ -6,9 +6,10 @@ PartOf=switchstand-codex.service
 
 [Service]
 Type=oneshot
+Environment=CODEX_HOME=/home/marco/.local/state/switchstand/codex/coordinator
 ExecStart=/home/marco/switchstand/scripts/codex-coordinator-resume
 RemainAfterExit=yes
-TimeoutStartSec=90
+TimeoutStartSec=240
 
 [Install]
 WantedBy=default.target switchstand-codex.service
