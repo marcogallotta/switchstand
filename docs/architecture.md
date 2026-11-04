@@ -15,7 +15,11 @@ The ordinary authenticated flow is:
    the canonical PostgreSQL owners.
 3. `canonical_work_runtime.py`, `effects.py::CanonicalAppendGateway`, and the canonical event and
    relation repositories validate currentness and apply work mutations.
-4. `grant_state.py` journals each protected mutation in the same transaction as canonical state.
+4. Each canonical mutation owner records its outcome in `grant_state.py::effect_intents`
+   in the same transaction as canonical state.
+
+For the Tracker owner map, transaction/retry boundaries and focused test routes, see
+[Tracker implementation](tracker.md).
 
 `contracts.py` owns shared closed request/result models. `core.py::Controller` is the bounded work
 read/source controller used by managed launches and by the exact-source compatibility methods; it
@@ -340,12 +344,12 @@ messaging, and required continuation:
   exact-principal launch grant. It never derives or rotates authority from provider content and is
   disabled by an authenticated migration-complete receipt.
 
-- `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, and `work_events.py` own the explicit, inert
-  compact zero-Asana schema definitions and repositories for current rows, stable title/completion
+- `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, and `work_events.py` own the explicit
+  compact canonical PostgreSQL schema definitions and repositories for current rows, stable title/completion
   search pages, legacy task aliases,
   dependencies, parents, simple project placements, and event history. `canonical_event_reads.py`
-  projects DB event storage through the existing public history/event contracts without runtime
-  wiring. `canonical_work_runtime.py` projects canonical current rows and relations through the
+  projects DB event storage through the existing public history/event contracts. The ordinary
+  edge and managed MCP constructors wire these canonical owners directly. `canonical_work_runtime.py` projects canonical current rows and relations through the
   existing get, search, create, scalar-update, parent, and dependency contracts. Protected creates
   atomically persist the row, requested parent or project placement, and effect receipt; protected
   parent/dependency changes and canonical project-membership add/remove atomically persist the
@@ -906,7 +910,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change inert edge-monitor classification | `edge_monitor.py` | `wakeful-edge-monitor.md`; do not add host activation or agent dispatch here |
 | Change inert edge-monitor host qualification | `edge_monitor_host.py` | `wakeful-edge-monitor.md`; keep scheduling and delivery outside it |
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
-| Change the inert compact zero-Asana work/relations/event model | `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, default-off service wiring, and protected create/update/relation atomicity |
+| Change canonical Tracker work/relations/event behavior | `canonical_work.py`, `canonical_relations.py`, `priority_claims.py`, `work_events.py`, `canonical_event_reads.py`, `canonical_work_runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, ordinary/managed wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
 | Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation, bounded digest-validated failure/activation reads, and source coverage; no external inference, mutation, or process control |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
