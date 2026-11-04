@@ -27,7 +27,7 @@ function load() {
   };
   runInNewContext(code, {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
     if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only'})};
-    if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
+    if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); if (alertMode === 'expired' && report.incident) { alertMode = true; return {ok: true, json: async () => ({status: 'logged', alert: {status: 'denied', reason: 'observation_expired'}})}; } return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
     const name = new URL(url).searchParams.get('name');
     if (name === blockName) await new Promise(resolve => { releasePoll = resolve; });
     const observed = observations.get(name);
@@ -175,3 +175,38 @@ const alertsBeforeStop = reports.filter(item => item.incident).length;
 await message({type: 'disarm'}); await message({type: 'check'});
 assert.equal(reports.filter(item => item.incident).length, alertsBeforeStop, 'STOP does not alert/recover');
 console.log('PASS: incident60s/gap/restart/closed/dedupe/recovery/STOP');
+
+// Unqualified restart resets even a short gap; qualified identity remains durable.
+saved = {}; reports.length = 0; attempts.length = 0; alertMode = true;
+tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+observations.get('A').delivery_ids = [id(300)]; outcome = 'draft-present';
+load(); await bind('A', 1); await message({type: 'check'});
+clock += 30000; load(); await message({type: 'check'});
+clock += 30000; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 0, 'short restart cannot carry unqualified timer');
+clock += 30000; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 1);
+const qualified = state('A').incident.evidence.incident_id;
+load(); clock += 1000; await message({type: 'check'});
+assert.equal(state('A').incident.evidence.incident_id, qualified);
+// A cached onRemoved empty list is not a fresh mailbox-clear observation.
+state('A').pending = []; tabs.delete(1); await removed(1);
+assert.equal(reports.filter(item => item.incident).length, 1);
+observations.get('A').delivery_ids = []; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 2);
+assert.equal(reports.filter(item => item.incident).at(-1).incident.phase, 'recovered');
+assert.equal(reports.filter(item => item.incident).at(-1).incident.incident_id, qualified);
+assert.equal(state('A').availability, 'closed');
+await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 2, 'closed empty recovery deduped');
+// Outage >90s: frozen pending op is retained across unknown/unconfigured responses.
+observations.get('A').delivery_ids = [id(301)]; alertMode = false;
+await message({type: 'check'});
+const expiredId = state('A').incident.evidence.incident_id;
+clock += 91000; load(); alertMode = 'expired'; await message({type: 'check'});
+assert.equal(state('A').lastRetiredIncident, expiredId);
+assert.equal(state('A').incident, undefined, 'only definitive absence retires old operation');
+await message({type: 'check'});
+assert.equal(state('A').incident.state, 'queued');
+assert.notEqual(state('A').incident.evidence.incident_id, expiredId);
+console.log('PASS: closed+fresh-empty recovery, short restart reset, qualified identity persistence, expired-uncommitted requalification');

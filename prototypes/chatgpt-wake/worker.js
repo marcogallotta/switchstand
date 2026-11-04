@@ -75,6 +75,7 @@ async function nudge(expectedUrl) {
 const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
+const bootId = crypto.randomUUID();
 async function source(path) {
   const response = await fetch(SOURCE + path, {signal: AbortSignal.timeout(3000), cache: 'no-store'});
   if (!response.ok) throw new Error(`backend HTTP ${response.status}`);
@@ -91,11 +92,12 @@ async function mailbox(name) {
   }
   return value;
 }
-async function incidentReport(binding, kind, ids, save) {
+async function incidentReport(binding, kind, ids, save, fresh) {
   const now = Date.now();
   const blocked = ids.length && ['draft-present', 'bound-tab-missing'].includes(kind);
   if (blocked) {
-    if (binding.blockReason !== kind || now - (binding.blockChecked || 0) > 60000) binding.blockSince = now;
+    if (binding.blockBoot !== bootId || binding.blockReason !== kind || now - (binding.blockChecked || 0) > 60000) binding.blockSince = now;
+    binding.blockBoot = bootId;
     binding.blockReason = kind;
     binding.blockChecked = now;
     if (!binding.incident && (kind === 'bound-tab-missing' || now - binding.blockSince >= 60000)) {
@@ -107,8 +109,9 @@ async function incidentReport(binding, kind, ids, save) {
   } else {
     delete binding.blockSince; delete binding.blockReason; delete binding.blockChecked;
     // UNKNOWN, explicit STOP and observation errors are not evidence of recovery.
-    if (binding.incident?.state === 'stale' && ['idle', 'click-attempted', 'busy'].includes(kind)) delete binding.incident;
-    if (binding.incident?.state === 'queued' && ['idle', 'click-attempted', 'busy'].includes(kind)) {
+    const clear = ['idle', 'click-attempted', 'busy'].includes(kind) || (fresh && kind === 'bound-tab-missing' && !ids.length);
+    if (binding.incident?.state === 'stale' && clear) delete binding.incident;
+    if (binding.incident?.state === 'queued' && clear) {
       binding.incident.state = 'recovery-pending';
     }
   }
@@ -134,15 +137,21 @@ async function incidentReport(binding, kind, ids, save) {
       binding.report = `alert ${receipt.alert?.status || receipt.escalation || 'unknown'}: ${receipt.alert?.reason || 'not queued'}`;
       // Definitive stale evidence is not ambiguous acceptance; do not recreate it under a new ID.
       if (receipt.alert?.status === 'stale') incident.state = 'stale';
+      if (receipt.alert?.status === 'denied' && receipt.alert.reason === 'observation_expired') {
+        // The host proved this exact operation uncommitted under its send lock.
+        binding.lastRetiredIncident = incident.evidence.incident_id;
+        delete binding.incident; delete binding.blockSince; delete binding.blockReason; delete binding.blockChecked;
+      }
     }
   } catch (error) { binding.report = 'alert outcome unknown; same identity retained: ' + error.message; }
 }
-async function record(binding, outcome, ids = [], save) {
+async function record(binding, outcome, ids = [], save, fresh = false) {
   binding.status = outcome;
   binding.checkedAt = new Date().toISOString();
   const kind = outcome.split(':')[0];
-  if (save) await incidentReport(binding, kind, ids, save);
-  if (binding.incident || ['idle', 'armed', 'click-attempted', 'stopped'].includes(kind)) return;
+  const hadIncident = Boolean(binding.incident);
+  if (save) await incidentReport(binding, kind, ids, save, fresh);
+  if (hadIncident || binding.incident || ['idle', 'armed', 'click-attempted', 'stopped'].includes(kind)) return;
   const reportKey = JSON.stringify([outcome, ids.slice(0, 50)]);
   if (binding.lastReport === reportKey && binding.report === 'logged; escalation unconfigured') return;
   try {
@@ -159,7 +168,7 @@ async function record(binding, outcome, ids = [], save) {
   } catch (error) { binding.report = 'backend report unavailable: ' + error.message; }
 }
 async function checkBinding(binding, save) {
-  const note = (outcome, ids = []) => record(binding, outcome, ids, save);
+  const note = (outcome, ids = []) => record(binding, outcome, ids, save, true);
   if (!binding.armed || stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   let observation;
   try { observation = await mailbox(binding.name); }

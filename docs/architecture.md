@@ -965,8 +965,12 @@ use separately owned engines.
 
 Existing Chrome binding storage reserves an incident before its report. Actual
 pending IDs plus a continuous observed draft block of60 seconds, or a closed tab,
-qualify one incident; one observed recovery follows. Gaps reset unqualified draft
-timers. STOP, busy and uncertain original sends remain distinct; no draft is
+qualify one incident; one observed recovery follows. Restarts and observation gaps reset unqualified draft
+timers. A fresh empty poll clears a closed-tab incident while retaining the closed
+availability marker; a cached close callback cannot clear it. A frozen first-send
+observation that expires is retired only after an authoritative absent replay
+under the same reporter grant lock; fresh requalification uses a new incident
+identity, while ambiguous and committed operations keep their frozen arguments. STOP, busy and uncertain original sends remain distinct; no draft is
 copied or overwritten. A queued durable alert is not proof of Coordinator pickup.
 No new persistence table, OAuth flow, background Worker or native-input route is
 introduced.

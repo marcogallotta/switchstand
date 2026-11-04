@@ -132,6 +132,12 @@ class AlertReport(ClosedModel):
         return uuid5(self.incident_id, phase or self.phase)
 
 
+class ExpiredObservation(ClosedModel):
+    """Definitive first-creation absence under the reporter admission lock."""
+    status: Literal["denied"] = "denied"
+    reason: Literal["observation_expired"] = "observation_expired"
+
+
 class HostReporter:
     """No caller-selected actor, recipient, body or grant. Host injection is opt-in."""
     def __init__(self, manifest: ReporterManifest, messages: MessageState):
@@ -160,7 +166,10 @@ class HostReporter:
                     now = datetime.now(UTC)
                     age = (report.observed_at - report.started_at).total_seconds()
                     fresh = (now - report.observed_at).total_seconds()
-                    if age < 0 or not 0 <= fresh <= 90 or (report.reason == "draft-present" and age < 60):
+                    if fresh > 90:
+                        # Exact replay already proved absence while this grant lock serializes sends.
+                        return ExpiredObservation().model_dump(mode="json")
+                    if age < 0 or fresh < 0 or (report.reason == "draft-present" and age < 60):
                         return {"status": "denied", "reason": "unqualified_observation"}
                     target = (await self.mailboxes.by_name(report.name)).mailbox
                     if target is None or target.endpoint_id != report.endpoint or target.generation != report.generation:

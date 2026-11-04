@@ -78,6 +78,9 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
     assert (await reporter.send(premature))["reason"] == "unqualified_observation"
     wrong = evidence.model_copy(update={"delivery_ids": [uuid4()], "incident_id": uuid4()})
     assert (await reporter.send(wrong))["reason"] == "pending_evidence_changed"
+    expired = evidence.model_copy(update={"incident_id": uuid4(),
+        "started_at": now - timedelta(seconds=152), "observed_at": now - timedelta(seconds=91)})
+    assert await reporter.send(expired) == {"status": "denied", "reason": "observation_expired"}
     receipt = await reporter.send(evidence)  # Simulate its response being lost to the extension.
     assert receipt["status"] == "queued"
     async with engine.begin() as connection:
@@ -85,7 +88,14 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
             message_deliveries.c.delivery_id == delivery).values(state="DISPOSITIONED"))
         await connection.execute(update(agent_mailboxes).where(
             agent_mailboxes.c.endpoint_id == target.endpoint_id).values(generation=2))
-    assert await reporter.send(evidence) == receipt  # Replay before stale/cleared evidence checks.
+    # A committed operation is replayable even beyond the first-observation freshness window.
+    class FutureDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now + timedelta(seconds=120)
+    with monkeypatch.context() as patch:
+        patch.setattr("switchstand.chatgpt_alerts.datetime", FutureDateTime)
+        assert await reporter.send(evidence) == receipt  # Replay before stale/cleared evidence checks.
     changed = evidence.model_copy(update={"delivery_ids": [uuid4()]})
     assert (await reporter.send(changed))["status"] == "conflict"
     recovered = evidence.model_copy(update={"phase": "recovered"})

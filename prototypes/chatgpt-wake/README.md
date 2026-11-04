@@ -74,7 +74,11 @@ reporter activation remain held until the exact reviewed manifest is approved.
 The browser keeps drafts intact. Pending mail plus60 seconds of continuously
 observed draft blocking, or a closed tab, qualifies one Codex Coordinator alert;
 clear observation qualifies one recovery. STOP/disarm does not emit a recovery.
-A service observation gap resets an unqualified draft timer. The sender persists
+A worker restart or observation gap resets an unqualified draft timer. Fresh empty
+mailbox observation recovers even while the tab stays closed. After an outage,
+only an explicit host observation_expired result (committed replay proved absent
+under its send lock) permits retiring that operation and requalifying fresh
+evidence with a new UUID; ambiguity retains the old UUID and arguments. The sender persists
 exact incident evidence; ambiguous requests keep the same identity and arguments.
 
 The trusted host bootstrap commands are below. `plan` is local-file-only; the
