@@ -163,3 +163,22 @@ async def test_cross_principal_transfer_rejects_destination_session_collision(en
         "conflict", "session_already_registered", conflict,
     )
     assert (await endpoints.for_actor("old-owner", "old-chat")).status == "ok"
+
+
+async def test_runtime_type_tracks_registration_and_takeovers_both_directions(endpoints):
+    from sqlalchemy import update
+    registered = await endpoints.register_agent("Moving", "owner", "codex:first")
+    assert registered.mailbox.agent_type == "codex"
+    async with endpoints.engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).values(agent_type=None))
+    renewed = await endpoints.register_agent("Moving", "owner", "codex:first")
+    assert renewed.mailbox.agent_type == "codex"
+    for session, expected in [("claude:second", "claude"), ("codex:third", "codex"),
+                               ("chat-fourth", "chatgpt")]:
+        moved = await endpoints.takeover("Moving", "owner", session)
+        assert moved.mailbox.endpoint_id == registered.mailbox.endpoint_id
+        assert moved.mailbox.agent_type == expected
+    async with endpoints.engine.begin() as connection:
+        await connection.execute(update(agent_mailboxes).values(agent_type=None))
+    renewed = await endpoints.takeover("Moving", "owner", "chat-fourth")
+    assert renewed.mailbox.agent_type == "chatgpt"

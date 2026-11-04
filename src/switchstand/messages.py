@@ -449,6 +449,15 @@ class MessageState:
         if self.review_cutoff is not None and self.review_cutoff.utcoffset() is None:
             raise ValueError("review cutoff receipt must include a timezone")
 
+    async def wake_pending(self) -> tuple[PendingMessage, ...]:
+        """Committed available mailbox deliveries, across every sender process."""
+        async with self.engine.connect() as connection:
+            rows = (await connection.execute(self._pending_query().join(
+                agent_mailboxes,
+                agent_mailboxes.c.endpoint_id == message_deliveries.c.recipient_work_id,
+            ).where(message_deliveries.c.state == "AVAILABLE"))).mappings().all()
+        return tuple(_view(dict(row)) for row in rows)
+
     async def open_handoff_watches(
         self, work_id: UUID, connection: AsyncConnection | None = None,
     ) -> tuple[str, ...] | None:

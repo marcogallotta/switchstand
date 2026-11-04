@@ -39,9 +39,12 @@ agent_mailboxes = Table(
     Column("principal_key", Text, nullable=False),
     Column("session_key", Text, nullable=False),
     Column("generation", Integer, nullable=False),
+    Column("agent_type", Text),
     UniqueConstraint("endpoint_id"),
     UniqueConstraint("principal_key", "session_key"),
     CheckConstraint("generation >= 1"),
+    CheckConstraint("agent_type IS NULL OR agent_type IN ('codex', 'claude', 'chatgpt')",
+                    name="ck_mailbox_agent_type"),
 )
 
 agent_mailbox_transfer_requests = Table(
@@ -54,6 +57,7 @@ agent_mailbox_transfer_requests = Table(
     Column("source_session_key", Text, nullable=False),
     Column("destination_principal_key", Text, nullable=False),
     Column("destination_session_key", Text, nullable=False),
+    Column("destination_agent_type", Text),
     Column("status", Text, nullable=False),
     Column("reason", Text),
     Column("resulting_generation", Integer),
@@ -72,6 +76,7 @@ class AgentMailbox(ClosedModel):
     principal_key: str = Field(min_length=1)
     session_key: str = Field(min_length=1)
     generation: int = Field(ge=1)
+    agent_type: Literal["codex", "claude", "chatgpt"] | None = None
 
 
 class AgentMailboxResult(ClosedModel):
@@ -118,6 +123,15 @@ def chat_session_key(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def session_agent_type(session: str) -> Literal["codex", "claude", "chatgpt"]:
+    """Classify the trusted runtime identity before its session is hashed."""
+    if session.startswith("codex:"):
+        return "codex"
+    if session.startswith("claude:"):
+        return "claude"
+    return "chatgpt"
+
+
 def coordinator_name_keys(value: str) -> tuple[str, ...]:
     """Resolve the canonical Coordinator name and its temporary /root alias."""
     key = agent_name_key(value)
@@ -137,6 +151,7 @@ class AgentMailboxState:
             endpoint_id=cast(UUID, row["endpoint_id"]),
             principal_key=cast(str, row["principal_key"]),
             session_key=cast(str, row["session_key"]), generation=cast(int, row["generation"]),
+            agent_type=row["agent_type"],
         )
 
     async def register_agent(self, name: str, principal_key: str, chat_session: str) -> AgentMailboxResult:
@@ -149,6 +164,10 @@ class AgentMailboxState:
                     agent_mailboxes.c.session_key == session_key,
                 ))).mappings().one_or_none()
                 if prior is not None:
+                    prior = (await connection.execute(update(agent_mailboxes).where(
+                        agent_mailboxes.c.name_key == prior["name_key"],
+                    ).values(agent_type=session_agent_type(chat_session)).returning(
+                        *agent_mailboxes.c))).mappings().one()
                     # Registration is idempotent for the already-bound session, including
                     # an existing /root. It never renames or takes over that mailbox.
                     return AgentMailboxResult(status="ok", mailbox=self._view(prior))
@@ -159,6 +178,7 @@ class AgentMailboxState:
                 await connection.execute(insert(agent_mailboxes).values(
                     name_key=key, display_name=display, endpoint_id=uuid4(),
                     principal_key=principal_key, session_key=session_key, generation=1,
+                    agent_type=session_agent_type(chat_session),
                 ).on_conflict_do_nothing())
                 prior = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.principal_key == principal_key,
@@ -269,6 +289,7 @@ class AgentMailboxState:
                             name_key=key, display_name=" ".join(name.strip().split()),
                             endpoint_id=uuid4(), principal_key=principal_key,
                             session_key=session_key, generation=1,
+                            agent_type=session_agent_type(replacement_session),
                         ).on_conflict_do_nothing())
                     else:
                         await connection.execute(update(agent_mailboxes).where(
@@ -282,6 +303,10 @@ class AgentMailboxState:
                 if row["principal_key"] != principal_key and not allow_principal_change:
                     return AgentMailboxResult(status="denied", reason="principal_mismatch")
                 if row["principal_key"] == principal_key and row["session_key"] == session_key:
+                    row = (await connection.execute(update(agent_mailboxes).where(
+                        agent_mailboxes.c.name_key == key,
+                    ).values(agent_type=session_agent_type(replacement_session)).returning(
+                        *agent_mailboxes.c))).mappings().one()
                     return AgentMailboxResult(status="ok", mailbox=self._view(row))
                 prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
                     agent_mailboxes.c.principal_key == principal_key,
@@ -295,6 +320,7 @@ class AgentMailboxState:
                     agent_mailboxes.c.generation == row["generation"],
                 ).values(
                     principal_key=principal_key, session_key=session_key,
+                    agent_type=session_agent_type(replacement_session),
                     generation=row["generation"] + 1,
                 ).returning(*agent_mailboxes.c))).mappings().one_or_none()
                 if moved is None:
@@ -329,6 +355,7 @@ class AgentMailboxState:
                     row["principal_key"] == principal_key
                     and row["session_key"] == session_key
                     and row["name_key"] == CODEX_COORDINATOR_KEY
+                    and row["agent_type"] == session_agent_type(replacement_session)
                 ):
                     return AgentMailboxResult(status="ok", mailbox=self._view(row))
                 prior = (await connection.execute(select(agent_mailboxes.c.name_key).where(
@@ -348,6 +375,7 @@ class AgentMailboxState:
                     display_name=CODEX_COORDINATOR_NAME,
                     principal_key=principal_key,
                     session_key=session_key,
+                    agent_type=session_agent_type(replacement_session),
                     generation=row["generation"] + 1,
                 ).returning(*agent_mailboxes.c))).mappings().one_or_none()
                 if moved is None:
@@ -394,6 +422,7 @@ class AgentMailboxState:
                     source_session_key=row["session_key"],
                     destination_principal_key=destination_principal_key,
                     destination_session_key=destination_session_key,
+                    destination_agent_type=session_agent_type(destination_session),
                     status="PENDING",
                     created_at=datetime.now(UTC),
                 ).on_conflict_do_nothing(index_elements=["request_id"]))
@@ -488,6 +517,7 @@ class AgentMailboxState:
                 ).values(
                     principal_key=request["destination_principal_key"],
                     session_key=request["destination_session_key"],
+                    agent_type=request["destination_agent_type"],
                     generation=generation,
                 ).returning(*agent_mailboxes.c))).mappings().one_or_none()
                 if moved is None:
