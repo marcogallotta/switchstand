@@ -16,12 +16,12 @@ Asana writes on a canonical request.
 
 | Change | Owner under `src/switchstand/` |
 | --- | --- |
-| Current work create/get/search/scalar update and public work projection | `canonical_work_runtime.py::CanonicalWorkRuntime` (`protected_create`, `get`, `search`, `protected_update`, `_item`) |
-| Current row storage, locking, optimistic version and legacy aliases | `canonical_work.py::CanonicalWorkRepository`; `canonical_revision` produces the opaque `pg_` revision from WorkId and row version |
-| Resultant routing/completion rules | `work_policy.py`, called before protected mutation; reuse `validate_resultant_state` rather than adding caller-specific policy |
-| Parents, dependencies and project placements | `canonical_relations.py`; protected work relations enter through `CanonicalWorkRuntime.protected_relation` |
+| Current work create/get/search/scalar update and work-item projection | [`canonical_work_runtime.py::CanonicalWorkRuntime`](../src/switchstand/canonical_work_runtime.py) (`protected_create`, `get`, `search`, `protected_update`, `_item`) |
+| Current row storage, locking, optimistic version and legacy aliases | [`canonical_work.py::CanonicalWorkRepository`](../src/switchstand/canonical_work.py); `canonical_revision` produces the opaque `pg_` revision from WorkId and row version |
+| Resultant routing/completion rules | [`work_policy.py`](../src/switchstand/work_policy.py), called before protected mutation; reuse `validate_resultant_state` rather than adding caller-specific policy |
+| Parents, dependencies and project placements | [`canonical_relations.py`](../src/switchstand/canonical_relations.py); protected work relations enter through `CanonicalWorkRuntime.protected_relation` |
 | Append/history/event storage and projection | `effects.py::CanonicalAppendGateway`, `work_events.py`, `canonical_event_reads.py` |
-| Public request/result shape and scalar patch validation | Shared `contracts.py` and `grants.py`; public note preview is `chatgpt.py::project_ordinary_work` → `mcp.py::project_work` |
+| Public request/result shape and scalar patch validation | Shared `contracts.py` and `grants.py`; public note preview is [`chatgpt_mcp.py::project_ordinary_work`](../src/switchstand/chatgpt_mcp.py) → `mcp.py::project_work` |
 | Admission, grants and effect journal schema | Shared `workspace_admission.py`, `grant_state.py` and `grants.py`; identity and mailbox registration remain outside Tracker |
 
 Managed launches use `mcp.py` and `core.py::Controller` with launch-bound authority, not ordinary
@@ -67,7 +67,8 @@ The last injects a specific precommit fault; it does not settle every real UNKNO
 covers public schemas, admission forwarding and note previews.
 
 For real HTTP/subprocess persistence, replay and restart evidence, use
-`tests/test_chatgpt_edge_process.py`; these local tests use synthetic authenticated identity,
+[`tests/test_chatgpt_edge_process.py`](../tests/test_chatgpt_edge_process.py)
+(`test_simple_completion_over_http_and_restart`); these local tests use synthetic authenticated identity,
 not real ChatGPT/OAuth acceptance. Managed Controller/service checks are separate boundaries.
 Use the disposable-database [development workflow](development.md#normal-local-workflow), select
 checks for the changed boundary, and record the exact candidate and untested limits. Migration,
