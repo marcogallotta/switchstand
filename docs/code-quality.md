@@ -38,6 +38,28 @@ Implementation Specification authors should include runnable required noninterac
 When resuming an older specification, add its missing command block with the agreed executable checks
 while preserving its acceptance criteria.
 
+For a material change, include a short **test plan in that same Implementation Specification**.
+Tie the plan to the approved user outcome and WorkId, with a checkable positive result and a
+relevant forbidden or negative effect. Name the earliest causal unit, component, or integration
+check, its command and observable result, including a regression for the known fault.
+Use the existing command block for runnable noninteractive checks. Add a small scripted end-to-end
+journey only when changed behavior crosses a meaningful seam that cheaper checks cannot credibly
+cover, such as real MCP/HTTP and persistence, authority/currentness, process composition,
+migration, UI, or a critical multi-tool path. No end-to-end or omission boilerplate is universal.
+For a runtime-composition claim, boot the candidate through its actual production-shaped
+entrypoint with isolated test resources and call the externally consumed interface. Do not
+manually wire the dependency under test. For a known or suspected missing-dependency wiring
+fault, as in the 6 October pilot, show that omitting the required dependency in that authentic
+composition makes the positive call fail readiness even if unit tests pass. The healthy
+composition for that fault must pass a positive call and a denied call with no persisted effect.
+If a legitimate test launch or credentials are unavailable, record `NOT_RUN`/`UNKNOWN`.
+For small slices, identify the affected fast checks; before a major integrated deployment, name
+the applicable broad regression and end-to-end checks on the exact release candidate. Do not
+defer an essential seam check until after activation or require a heavy journey after every safe
+incremental PR. For each required check, record the proof boundary, expected result, setup and
+teardown, rerun condition, cost, and actual `PASS`/`FAIL`/`SKIP`/`NOT_RUN`/`UNKNOWN` result.
+Review of a proposed plan is not execution or acceptance evidence.
+
 During implementation:
 - Fix the causal owner; do not patch callers/tests around the defect.
 - At each quality refresh, compare the actual trajectory with the current Execution Plan. Unexpected new owner/provider/persistence/trust/interface/external-I/O/recovery surface, materially larger defensive/test-support machinery, or loss of the planned discriminating proof means stop/replan/classify the affected path before adding another patch layer. Routine local/private/reversible mechanics remain worker-owned.
@@ -106,6 +128,10 @@ findings before final Human Review. Later material deltas receive focused checki
 review, not an automatic full restart or another reviewer. Cheap research and unaffected work
 continue; hold only a commitment that consumes an unresolved material choice or lacks authority.
 Review supplies evidence, never implementation, landing, activation or provider-effect authority.
+The same independent pre-implementation review challenges the Specification and its test plan:
+the reviewer invents a plausible wrong result and asks whether a proposed check would fail,
+whether end-to-end coverage is needed for an uncovered seam, and whether any proposed journey
+adds no value. Use that existing review and focused rereview, not a second test-plan gate.
 
 ### Mandatory scope blocks
 
