@@ -10,13 +10,19 @@ from collections.abc import Callable
 from contextlib import AsyncExitStack, suppress
 from pathlib import Path
 from typing import Any, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from websockets.asyncio.client import unix_connect
 
 from .agent_mailboxes import AgentMailbox, AgentMailboxState, chat_session_key
 from .mailbox_wake import delivery_marker, delivery_notice, marker_receipts
-from .messages import REVIEW_ROUTE_REFS, MessageState, PendingMessage
+from .messages import (
+    REVIEW_ROUTE_REFS,
+    MessageRoute,
+    MessageState,
+    MessageSubmitRequest,
+    PendingMessage,
+)
 
 LOG = logging.getLogger(__name__)
 SOURCES = ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview",
@@ -77,7 +83,8 @@ class DaemonConnection:
                       and packet.get("params", {}).get("threadId") == self.thread_id):
                     self.dirty()
         except Exception:
-            LOG.exception("inbound wake observer disconnected")
+            LOG.exception("inbound wake observer disconnected socket=%s thread=%s phase=observe",
+                          self.socket, self.thread_id)
         finally:
             for future in self.pending.values():
                 if not future.done():
@@ -155,6 +162,44 @@ class InboundWake:
         self.outcomes: dict[UUID, str] = {}
         self.roots: dict[str, asyncio.Lock] = {}
         self.routes: dict[str, tuple[Any, ...]] = {}
+        self.suspended: set[UUID] = set()
+        self.observed: set[UUID] = set()
+        self.watcher: asyncio.Task[None] | None = None
+
+    async def start(self):
+        # Baseline old mail before callbacks/observation: restart never authorizes replay.
+        self.observed = {m.delivery_id for m in await self.messages.wake_pending()}
+        self.messages.on_delivery = self.signal
+        self.watcher = asyncio.create_task(self._watch())
+
+    async def _watch(self):
+        while True:
+            await asyncio.sleep(1)
+            try:
+                for message in await self.messages.wake_pending():
+                    if message.delivery_id not in self.observed:
+                        self.signal(message, True)
+            except Exception:
+                LOG.exception("inbound wake committed-delivery discovery failed phase=watch")
+
+    async def _alert(self, evidence: dict[str, Any], error: Exception):
+        try:
+            target = (await self.mailboxes.by_name("claude-coordinator")).mailbox
+            if target is None:
+                raise RuntimeError("alert recipient unavailable")
+            result = await self.messages.submit_admitted(
+                uuid5(NAMESPACE_URL, "switchstand:codex-inbound-wake"),
+                MessageRoute(recipient_work_id=target.endpoint_id,
+                             recipient_grant_version=target.generation),
+                MessageSubmitRequest(api_version="1", message_id=uuid4(), grant_version=1,
+                    route_ref="agent.claude-coordinator", kind="request",
+                    payload={"wake_failure": evidence, "error": str(error)[:500]}),
+            )
+            if result.status != "ok":
+                raise RuntimeError(f"alert commit {result.status}: {result.reason}")
+        except Exception:
+            LOG.exception("inbound wake alert unavailable evidence=%s", evidence)
+
 
     async def check_route(self, token: str, session_id: str) -> dict[str, str]:
         """Exact-route read-only bearer proof; GO is a snapshot, never an effect grant."""
@@ -209,55 +254,108 @@ class InboundWake:
             return False
 
     def signal(self, message: PendingMessage, fresh: bool):
+        self.observed.add(message.delivery_id)
         if fresh:
             self.fresh.add(message.delivery_id)
             self.fresh_messages[message.delivery_id] = message
         recipient = message.recipient_work_id
         event = self.events.setdefault(recipient, asyncio.Event())
         event.set()
-        if recipient not in self.tasks:
+        if recipient not in self.tasks or (self.tasks[recipient].done()
+                                            and recipient not in self.suspended):
             self.tasks[recipient] = asyncio.create_task(self._run(recipient, event))
 
     async def close(self):
         self.messages.on_delivery = None
+        if self.watcher is not None:
+            self.watcher.cancel()
+            await asyncio.gather(self.watcher, return_exceptions=True)
         for task in self.tasks.values():
             task.cancel()
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)
 
+    async def _root(self, rpc: DaemonConnection, identity: str) -> dict[str, Any]:
+        """Resume only stored, unsupported-capability-unknown Roots; then reread capability."""
+        thread = (await rpc.call("thread/read", {
+            "threadId": identity, "includeTurns": False,
+        }))["thread"]
+        if thread.get("parentThreadId"):
+            raise RuntimeError("UNKNOWN: owning actor is not an externally wakeable Root")
+        if (thread.get("status", {}).get("type") == "notLoaded"
+                and thread.get("canAcceptDirectInput") is None):
+            await rpc.call("thread/resume", {"threadId": identity, "excludeTurns": True})
+            thread = (await rpc.call("thread/read", {
+                "threadId": identity, "includeTurns": False,
+            }))["thread"]
+        if thread.get("parentThreadId") or thread.get("canAcceptDirectInput") is not True:
+            raise RuntimeError("UNKNOWN: actor is not an externally wakeable Root")
+        return thread
+
     async def _run(self, recipient: UUID, event: asyncio.Event):
+        # Only uncertain turn acceptance is terminal. Definite pre-effect failures can
+        # be retried by subsequent delivery signals without restarting the service.
+        binding = None
+        identity = ""
+        rpc = None
+        evidence: dict[str, Any] = {"recipient": str(recipient), "phase": "discovery",
+                                    "generation": None, "thread": None, "socket": None,
+                                    "discovery": {}, "actor_status": None}
         try:
             async with AsyncExitStack() as stack:
-                connections = [await stack.enter_async_context(DaemonConnection(socket, event.set))
-                               for socket in self.sockets]
-                binding = None
-                identity = ""
-                rpc = connections[0]
+                connections: dict[str, DaemonConnection] = {}
                 attached = ""
                 while True:
                     await event.wait()
-                    event.clear()  # Later arrivals remain dirty throughout this pass.
+                    event.clear()
+                    evidence["phase"] = "discovery"
                     result = await self.mailboxes.by_endpoint_id(recipient)
                     if result.mailbox is None:
                         raise RuntimeError("UNKNOWN: recipient binding unavailable")
-                    if result.mailbox != binding:
+                    evidence["generation"] = result.mailbox.generation
+                    evidence["agent_type"] = result.mailbox.agent_type
+                    if result.mailbox.agent_type != "codex":
+                        self.outcomes[recipient] = ("UNKNOWN_AGENT_TYPE" if result.mailbox.agent_type is None
+                                                    else "NON_CODEX")
+                        LOG.info("inbound wake skipped evidence=%s", json.dumps(evidence))
+                        return
+                    reader = getattr(rpc, "reader", None)
+                    dead = reader is not None and reader.done()
+                    if result.mailbox != binding or dead:
                         matches: list[tuple[DaemonConnection, str]] = []
-                        for connection in connections:
+                        discovery: dict[str, Any] = {}
+                        for socket in self.sockets:
                             try:
-                                matches.append((connection, await resolve_thread(connection, result.mailbox)))
+                                connection = connections.get(socket)
+                                reader = getattr(connection, "reader", None)
+                                if connection is None or (reader is not None and reader.done()):
+                                    connection = await stack.enter_async_context(
+                                        DaemonConnection(socket, event.set))
+                                    connections[socket] = connection
+                                thread_id = await resolve_thread(connection, result.mailbox)
+                                matches.append((connection, thread_id))
+                                discovery[socket] = {"matches": 1}
                             except ThreadNotFound:
-                                continue
-                        if len(matches) != 1:
-                            raise RuntimeError("UNKNOWN: no unique recipient across configured daemons")
+                                discovery[socket] = {"matches": 0}
+                            except (ConnectionError, OSError, TimeoutError, DaemonRejected) as error:
+                                discovery[socket] = {"matches": None, "error": type(error).__name__}
+                        evidence["discovery"] = discovery
+                        if len(matches) == 0:
+                            raise RuntimeError("UNKNOWN: missing recipient across configured daemons")
+                        if len(matches) > 1:
+                            raise RuntimeError("UNKNOWN: multiple recipient matches across configured daemons")
                         rpc, identity = matches[0]
+                        attached = ""
                     binding = result.mailbox
+                    assert rpc is not None
+                    evidence.update(thread=identity, socket=getattr(rpc, "socket", None), phase="eligibility")
                     thread = (await rpc.call("thread/read", {
                         "threadId": identity, "includeTurns": False,
                     }))["thread"]
+                    evidence["actor_status"] = thread.get("status")
+                    evidence["direct_input"] = thread.get("canAcceptDirectInput")
                     root = thread.get("parentThreadId") or identity
                     root_binding = binding
                     path = None
-                    if root == identity and thread.get("canAcceptDirectInput") is not True:
-                        raise RuntimeError("UNKNOWN: actor is not an externally wakeable Root")
                     if root != identity:
                         spawn = thread.get("source", {}).get("subAgent", {}).get("thread_spawn", {})
                         if spawn.get("parent_thread_id") != root or spawn.get("depth") != 1:
@@ -266,29 +364,26 @@ class InboundWake:
                         root_binding = (await self.mailboxes.for_session(f"codex:{root}")).mailbox
                         if root_binding is None or root_binding.principal_key != binding.principal_key:
                             raise RuntimeError("UNKNOWN: owning Root binding unavailable")
-                        owner = (await rpc.call("thread/read", {
-                            "threadId": root, "includeTurns": False,
-                        }))["thread"]
-                        if owner.get("parentThreadId") or owner.get("canAcceptDirectInput") is not True:
-                            raise RuntimeError("UNKNOWN: owning actor is not an externally wakeable Root")
                     rpc.thread_id = root
                     async with self.roots.setdefault(root, asyncio.Lock()):
-                        try:
-                            if attached != root:
-                                await rpc.call("thread/resume", {"threadId": root, "excludeTurns": True})
-                                attached = root
-                            await self._reconcile(rpc, binding, identity, root, root_binding, path)
-                        except DaemonRejected as error:
-                            self.outcomes[recipient] = f"DENIED: {error}"
+                        evidence["phase"] = "attach"
+                        await self._root(rpc, root)
+                        if attached != root:
+                            await rpc.call("thread/resume", {"threadId": root, "excludeTurns": True})
+                            attached = root
+                        evidence["phase"] = "pre-dispatch"
+                        await self._reconcile(rpc, binding, identity, root, root_binding, path)
         except asyncio.CancelledError:
             raise
-        except DaemonRejected as error:
-            self.outcomes[recipient] = f"DENIED: {error}"
-            LOG.warning("inbound wake rejected for %s: %s", recipient, error)
         except Exception as error:
-            self.outcomes[recipient] = f"UNKNOWN: {error}"
-            LOG.exception("inbound wake suspended for %s", recipient)
-            # Retain a terminal task: a new signal cannot blindly retry ambiguous turn/start.
+            uncertain = isinstance(error, UncertainTurn)
+            if uncertain:
+                self.suspended.add(recipient)
+                evidence["phase"] = "turn/start-uncertain"
+            self.outcomes[recipient] = f"{'DENIED' if isinstance(error, DaemonRejected) else 'UNKNOWN'}: {error}"
+            LOG.exception("inbound wake %s evidence=%s", "suspended" if uncertain else "failed",
+                          json.dumps(evidence, sort_keys=True))
+            await self._alert(evidence, error)
 
     async def _reconcile(self, rpc: DaemonConnection, binding: AgentMailbox, identity: str,
                          root: str | None = None, root_binding: AgentMailbox | None = None,
@@ -369,11 +464,14 @@ class InboundWake:
                 result = await rpc.call("turn/start", {
                     "threadId": root, "input": [{"type": "text", "text": text}],
                 })
+                turn_id = result["turn"]["id"]
+                if not isinstance(turn_id, str) or not turn_id:
+                    raise ValueError("invalid turn acceptance identity")
             except DaemonRejected:
                 raise
             except Exception as error:
                 raise UncertainTurn("turn acceptance UNKNOWN; no replay") from error
-            self.outcomes[recipient] = "ACCEPTED:" + result["turn"]["id"]
+            self.outcomes[recipient] = "ACCEPTED:" + turn_id
             self.fresh.difference_update(remaining)
             for delivery in remaining:
                 self.fresh_messages.pop(delivery, None)

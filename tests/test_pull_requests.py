@@ -264,7 +264,7 @@ def test_populated_migration_refuses_to_discard_pr_ownership(database_prerequisi
             command.downgrade(config, "0026_agent_message_ack")
         with engine.connect() as connection:
             assert connection.scalar(text("SELECT version_num FROM alembic_version")) \
-                == "0027_pull_requests"
+                == "0028_mailbox_agent_type"
             record = connection.execute(select(pull_requests)).mappings().one()
             assert record["owner_key"] == "author" and record["row_version"] == 1
     finally:

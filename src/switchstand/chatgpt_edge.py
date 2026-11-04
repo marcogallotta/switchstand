@@ -96,7 +96,7 @@ CODEX_STOP_MAILBOX_PATH = "/internal/codex-stop-mailbox"
 CLAUDE_MAIL_SUMMARY_PATH = "/internal/claude-mail-summary"
 GRACEFUL_SHUTDOWN_SECONDS = 30
 CLAUDE_CODE_CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
-STATEFUL_MIGRATION_REVISION = "0027_pull_requests"
+STATEFUL_MIGRATION_REVISION = "0028_mailbox_agent_type"
 _https_resource_url = normalize_resource_url
 
 
@@ -862,7 +862,7 @@ async def resource_service(
         if control := os.getenv("SWITCHSTAND_CODEX_WAKE_CONTROL"):
             wake = InboundWake(messages, Path(control),
                                Path(__file__).resolve().parents[2] / "scripts/agent-resource-admission")
-            messages.on_delivery = wake.signal
+            await wake.start()
         priority_claims = None
         priority_context = None
         priority_claims_enabled = os.getenv("SWITCHSTAND_PRIORITY_CLAIMS") == "1"

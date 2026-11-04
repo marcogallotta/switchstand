@@ -17,7 +17,7 @@ from switchstand.mailbox_wake import MARKER
 def subject(tmp_path):
     identity, delivery = str(uuid4()), uuid4()
     binding = AgentMailbox(name="Test", name_key="test", endpoint_id=uuid4(),
-        principal_key="p", session_key=chat_session_key(f"codex:{identity}"), generation=1)
+        principal_key="p", agent_type="codex", session_key=chat_session_key(f"codex:{identity}"), generation=1)
     control = tmp_path / "control"
     control.write_text('{"enabled":true,"socket":"/unused"}')
     @asynccontextmanager
@@ -29,6 +29,7 @@ def subject(tmp_path):
     wake.fresh.add(delivery)
     wake.fresh_messages[delivery] = NS(route_ref="ordinary.request", payload={})
     wake._admit = AsyncMock(return_value=True)
+    wake._alert = AsyncMock()
     async def call(method, _params):
         return {"thread/read": {"thread": {"status": {"type": "idle"}}},
                 "thread/turns/list": {"data": []}, "turn/start": {"turn": {"id": "t"}},
@@ -37,7 +38,7 @@ def subject(tmp_path):
     return wake, rpc, binding, identity, delivery
 
 
-@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown"])
+@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown", "malformed"])
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
     if boundary == "oldnew":
@@ -62,6 +63,8 @@ async def test_dispatch_boundaries(subject, boundary):
         if method == "thread/turns/list" and boundary in {"receipt", "routed"}:
             return {"data": [{"items": [{"type": "userMessage", "content": [
             {"type": "text", "text": MARKER + json.dumps([str(delivery)])}]}]}]}
+        if method == "turn/start" and boundary == "malformed":
+            return {"turn": {"id": None}}
         if method == "turn/start" and boundary == "unknown":
             raise ConnectionError("acceptance lost")
         return await original(method, params)
@@ -72,13 +75,13 @@ async def test_dispatch_boundaries(subject, boundary):
         wake.messages.all_pending_delivery_ids.return_value = None
     if boundary == "old":
         wake.fresh.clear()
-    if boundary == "unknown":
-        with pytest.raises(RuntimeError):
+    if boundary in {"unknown", "malformed"}:
+        with pytest.raises(module.UncertainTurn):
             await wake._reconcile(rpc, binding, identity)
     else:
         await wake._reconcile(rpc, binding, identity, path="/root/head" if boundary == "routed" else None)
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
-    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown"} else 0)
+    assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown", "malformed"} else 0)
     if boundary == "oldnew":
         assert json.loads(starts[0]["input"][0]["text"].split("\n", 1)[0][len(MARKER):]) == [str(delivery)]
     if boundary == "old":
@@ -208,7 +211,9 @@ async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatc
     for b in (binding, other):
         wake.signal(NS(delivery_id=delivery, recipient_work_id=b.endpoint_id), True)
     await asyncio.sleep(.03)
-    assert all(task.done() for task in wake.tasks.values()) == (failure == "uncertain")
+    assert bool(wake.suspended) == (failure == "uncertain")
+    if failure == "uncertain":
+        assert attempts == 2
     if failure == "rejected":
         assert attempts >= 4
     if failure == "resume_rejected":
@@ -243,3 +248,104 @@ async def test_only_unique_owning_daemon_is_attached(subject, monkeypatch, owner
         assert attached == (socket == "/" + owner)
     assert wake._reconcile.await_count == (1 if owner in {"first", "second"} else 0)
     await wake.close()
+
+
+@pytest.mark.parametrize("agent_type", [None, "claude", "chatgpt"])
+async def test_other_runtime_never_discovers_or_suspends(subject, monkeypatch, agent_type):
+    wake, _, binding, _, delivery = subject
+    binding = binding.model_copy(update={"agent_type": agent_type})
+    wake.mailboxes = NS(by_endpoint_id=AsyncMock(return_value=NS(mailbox=binding)))
+    connect = AsyncMock(side_effect=AssertionError("must not contact Codex"))
+    monkeypatch.setattr(module, "DaemonConnection", connect)
+    wake.signal(NS(delivery_id=delivery, recipient_work_id=binding.endpoint_id), True)
+    await wake.tasks[binding.endpoint_id]
+    connect.assert_not_called()
+    assert binding.endpoint_id not in wake.suspended
+    wake._alert.assert_not_awaited()
+
+
+async def test_unloaded_root_resumes_before_capability_check(subject):
+    wake, rpc, _, identity, _ = subject
+    rpc.call.side_effect = [
+        {"thread": {"parentThreadId": None, "status": {"type": "notLoaded"},
+                    "canAcceptDirectInput": None}}, {},
+        {"thread": {"parentThreadId": None, "status": {"type": "idle"},
+                    "canAcceptDirectInput": True}},
+    ]
+    assert (await wake._root(rpc, identity))["canAcceptDirectInput"]
+    assert [c.args[0] for c in rpc.call.call_args_list] == [
+        "thread/read", "thread/resume", "thread/read"]
+
+
+@pytest.mark.parametrize("owner", ["dead_reader", "unrelated_offline", "missing", "multiple"])
+async def test_discovery_recovers_and_reports_failure(subject, monkeypatch, caplog, owner):
+    wake, _rpc, binding, identity, delivery = subject
+    wake.sockets = ("/first", "/second")
+    wake.mailboxes = NS(by_endpoint_id=AsyncMock(return_value=NS(mailbox=binding)))
+    calls = []
+    @asynccontextmanager
+    async def connect(socket, dirty):
+        calls.append(socket)
+        if socket == "/second" and owner == "unrelated_offline":
+            raise ConnectionError("offline unrelated daemon")
+        async def call(method, params):
+            if method in {"thread/list", "thread/loaded/list"}:
+                return {"data": [identity] if owner != "missing" and (
+                    socket == "/first" or owner == "multiple") else []}
+            return {"thread": {"parentThreadId": None, "canAcceptDirectInput": True,
+                               "status": {"type": "idle"}}}
+        peer = NS(call=AsyncMock(side_effect=call), socket=socket, reader=None)
+        yield peer
+    monkeypatch.setattr(module, "DaemonConnection", connect)
+    attempts = 0
+    async def reconcile(peer, *_):
+        nonlocal attempts
+        attempts += 1
+        if owner == "dead_reader" and attempts == 1:
+            peer.reader = asyncio.create_task(asyncio.sleep(0))
+            await peer.reader
+            wake.events[binding.endpoint_id].set()
+            return
+        raise module.UncertainTurn("test ends at dispatch boundary")
+    wake._reconcile = reconcile
+    wake.signal(NS(delivery_id=delivery, recipient_work_id=binding.endpoint_id), True)
+    await wake.tasks[binding.endpoint_id]
+    if owner == "dead_reader":
+        assert calls.count("/first") == 2 and attempts == 2
+    if owner == "unrelated_offline":
+        assert attempts == 1
+    if owner in {"missing", "multiple"}:
+        assert owner in wake.outcomes[binding.endpoint_id]
+        assert attempts == 0
+    wake._alert.assert_awaited_once()
+    assert '"generation": 1' in caplog.text and '"discovery":' in caplog.text
+    await wake.close()
+
+
+async def test_committed_discovery_baselines_old_mail_and_deduplicates_callback(subject):
+    wake, _, binding, _, delivery = subject
+    old = NS(delivery_id=uuid4(), recipient_work_id=binding.endpoint_id)
+    new = NS(delivery_id=delivery, recipient_work_id=binding.endpoint_id)
+    wake.messages.wake_pending = AsyncMock(return_value=(old,))
+    wake._run = AsyncMock()
+    await wake.start()
+    wake.messages.wake_pending.return_value = (old, new)
+    await asyncio.sleep(1.05)
+    wake._run.assert_awaited_once()
+    assert old.delivery_id not in wake.fresh and delivery in wake.fresh
+    await asyncio.sleep(1.05)
+    wake._run.assert_awaited_once()
+    await wake.close()
+
+
+async def test_failure_alert_is_one_durable_mail_to_claude(subject):
+    wake, _, binding, _, _ = subject
+    wake.mailboxes = NS(by_name=AsyncMock(return_value=NS(mailbox=binding)))
+    wake.messages.submit_admitted = AsyncMock(return_value=NS(status="ok"))
+    await module.InboundWake._alert(wake, {"generation": 1, "phase": "discovery"},
+                                    RuntimeError("missing route"))
+    wake.messages.submit_admitted.assert_awaited_once()
+    args = wake.messages.submit_admitted.call_args.args
+    assert args[1].recipient_work_id == binding.endpoint_id
+    assert args[2].route_ref == "agent.claude-coordinator"
+    assert args[2].payload["error"] == "missing route"
