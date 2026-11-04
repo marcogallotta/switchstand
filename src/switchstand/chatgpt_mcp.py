@@ -713,7 +713,9 @@ def build_ordinary_tools(
         """Capture a title-only unassigned Task; capture grants no execution authority.
 
         Omit semantic fields for inert WAITING capture, optionally under an admitted
-        parent or project. Assigned work requires explicit SELF and legal state/action.
+        parent or project. Before assigned SELF creation, register this MCP session's
+        unique durable agent name with agent_register (reuse its binding on resume).
+        Assigned work requires explicit SELF and legal state/action.
         Explicit UNKNOWN or incompatible partial state is denied, never defaulted.
         """
         correlate(parent_work_id)
