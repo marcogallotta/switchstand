@@ -36,6 +36,7 @@ class _Facts(_DiagnosticModel):
     draftPresent: StrictBool | None = None
     inserted: StrictBool | None = None
     controlSelection: Literal["missing-form", "no-explicit", "all-hidden", "ambiguous", "unique"] | None = None
+    ownershipInvalidator: Literal["editor-mutation", "form-event", "navigation", "none-unknown"] | None = None
     controlPresent: StrictBool | None = None
     controlEnabled: StrictBool | None = None
     clickDispatched: StrictBool | None = None
@@ -52,7 +53,7 @@ class _Attempt(_DiagnosticModel):
     finished: AwareDatetime | None
     outcome: Annotated[str, Field(max_length=40)] | None
     reason: Literal["dispatch-start", "result", "dom-exception", "execution-failed",
-                    "missing-result", "stopped-before-dispatch"]
+                    "missing-result", "stopped-before-dispatch", "ownership-changed"]
     facts: _Facts
     exception: Literal["Error", "TypeError", "ReferenceError", "DOMException", "Other"] | None = None
 

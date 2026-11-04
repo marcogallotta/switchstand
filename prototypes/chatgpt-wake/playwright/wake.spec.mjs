@@ -232,3 +232,41 @@ test('HALTED current control snapshot preserves draft, busy state and legacy cau
   expect(wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.current_control.reason).toBe('unavailable');
   expect(JSON.stringify(wake.reports)).not.toContain('private draft sentinel');
 });
+
+for (const kind of ['same-text-normalization', 'trusted-user-edit']) {
+  test(`ownership RCA: ${kind} refuses before click`, async ({wake}) => {
+    await wake.page.evaluate(kind=>{
+      window.rca={kind,normalized:false,events:[]};
+      const editor=document.querySelector('#prompt-textarea');
+      editor.addEventListener('input',event=>rca.events.push({trusted:event.isTrusted}));
+      if(kind==='same-text-normalization') editor.addEventListener('input',()=>setTimeout(()=>{
+        editor.replaceChildren(document.createTextNode(editor.textContent));rca.normalized=true;
+      },25),{once:true});
+    },kind);
+    wake.metadata.delivery_ids=[delivery(950)];const checking=wake.check();
+    if(kind==='trusted-user-edit') {
+      await wake.page.waitForFunction(()=>fixture.insertions===1);
+      await wake.page.keyboard.type('x');
+    }
+    await checking;
+    const cause=await wake.popup.evaluate(async()=>{const s=await chrome.storage.local.get('wakeBindings');
+      return (await chrome.scripting.executeScript({target:{tabId:s.wakeBindings[0].tabId},func:()=>{
+        const witness=globalThis.switchstandWakeWitness,before=witness.invalidator;witness.retire();return [before,witness.invalidator];
+      }}))[0].result;});
+    expect(cause).toEqual([kind==='same-text-normalization'?'editor-mutation':'form-event',kind==='same-text-normalization'?'editor-mutation':'form-event']);
+    const binding=await wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
+    console.log(JSON.stringify({kind,status:binding.status,facts:binding.diagnostic.facts}));
+    expect(binding.halted).toBe(true);expect(binding.diagnostic.facts.clickDispatched).toBeUndefined();
+    await expect(wake.page.locator('#turns li')).toHaveCount(0);
+    if(kind==='same-text-normalization') {
+      expect(binding.status).toBe('attempt-outcome-unknown: ownership changed');
+      expect(binding.diagnostic.reason).toBe('ownership-changed');expect(binding.diagnostic.facts.ownershipInvalidator).toBe('editor-mutation');
+      expect(binding.diagnostic.facts).toMatchObject({inserted:true,controlSelection:'unique',controlPresent:true,controlEnabled:true});
+      await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
+      expect(await wake.page.evaluate(()=>rca.normalized)).toBe(true);
+    } else {
+      expect(binding.status).toMatch(/inserted-not-submitted/);
+      expect(await wake.page.evaluate(()=>rca.events.some(event=>event.trusted))).toBe(true);
+    }
+  });
+}

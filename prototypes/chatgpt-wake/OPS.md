@@ -112,3 +112,5 @@ The latest failed diagnostic report is retried during ordinary Check; there is n
 history. A new attempt may replace an older unreported receipt. Logging does not itself repair HALT. The combined candidate retains conversation routing,
 page-owned one-no-click retry and unique visible explicit Send selection (including exact case-insensitive aria-label Send); retry-fence rejection
 is logged separately from the retained original attempt.
+
+Ownership refusal retains fixed reason `ownership-changed` and first invalidator family only; `none-unknown` includes queued mutations before callback delivery. No ownership guard or retry policy changes.

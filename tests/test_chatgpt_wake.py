@@ -133,6 +133,11 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
             selected = deepcopy(payload)
             selected["diagnostics"]["attempt"]["facts"]["controlSelection"] = selection
             assert (await client.post(PATH + "/report", json=selected, headers=headers)).json() == {"status": "logged"}
+        for cause in ["editor-mutation", "form-event", "navigation", "none-unknown", "private draft sentinel"]:
+            owned = deepcopy(payload)
+            owned["diagnostics"]["attempt"]["reason"] = "ownership-changed"
+            owned["diagnostics"]["attempt"]["facts"]["ownershipInvalidator"] = cause
+            assert (await client.post(PATH + "/report", json=owned, headers=headers)).status_code == (400 if cause == "private draft sentinel" else 200)
         invalid_selection = deepcopy(payload)
         invalid_selection["diagnostics"]["attempt"]["facts"]["controlSelection"] = "private draft sentinel"
         assert (await client.post(PATH + "/report", json=invalid_selection, headers=headers)).status_code == 400
@@ -166,10 +171,12 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         maximum["diagnostics"]["attempt"]["delivery_ids"] = [str(uuid4()) for _ in range(50)]
         maximum["diagnostics"]["attempt"]["generation"] = 9007199254740991
         maximum["diagnostics"]["attempt"]["exception"] = "ReferenceError"
+        maximum["diagnostics"]["attempt"]["reason"] = "ownership-changed"
         maximum["diagnostics"]["attempt"]["facts"] = dict.fromkeys([
             "urlMatched", "editorFound", "busy", "draftPresent", "inserted",
             "controlPresent", "controlEnabled", "clickDispatched"], False)
         maximum["diagnostics"]["attempt"]["facts"]["controlSelection"] = "missing-form"
+        maximum["diagnostics"]["attempt"]["facts"]["ownershipInvalidator"] = "editor-mutation"
         maximum["diagnostics"]["current_control"] = {"release": identity, "boot": identity, "reason": "editor-unavailable"}
         maximum["diagnostics"]["pair"]["reason"] = "conversation-already-bound"
         request = client.build_request("POST", PATH + "/report", json=maximum, headers=headers)

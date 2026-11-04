@@ -100,9 +100,11 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (attempt?.token) {
       globalThis.switchstandWakeWitness?.retire();
       const events = ['input', 'beforeinput', 'paste', 'change', 'keydown', 'click', 'submit'];
-      const invalidate = () => witness.retire();
+      const invalidate = event => witness.retire(!event?.type ? 'editor-mutation'
+        : ['pagehide', 'popstate'].includes(event.type) ? 'navigation' : 'form-event');
       witness = {token: attempt.token, editor, url: expectedUrl, valid: true,
-        observer: new MutationObserver(invalidate), retire() {
+        observer: new MutationObserver(invalidate), retire(cause = 'none-unknown') {
+          if (this.valid) this.invalidator = cause;
           this.valid = false; this.observer.disconnect();
           for (const event of events) (form || editor).removeEventListener(event, invalidate, true);
           window.removeEventListener('pagehide', invalidate);
@@ -134,7 +136,10 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
       return outcome;
     }
     // User actions during the wait for a send control revoke ownership permanently.
-    if (attempt && !owned(witness)) { witness?.retire(); return 'attempt-outcome-unknown: ownership changed'; }
+    if (attempt && !owned(witness)) {
+      facts.ownershipInvalidator = witness?.invalidator || 'none-unknown';
+      witness?.retire(); return 'attempt-outcome-unknown: ownership changed';
+    }
     witness?.retire();
     facts.clickDispatched = true;
     send.click();
@@ -155,7 +160,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '195b3191-7d9c-4651-9f21-527a941085c9';
+const releaseId = 'd4f1f4bf-c720-4e4e-a5a4-b67c3a60d03e';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -183,7 +188,7 @@ async function diagnosticReport(binding, save) {
 }
 function attemptResult(binding, outcome, receipt, reason, error) {
   Object.assign(binding.diagnostic, {finished: new Date().toISOString(),
-    outcome: outcome.split(':')[0], reason: reason || receipt?.reason || 'result',
+    outcome: outcome.split(':')[0], reason: reason || receipt?.reason || (outcome === 'attempt-outcome-unknown: ownership changed' ? 'ownership-changed' : 'result'),
     facts: receipt?.facts || {}, exception: error
       ? (['Error', 'TypeError', 'ReferenceError', 'DOMException'].includes(error.name) ? error.name : 'Other')
       : receipt?.exception || null});
