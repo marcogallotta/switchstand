@@ -1,0 +1,75 @@
+#!/home/marco/switchstand/.venv/bin/python
+"""Read exactly the three recovery notes; stdout contains only their plain text."""
+import json
+import os
+import re
+from pathlib import Path
+import sys
+
+ROOT = Path('/home/marco/switchstand-recovery/coordinator')
+FORBIDDEN = Path('/home/marco/.config/switchstand/.env')
+def guard(event, args):
+    if event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):
+        if Path(os.fsdecode(args[0])).resolve() == FORBIDDEN:
+            raise PermissionError('forbidden configuration file')
+sys.addaudithook(guard)
+sys.dont_write_bytecode = True
+sys.path.insert(0, '/home/marco/switchstand/src')
+from switchstand.edge_semantic_probe import MCP, _private
+from switchstand.stable_auth_deployment import _env
+
+IDS = ('40581c1e-04c5-5ab4-94d9-3c5ce21fcd35',
+       '332857d1-6c4d-51e8-af19-ed77b4f19e69',
+       'a8ec90d7-8f20-5e44-9551-03fbfea22474')
+
+def current_section(notes):
+    heading = re.search(r'^## CURRENT(?:[ \t]+[^\r\n]*)?\r?$', notes, re.MULTILINE)
+    if heading is None:
+        raise ValueError('CURRENT section unavailable')
+    following = re.search(r'^##[ \t]+', notes[heading.end():], re.MULTILINE)
+    end = heading.end() + following.start() if following else len(notes)
+    return notes[heading.start():end].rstrip()
+
+def render(notes, agents_bytes):
+    output = '\n\n'.join(notes).encode('utf-8')
+    if agents_bytes + len(output) > 10240:
+        return ('RECOVERY READ OVER 10 KB: tell Marco now; read the three items manually\n'
+                + '\n'.join(IDS)).encode('utf-8')
+    return output
+
+def main():
+    event = json.load(sys.stdin)
+    if event.get('hook_event_name') != 'SessionStart' or event.get('source') != 'compact':
+        raise ValueError('expected compact SessionStart')
+    values = _env(Path('/home/marco/.config/switchstand/mcp.env'))
+    client = MCP('http://127.0.0.1:8790/mcp', _private(Path(values['SWITCHSTAND_R0_TOKEN_FILE'])))
+    try:
+        client.initialize()
+        notes = []
+        for sequence, work_id in enumerate(IDS, 2):
+            response = client._post({'jsonrpc': '2.0', 'id': sequence,
+                'method': 'tools/call', 'params': {'name': 'work_get', 'arguments': {
+                'api_version': '1', 'work_id': work_id, 'include_notes': True}}})
+            response.raise_for_status()
+            envelope = response.json()
+            if 'error' in envelope: raise ValueError('MCP request failed')
+            result = envelope['result']
+            if result.get('isError'): raise ValueError('MCP tool failed')
+            content = result.get('content', [])
+            data = result.get('structuredContent')
+            if data is None:
+                data = json.loads(next(c['text'] for c in content if c.get('type') == 'text'))
+            if data.get('status') != 'ok' or data['item']['id'] != work_id:
+                raise ValueError('notes unavailable or mismatched')
+            note = data['item']['notes']
+            notes.append(current_section(note) if work_id == IDS[2] else note)
+        output = render(notes, (ROOT / 'AGENTS.md').stat().st_size)
+        sys.stdout.buffer.write(output)
+    finally:
+        client.close()
+
+if __name__ == '__main__':
+    try: main()
+    except Exception:
+        print('Recovery notes unavailable or over budget; no notes injected.', file=sys.stderr)
+        sys.exit(1)

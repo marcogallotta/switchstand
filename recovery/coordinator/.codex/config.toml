@@ -1,0 +1,40 @@
+# Project-level config for the recovery coordinator when it runs on the shared wake-enabled Codex daemon.
+[features]
+hooks = true
+multi_agent = true
+apps = false
+remote_plugin = false
+
+[[hooks.Stop]]
+[[hooks.Stop.hooks]]
+type = "command"
+command = "/home/marco/switchstand/scripts/codex-stop-mailbox"
+timeout = 5
+
+[[hooks.SessionStart]]
+matcher = "^compact$"
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/home/marco/switchstand-recovery/coordinator/codex-home/recovery-notes-hook"
+timeout = 45
+
+[mcp_servers.switchstand]
+# Ordinary in-repo Codex owns the authenticated provider-neutral HTTP/OAuth endpoint
+# directly; it must not depend on a pre-existing user-level server with the same name.
+url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
+required = true
+default_tools_approval_mode = "approve"
+enabled_tools = ["repository_bundle_get", "repository_candidate_qualification_get", "work_get", "human_trajectory_get", "work_search", "work_resolve_reference",
+                 "work_history", "work_event", "work_append", "observability_get", "capability_preflight_get",
+                 "project_create",
+                 "work_create", "work_update", "human_trajectory_record", "outcome_state_update", "implementation_request", "work_relate",
+                 "file_bug", "file_feature", "file_process", "file_performance", "file_review_feedback", "file_fork_management",
+                 "required_result_save", "agent_register", "agent_takeover", "agent_transfer_request",
+                 "agent_message_send", "agent_message_pending", "agent_message_receive",
+                 "agent_message_recover", "agent_message_result_send", "agent_message_acknowledge",
+                 "agent_message_disposition"]
+
+
+[mcp_servers.switchstand_oauth_proof]
+enabled = false
+url = "https://laptop.tail46f0b9.ts.net/switchstand/mcp"
