@@ -137,10 +137,11 @@ def authenticated_smoke(expected_sha: str) -> None:
 
 
 class Deployer:
-    def __init__(self, repo: Path, candidate_sha: str, log: TextIO):
+    def __init__(self, repo: Path, candidate_sha: str, log: TextIO, branch: str = "prod"):
         self.repo = repo
         self.candidate_sha = candidate_sha
         self.log = log
+        self.branch = branch
         self.attempt = STATE_ROOT / "deployments" / f"edge-{candidate_sha[:12]}"
         self.runtime = self.attempt / "runtime"
         self.launcher_before = self.attempt / "launcher.before"
@@ -184,11 +185,13 @@ class Deployer:
     def prepare(self) -> None:
         if self.code_record.exists():
             raise RuntimeError("retained code-only attempt requires reconciliation")
-        refspec = "+refs/heads/main:refs/remotes/origin/main"
+        git(self.repo, "check-ref-format", f"refs/heads/{self.branch}")
+        remote_ref = f"refs/remotes/origin/{self.branch}"
+        refspec = f"+refs/heads/{self.branch}:{remote_ref}"
         git(self.repo, "fetch", "--quiet", "--no-tags", "origin", refspec)
-        accepted = git(self.repo, "rev-parse", "origin/main").stdout.strip()
+        accepted = git(self.repo, "rev-parse", remote_ref).stdout.strip()
         if accepted != self.candidate_sha:
-            raise RuntimeError("candidate must be the exact current origin/main")
+            raise RuntimeError(f"candidate must be the exact current origin/{self.branch}")
         self.attempt.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.runtime.exists():
             actual = git(self.runtime, "rev-parse", "HEAD").stdout.strip()
@@ -408,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("candidate_sha")
     parser.add_argument("--repo", required=True, type=Path)
+    parser.add_argument("--branch", default="prod", help="exact remote candidate branch (default: prod)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--code-only-from", help="reviewed/replay-qualified exact old SHA")
     mode.add_argument("--rollback-code-only", action="store_true")
@@ -425,7 +429,7 @@ def main(argv: list[str] | None = None) -> int:
         except BlockingIOError:
             parser.error("another edge deployment holds the lock")
         try:
-            deployer = Deployer(args.repo.resolve(), args.candidate_sha, log)
+            deployer = Deployer(args.repo.resolve(), args.candidate_sha, log, args.branch)
             if args.rollback_code_only:
                 deployer.step("rollback_code_only", deployer.rollback_code_only)
             else:
