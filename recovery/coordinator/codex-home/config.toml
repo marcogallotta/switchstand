@@ -1,5 +1,5 @@
 approval_policy = "never"
-default_permissions = ":danger-full-access"
+sandbox_mode = "workspace-write"
 # This must be in CODEX_HOME before project discovery; project-local settings are too late.
 project_root_markers = [".git", ".recovery-root"]
 project_doc_max_bytes = 32768
@@ -37,3 +37,6 @@ timeout = 45
 # Exclude the observed remote Test connector even if remote apps are enabled elsewhere.
 [apps.asdk_app_6ad75caa7b108191abdd036d618b352e]
 enabled = false
+
+[sandbox_workspace_write]
+writable_roots = ["/home/marco/switchstand/.git", "/home/marco/.local/state/switchstand/worktrees"]

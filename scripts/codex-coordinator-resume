@@ -1,0 +1,59 @@
+#!/home/marco/switchstand/.venv/bin/python
+"""Load the exact existing Coordinator on its dedicated daemon, without a TUI."""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+from pathlib import Path
+from uuid import UUID
+
+from websockets.asyncio.client import unix_connect
+
+
+async def resume(socket: str, thread_id: str) -> None:
+    # Only connection establishment may retry: no request has been sent yet.
+    for attempt in range(50):
+        try:
+            connection = await unix_connect(socket, open_timeout=1)
+            break
+        except OSError:
+            if attempt == 49:
+                raise
+            await asyncio.sleep(0.1)
+    try:
+        async def call(identity: int, method: str, params: dict) -> dict:
+            await connection.send(json.dumps({"id": identity, "method": method, "params": params}))
+            while True:
+                packet = json.loads(await asyncio.wait_for(connection.recv(), 45))
+                if packet.get("id") == identity:
+                    if "error" in packet:
+                        raise RuntimeError(f"{method} rejected: {packet['error']}")
+                    return packet["result"]
+        await call(1, "initialize", {
+            "clientInfo": {"name": "switchstand-coordinator-resume", "version": "1"},
+            "capabilities": {"experimentalApi": True},
+        })
+        await connection.send(json.dumps({"method": "initialized", "params": {}}))
+        result = await call(2, "thread/resume", {"threadId": thread_id, "excludeTurns": True})
+        thread = result["thread"]
+        if thread["id"] != thread_id:
+            raise RuntimeError("daemon resumed a different thread")
+        print(json.dumps({"thread_id": thread_id, "status": thread["status"], "resumed": True}))
+    finally:
+        await connection.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--socket", default="/run/user/1000/switchstand-codex.sock")
+    parser.add_argument("--thread-file", type=Path, default=Path(
+        "/home/marco/.local/state/switchstand/codex/coordinator/background-thread-id"))
+    args = parser.parse_args()
+    thread_id = args.thread_file.read_text().strip()
+    UUID(thread_id)  # Refuse missing/invalid identity; never create a replacement thread.
+    asyncio.run(resume(args.socket, thread_id))
+
+
+if __name__ == "__main__":
+    main()

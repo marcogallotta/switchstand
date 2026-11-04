@@ -243,3 +243,40 @@ async def test_only_unique_owning_daemon_is_attached(subject, monkeypatch, owner
         assert attached == (socket == "/" + owner)
     assert wake._reconcile.await_count == (1 if owner in {"first", "second"} else 0)
     await wake.close()
+
+
+@pytest.mark.parametrize("failure", [ConnectionError("disconnect"), module.UncertainTurn("unknown turn")])
+@pytest.mark.parametrize("delivery_races_disconnect", [False, True])
+async def test_new_delivery_reconnects_only_definite_transport_failure(subject, monkeypatch, failure,
+                                                                      delivery_races_disconnect):
+    wake, _, binding, _, delivery = subject
+    started, disconnect = asyncio.Event(), asyncio.Event()
+    attempts = 0
+    class Connection:
+        def __init__(self, *_):
+            pass
+        async def __aenter__(self):
+            nonlocal attempts
+            attempts += 1
+            started.set()
+            if attempts == 1:
+                await disconnect.wait()
+                raise failure
+            await asyncio.Event().wait()
+        async def __aexit__(self, *_):
+            pass
+    monkeypatch.setattr(module, "DaemonConnection", Connection)
+    message = NS(recipient_work_id=binding.endpoint_id, delivery_id=delivery)
+    wake.signal(message, True)
+    await started.wait()
+    first = wake.tasks[binding.endpoint_id]
+    if delivery_races_disconnect:
+        wake.signal(message, True)
+    disconnect.set()
+    await first
+    if not delivery_races_disconnect:
+        wake.signal(message, True)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert attempts == (2 if isinstance(failure, ConnectionError) else 1)
+    await wake.close()
