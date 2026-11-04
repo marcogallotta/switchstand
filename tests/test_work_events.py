@@ -1,10 +1,7 @@
-import os
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
-from alembic import command
-from alembic.config import Config
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -50,19 +47,10 @@ def test_inert_event_schema_does_not_join_current_shared_metadata():
 
 
 @pytest.fixture
-async def repository(database_prerequisite):
-    url = os.getenv("TEST_DATABASE_URL")
-    if not url:
-        pytest.skip("TEST_DATABASE_URL is required for work-event persistence tests")
-    config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", url)
-    command.upgrade(config, "head")
-    engine = create_async_engine(url)
+async def repository(canonical_database_schema: str):
+    engine = create_async_engine(canonical_database_schema)
     work_id, other_work_id = uuid4(), uuid4()
     async with engine.begin() as connection:
-        await connection.run_sync(lambda sync: canonical_metadata.create_all(
-            sync, tables=[canonical_work, work_events], checkfirst=True
-        ))
         await connection.execute(canonical_work.insert(), [
             {
                 "work_id": work_id, "title": "First", "normalized_title": "first",
