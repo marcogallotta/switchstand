@@ -95,10 +95,9 @@ a separate explicitly authorized operator action completed before the DB-native 
 installed. A surviving mismatch remains `UNKNOWN` and requires trusted operator adjudication without
 a resend.
 
-Raw `source_*` tools are not part of the ordinary current surface. They remain
-available only on bounded managed/recovery compatibility routes described in
-[MCP work, history, and compatibility](source-history-feedback.md). New ordinary
-flows use provider-neutral WorkIds and work/history/event tools.
+Raw `source_*` tools are retired from both ordinary and managed current MCP surfaces.
+Flows use provider-neutral WorkIds and work/history/event tools as described in
+[MCP work, history, and compatibility](source-history-feedback.md).
 
 This private single-user deployment advertises `readOnlyHint=true` on every
 current ordinary tool to work around ChatGPT prompting for routine calls even

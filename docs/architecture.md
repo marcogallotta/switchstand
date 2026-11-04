@@ -918,8 +918,9 @@ are removal predicates, not removal decisions:
 | Stable-auth activation-only migration/deployment (`stable_auth_migration.py`, `stable_auth_deployment.py`) | Owns state-copy receipts, the public gate, first split activation, and ambiguous/post-exposure forward repair. | The topology decision and separately authorized activation are terminal, exact live readback has closed every migration/deployment receipt and rollback window, and the retained topology has another owner for every still-required recovery path. | Stable-auth transition owner (`stable_auth_deployment.py`, `chatgpt-mcp-edge.md`) |
 | Resource-worker broker/executor/canary trial | Keeps the inert candidate available for the bounded evidence needed to adopt or retire it. | A separately authorized exact canary is terminal and the explicit decision either assigns an active runtime owner after PASS or records retirement plus disposal of broker state/units after non-adoption; incomplete/UNKNOWN evidence permits neither. | Resource-worker trial owner (`agent_broker.py`, `resource-governed-agent-workers.md`) |
 
-- Raw `source_*` tools remain until ordinary, recovery, and failback consumers have verified
-  provider-neutral replacements and legacy references are drained.
+- Raw `source_*` tools are already retired from current MCP surfaces. Retained internal provider
+  compatibility remains subject to its applicable removal predicates, including verified provider-neutral
+  replacements for ordinary, recovery, and failback consumers and drained legacy references.
 - Agent-name mailboxes remain until canonical durable agent identity replaces their endpoint UUID
   bridge and existing messages can be migrated without losing currentness or reply identity.
 - `launch_source.py` remains until isolated launch no longer needs host-side source translation and
