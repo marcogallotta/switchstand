@@ -535,7 +535,7 @@ messaging, and required continuation:
   caller authority contract; an operation ID identifies one protected effect across reconciliation.
 - `messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
-  checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
+  checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
   the historical projection table remains readable only for frozen-cutover disposition and later
   schema retirement.
 - `agent_mailboxes.py` owns the temporary `agent_mailboxes` binding of a visible durable agent
@@ -584,9 +584,10 @@ generation, MCP session currentness, and WorkId remain distinct. It should be re
 only after the canonical agent/work identity model and migration of outstanding mailbox state are
 implemented and verified.
 
-`agent_message_acknowledge` moves one to ten ordinary AVAILABLE/RECEIVED notifications to
+`agent_message_acknowledge` moves one to ten recipient AVAILABLE/RECEIVED deliveries to
 ACKNOWLEDGED. ACK means only that the notification was processed: it does not reply, complete,
-record a verdict/effect, or close a sender watch. Typed-review routes reject ACK. An exact result
+record a verdict/effect, or close a sender watch. Typed-review deliveries may be dismissed by ACK;
+ordinary result and disposition routes still reject them. An exact ordinary result
 may reply from ACK and atomically stores the result plus exact-evidence disposition; replay
 converges both records. Recipient pending reads show only AVAILABLE/RECEIVED deliveries, while
 open request watches and proposed-owner references include ACKNOWLEDGED until disposition.
@@ -759,7 +760,8 @@ Activity never postpones the deadline; actors are isolated, duplicates suppresse
 The synchronous mailbox `Stop` hook calls the loopback-only
 `/internal/codex-stop-mailbox` route on the existing edge. That route resolves only the current
 `codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs
-without receiving or changing them. The hook follows continuation cursors, with
+excluding reserved review routes before pagination, without receiving or changing them.
+The hook follows continuation cursors, with
 `stop_hook_active` as the mandatory continued-stop escape; missing, replaced, malformed, timed-out,
 or unavailable state fails open visibly. The public host does not route this path. The optional read-only
 `check_obligations` projection on that same route resolves the current `Codex Coordinator`
