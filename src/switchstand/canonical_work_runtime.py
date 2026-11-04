@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from typing import Protocol, cast
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import Text, exists, insert, select, true, update
@@ -34,13 +34,11 @@ from .contracts import (
     Routing,
     WorkContext,
     WorkItem,
-    WorkPatch,
     WorkPlacement,
     WorkResult,
     WorkSearchItem,
     WorkSearchRequest,
     WorkSearchResult,
-    WorkUpdateRequest,
 )
 from .creates import CreateGateway
 from .grant_state import GrantState, effect_intents
@@ -123,10 +121,6 @@ def confirmation_message(review_id: UUID) -> str:
     return CONFIRM_CANCELS_REVIEW_MESSAGE.format(review_id=review_id)
 
 
-class _TypedUpdateRequest(Protocol):
-    patch: WorkPatch
-
-
 def _routing(work: CurrentWork) -> Routing:
     return Routing(
         priority=work.priority,
@@ -144,7 +138,7 @@ def _routing(work: CurrentWork) -> Routing:
 
 
 def _validate_semantic_write(
-    work: CurrentWork, fields: set[str] | frozenset[str], *, field_local: bool = False,
+    work: CurrentWork, fields: set[str] | frozenset[str],
 ) -> None:
     if fields & SEMANTIC_FIELDS:
         validate_resultant_state(
@@ -152,7 +146,7 @@ def _validate_semantic_write(
             owner_key=work.owner_key, wait_kind=work.wait_kind,
             unblock_condition=work.unblock_condition, next_due=work.next_due,
             next_action_class=work.next_action_class, next_action_ref=work.next_action_ref,
-            completed=work.completed, affected=fields if field_local else SEMANTIC_FIELDS,
+            completed=work.completed, affected=fields,
         )
 
 
@@ -423,39 +417,6 @@ class CanonicalWorkRuntime:
                 request, "unknown", "state_or_effect_unavailable", possible=True,
             )
 
-    async def update(self, request: WorkUpdateRequest) -> WorkResult:
-        current = await self.works.get(request.work_id)
-        current_item = None if current is None else await self._item(current)
-        if current is None or current_item is None:
-            return WorkResult(status="unknown")
-        if request.observed_revision != current_item.revision:
-            return WorkResult(status="stale", item=current_item)
-        patch: WorkPatch = cast(_TypedUpdateRequest, request).patch  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
-        fields = patch.model_fields_set
-        if not fields <= _SCALAR_FIELDS:
-            return WorkResult(status="denied")
-        values = {field: getattr(patch, field) for field in fields}  # pyright: ignore[reportUnknownArgumentType]
-        try:
-            candidate = replace(current, **values)
-            _validate_semantic_write(candidate, fields)
-            root_id = _exact_root(candidate.canonical_root)
-            if root_id is not None and await self.works.get(root_id) is None:
-                return WorkResult(status="denied")
-            changed = await self.works.replace(candidate)
-        except ValueError as error:
-            if "stale canonical work version" not in str(error):
-                return WorkResult(status="denied")
-            latest = await self.works.get(request.work_id)
-            latest_item = None if latest is None else await self._item(latest)
-            return (
-                WorkResult(status="unknown") if latest_item is None
-                else WorkResult(status="stale", item=latest_item)
-            )
-        changed_item = await self._item(changed)
-        if changed_item is None:
-            return WorkResult(status="unknown")
-        return WorkResult(status="ok", item=changed_item)
-
     @staticmethod
     def _guard(
         request: ProtectedUpdate, status: str, reason: str, *, possible: bool = False,
@@ -593,7 +554,7 @@ class CanonicalWorkRuntime:
                                 "next_action_class/next_action_ref and NONE "
                                 "wait_kind/unblock_condition/next_due"
                             )
-                        _validate_semantic_write(candidate, set(values), field_local=True)
+                        _validate_semantic_write(candidate, set(values))
                     except ValueError as error:
                         return self._guard(request, "denied", "invalid_resultant_state").model_copy(
                             update={"next_action": str(error)}
