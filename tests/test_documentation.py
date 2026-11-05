@@ -140,7 +140,7 @@ def test_role_router_has_exact_function_routes_and_owner_links():
     }
 
     assert set(routes) == {
-        "Ordinary session",
+        "Unbound Worker session",
         "Root",
         "Delegated Coordinator",
         "Research/design Worker",
@@ -268,7 +268,7 @@ def test_authority_and_work_routing_keep_their_causal_fences():
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
     assert "Role, docs, placement, readability, login/tools and procedures never grant authority" in authority
-    assert "An ordinary unbound Coordinator uses an assigned/handoff WorkId" in authority
+    assert "An unbound Coordinator or Worker uses an assigned/handoff WorkId" in authority
     assert "Mailbox registration/takeover supplies neither work identity nor authority" in authority
     assert "never create work from a question, status, correction, approval" in authority
     assert "Landing requires current independent review and exact-head/composition gates" in authority
@@ -314,16 +314,17 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     assert "pass his full current confirmation message to `agent_takeover`" in agents
     assert "must stop and ask Marco for confirmation" in agents
     assert "never retake the Coordinator after losing it" in agents
-    assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
+    assert "Neither creates a writer, manifest, Wakeful supervisor, or launch-bound WorkId" in usage
+    assert "The scripts bypass any `codex` command earlier on `PATH`" in usage
+    assert "Resume the exact session through the same role entry" in usage
     assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
-    assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
+    assert "Coordinator mailbox identity and any takeover require Marco's separate current direction" in usage
     assert "`/root` remains a temporary inbound alias" in usage
     assert "stops with `takeover_confirmation_required`" in usage
-    assert "tells the agent to ask Marco" in usage
-    assert "never retakes the name after losing it" in usage
+    assert "never retakes a lost name without a new direct instruction" in usage
     assert "checks pending mail at the start and end of each Marco turn" in usage
     assert "whenever Marco says `check mail`" in usage
-    assert "A fresh launch is independent" in usage
+    assert "A fresh `scripts/launch-coordinator` run is independent" in usage
     assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
     assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
 
