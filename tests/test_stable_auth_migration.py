@@ -125,7 +125,8 @@ def test_source_change_during_copy_fails_and_preserves_partial_evidence(
 
 def test_state_manifest_rejects_symlink_hardlink_and_missing_category(tmp_path: Path):
     source = state_tree(tmp_path)
-    first = next(source.rglob("*.json"))
+    required_store = source / f"S_mcp_{migration.STATE_CATEGORIES['clients']}-fixture"
+    first = next(required_store.glob("*.json"))
     link = source / "symbolic"
     link.symlink_to(first)
     with pytest.raises(MigrationFailure, match="symbolic"):
