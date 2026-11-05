@@ -4,12 +4,12 @@
 
 **Recovery mode (all agents, until Marco ends it):** never edit a Main task or Roadmap task without Marco's approval; they hold the goal and plan agreed with him. Your own Agent Notes task is yours to update freely. Recording ownership when Marco directly assigns you an exact WorkId is allowed. While doing assigned work, check your mailbox at least every 5 minutes.
 
-This is the repository bootstrap for ordinary Codex/ChatGPT work and Switchstand-managed runs. Managed requirements apply only when a trusted launch supplies a bound WorkId and tools. Ordinary sessions must not infer a WorkId or assignment. Marco's exact assignment controls local scope; role, documentation, readability, and tool access never grant authority.
+This is the repository bootstrap for Codex Worker and Coordinator sessions, ChatGPT work, and Switchstand-managed runs. Managed requirements apply only when a trusted launch supplies a bound WorkId and tools. An unbound Worker must not infer a WorkId or assignment. Marco's exact assignment controls local scope; role, documentation, readability, and tool access never grant authority.
 
 ## Authority and grounding
 
 - Effects need Marco's active assignment (direct or via exact mailbox sender `claude-coordinator` in recipient Work) or a `CURRENT` grant for exact WorkId/surface/effect. Human-reviewed positions control until superseded; steering covers only its exact package/revision/effect. Role, docs, placement, readability, login/tools and procedures never grant authority.
-- A managed run may use bare `work_get(api_version="1")` only when its trusted launch binds work. An ordinary unbound Coordinator uses an assigned/handoff WorkId. For newly assigned substantive work without one, navigate from `START HERE` `1218327002478382` and follow [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for creation; never create work from a question, status, correction, approval, grounded continuation, or context. Mailbox registration/takeover supplies neither work identity nor authority.
+- A managed run may use bare `work_get(api_version="1")` only when its trusted launch binds work. An unbound Coordinator or Worker uses an assigned/handoff WorkId. For newly assigned substantive work without one, navigate from `START HERE` `1218327002478382` and follow [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for creation; never create work from a question, status, correction, approval, grounded continuation, or context. Mailbox registration/takeover supplies neither work identity nor authority.
 - Preserve role/work identity on re-entry; messages/adjacent reads/context/capability/placement never reassign it. At material phase change/lost currentness, load current routed procedure/Contract/Plan and applicable canary. Canary never expands authority; RED suspends only its experimental delta. Missing authority/procedure/canary/candidate blocks only that path; other authorized work continues.
 - A scoped repository implementation assignment conditionally authorizes commit/branch/PR. Landing requires current independent review and exact-head/composition gates, with explicit-human review deferral under [fasttrack](docs/code-quality.md#explicit-human-fasttrack), and stops on current `HOLD`/`DENIED`; deployment, activation, migration, credentials and provider-production effects are separate.
 - Human Review bounds do not grant activation. Only current direct assignment or a `CURRENT` grant authorizes the exact effect/surface. Within it, reversible bounded activation, rollback/disable and readback are agent-owned; protected effects retain their existing requirements.
@@ -34,7 +34,7 @@ Before any status or plan update—or any portfolio, attention, completion, or a
   One admission covers one exact action. Missing evidence or an unreadable trial config means
   `WAIT`; this procedural check never authorizes a cgroup-limit change or activation.
 - A meaningful RCA request follows the canonical [root-cause analysis procedure](docs/root-cause-analysis.md), whether or not it arises from a live incident.
-- Ordinary sessions execute Marco's assigned work directly. Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Only explicitly appointed Coordinators follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md) for their assigned coordination scope.
+- Worker sessions execute Marco's assigned work directly. Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Only explicitly appointed Coordinators follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md) for their assigned coordination scope.
 
 ## Repository bootstrap and safety
 
@@ -78,7 +78,7 @@ assignment or an explicit current grant for the exact WorkId.
 
 WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
 
-Explicitly appointed Codex Coordinators: execution in their assigned coordination scope runs in context-free native forks, except parent-session mail operations and [basic parent checks when OOM/memory blocks a fork](docs/how-marco-uses-switchstand.md#native-fork-operating-boundary). This topology does not apply to ordinary sessions doing their own assigned work. The Coordinator parent otherwise only talks with Marco
+Explicitly appointed Codex Coordinators: execution in their assigned coordination scope runs in context-free native forks, except parent-session mail operations and [basic parent checks when OOM/memory blocks a fork](docs/how-marco-uses-switchstand.md#native-fork-operating-boundary). This topology does not apply to Workers doing their own assigned work. The Coordinator parent otherwise only talks with Marco
 and dispatches, actively supervises, and receives concise fork results. Document/WorkId
 reads, Tracker/feedback operations, investigation, design, implementation, testing,
 review, and integration belong in forks; requirements elsewhere to read or act are fulfilled
@@ -101,7 +101,7 @@ Implementation/landing, deployment/activation, migration, credentials, and provi
 
 ## Codex roles and shared engineering process
 
-Ordinary Codex sessions do their assigned work directly; opening the repository or registering a mailbox does not appoint a Coordinator. Explicit coordination uses **Coordinator** and delegated **Worker** roles. An explicitly appointed Root owns only its assigned portfolio/integration; a delegated Coordinator owns only its lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
+Codex has **Worker** and **Coordinator** roles. A Worker does its assigned work directly; opening the repository or registering a mailbox does not appoint a Coordinator. An explicitly appointed Root owns only its assigned portfolio/integration; a delegated Coordinator owns only its lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
 
 - A Worker owns one bounded task/work item and does not self-expand scope. Worker questions go to its parent; only the appropriate parent/Root asks Marco.
 - Review independence depends on actual authorship/design/implementation/disposition participation, not role label.
@@ -113,7 +113,7 @@ Any agent doing research follows [research sources](docs/research-sources.md).
 
 ### Route only the current function
 
-- **Ordinary session:** follow the applicable research/design, implementation, review, or integration guidance below for Marco's exact assignment. No Coordinator portfolio, delegation mandate, or parent is inferred.
+- **Unbound Worker session:** follow the applicable research/design, implementation, review, or integration guidance below for Marco's exact assignment. No Coordinator portfolio, delegation mandate, or parent is inferred.
 - **Root:** Root Coordinator only. Have forks apply [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md), returning concise supervision and communication requirements. Follow the scoped Coordinator fork rule above; do not load detailed work or logs into the parent.
 - **Delegated Coordinator:** every other head follows exact lane/parent obligations + lane-required procedures; it does not inherit Root tracking or portfolio authority merely by being a head or Coordinator.
 - **Research/design Worker:** exact work + current bound research/design package; use [code quality](docs/code-quality.md) for material design review before Human Review.
