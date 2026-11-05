@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
+from functools import partial
 from pathlib import Path
 
 import pytest
 from mcp import Client, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 from switchstand.coordinator_sync import CoordinatorSync, build_server
 from switchstand.coordinator_workers import CoordinatorWorkers
@@ -209,7 +212,15 @@ def test_oserror_releasing_config_lock_preserves_known_applied_effect(
     assert git(primary, "status", "--porcelain", "--untracked-files=all") == ""
 
 
-async def test_real_stdio_boundary_performs_fixed_host_fast_forward(tmp_path: Path) -> None:
+@pytest.fixture
+def audit_stderr(tmp_path, monkeypatch):
+    path = tmp_path / "audit.stderr"
+    with path.open("w") as stream:
+        monkeypatch.setattr("mcp.client.client.stdio_client", partial(stdio_client, errlog=stream))
+        yield path
+
+
+async def test_real_stdio_boundary_performs_fixed_host_fast_forward(tmp_path: Path, audit_stderr) -> None:
     home, primary, source, _started, final = setup(tmp_path)
     server = StdioServerParameters(
         command=sys.executable,
@@ -237,6 +248,9 @@ async def test_real_stdio_boundary_performs_fixed_host_fast_forward(tmp_path: Pa
     assert rejected.is_error
     assert result.structured_content["status"] == "ok"
     assert git(primary, "rev-parse", "HEAD") == final
+    records = [json.loads(line.removeprefix("switchstand_mcp_timing "))
+               for line in audit_stderr.read_text().splitlines() if line.startswith("switchstand_mcp_timing ")]
+    assert len(records) == 3 and len({row["call_id"] for row in records}) == 3
 
 
 async def test_worker_tools_are_closed_and_explicit_when_enabled(tmp_path: Path) -> None:

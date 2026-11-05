@@ -80,6 +80,7 @@ from .messages import (
     canonical_payload_chars,
     disposition_digest,
 )
+from .observability import install_call_audit
 from .outcome_state import ActionSummary, OutcomeItem
 from .priority_claim_service import (
     HumanPriorityClear,
@@ -1826,6 +1827,7 @@ def build_ordinary_tools(
 def build_chatgpt_server(service: ChatGPTService, server: MCPServer | None = None) -> MCPServer:
     """A host may supply an OAuth-configured server; default stdio is test-adapter only."""
     server = server or MCPServer("Switchstand ChatGPT")
+    install_call_audit(server)
     for name, function in build_ordinary_tools(service):
         closed_tool(server, name, function, ordinary_tool_annotations(name))
     return server

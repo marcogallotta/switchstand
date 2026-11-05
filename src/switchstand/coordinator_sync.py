@@ -26,6 +26,7 @@ from .coordinator_workers import (
     WorkerStatusResult,
 )
 from .mcp import closed_tool
+from .observability import install_call_audit
 
 SHA = re.compile(r"[0-9a-f]{40}")
 GIT_TIMEOUT_SECONDS = 30
@@ -412,6 +413,7 @@ def build_server(
     control: CoordinatorSync, workers: CoordinatorWorkers | None = None
 ) -> MCPServer:
     server = MCPServer("Switchstand Coordinator Control")
+    install_call_audit(server)
 
     async def _coordinator_currentness_get(
         api_version: Literal["1"],

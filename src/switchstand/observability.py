@@ -5,26 +5,87 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 import time
 from collections.abc import Awaitable, Callable, Collection, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 from weakref import WeakKeyDictionary
 
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools import ToolResult
+from mcp.server.context import CallNext as SDKCallNext
+from mcp.server.context import ServerRequestContext
+from pydantic import BaseModel
 from sqlalchemy import event, text
 from sqlalchemy.engine import Connection, ExceptionContext
 from sqlalchemy.ext.asyncio import AsyncEngine
+
+from .failure_journal import redact_mcp_content as redact
 
 LOG = logging.getLogger("uvicorn.error")
 TIMING_SCHEMA = "switchstand.mcp_call_timing.v1"
 TIMING_PREFIX = "switchstand_mcp_timing "
 TIMING_SCHEMA_GENERATION = "0026_agent_message_ack"
 _SQL_STACK = "switchstand_observability_sql_stack"
+TEXT_LIMIT = 2000
+
+
+def capture_content(value: Any) -> dict[str, object]:
+    """Copy wire content, with visible partial coverage on traversal exhaustion."""
+    nodes, remaining, partial = 256, 16384, False
+
+    def copy(item: Any, depth: int = 0) -> Any:
+        nonlocal nodes, remaining, partial
+        nodes -= 1
+        if nodes < 0 or depth > 32 or remaining < 0:
+            partial = True
+            return "[CAPTURE_LIMIT]"
+        if isinstance(item, BaseModel):
+            item = item.model_dump(mode="json", by_alias=True)
+        if isinstance(item, str):
+            text = redact(item)
+            if len(text) > TEXT_LIMIT:
+                text = text[:TEXT_LIMIT] + f"[TRUNCATED original_chars={len(item)}]"
+            remaining -= len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
+            if remaining < 0:
+                partial = True
+                return "[CAPTURE_LIMIT]"
+            return text
+        if isinstance(item, Mapping):
+            result: dict[str, Any] = {}
+            for key, child in cast(Mapping[str, Any], item).items():
+                if nodes <= 0 or remaining < 0:
+                    partial = True
+                    result["[CAPTURE_LIMIT]"] = "remaining fields not captured"
+                    break
+                name = copy(key, depth + 1)
+                # Use the canonical credential syntax owner for secret-key context too.
+                secret = redact(f'{key}="credential"') != f'{key}="credential"'
+                result[name] = "[redacted]" if secret else copy(child, depth + 1)
+            return result
+        if isinstance(item, (list, tuple)):
+            children: list[Any] = []
+            for child in cast(list[Any], item):
+                if nodes <= 0 or remaining < 0:
+                    partial = True
+                    children.append("[CAPTURE_LIMIT]")
+                    break
+                children.append(copy(child, depth + 1))
+            return children
+        if item is None or isinstance(item, (bool, int, float)):
+            return item
+        partial = True
+        return "[UNSUPPORTED_CONTENT]"
+
+    try:
+        copied = copy(value)
+        return {"value": copied, "coverage": "PARTIAL" if partial else "CAPTURED"}
+    except Exception:  # noqa: BLE001 -- failed capture must preserve the response
+        return {"value": "[CAPTURE_FAILED]", "coverage": "UNKNOWN"}
 
 
 @dataclass(slots=True)
@@ -83,6 +144,25 @@ class CallTiming:
 _active_call: ContextVar[CallTiming | None] = ContextVar(
     "switchstand_active_call_timing", default=None
 )
+
+
+class _RequestDiagnosticFilter(logging.Filter):
+    """Keep dependency failure identity without rejected inputs or tracebacks."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _active_call.get() is not None:
+            kind = record.exc_info[0] if record.exc_info else None
+            record.msg = "MCP request diagnostic: %s"
+            record.args = (kind.__name__ if kind else "TOOL_DIAGNOSTIC",)
+            record.exc_info = record.exc_text = record.stack_info = None
+        return True
+
+
+def _protect_request_diagnostics() -> None:
+    for name in ("fastmcp.server.server", "mcp.server.mcpserver.server"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(item, _RequestDiagnosticFilter) for item in logger.filters):
+            logger.addFilter(_RequestDiagnosticFilter())
 
 
 class TimingPersistence:
@@ -169,6 +249,7 @@ class CallTimingMiddleware(Middleware):
         persist: Callable[[Mapping[str, object]], Awaitable[None]] | None = None,
         allowed_tools: Collection[str] = (),
     ) -> None:
+        _protect_request_diagnostics()
         self.identity = identity
         self.emit = emit or self._log
         self.persist = persist
@@ -178,16 +259,24 @@ class CallTimingMiddleware(Middleware):
     def _log(record: dict[str, object]) -> None:
         LOG.info(
             "%s%s", TIMING_PREFIX,
-            json.dumps(record, sort_keys=True, separators=(",", ":")),
+            json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
         )
+
+    @staticmethod
+    def emit_stderr(record: dict[str, object]) -> None:
+        # SDK Rich handlers wrap JSON across physical lines; retain one raw stderr record.
+        sys.stderr.write(TIMING_PREFIX + json.dumps(record, ensure_ascii=False,
+                                                   separators=(",", ":")) + "\n")
 
     async def _safe_emit(
         self, timing: CallTiming, ended: float, status: Literal["ok", "error"],
         error_class: str | None,
+        audit: dict[str, object],
     ) -> None:
         record = timing.record(ended=ended, status=status, identity={}, error_class=error_class)
         try:
             record["identity"] = dict(self.identity())
+            record.update(audit)
             self.emit(record)
         except Exception:  # noqa: BLE001 -- observability must never change tool outcome
             LOG.debug("timing log emission failed")
@@ -200,27 +289,57 @@ class CallTimingMiddleware(Middleware):
     async def on_call_tool(
         self, context: MiddlewareContext[Any], call_next: CallNext[Any, ToolResult],
     ) -> ToolResult:
+        return await self._capture(
+            context.message.name, context.message.arguments,
+            lambda: call_next(context),
+        )
+
+    async def capture_request(self, context: ServerRequestContext[Any, Any], call_next: SDKCallNext) -> Any:
+        if context.method != "tools/call":
+            return await call_next(context)
+        params = context.params or {}
+        return await self._capture(params.get("name", "UNKNOWN"), params.get("arguments"),
+                                   lambda: call_next(context))
+
+    async def _capture(self, tool: Any, arguments: Any, invoke: Callable[[], Awaitable[Any]]) -> Any:
+        safe_tool = capture_content(tool)["value"]
         timing = CallTiming(
             call_id=str(uuid4()),
-            tool=str(context.message.name),
+            tool=safe_tool if isinstance(safe_tool, str) else "UNKNOWN",
             wall_started_at=datetime.now(UTC),
             monotonic_started_at=time.perf_counter(),
         )
         token = _active_call.set(timing)
         status: Literal["ok", "error"] = "error"
         error_class: str | None = None
+        audit: dict[str, object] = {"input": capture_content(arguments), "output": None}
         try:
-            result = await call_next(context)
-            status = "error" if result.is_error else "ok"
-            error_class = "TOOL_RESULT_ERROR" if result.is_error else None
-            return result
-        except BaseException:
+            result = await invoke()
+            failed = bool(cast(Mapping[str, Any], result).get("isError", False)) if isinstance(
+                result, Mapping
+            ) else bool(getattr(result, "is_error", False))
+            status = "error" if failed else "ok"
+            error_class = "TOOL_RESULT_ERROR" if failed else None
+            audit["output"] = capture_content(result)
+            return cast(Any, result)
+        except BaseException as error:
             error_class = "RAISED_EXCEPTION"
+            audit["exception_type"] = type(error).__name__
             raise
         finally:
             ended = time.perf_counter()
             _active_call.reset(token)
-            await self._safe_emit(timing, ended, status, error_class)
+            await self._safe_emit(timing, ended, status, error_class, audit)
+
+
+def install_call_audit(server: Any, *, stdio: bool = True, **options: Any) -> None:
+    """Install once at the SDK wire seam; diagnostics use stderr, never STDIO stdout."""
+    options.setdefault("identity", dict)
+    if stdio:
+        options.setdefault("emit", CallTimingMiddleware.emit_stderr)
+    if not any(getattr(item, "__self__", None).__class__ is CallTimingMiddleware
+               for item in server.middleware):
+        server.middleware.insert(0, CallTimingMiddleware(**options).capture_request)
 
 
 def register_sqlalchemy_timing(engine: AsyncEngine) -> None:

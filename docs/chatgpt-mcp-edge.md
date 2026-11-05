@@ -20,6 +20,37 @@ a client. For a suspected live outage, use the
 [live-incident runbook](operations-live-incident.md); metadata or transport
 availability alone is not an authenticated health check.
 
+## MCP call diagnostics
+
+`observability.py` installs one SDK-boundary audit for every Switchstand MCP server,
+including managed/context, development, coordinator control and ordinary adapters.
+One `switchstand_mcp_timing ` JSON record contains correlation/timing, `input` and
+`output` copies with `value` and `coverage`. HTTP output includes the mailbox footer.
+Copies preserve notes, messages and response text. Each string retains up to 2,000
+redacted characters followed by `[TRUNCATED original_chars=…]` when longer.
+Credential-key/quoted assignments, Bearer/Basic headers and URL credentials are
+masked; arbitrary unlabelled secrets are not reliably recognizable. Dependency
+exception/validation diagnostics retain static identity without rejected values or traces.
+Responses and existing DB timing-only persistence remain unchanged.
+
+Each copy has depth32, 256-node and 16KiB serialized-string traversal limits;
+`[CAPTURE_LIMIT]` with `coverage=PARTIAL` means incomplete capture, and capture
+failure reports `UNKNOWN`. These safety bounds never establish complete history.
+HTTP uses the existing service logger; STDIO writes raw JSON to stderr so terminal
+formatters cannot split records or contaminate protocol stdout. The caller owns
+STDIO stderr retrieval; no durable STDIO history is installed.
+
+For an authorized bounded service-journal read, filter existing records, for example:
+
+```sh
+journalctl --user -u switchstand-chatgpt-mcp.service --since '10 minutes ago' -o cat --all --no-pager | sed -n 's/^[^{]*switchstand_mcp_timing //p' | jq 'select(.tool == "work_get") | {call_id,tool,input,output}'
+```
+
+Host retrieval across restart, retention, rate limits and drop behavior require
+runtime evidence. No 14-day window or persistence fallback is established by this
+code. Invalid protocol envelopes rejected before SDK request dispatch are outside
+this capture; tool lookup and argument-validation failures inside dispatch are included.
+
 ## Current surface
 
 The edge exposes mostly provider-neutral capabilities in semantic groups:

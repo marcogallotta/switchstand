@@ -74,6 +74,24 @@ def redact(value: str) -> str:
     return _SECRET.sub(replace, value)
 
 
+# Additive MCP diagnostics policy; persisted journal canonical bytes must stay stable.
+_MCP_CREDENTIAL = re.compile(
+    r'''(?i)((?:["']?(?:password|passwd|(?:access[_-]?|refresh[_-]?)?token|secret|api[_-]?key|authorization|cookie)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer|Basic)\s+[^\s,;}]+|[^\s,;}\\]+)'''
+)
+_MCP_COOKIE = re.compile(
+    r'''(?i)(\bcookie\s*:\s*)(?:[^;\s,"{}=]+=(?:"[^"\r\n]*"|[^;\s,"{}\\]*))(?:[ \t]*;[ \t]*[^;\s,"{}=]+=(?:"[^"\r\n]*"|[^;\s,"{}\\]*))*'''
+)
+
+
+def redact_mcp_content(value: str) -> str:
+    """Extend canonical syntax for MCP copies without changing journal digests."""
+    def replace(match: re.Match[str]) -> str:
+        text = match.group()[len(match.group(1)):]
+        quote = text[0] if text[0] in "\"'" else ""
+        return f"{match.group(1)}{quote}[redacted]{quote}"
+    return redact(_MCP_CREDENTIAL.sub(replace, _MCP_COOKIE.sub(r"\1[redacted]", value)))
+
+
 def redact_environment(value: str, environment: dict[str, str]) -> str:
     """Redact syntax-based credentials plus exact secret values known at this boundary."""
     result = redact(value)

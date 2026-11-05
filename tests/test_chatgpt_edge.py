@@ -1,3 +1,5 @@
+import json
+import logging
 import time
 from types import SimpleNamespace
 from uuid import uuid4
@@ -41,7 +43,8 @@ GITHUB_ID = "192548"
 CONFIG = MCPAuthConfig("client", "secret", GITHUB_ID, RESOURCE)
 
 
-async def test_attention_http_preserves_results_and_primary_effect_on_hint_failure(monkeypatch):
+async def test_attention_http_preserves_results_and_primary_effect_on_hint_failure(monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
     import asyncio
 
     from mcp.types import CallToolResult, TextContent, ToolAnnotations
@@ -54,15 +57,16 @@ async def test_attention_http_preserves_results_and_primary_effect_on_hint_failu
     monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verified)
     monkeypatch.setattr(chatgpt_edge, "ordinary_tool_annotations", lambda _name: ToolAnnotations())
     effects, identities, results = [], [], {}
-    async def success() -> CallToolResult:
+    async def success(notes: str = "ordinary input") -> CallToolResult:
         effects.append("one effect")
         return CallToolResult(content=[TextContent(type="text", text="receipt")],
-                              structured_content={"receipt": "definitive"},
+                              structured_content={"receipt": "definitive", "notes": notes,
+                                                  "secret": "output-secret-canary"},
                               meta={"receipt_meta": "retained"})
     async def returned_error() -> CallToolResult:
         return CallToolResult(content=[TextContent(type="text", text="failure")], is_error=True)
     async def raw_error() -> str:
-        raise RuntimeError("raw error")
+        raise RuntimeError("password=exception-secret-canary")
     async def validation(number: int) -> int:
         return number
     monkeypatch.setattr(chatgpt_edge, "build_ordinary_tools", lambda *_args, **_kwargs: (
@@ -89,8 +93,9 @@ async def test_attention_http_preserves_results_and_primary_effect_on_hint_failu
             return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=ISSUER, **kwargs)
         transport = StreamableHttpTransport(f"{ISSUER}mcp", auth="fixed-bearer",
                                            httpx_client_factory=client_factory)
-        cases = (("success", {}), ("returned_error", {}), ("raw_error", {}),
-                 ("validation", {"number": "bad"}), ("missing", {}))
+        cases = (("success", {"notes": "ordinary input Cookie: session=first-secret-canary; csrf=second-secret-canary\nCookie: session=; csrf=empty-first-secret-canary\nCookie: session=first-secret-canary; empty=; csrf=empty-mid-secret-canary\n" + "x" * 2100 + " password=input-secret-canary"}),
+                 ("returned_error", {}), ("raw_error", {}),
+                 ("validation", {"number": "password=validation-secret-canary"}), ("missing", {}))
         async with app.router.lifespan_context(app), Client(transport) as client:
             for name, arguments in cases:
                 result = await client.call_tool_mcp(name, arguments, meta={"openai/session": "tab-a"})
@@ -104,6 +109,18 @@ async def test_attention_http_preserves_results_and_primary_effect_on_hint_failu
                     assert wire == results[name]
     assert effects == ["one effect"] * 4
     assert identities == [(GITHUB_ID, "tab-a")] * 15
+    audit = [json.loads(record.getMessage().split("switchstand_mcp_timing ", 1)[1])
+             for record in caplog.records if record.getMessage().startswith("switchstand_mcp_timing ")]
+    assert len(audit) == 20 and len({row["call_id"] for row in audit}) == 20
+    assert {row["tool"] for row in audit} == {name for name, _ in cases}
+    assert "secret-canary" not in caplog.text
+    for row in audit:
+        if row["tool"] == "success":
+            assert row["input"]["value"]["notes"].startswith("ordinary input ")
+            assert "TRUNCATED" in row["input"]["value"]["notes"]
+            assert row["output"]["value"]["structuredContent"]["notes"].startswith("ordinary input ")
+            assert row["output"]["value"]["structuredContent"]["secret"] == "[redacted]"
+    assert any("Messages:" in json.dumps(row["output"]) for row in audit)
 
 
 def test_runtime_identity_uses_stable_claude_oauth_principal_namespace(monkeypatch):

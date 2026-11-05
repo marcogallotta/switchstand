@@ -56,8 +56,8 @@ from .oauth_continuity import (
     SwitchstandGitHubProvider,
 )
 from .observability import (
-    CallTimingMiddleware,
     annotate_target,
+    install_call_audit,
     register_sqlalchemy_timing,
     register_timing_persistence,
     timing_persistence,
@@ -743,10 +743,11 @@ def _create_resource_app(
     )
     state = service.state
     store = timing_persistence(state.engine) if isinstance(state, PostgresState) else None
-    server.add_middleware(CallTimingMiddleware(
-        _timing_identity, persist=None if store is None else store.persist,
+    install_call_audit(
+        server._mcp_server, stdio=False, identity=_timing_identity,  # pyright: ignore[reportPrivateUsage]
+        persist=None if store is None else store.persist,
         allowed_tools=tuple(name for name, _tool in ordinary_tools),
-    ))
+    )
     for name, tool in ordinary_tools:
         server.tool(tool, annotations=ordinary_tool_annotations(name))
 

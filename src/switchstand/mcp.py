@@ -56,6 +56,7 @@ from .messages import (
     pending_managed_messages,
     send_managed_result,
 )
+from .observability import install_call_audit
 from .priority_claim_service import (
     PriorityClaimReadResult,
     PriorityClaimService,
@@ -404,6 +405,7 @@ def build_server(
     issue_reporter: object | None = None,
 ) -> MCPServer:
     server = MCPServer("Switchstand launch-bound context" if bound_context else "Switchstand")
+    install_call_audit(server)
 
     if bound_context:
         async def _bound_work_get(api_version: Literal["1"]) -> PublicWorkResult:
@@ -728,7 +730,9 @@ def build_server(
 
 def server_from_env() -> MCPServer:
     if os.getenv("SWITCHSTAND_MANAGED") != "1":
-        return MCPServer("Switchstand (unbound)")
+        server = MCPServer("Switchstand (unbound)")
+        install_call_audit(server)
+        return server
     profile = os.getenv("SWITCHSTAND_MANAGED_PROFILE", "full")
     if profile == "launch-bound":
         from .launch_bound_profile import build_from_env

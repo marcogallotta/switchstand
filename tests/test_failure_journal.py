@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -16,11 +18,38 @@ from switchstand.failure_journal import (
     FailureRecord,
     FailureResolution,
     redact_environment,
+    redact_mcp_content,
+    validate_failure_record_row,
     validate_failure_resolution_row,
 )
 
 NOW = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
 WORK_ID = "20000000-0000-4000-8000-000000000001"
+
+
+@pytest.mark.parametrize("value", [
+    '{"access_token": "quoted secret canary", "notes": "ordinary prose"}',
+    "{'password': 'quoted secret canary', 'notes': 'ordinary prose'}",
+    'authorization="quoted secret canary" ordinary prose',
+    'cookie="quoted secret canary" ordinary prose',
+    'authorization: Bearer quoted-secret-canary ordinary prose',
+    'authorization: Basic quoted-secret-canary ordinary prose',
+])
+def test_quoted_credentials_preserve_neighboring_prose(value):
+    result = redact_mcp_content(value)
+    assert "secret canary" not in result and "quoted-secret-canary" not in result
+    assert "[redacted]" in result and "ordinary prose" in result
+
+
+@pytest.mark.parametrize("header", ["Cookie: session=first-secret; csrf=second-secret",
+                                    "Cookie: session=; csrf=second-secret",
+                                    "Cookie: session=first-secret; empty=; csrf=second-secret"])
+@pytest.mark.parametrize("ending", ["\nordinary prose", " ordinary prose", r"\nordinary prose"])
+def test_complete_cookie_header_masks_all_pairs_and_preserves_neighboring_prose(header, ending):
+    value = header + ending
+    result = redact_mcp_content(value)
+    assert "first-secret" not in result and "second-secret" not in result
+    assert result.endswith(ending) and "[redacted]" in result
 
 
 def failure(*, attempt_id=None, operation_id=None, result="connection refused"):
@@ -183,3 +212,26 @@ async def test_redaction_boundary_journal_roundtrip_and_resolution(journal):
     assert (await journal.resolve(resolution.model_copy(update={"summary": "changed"}))
             ).status == "CONFLICT"
     assert await journal.open(owner=WORK_ID) == ()
+
+
+async def test_historical_quoted_credentials_keep_integrity_and_replay(journal):
+    value = failure(result='{"access_token":"historical synthetic credential"}')
+    original = value.model_dump(mode="json")
+    digest = hashlib.sha256(json.dumps(original, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert value.canonical() == original
+    assert validate_failure_record_row(original | {"content_digest": digest}) == value
+    assert validate_failure_record_row(original | {"content_digest": "tampered"}) is None
+    assert (await journal.record(value)).status == "APPLIED"
+    assert (await journal.record(value)).status == "REPLAYED"
+    assert await journal.get(value.attempt_id) == value
+    resolution = FailureResolution(resolution_id=uuid4(), operation_id=uuid4(),
+                                   attempt_id=value.attempt_id, resolved_at=NOW,
+                                   summary='{"access_token":"historical synthetic resolution"}')
+    original = resolution.model_dump(mode="json")
+    digest = hashlib.sha256(json.dumps(original, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    row = {f"resolution_{key}": item for key, item in original.items()}
+    assert resolution.canonical() == original
+    assert validate_failure_resolution_row(row | {"resolution_content_digest": digest}) == resolution
+    assert validate_failure_resolution_row(row | {"resolution_content_digest": "tampered"}) is None
+    assert (await journal.resolve(resolution)).status == "APPLIED"
+    assert (await journal.resolve(resolution)).status == "REPLAYED"
