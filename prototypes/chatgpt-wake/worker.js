@@ -117,7 +117,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '2471fbf7-4f51-4b0a-a60e-0b4ab9b216f1';
+const releaseId = '3abfeeb7-fb34-49ab-9ad3-cda62b8c1b08';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -169,27 +169,26 @@ async function mailbox(name) {
 }
 async function incidentReport(binding, kind, ids, save, fresh) {
   const now = Date.now();
-  const blocked = ids.length && ['draft-present', 'bound-tab-missing'].includes(kind);
-  if (blocked) {
-    if (binding.blockBoot !== bootId || binding.blockReason !== kind || now - (binding.blockChecked || 0) > 60000) binding.blockSince = now;
+  const pending = fresh && ids.length && kind !== 'stopped';
+  const missing = ids.length && kind === 'bound-tab-missing';
+  if (pending) {
+    if (binding.blockBoot !== bootId || now - (binding.blockChecked || 0) > 60000) binding.blockSince = now;
     binding.blockBoot = bootId;
-    binding.blockReason = kind;
     binding.blockChecked = now;
-    if (!binding.incident && (kind === 'bound-tab-missing' || now - binding.blockSince >= 60000)) {
-      const evidence = {incident_id: crypto.randomUUID(), phase: 'blocked', name: binding.name,
-        endpoint: binding.endpoint, generation: binding.generation, delivery_ids: ids.slice(0, 50),
-        reason: kind, started_at: new Date(binding.blockSince).toISOString(), observed_at: new Date(now).toISOString()};
-      binding.incident = {evidence, state: 'pending'};
-    }
-  } else {
+  } else if (fresh || kind === 'stopped' || !missing) {
     delete binding.blockSince; delete binding.blockReason; delete binding.blockChecked;
-    // UNKNOWN, explicit STOP and observation errors are not evidence of recovery.
-    const clear = ['idle', 'click-attempted', 'busy'].includes(kind) || (fresh && kind === 'bound-tab-missing' && !ids.length);
-    if (binding.incident?.state === 'stale' && clear) delete binding.incident;
-    if (binding.incident?.state === 'queued' && clear) {
-      binding.incident.state = 'recovery-pending';
-    }
   }
+  if (!binding.incident && (missing || (pending && now - binding.blockSince >= 60000))) {
+    const reason = ['draft-present', 'bound-tab-missing'].includes(kind) ? kind : 'pending-mail';
+    const evidence = {incident_id: crypto.randomUUID(), phase: 'blocked', name: binding.name,
+      endpoint: binding.endpoint, generation: binding.generation, delivery_ids: ids.slice(0, 50),
+      reason, started_at: new Date(binding.blockSince ?? now).toISOString(), observed_at: new Date(now).toISOString()};
+    binding.incident = {evidence, state: 'pending'};
+  }
+  // Only a fresh matching mailbox observation can prove pickup, including after a click.
+  const clear = fresh && !ids.length && kind !== 'stopped';
+  if (binding.incident?.state === 'stale' && clear) delete binding.incident;
+  if (binding.incident?.state === 'queued' && clear) binding.incident.state = 'recovery-pending';
   const incident = binding.incident;
   if (!incident || !['pending', 'recovery-pending'].includes(incident.state) || kind === 'stopped') return;
   const phase = incident.state === 'pending' ? 'blocked' : 'recovered';
@@ -250,8 +249,8 @@ async function conversationTab(binding) {
 }
 async function checkBinding(binding, save) {
   if (binding.halted) binding.currentControl = {release: releaseId, boot: bootId, reason: 'unavailable'};
-  let observation;
-  const note = (outcome, ids = observation?.delivery_ids || []) => record(binding, outcome, ids, save, true);
+  let observation, fresh = false;
+  const note = (outcome, ids = observation?.delivery_ids || []) => record(binding, outcome, ids, save, fresh);
   if (!binding.armed || stopRequested(binding)) { binding.armed = false; return note('stopped'); }
   try { observation = await mailbox(binding.name); }
   catch (error) { return note('source-unavailable: ' + error.message); }
@@ -259,6 +258,7 @@ async function checkBinding(binding, save) {
     binding.armed = false;
     return note('mailbox-binding-changed');
   }
+  fresh = true;
   const pending = observation.delivery_ids.filter(id => !binding.seen.includes(id));
   binding.pending = pending;
   binding.observedPending = observation.delivery_ids;

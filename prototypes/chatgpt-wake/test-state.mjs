@@ -257,7 +257,7 @@ assert.equal(reports.filter(item => item.incident).length, 0);
 outcome = 'busy'; await message({type: 'check'});
 outcome = 'draft-present'; await message({type: 'check'});
 clock += 30000; await message({type: 'check'});
-assert.equal(reports.filter(item => item.incident).length, 0, 'busy interrupts continuous draft qualification');
+assert.equal(reports.filter(item => item.incident).length, 1, 'busy does not reset continuous pending qualification');
 clock += 30000; await message({type: 'check'});
 const draftIncident = reports.filter(item => item.incident).at(-1).incident;
 assert.equal(draftIncident.reason, 'draft-present');
@@ -267,11 +267,53 @@ assert.deepEqual(state('A').attemptIds, [id(401)], 'read-only checks do not rese
 await message({type: 'check'});
 assert.equal(reports.filter(item => item.incident).length, 1, 'ongoing draft never falsely recovers');
 outcome = 'click-attempted'; await message({type: 'check'});
+assert.equal(reports.filter(item => item.incident).length, 1, 'click/idle with pending does not recover');
+observations.get('A').delivery_ids = []; await message({type: 'check'});
 assert.equal(reports.filter(item => item.incident).at(-1).incident.phase, 'recovered');
 assert.equal(reports.filter(item => item.incident).at(-1).incident.incident_id, draftIncident.incident_id);
 assert.equal(attempts.length, 1, 'seen mail is observed without another DOM mutation');
 assert.ok(readOnlyChecks.length > 0);
-console.log('PASS seen-pending draft60s, busy resets continuity, read-only observation, dedupe and same-incident recovery');
+console.log('PASS seen-pending draft60s, busy preserves pending continuity, read-only observation, dedupe and same-incident recovery');
+
+// All fresh pending outcomes share one timer, even seen IDs and HALT; only empty proves pickup.
+for (const blocker of ['idle', 'attempt-outcome-unknown', 'wrong-conversation']) {
+  saved = {}; reports.length = 0; attempts.length = 0;
+  observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: [id(410)]});
+  outcome = 'click-attempted'; load(); await bind('A', 1); await message({type: 'check'});
+  if (blocker === 'attempt-outcome-unknown') state('A').halted = true;
+  outcome = blocker;
+  clock += 59000; await message({type: 'check'});
+  assert.equal(reports.filter(item => item.incident).length, 0, blocker + ' below60s');
+  observations.get('A').delivery_ids.push(id(411)); // New arrivals do not restart an existing backlog.
+  clock += 1000; await message({type: 'check'});
+  const incident = reports.filter(item => item.incident).at(-1).incident;
+  assert.equal(incident.reason, 'pending-mail');
+  assert.deepEqual(incident.delivery_ids, [id(410), id(411)]);
+  outcome = 'busy'; await message({type: 'check'});
+  assert.equal(reports.filter(item => item.incident).length, 1, 'status change dedupes');
+  observations.delete('A'); await message({type: 'check'});
+  assert.equal(reports.filter(item => item.incident).length, 1, 'failed poll cannot recover');
+  observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: []});
+  await message({type: 'check'});
+  assert.equal(reports.filter(item => item.incident).at(-1).incident.phase, 'recovered');
+}
+// Failed poll and mismatched identity cannot qualify, and STOP resets the unqualified timer.
+for (const interruption of ['offline', 'mismatch', 'stop']) {
+  saved = {}; reports.length = 0;
+  observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: [id(420)]});
+  outcome = 'idle'; load(); await bind('A', 1); await message({type: 'check'});
+  clock += 30000;
+  const observation = observations.get('A');
+  if (interruption === 'offline') observations.delete('A');
+  if (interruption === 'mismatch') observation.generation = 2;
+  if (interruption === 'stop') await message({type: 'disarm'});
+  await message({type: 'check'});
+  assert.equal(state('A').blockSince, undefined);
+  observations.set('A', {...observation, generation: 1});
+  clock += 30000; await message({type: 'check'});
+  assert.equal(reports.filter(item => item.incident).length, 0, 'interruption cannot age pending');
+}
+console.log('PASS pending idle/HALT/wrong-chat59/60s, changing backlog, dedupe, errors, identity and STOP');
 
 // Execute the actual page function: read-only mode must never focus or edit.
 const pageUrl = 'https://chatgpt.com/c/a';
@@ -500,7 +542,8 @@ const interrupted = reports.find(item => item.diagnostics).diagnostics;
 assert.notEqual(interrupted.boot, interrupted.attempt.boot);
 assert.equal(interrupted.attempt.finished, null);
 assert.deepEqual(interrupted.attempt.facts, {});
-assert.equal(reports.filter(item => item.incident).length, 0, 'diagnostics independent of inherited alert');
+assert.equal(reports.filter(item => item.incident).length, 1, 'fresh empty mailbox recovers inherited alert even under HALT');
+assert.equal(reports.find(item => item.incident).incident.phase, 'recovered');
 assert.equal(interrupted.attempt.reason, 'dispatch-start', 'unfinished means no durable result; DOM stage unknown');
 delete state('A').diagnostic; delete state('A').diagnosticAck;
 load(); reports.length = 0;

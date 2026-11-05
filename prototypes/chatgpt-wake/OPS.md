@@ -63,12 +63,13 @@ For an incident test, first verify an armed binding has **real pending mailbox
 IDs**. Close that exact paired ChatGPT tab; its next normal poll can report one
 closed-tab incident to `browser extension`. No extra source message is required.
 If there are no genuine pending IDs, that test cannot yet prove an incident.
-Alternatively, an existing draft blocking a send must be continuously observed
-for 60 seconds; do not insert a draft just to manufacture proof. Busy, STOP,
-disarmed, unavailable source and `attempt-outcome-unknown` are separate states.
+Any continuously observed pending mailbox qualifies after 60 seconds, including
+HALT, wrong conversation, busy, or mail already seen after a click. An existing
+draft retains its draft reason; other pending states use `pending-mail`. STOP,
+disarming, source errors and observation gaps reset an unqualified timer.
 Do not retry or overwrite the current Code Cleanup 3 UNKNOWN attempt/draft.
 A queued alert is not received until the parent actually receives it. A recovery
-requires observed cleared pending IDs or a positively cleared former blocker.
+requires a fresh matching observation with no pending IDs. STOP never emits recovery.
 The honest reporter TEST already received/acknowledged proves routing only;
 genuine automatic incident delivery is still NOT_RUN until actually observed.
 

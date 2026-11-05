@@ -118,7 +118,7 @@ class AlertReport(ClosedModel):
     endpoint: UUID
     generation: int = Field(ge=1, strict=True)
     delivery_ids: list[UUID] = Field(min_length=1, max_length=50)
-    reason: Literal["draft-present", "bound-tab-missing"]
+    reason: Literal["draft-present", "bound-tab-missing", "pending-mail"]
     started_at: AwareDatetime
     observed_at: AwareDatetime
 
@@ -180,7 +180,7 @@ class HostReporter:
                     if fresh > 90:
                         # Exact replay already proved absence while this grant lock serializes sends.
                         return ExpiredObservation().model_dump(mode="json")
-                    if age < 0 or fresh < 0 or (report.reason == "draft-present" and age < 60):
+                    if age < 0 or fresh < 0 or (report.reason in {"draft-present", "pending-mail"} and age < 60):
                         return {"status": "denied", "reason": "unqualified_observation"}
                     target = (await self.mailboxes.by_name(report.name)).mailbox
                     if target is None or target.endpoint_id != report.endpoint or target.generation != report.generation:

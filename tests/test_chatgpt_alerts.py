@@ -18,6 +18,7 @@ from switchstand.chatgpt_alerts import (
 )
 from switchstand.grant_state import GrantState
 from switchstand.messages import MessageState, message_deliveries
+from switchstand.state import metadata as state_metadata
 
 
 def test_manifest_hash_and_fixed_scope(tmp_path):
@@ -34,8 +35,12 @@ def test_manifest_hash_and_fixed_scope(tmp_path):
     assert value.recipient == "ChatGPT Wake Setup 2026-11-04"
 
 
-async def test_bootstrap_interruption_and_exact_alert_replay(state_database_schema, monkeypatch):
+@pytest.mark.parametrize("reason", ["draft-present", "pending-mail"])
+async def test_bootstrap_interruption_and_exact_alert_replay(state_database_schema, monkeypatch, reason):
     engine = create_async_engine(state_database_schema)
+    async with engine.begin() as connection:
+        await connection.run_sync(state_metadata.drop_all)
+        await connection.run_sync(state_metadata.create_all)
     grants = GrantState(engine)
     mailboxes = AgentMailboxState(engine)
     manifest = plan("b" * 40)
@@ -72,10 +77,13 @@ async def test_bootstrap_interruption_and_exact_alert_replay(state_database_sche
     delivery = sent.message.delivery_id
     now = datetime.now(UTC)
     evidence = AlertReport(incident_id=uuid4(), phase="blocked", name=target.name,
-        endpoint=target.endpoint_id, generation=1, delivery_ids=[delivery], reason="draft-present",
-        started_at=now - timedelta(seconds=61), observed_at=now)
+        endpoint=target.endpoint_id, generation=1, delivery_ids=[delivery], reason=reason,
+        started_at=now - timedelta(seconds=60), observed_at=now)
+    payload = evidence.payload()
+    assert set(payload) == {"type", "phase", "incident", "mailbox", "reason", "work_id", "pending_count", "evidence_sha256"}
+    assert payload["reason"] == reason
     reporter = HostReporter(manifest, state)
-    premature = evidence.model_copy(update={"started_at": now, "incident_id": uuid4()})
+    premature = evidence.model_copy(update={"started_at": now - timedelta(seconds=59), "incident_id": uuid4()})
     assert (await reporter.send(premature))["reason"] == "unqualified_observation"
     wrong = evidence.model_copy(update={"delivery_ids": [uuid4()], "incident_id": uuid4()})
     assert (await reporter.send(wrong))["reason"] == "pending_evidence_changed"
