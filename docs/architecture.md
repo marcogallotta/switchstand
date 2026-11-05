@@ -844,15 +844,18 @@ Ordinary Codex uses the official npm-installed CLI directly. Repository configur
 instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
 global `codex` command. A repository hook re-injects the existing Feedback V1 obligation
 on every user prompt and immediately after compaction. Compact recovery precedes feedback context:
-the agent restores the exact task's original approved objective, current scope/STOP and role guidance;
+when a task is assigned, the agent restores its original approved objective, current scope/STOP and function guidance;
 summaries confer no approval, and corrections require recording and approval on that task.
 The hook performs no classification, reporting,
 network call or transcript scan; the agent still uses the canonical Tracker Issues
 V1-A tools and their readback. Its one-second local timeout preserves prompt acknowledgement as the
 first response, and failures are visible and nonblocking.
-On PostToolUse, the hook keeps only a locked due/counter record per payload `(session_id, agent_id-or-parent)` under `$XDG_STATE_HOME/switchstand/codex/notifications` (default `~/.local/state`).
-The first boundary starts five minutes; the next due boundary bundles messages/actionable feedback and fork supervision (three LIGHT notifications, then HARD, repeating), and reminds the agent to resume its original approved objective.
-Activity never postpones the deadline; actors are isolated, duplicates suppressed and missed ticks never burst. The hook only delivers reminders: agents perform checks; no idle wake or completion acknowledgement exists.
+Worker configuration registers no PostToolUse reminder or standing-continuity hooks.
+The feedback hook treats residual PostToolUse calls from older registrations as inert and writes no
+notification state. A question creates neither an assignment nor a Coordinator role; ordinary
+sessions execute their assigned work directly and can finish with normal prose.
+The prompt-only `codex-stop-mailbox --record-stop` hook records the existing minimal same-turn
+STOP intent for top-level sessions without injecting context, calling the network, or supervising work.
 The synchronous mailbox `Stop` hook calls the loopback-only
 `/internal/codex-stop-mailbox` route on the existing edge. That route resolves only the current
 `codex:<threadId>` session binding and returns read-only, newest-first pages of pending delivery IDs
@@ -870,7 +873,8 @@ map is compatibility input, not an action whitelist or authority grant. Configur
 are rechecked before returning actions; missing/malformed opt-in or stale evidence releases UNKNOWN.
 The same file may set the explicit boolean `test_prefix: true` to enable TEST-prefix mailboxes;
 removing that flag disables the prefix trial while preserving any exact-session opt-in.
-The retained continuity hook gates opted-in PILOT runs on a dedicated final reply containing
+The retained continuity script is not registered by ordinary repository configuration.
+An explicitly configured PILOT consumer of that script gates on a dedicated final reply containing
 exactly one permitted yield marker. ASSIGNMENT accepts ASSIGNMENT_COMPLETE, REAL_BLOCKER,
 HANDOFF or USER_STOP; STANDING excludes ASSIGNMENT_COMPLETE. An explicit top-level STOP, kill,
 cancel, or pause also allows an ordinary reply to end that same turn. Other ordinary prose remains

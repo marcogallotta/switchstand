@@ -171,6 +171,8 @@ def test_role_contract_preserves_boundaries_without_execution_detail():
 
     assert "**Codex roles today:** Coordinator and Worker." in roles
     assert "A Worker owns its bounded assignment and does not self-expand" in roles
+    assert "**Codex Coordinator only:** within its assigned coordination scope" in roles
+    assert "A Worker executes its own bounded assignment directly" in roles
     assert "Root owns overall integration" in roles
     assert "delegated Coordinators own only their assigned lane" in roles
     assert "Role, tool, login, canary, review, document or mailbox registration grants nothing" in agents
@@ -329,8 +331,8 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     assert "Mailbox registration or Marco-confirmed `Codex Coordinator` takeover restores only the durable messaging address" in usage
     assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
     assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
-    assert "The first boundary starts five minutes" in architecture
-    assert "three LIGHT notifications, then HARD, repeating" in architecture
+    assert "Worker configuration registers no PostToolUse reminder or standing-continuity hooks" in architecture
+    assert "codex-stop-mailbox --record-stop" in architecture
     assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
     assert "`/root` remains a temporary inbound alias" in usage
     assert "stops with `takeover_confirmation_required`" in usage

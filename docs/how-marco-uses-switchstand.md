@@ -38,14 +38,15 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 
 ## Three working modes
 
-### Ordinary Codex Coordinator
+### Ordinary Codex sessions
 
-Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, Wakeful supervisor, or launch-bound WorkId. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `Codex Coordinator` calls `agent_takeover("Codex Coordinator", message=<Marco's full current message>)`. A first cross-principal attempt without that confirmation stops with `takeover_confirmation_required` and tells the agent to ask Marco; the retry passes Marco's full confirmation message. `/root` remains a temporary inbound alias for old senders. The Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+Raw `codex` is the official npm-installed CLI. In the repository it loads the repository instructions and authenticated Switchstand integration without a launcher-created writer, manifest, Wakeful supervisor, or launch-bound WorkId. An ordinary session does Marco's assigned work directly; neither opening the repository nor registering a mailbox appoints it Coordinator or requires delegation. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Only a stock session Marco directly addresses as `Codex Coordinator` calls `agent_takeover("Codex Coordinator", message=<Marco's full current message>)`. A first cross-principal attempt without that confirmation stops with `takeover_confirmation_required` and tells the agent to ask Marco; the retry passes Marco's full confirmation message. `/root` remains a temporary inbound alias for old senders. That explicitly appointed Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes the name after losing it without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
 
 After compaction, the same hook first directs recovery of the ORIGINAL APPROVED objective,
-current constraints/STOP and bounded agent notes from the exact assigned task; agent summaries
+current constraints/STOP and bounded agent notes when an exact task is assigned; a question
+does not create a task or a Coordinator role. Agent summaries
 are not approval. Corrections must be recorded and approved on that task. Preserve role/WorkId,
-read current role guidance (Root: the Coordinator tracking contract; others: their AGENTS route),
+read guidance for the assigned function (Coordinator procedures only for explicitly appointed Coordinators),
 and load other docs only for the current function/phase/trigger; AGENTS is already supplied.
 
 Switchstand-authored policy remains subordinate to Marco. A Coordinator executes ordinary
@@ -64,11 +65,14 @@ an ID, it follows the single-create-and-readback route above. If that route cann
 exact WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred assignment. Bare
 `work_get` remains the launch-bound managed-worker behavior described below.
 
-Codex has two roles: Coordinator and Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions are not additional roles. It keeps disjoint lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model is intentionally different from ChatGPT and must not be copied there merely for parity.
+Ordinary sessions work directly. When Marco explicitly assigns coordination, its roles are Coordinator and delegated Worker. The Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions do not appoint additional Coordinators. It keeps its assigned lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model applies only within that explicit assignment and must not be copied to ordinary sessions or ChatGPT merely for parity.
 
 #### Native fork operating boundary
 
-All execution except parent-session mail operations belongs in context-free native forks, including
+This boundary applies only to explicitly appointed Codex Coordinators and their assigned
+coordination scope. Ordinary sessions execute their own work directly and use fresh independent
+reviewers when required; no mandatory all-work delegation is inferred.
+Within the explicit Coordinator scope, execution except parent-session mail operations belongs in context-free native forks, including
 record/document reads and Tracker and feedback operations. Mailbox registration, takeover, and
 all mail calls stay in the parent session; forks are not registered to the parent's mailbox.
 The parent talks with Marco and actively supervises
