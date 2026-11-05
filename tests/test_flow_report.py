@@ -5,7 +5,6 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -834,10 +833,10 @@ async def test_unknown_work_fails_without_fabricating_a_report(engine: AsyncEngi
 
 
 @pytest.mark.parametrize("output_format", [None, "concise"])
-async def test_installed_cli_reads_exact_private_pg_evidence(
+async def test_cli_main_reads_exact_private_pg_evidence(
     engine: AsyncEngine, output_format: str | None,
 ) -> None:
-    """Exercise the entry point and DB together, without replacing report or rendering."""
+    """Run the configured CLI callable without requiring an installed console script."""
     target, unrelated = uuid4(), uuid4()
     for work_id in (target, unrelated):
         await add_work(engine, work_id)
@@ -845,12 +844,12 @@ async def test_installed_cli_reads_exact_private_pg_evidence(
     async with engine.begin() as connection:
         await connection.execute(update(canonical_work).values(notes=private_note))
         before = (await connection.execute(select(canonical_work))).mappings().all()
-    command = [str(Path(sys.executable).with_name("switchstand-flow-report")),
+    command = [sys.executable, "-c", "from switchstand.flow_report import main; raise SystemExit(main())",
                "--work-id", str(target)]
     if output_format is not None:
         command.extend(["--format", output_format])
     process = await asyncio.create_subprocess_exec(
-        *command, env={**os.environ, "DATABASE_URL": engine.url.render_as_string(
+        *command, env={**os.environ, "PATH": "", "DATABASE_URL": engine.url.render_as_string(
             hide_password=False,
         )}, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
@@ -882,14 +881,14 @@ async def test_installed_cli_reads_exact_private_pg_evidence(
     assert after == before
 
 
-async def test_installed_cli_unknown_work_exits_without_success_output(
+async def test_cli_main_unknown_work_exits_without_success_output(
     engine: AsyncEngine,
 ) -> None:
     missing = uuid4()
     process = await asyncio.create_subprocess_exec(
-        str(Path(sys.executable).with_name("switchstand-flow-report")),
+        sys.executable, "-c", "from switchstand.flow_report import main; raise SystemExit(main())",
         "--work-id", str(missing),
-        env={**os.environ, "DATABASE_URL": engine.url.render_as_string(hide_password=False)},
+        env={**os.environ, "PATH": "", "DATABASE_URL": engine.url.render_as_string(hide_password=False)},
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
