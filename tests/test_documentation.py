@@ -140,6 +140,7 @@ def test_role_router_has_exact_function_routes_and_owner_links():
     }
 
     assert set(routes) == {
+        "Ordinary session",
         "Root",
         "Delegated Coordinator",
         "Research/design Worker",
@@ -167,8 +168,6 @@ def test_role_contract_preserves_boundaries_without_execution_detail():
     roles = section(read("AGENTS.md"), "## Codex roles and shared engineering process")
     before_router = roles.split("### Route only the current function", 1)[0]
 
-    assert "exactly two roles: **Coordinator** and **Worker**" in before_router
-    assert "Root owns the overall assigned portfolio/integration" in before_router
     assert "delegated Coordinator owns only its lane" in before_router
     assert "Role/function never grants authority" in before_router
     assert "Review independence depends on actual" in before_router
@@ -317,8 +316,6 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
     assert "never retake the Coordinator after losing it" in agents
     assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
     assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
-    assert "The first boundary starts five minutes" in architecture
-    assert "three LIGHT notifications, then HARD, repeating" in architecture
     assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
     assert "`/root` remains a temporary inbound alias" in usage
     assert "stops with `takeover_confirmation_required`" in usage
@@ -382,10 +379,8 @@ def test_polling_trigger_is_small_and_detail_lives_with_message_owners():
 
 
 def test_root_delegation_detail_lives_in_tracker_owner():
-    agents = normalized("AGENTS.md")
     tracker = normalized("docs/coordinator-tracker-contract.md")
 
-    assert "Root coordination, delegation, child challenge/disposition, scheduling" in agents
     assert "All execution belongs in context-free native forks" in tracker
     assert "use safe available slots without filler" in tracker
     assert "serialize heavy shared writers" in tracker

@@ -151,8 +151,14 @@ def test_explicit_user_stop_skips_pending_mailbox(tmp_path: Path) -> None:
 
 def configured_hooks(event: dict[str, Any], endpoint: str, state_home: Path) -> list[dict]:
     config = tomllib.loads((ROOT / ".codex/config.toml").read_text())
+    # CI mounts the source checkout read-only under a different owner. Exercise real
+    # Git discovery in an owned fixture rather than trusting that outer checkout.
+    repository = state_home / "repository"
+    if not repository.exists():
+        subprocess.run(["git", "init", "--quiet", str(repository)], check=True)
+        (repository / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
     return [json.loads(subprocess.run(
-        ["sh", "-c", handler["command"]], cwd=ROOT,
+        ["sh", "-c", handler["command"]], cwd=repository,
         input=json.dumps(event), text=True, capture_output=True, check=True,
         env=os.environ | {"XDG_STATE_HOME": str(state_home),
                           "SWITCHSTAND_CODEX_STOP_ENDPOINT": endpoint},
@@ -160,7 +166,14 @@ def configured_hooks(event: dict[str, Any], endpoint: str, state_home: Path) -> 
         for handler in group["hooks"]]
 
 
-def test_configured_plain_question_finishes_without_standing_assignment(tmp_path: Path) -> None:
+def test_configured_plain_question_finishes_without_standing_assignment(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    source = tmp_path / "source-without-git"
+    source.mkdir()
+    for name in (".codex", "scripts"):
+        (source / name).symlink_to(ROOT / name, target_is_directory=True)
+    monkeypatch.setitem(globals(), "ROOT", source)
     prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "session-1",
               "turn_id": "question", "prompt": "What is 2+2?"}
     with MailboxServer([{
