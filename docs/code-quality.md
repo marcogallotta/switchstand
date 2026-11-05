@@ -6,21 +6,27 @@ This is the repository semantic owner for substantive code/config/test implement
 
 A good change delivers the exact governing behavior with the simplest sound current design, lives in the correct owner, preserves explicit authority/trust/resource/dependency boundaries, avoids duplicate truth and speculative machinery, has discriminating maintainable evidence, and leaves the touched system no harder for a fresh competent agent to understand and safely change. Green tests are evidence, not the definition of correctness or quality.
 
-### Root AGENTS admission
+### Globally loaded instruction admission
 
-Root `AGENTS.md` is a bootstrap/router, not a process manual. Any addition to it must satisfy
-all of these in the existing review; this is not a separate ceremony:
+Root `AGENTS.md` and ChatGPT Project Settings are stable bootstrap/routers, not process manuals.
+Any addition or meaning-changing edit to either must satisfy all of these in the existing review;
+this is not a separate ceremony:
 
-1. essentially every fresh agent needs it before role/function selection;
+1. essentially every consumer of that global surface needs it before role/function selection;
 2. omission can cause immediate unsafe or materially misrouted behavior before owner guidance loads;
 3. no narrower current semantic owner can carry it;
 4. the text is an invariant, first-minute trigger, or routing pointer rather than procedure; and
 5. it does not duplicate owner-document semantics.
 
 Any `NO` routes the detail to its current owner and leaves at most the needed trigger/pointer in
-root `AGENTS.md`. A serious incident does not automatically qualify a new bootstrap rule. Do not
-use a total byte/line cap as the semantic gate: size may be reported diagnostically, but review
-must challenge ownership and necessity rather than compress prose to hit a threshold.
+the applicable bootstrap. If existing routing already reaches that owner, make no global change.
+A serious incident does not automatically qualify a new bootstrap rule. Feature work never edits
+Project Settings opportunistically; change that manual provider surface only when its globally
+loaded bootstrap must change, under the existing exact-text review, effect-authority, and readback
+rules. The existing
+review reports before/after bytes and any displaced owner text as diagnostics. Do not use a total
+byte/line cap as the semantic gate: review must challenge ownership and necessity rather than
+compress prose to hit a threshold.
 
 ## Author / implementer
 
