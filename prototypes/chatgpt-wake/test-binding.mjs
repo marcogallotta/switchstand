@@ -7,6 +7,7 @@ const delivery = '00000000-0000-4000-8000-000000000002';
 const url = 'https://chatgpt.com/c/confirmed';
 let saved = {}, handler, failSave = false, releasePoll, waitPoll = false, jsonFailure = false;
 let waitSave = false, releaseSave;
+let scriptPlan, effects = [];
 let observed = {status: 'ok', endpoint, generation: 1, name: 'A', delivery_ids: [delivery]};
 let tab = {url};
 function load() {
@@ -22,8 +23,15 @@ function load() {
           saved = structuredClone({...saved, ...value});
         }
       }},
-      tabs: {async get() { return structuredClone(tab); }}
-      // No scripting API: this feature cannot touch the composer or Send/Stop.
+      tabs: {async get() { return structuredClone(tab); }},
+      scripting: {async executeScript({args}) {
+        const attempt = args[2];
+        if (attempt.insert || attempt.final) {
+          assert.equal(saved.wakeBindings[0].halted, true, 'reservation precedes every effect');
+          effects.push(attempt);
+        }
+        return [{result: scriptPlan ? await scriptPlan(attempt) : {sendReady: true, outcome: 'click-attempted'}}];
+      }}
     },
     fetch: async (_url, options) => {
       assert.equal(options.cache, 'no-store', 'pairing uses a fresh backend observation');
@@ -109,3 +117,43 @@ let foreignReplied = false;
 assert.equal(handler({type: 'disarm'}, {id: 'foreign'}, () => { foreignReplied = true; }), undefined);
 assert.equal(foreignReplied, false);
 console.log('pairing contract PASS: pending, identity, history, Stop, restart, storage failure');
+const check = () => message({type: 'check'});
+const reset = () => { saved = structuredClone(paired); state().seen = []; effects = []; scriptPlan = undefined; load(); };
+reset();
+assert.match((await check()).status, /^Wake click attempted/);
+assert.deepEqual(state().seen, [delivery]);
+await check();
+assert.equal(effects.length, 2, 'repeat Check cannot send the same batch again');
+load(); await check(); assert.equal(effects.length, 2, 'restart retains dedupe');
+for (const response of ['draft-present', 'busy', 'composer-unavailable']) {
+  reset(); scriptPlan = () => response;
+  await check(); assert.equal(effects.length, 0); assert.equal(state().halted, undefined);
+}
+reset(); observed.generation = 2;
+assert.ok((await check()).error); assert.equal(effects.length, 0); observed.generation = 1;
+reset(); failSave = true;
+assert.ok((await check()).error); assert.equal(effects.length, 0, 'save failure blocks insertion/Stop/Send'); failSave = false;
+reset(); scriptPlan = attempt => { if (attempt.insert) throw Error('interrupted'); return {sendReady: true}; };
+await check(); assert.equal(state().halted, true);
+load(); await check(); assert.equal(effects.length, 1);
+assert.match((await bind()).error, /Unresolved/, 'Pair cannot renew an UNKNOWN attempt');
+reset(); scriptPlan = attempt => {
+  if (attempt.insert) observed.delivery_ids = [];
+  return {sendReady: true};
+};
+await check(); assert.equal(effects.some(effect => effect.final), false, 'original pending loss blocks final Send');
+assert.equal(state().halted, true); observed.delivery_ids = [delivery];
+reset(); let releaseReadiness;
+scriptPlan = async attempt => {
+  if (attempt.insert) await new Promise(resolve => { releaseReadiness = resolve; });
+  return {sendReady: true};
+};
+const preparing = check();
+while (!releaseReadiness) await new Promise(resolve => setImmediate(resolve));
+await message({type: 'disarm'});
+assert.equal(state().armed, false);
+releaseReadiness(); await preparing;
+assert.equal(effects.some(effect => effect.final), false, 'Stop during readiness prevents final dispatch');
+assert.equal(state().armed, false, 'attempt completion cannot resurrect Stop');
+assert.equal(state().halted, true);
+console.log('manual contract PASS: reserve-before-effect, dedupe, identity, draft, save failure, UNKNOWN, pending loss and Stop');
