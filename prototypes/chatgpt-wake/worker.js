@@ -1,4 +1,4 @@
-// One verified pairing; manual Check reserves each wake before touching the composer.
+// One verified pairing; manual and alarm checks share the same durable wake reservation.
 const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let serial = Promise.resolve();
@@ -257,3 +257,14 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     ? error.message : 'Could not update pairing. Check the mailbox connection and try again.'}));
   return true;
 });
+
+// Alarms only request the ordinary check; they never renew a consumed attempt.
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name !== 'mailbox-wake') return;
+  const version = stopVersion;
+  const result = serial.then(() => check(version));
+  serial = result.catch(() => {});
+});
+chrome.alarms.get('mailbox-wake').then(alarm => {
+  if (!alarm) return chrome.alarms.create('mailbox-wake', {periodInMinutes: 0.5});
+}).catch(() => console.warn('Automatic mailbox watch unavailable.'));

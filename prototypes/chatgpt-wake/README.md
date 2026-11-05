@@ -1,16 +1,20 @@
-# Exact mailbox pairing and manual wake
+# Exact mailbox pairing and automatic wake
 
 The extension verifies one existing Switchstand mailbox and saves its confirmed
-ChatGPT conversation. Check now manually attempts one wake for new pending mail:
+ChatGPT conversation. A Chrome alarm checks for new pending mail every 30 seconds;
+Check now requests the same check manually. Either path attempts one wake per new
+delivery-ID batch:
 it may stop an active response, wait up to ten seconds for Send, and submit exactly
-`Process your mailbox`. There is no background watching or alert delivery yet.
+`Process your mailbox`. There is no alert delivery yet.
 
 Run the existing wake backend on localhost:18766, then load this directory as an
 unpacked extension. Open an existing ChatGPT conversation, verify its registered
 mailbox name, and confirm the displayed identity and conversation. Stop disables
 the saved pairing without clearing its history or mailbox. Pending mail does not
 prevent pairing. Unresolved attempts and existing different pairings are retained
-and rejected rather than reset. Later feature PRs add background watching.
+and rejected rather than reset. Background checks defer while a draft is present or
+observation fails; they never renew an uncertain attempt or clear Stop. Chrome may
+delay alarms, so 30 seconds is a requested interval, not a delivery deadline.
 
 Run `node prototypes/chatgpt-wake/test-binding.mjs` for pairing and dispatch state
 contracts. The focused Playwright fixture exercises actual MV3 storage, messaging

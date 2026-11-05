@@ -1021,7 +1021,8 @@ wake reservations in extension storage; its popup requests Verify, Pair, Check a
 Stop from the worker. `/internal/chatgpt-wake/poll` supplies registered mailbox
 identity and pending delivery IDs, never content. Check reserves before Stop or
 insertion, rechecks original pending identity, and finishes with synchronous DOM
-guards and Send. Uncertain attempts stay blocked; there is no background watch yet.
+guards and Send. Chrome's `mailbox-wake` alarm requests the same serialized check
+every 30 seconds; seen IDs, Stop and unresolved attempts survive worker restarts.
 
 `wakeful.py` remains the neutral SQLite/outbox owner.
 `disk_pressure.py` is a non-destructive, one-shot Wakeful producer that runs outside the Codex
