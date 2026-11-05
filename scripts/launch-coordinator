@@ -3,4 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd -- "$repo_root/roles/coordinator"
-exec codex "$@"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.local/state/switchstand/codex/coordinator}"
+codex_cli="$HOME/.nvm/versions/node/v24.16.0/bin/codex"
+if [[ ! -x "$codex_cli" ]]; then
+    echo "Official Codex CLI is missing: $codex_cli" >&2
+    exit 127
+fi
+exec "$codex_cli" "$@"
