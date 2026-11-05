@@ -93,7 +93,7 @@ async def test_attention_http_preserves_results_and_primary_effect_on_hint_failu
             return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=ISSUER, **kwargs)
         transport = StreamableHttpTransport(f"{ISSUER}mcp", auth="fixed-bearer",
                                            httpx_client_factory=client_factory)
-        cases = (("success", {"notes": "ordinary input Cookie: session=first-secret-canary; csrf=second-secret-canary\n" + "x" * 2100 + " password=input-secret-canary"}),
+        cases = (("success", {"notes": "ordinary input Cookie: session=first-secret-canary; csrf=second-secret-canary\nCookie: session=; csrf=empty-first-secret-canary\nCookie: session=first-secret-canary; empty=; csrf=empty-mid-secret-canary\n" + "x" * 2100 + " password=input-secret-canary"}),
                  ("returned_error", {}), ("raw_error", {}),
                  ("validation", {"number": "password=validation-secret-canary"}), ("missing", {}))
         async with app.router.lifespan_context(app), Client(transport) as client:

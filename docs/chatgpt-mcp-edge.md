@@ -43,7 +43,7 @@ STDIO stderr retrieval; no durable STDIO history is installed.
 For an authorized bounded service-journal read, filter existing records, for example:
 
 ```sh
-journalctl --user -u switchstand-chatgpt-mcp.service --since '10 minutes ago' -o cat --no-pager | sed -n 's/^switchstand_mcp_timing //p' | jq 'select(.tool == "work_get") | {call_id,tool,input,output}'
+journalctl --user -u switchstand-chatgpt-mcp.service --since '10 minutes ago' -o cat --all --no-pager | sed -n 's/^[^{]*switchstand_mcp_timing //p' | jq 'select(.tool == "work_get") | {call_id,tool,input,output}'
 ```
 
 Host retrieval across restart, retention, rate limits and drop behavior require
