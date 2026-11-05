@@ -1,0 +1,15 @@
+[Unit]
+Description=Local ChatGPT wake backend (exact reviewed package)
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=@WRITER@
+Environment=PYTHONPATH=@WRITER@/src
+ExecStart=@WRITER@/.venv/bin/python @LAUNCHER@
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
