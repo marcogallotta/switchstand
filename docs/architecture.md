@@ -954,12 +954,15 @@ HALTED polls preserve the original cause. A separate optional fixed-enum current
 uses read-only observation without input or retry; it is neither the original cause nor a freshness guarantee. A started-only receipt means no durable result,
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
-The combined candidate retains conversation routing, explicit empty-mailbox Pair reconciliation,
+The combined candidate retains conversation routing; explicit Pair grants one fresh wake,
+even with pending mail or a blocked composer, retaining the prior uncertain attempt as an archive.
+Seen history and incident state persist; automatic checks never renew this manual grant. It retains
 unique visible explicit Send selection. V1 uses one bounded Stop/insertion/readiness phase,
 then a fresh worker STOP/mailbox fence and synchronous final Send. Only a durable known no-click
 attempt with matching original pending identity may recover its exact wake draft once; reservation
 is consumed before effects. No ownership witness or retry loop exists. Timeout/error/restart
-after reservation remains HALTED; legacy UNKNOWN and prior-click HALTs stay protected.
+after reservation remains HALTED; legacy UNKNOWN and prior-click HALTs require explicit manual
+Pair for a fresh wake. That grant may use an exact wake draft without attachments; other drafts stay protected.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed

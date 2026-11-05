@@ -105,14 +105,18 @@ exact artifact hashes in its activation proof. The envelope boot/release IDs des
 executing logger; the attempt retains its original boot/release IDs across reloads.
 A missing terminal result means only that no result was durably recorded; the DOM stage is
 UNKNOWN. `legacy_halt: true` means no attempt receipt exists, not a new attempt/interruption.
-Pair accepted/refused records preserve the attempt. Explicit Pair may reconcile a halt only
-for the same endpoint/generation after a fresh complete empty mailbox observation.
+Explicit Pair arms even with pending mail or a blocked composer and grants one fresh wake.
+For an unresolved attempt it must retain the same endpoint/generation and conversation.
+The previous attempt/HALT/IDs/consumed marker are archived, seen and incidents retained;
+automatic checks never renew the grant or declare the previous outcome resolved.
 `clickDispatched` records click invocation, never ChatGPT acceptance or mailbox processing.
 Facts contain booleans/fixed reasons only, never drafts, URLs, labels or raw exceptions.
 The latest failed diagnostic report is retried during ordinary Check; there is no queue or
 history. A new attempt may replace an older unreported receipt. Logging does not itself repair HALT. The combined candidate retains conversation routing,
 unique visible explicit Send selection (including exact case-insensitive aria-label Send),
 with a bounded Stop/readiness phase, then a fresh worker STOP/mailbox fence and synchronous final Send.
-Only a durable known no-click attempt with original pending identity can consume one exact-wake-draft recovery.
+Automatic exact-draft recovery requires durable known no-click and original pending identity;
+an explicit manual Pair also permits one current exact wake draft without attachments.
 Stop requires a unique visible enabled control and an empty or proven exact wake draft without attachments.
-Timeout/error/restart after reservation stays HALTED; legacy UNKNOWN and prior-click HALTs remain protected.
+Timeout/error/restart after reservation stays HALTED; legacy UNKNOWN and prior-click HALTs
+require explicit manual Pair for a fresh wake; arbitrary drafts remain untouched.

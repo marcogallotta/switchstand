@@ -84,7 +84,7 @@ observations.get('B').delivery_ids.push(id(13));
 const beforeRestartCheck = attempts.length;
 await message({type: 'check'});
 assert.equal(attempts.length, beforeRestartCheck);
-assert.match((await bind('B', 2)).error, /unresolved/);
+assert.equal(state('B').manualWakeId, undefined, 'restart never creates a manual grant');
 tabs.delete(1);
 await removed(1);
 const beforeClosed = attempts.length;
@@ -282,7 +282,7 @@ for (const blocker of ['idle', 'attempt-outcome-unknown', 'wrong-conversation'])
   saved = {}; reports.length = 0; attempts.length = 0;
   observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: [id(410)]});
   outcome = 'click-attempted'; load(); await bind('A', 1); await message({type: 'check'});
-  if (blocker === 'attempt-outcome-unknown') state('A').halted = true;
+  if (blocker === 'attempt-outcome-unknown') state('A').halted = true; delete state('A').manualWakeId;
   outcome = blocker;
   clock += 59000; await message({type: 'check'});
   assert.equal(reports.filter(item => item.incident).length, 0, blocker + ' below60s');
@@ -398,32 +398,59 @@ assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
 for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
 console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
 
-// Only explicit Pair can reconcile a drained halt; observation never clears it.
+// Explicit Pair grants a fresh wake without declaring the prior uncertain attempt resolved.
 for (const legacy of [false, true]) {
   await unsentWake();
   delete state('A').retry;
-  state('A').seen = [id(699)];
+  state('A').seen = [id(699), id(700)];
   if (legacy) delete state('A').attemptIds;
   const prior = structuredClone(state('A'));
-  observations.get('A').delivery_ids = [];
+  observations.get('A').delivery_ids = [id(700)];
   const count = attempts.length;
   await message({type:'verify', name:'A'}); await message({type:'check'});
   assert.equal(state('A').halted, true, 'empty observation cannot release a halt');
   await message({type:'disarm',endpoint:id(1)});
   assert.equal((await bind('A',1)).error, undefined);
   assert.equal(state('A').armed, true);
-  assert.equal(Boolean(state('A').halted), false);
+  assert.equal(state('A').halted, true, 'Arm preserves unresolved history until a new reservation');
   assert.deepEqual(state('A').seen, prior.seen);
-  assert.equal(state('A').lastReconciledAttempt.outcome,'attempt-outcome-unknown');
-  assert.deepEqual(state('A').lastReconciledAttempt.delivery_ids,legacy ? null : prior.attemptIds);
+  assert.deepEqual(state('A').lastArmedAttempt.diagnostic, prior.diagnostic);
+  assert.deepEqual(state('A').lastArmedAttempt.attemptIds,legacy ? null : prior.attemptIds);
+  assert.equal(state('A').manualWakeId, state('A').pairDiagnostic.id);
+  assert.deepEqual(state('A').pending, observations.get('A').delivery_ids, 'Arm retains fresh pending IDs');
   assert.equal(attempts.length,count,'Pair does not execute a page script');
+  outcome = 'click-attempted'; await message({type:'check'});
+  assert.equal(attempts.length, count + 1, 'explicit Arm allows one fresh wake even for seen pending');
+  assert.notEqual(state('A').diagnostic.id, prior.diagnostic.id);
+  assert.equal(state('A').manualWakeId, undefined);
+  assert.deepEqual(state('A').lastArmedAttempt.diagnostic, prior.diagnostic);
+  assert.deepEqual(state('A').seen, prior.seen, 'seen history stays unique');
+  load(); await alarm(); await message({type:'check'});
+  assert.equal(attempts.length, count + 1, 'restart/alarm cannot renew explicit grant');
 }
-for (const invalid of ['pending-seen','unavailable','malformed','generation','endpoint']) {
+for (const draft of ['exact', 'empty', 'other']) {
+  await unsentWake(); const prior = structuredClone(state('A').diagnostic);
+  assert.equal((await bind('A',1)).error, undefined, 'bad composer state does not block Arm');
+  const before = attempts.length;
+  stopPlan = async options => {
+    const phase = options.args[2];
+    if (draft === 'other' || (draft === 'empty' && phase.recover)) return 'draft-present';
+    if (phase.insert) assert.equal(phase.recover, draft === 'exact');
+    return {outcome:'idle',prepareReady:true,sendReady:true,stopReady:false};
+  };
+  outcome = options => {assert.equal(options.args[2].recover, draft === 'exact');return 'click-attempted';};
+  await message({type:'check'});
+  assert.equal(attempts.length, before + (draft === 'other' ? 0 : 1));
+  assert.deepEqual(state('A').lastArmedAttempt.diagnostic, prior);
+  assert.equal(Boolean(state('A').manualWakeId), draft === 'other');
+  stopPlan = undefined;
+}
+for (const invalid of ['conversation','unavailable','malformed','generation','endpoint']) {
   await unsentWake();delete state('A').retry;
   const observed=observations.get('A');const original=structuredClone(observed);
   const verified={...observed,tabId:1,url:tabs.get(1).url};
   observed.delivery_ids=[];
-  if(invalid==='pending-seen'){state('A').seen=[id(700)];observed.delivery_ids=[id(700)];}
+  if(invalid==='conversation'){verified.url='https://chatgpt.com/c/other';tabs.set(1,{url:verified.url});}
   if(invalid==='unavailable')observations.delete('A');
   if(invalid==='malformed')observed.delivery_ids=['not-a-uuid'];
   if(invalid==='generation')observed.generation++;
@@ -442,7 +469,7 @@ const stopReconcile=message({type:'disarm',endpoint:id(1)});
 blockName=undefined;releasePoll();
 assert.match((await reconciling).error,/Stop requested/);await stopReconcile;
 assert.equal(state('A').halted,true);assert.equal(state('A').armed,false);
-console.log('PASS explicit drained Pair only; preserves seen/UNKNOWN including legacy missing IDs, rejects seen-pending/malformed/unavailable/drift/Stop, and executes no page script.');
+console.log('PASS manual Pair grants one fresh seen-pending wake; archives UNKNOWN/legacy IDs, preserves seen, no page effect from Pair, no alarm/restart renewal, identity/chat/STOP guards.');
 
 // Conversation routing, with one retained pending delivery per distinct case.
 async function routingWake() {
@@ -527,7 +554,9 @@ assert.equal(state('A').status, failureStatus, 'first detailed error survives HA
 assert.deepEqual(state('A').diagnostic, failedAttempt);
 assert.ok(state('A').diagnosticAck, 'same retained receipt logged on next ordinary Check');
 assert.equal(reports.filter(item => item.diagnostics?.attempt?.id === failedAttempt.id).length, 2);
-assert.match((await bind('A', 1)).error, /unresolved/);
+tabs.set(1,{url:'https://chatgpt.com/c/other'});
+assert.match((await bind('A', 1)).error, /another conversation/);
+tabs.set(1,{url:'https://chatgpt.com/c/a'});
 assert.equal(state('A').pairDiagnostic.result, 'refused');
 assert.equal(state('A').pairDiagnostic.reason, 'unresolved-attempt');
 assert.deepEqual(state('A').diagnostic, failedAttempt, 'Pair refusal preserves original attempt');
@@ -536,7 +565,7 @@ await bind('A', 1);
 assert.equal(state('A').pairDiagnostic.result, 'accepted');
 assert.deepEqual(state('A').diagnostic, failedAttempt, 'Pair acceptance preserves original attempt');
 // An unfinished pre-dispatch record never implies that DOM insertion/click occurred.
-state('A').halted = true;
+state('A').halted = true; delete state('A').manualWakeId;
 Object.assign(state('A').diagnostic, {finished: null, outcome: null, reason: 'dispatch-start', facts: {}});
 state('A').incident = {state: 'queued', evidence: {incident_id: id(502)}};
 load(); reports.length = 0;
@@ -615,7 +644,7 @@ for (const kind of ['known-no-click', 'clicked', 'legacy', 'drained', 'generatio
   saved = {}; attempts.length = 0;
   observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: []});
   stopPlan = undefined; load(); await bind('A', 1);
-  observations.get('A').delivery_ids = [id(701)]; state('A').halted = true;
+  observations.get('A').delivery_ids = [id(701)]; state('A').halted = true; delete state('A').manualWakeId;
   state('A').attemptIds = [id(701)];
   if (kind !== 'legacy') state('A').diagnostic = {id: id(702), endpoint: id(1), generation: 1, delivery_ids: [id(701)], reason: 'result', outcome: 'inserted-not-submitted',
     facts: {inserted: true, ...(kind === 'clicked' ? {clickDispatched: true} : {})}};

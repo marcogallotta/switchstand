@@ -143,7 +143,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '5b470ab6-1788-4407-8e58-0ef2bff173c1';
+const releaseId = '24855ab9-124a-4fb0-a5c8-5908454fc479';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -285,7 +285,7 @@ async function checkBinding(binding, save) {
     return note('mailbox-binding-changed');
   }
   fresh = true;
-  const pending = observation.delivery_ids.filter(id => !binding.seen.includes(id));
+  const pending = observation.delivery_ids.filter(id => binding.manualWakeId || !binding.seen.includes(id));
   binding.pending = pending;
   binding.observedPending = observation.delivery_ids;
   let tab;
@@ -297,14 +297,15 @@ async function checkBinding(binding, save) {
   }
   binding.availability = 'open';
   const previous = binding.diagnostic;
-  const recover = binding.halted && previous?.outcome === 'inserted-not-submitted' &&
+  const manual = Boolean(binding.manualWakeId);
+  let recover = binding.halted && previous?.outcome === 'inserted-not-submitted' &&
     previous.endpoint === binding.endpoint && previous.generation === binding.generation &&
     Array.isArray(binding.attemptIds) && binding.attemptIds.length &&
     binding.attemptIds.every(id => previous.delivery_ids?.includes(id)) &&
     binding.attemptIds.some(id => observation.delivery_ids.includes(id)) &&
     previous.reason === 'result' && previous.facts?.inserted === true && !previous.facts.clickDispatched &&
     binding.stopSendAttempt !== previous.id;
-  if (binding.halted && !recover) {
+  if (binding.halted && !recover && !manual) {
     if (!tab.discarded && !tab.frozen) {
       try {
         const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
@@ -321,7 +322,7 @@ async function checkBinding(binding, save) {
   if (tab.discarded) return note('tab-discarded');
   if (tab.frozen) return note('tab-frozen');
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
-  if (!pending.length && !recover) {
+  if (!pending.length && !recover && !manual) {
     try {
       const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, true]});
       return note(result?.result || 'composer-unavailable: observation returned no result');
@@ -331,12 +332,21 @@ async function checkBinding(binding, save) {
   let ready;
   try {
     const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
-      args: [binding.url, false, {prepare: true, recover}, false]});
+      args: [binding.url, false, {prepare: true, recover: recover || manual}, false]});
     ready = result?.result;
+    if (manual) {
+      recover = ready !== 'draft-present';
+      if (!recover) {
+        const [empty] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
+          args: [binding.url, false, {prepare: true, recover: false}, false]});
+        ready = empty?.result;
+      }
+    }
   } catch { return note('composer-unavailable: Stop/Send preflight failed'); }
   if (!ready?.sendReady && !ready?.stopReady && !ready?.prepareReady) return note(typeof ready === 'string' ? ready : 'busy');
-  const consumed = recover || ready.stopReady;
-  const sendIds = recover ? binding.attemptIds : pending;
+  const consumed = manual || recover || ready.stopReady;
+  const sendIds = recover && !manual ? binding.attemptIds : pending;
+  delete binding.manualWakeId;
   // Reserve before Stop or Send; a consumed sequence never receives another allowance.
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
@@ -387,7 +397,7 @@ async function checkBinding(binding, save) {
     const safe = ['busy', 'draft-present', 'wrong-conversation', 'insert-failed'].includes(outcome) || outcome.startsWith('composer-unavailable');
     if (safe && !consumed) binding.halted = false;
     if (outcome === 'click-attempted') {
-      binding.seen.push(...sendIds);
+      binding.seen.push(...sendIds.filter(id => !binding.seen.includes(id)));
       binding.pending = [];
       binding.halted = false;
     }
@@ -449,7 +459,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         pairReason = 'generation-changed';
         if (prior && prior.generation !== generation) throw new Error('Mailbox generation changed; operator reconciliation required.');
         pairReason = 'unresolved-attempt';
-        if (prior?.halted && observed.delivery_ids.length) throw new Error('Previous attempt is unresolved; mailbox must be empty before explicitly rearming.');
+        if (prior?.halted && prior.url !== url) throw new Error('Unresolved attempt belongs to another conversation.');
         pairReason = 'stop-requested';
         if (stopAll !== stopSnapshot.all || stopEndpoints.get(endpoint) !== stopSnapshot.endpoint) {
           throw new Error('Stop requested during pairing; verify again.');
@@ -457,13 +467,14 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         // Explicit rearm may clear only intents already present when it arrived.
         if (stopAll === stopSnapshot.all) stopAll = 0;
         if (stopEndpoints.get(endpoint) === stopSnapshot.endpoint) stopEndpoints.delete(endpoint);
-        const binding = {endpoint, generation, name: observed.name, tabId, url, armed: true,
-          seen: prior?.seen || [], pending: [], status: 'armed', report: 'not checked', incident: prior?.incident,
-          lastReconciledAttempt: prior?.halted ? {outcome: 'attempt-outcome-unknown',
-            status: prior.status, delivery_ids: prior.attemptIds || null, checkedAt: prior.checkedAt || null}
-            : prior?.lastReconciledAttempt,
+        const pairId = crypto.randomUUID();
+        const binding = {...prior, endpoint, generation, name: observed.name, tabId, url, armed: true, manualWakeId: pairId,
+          seen: prior?.seen || [], pending: observed.delivery_ids.slice(), status: 'armed', report: 'not checked', incident: prior?.incident,
+          lastArmedAttempt: prior?.diagnostic || prior?.halted ? {diagnostic: prior.diagnostic || null,
+            halted: Boolean(prior.halted), status: prior.status || null, attemptIds: prior.attemptIds || null, stopSendAttempt: prior.stopSendAttempt || null,
+            pairId: prior.pairDiagnostic?.id || null} : prior?.lastArmedAttempt,
           diagnostic: prior?.diagnostic, diagnosticAck: prior?.diagnosticAck,
-          pairDiagnostic: {id: crypto.randomUUID(), boot: bootId, release: releaseId,
+          pairDiagnostic: {id: pairId, boot: bootId, release: releaseId,
             at: new Date().toISOString(), result: 'accepted', reason: 'accepted', attempt: prior?.diagnostic?.id || null}};
         if (prior) wakeBindings[wakeBindings.indexOf(prior)] = binding;
         else wakeBindings.push(binding);
