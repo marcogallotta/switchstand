@@ -850,7 +850,7 @@ The hook performs no classification, reporting,
 network call or transcript scan; the agent still uses the canonical Tracker Issues
 V1-A tools and their readback. Its one-second local timeout preserves prompt acknowledgement as the
 first response, and failures are visible and nonblocking.
-Ordinary configuration registers no PostToolUse reminder or standing-continuity hooks.
+Worker configuration registers no PostToolUse reminder or standing-continuity hooks.
 The feedback hook treats residual PostToolUse calls from older registrations as inert and writes no
 notification state. A question creates neither an assignment nor a Coordinator role; ordinary
 sessions execute their assigned work directly and can finish with normal prose.
