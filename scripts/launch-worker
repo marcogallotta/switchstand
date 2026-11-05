@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd -- "$repo_root"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.local/state/switchstand/codex/coordinator}"
+nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+if [[ ! -f "$nvm_dir/nvm.sh" ]]; then
+    echo "NVM is missing: $nvm_dir/nvm.sh" >&2
+    exit 127
+fi
+source "$nvm_dir/nvm.sh" --no-use
+if ! node_path="$(nvm which default 2>/dev/null)"; then
+    echo "NVM default Node is unavailable" >&2
+    exit 127
+fi
+node_bin="$(dirname -- "$node_path")"
+codex_cli="$node_bin/codex"
+if [[ ! -x "$codex_cli" ]]; then
+    echo "Official Codex CLI is missing from NVM default Node: $codex_cli" >&2
+    exit 127
+fi
+export PATH="$node_bin:$PATH"
+exec "$codex_cli" "$@"
