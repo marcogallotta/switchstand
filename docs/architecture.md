@@ -107,8 +107,10 @@ or principal identity.
 `flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. The report remains
 partial: it reports canonical current state and relations plus observed target events from one
 read-only, repeatable-read transaction. It projects only digest-validated failure/resolution rows
-whose owner is that exact WorkId, without exposing their private prose, and digest-validates
-activation revision chains correlated by their source-owned product/return-owner bindings.
+whose owner is that exact WorkId, excluding private prose by default, and digest-validates
+activation revision chains correlated by their source-owned product/return-owner bindings. The
+private Python API can explicitly opt into failure summary/evidence with `include_failure_detail=True`;
+the CLI does not enable that option.
 Activation remains `PARTIAL` because that source has no revision timestamps. Exact WorkId timing is
 stable-cohort service evidence, never task critical path. A separate additive
 source-coverage projection uses only `KNOWN`, `PARTIAL`, or `UNKNOWN`; absent exact candidate,
@@ -162,6 +164,54 @@ Completed managed-run intervals join the same observed-wall union; requested or 
 unterminated runs remain point/state evidence rather than inferred elapsed work. Mechanisms without
 an exact WorkId correlation, including host-maintenance receipts, remain `UNKNOWN` rather than
 acquiring an agent-authored stage label.
+
+
+**Private Flow Report: invocation and test route.** Implementation, projection and rendering live
+in [`flow_report.py`](../src/switchstand/flow_report.py). The
+[`switchstand-flow-report` entry point](../pyproject.toml) accepts one exact UUID:
+
+```bash
+DATABASE_URL="$TEST_DATABASE_URL" .venv/bin/switchstand-flow-report --work-id <WorkId> --format json
+```
+
+Run from an [owned writer with its prepared environment](development.md#normal-local-workflow).
+`TEST_DATABASE_URL` must identify the authorized disposable test database containing that WorkId;
+the CLI reads `DATABASE_URL`, does not provision or migrate a database, and defaults to JSON.
+`--format concise` renders the same facts. A missing canonical WorkId raises an error rather than
+creating work. This private host command uses database access directly, without ordinary MCP
+admission or permission filtering: the caller must already have authority to read the selected
+state. Its transaction is read-only and repeatable-read; the report does not mutate work, launch
+agents, or control services. The test fixture's database create/drop rights are separate from
+report-only read access.
+
+Optional `--github-pr <number> --github-head-sha <lowercase-40-character-SHA>` must be supplied
+together. This reads GitHub through [`repository_candidate.py`](../src/switchstand/repository_candidate.py)
+for `marcogallotta/switchstand`, after the database snapshot, so it is not a cross-provider atomic
+snapshot. The default qualifier uses public HTTP reads without installing an authentication
+credential; network access, provider availability and exact candidate identity still require
+separate evidence. Without the flags no GitHub request is made. An `UNKNOWN` source or unsupported
+aggregate-learning cohort stays unproved even when the command exits successfully.
+
+Direct database evidence owners include `tracker/work.py`, `tracker/relations.py`, `tracker/events.py`,
+`failure_journal.py`, `activation_continuity.py`, `human_reviews.py`, `human_trajectory.py`,
+`outcome_state.py`, `task_runs.py`, `reviews.py`, and `observability.py`; their validators, schemas and
+correlation rules remain source-owned. The focused behavioral route is:
+
+```bash
+sh scripts/check tests/test_flow_report.py tests/test_flow_report_render.py tests/test_flow_report_github.py
+```
+
+[`test_flow_report.py`](../tests/test_flow_report.py) uses real disposable PostgreSQL for exact
+correlation, snapshot consistency, validation and privacy; its fixture creates and drops a private
+database. Its `test_installed_cli_reads_exact_private_pg_evidence` invokes the actual entry point
+in JSON/concise formats with an unrelated decoy, checks coverage/privacy and unchanged canonical
+rows; `test_installed_cli_unknown_work_exits_without_success_output` checks missing-work failure.
+[`test_flow_report_render.py`](../tests/test_flow_report_render.py) checks faithful output,
+and [`test_flow_report_github.py`](../tests/test_flow_report_github.py) checks supplied candidate
+projection/CLI validation with synthetic provider data. These tests do not prove live GitHub access,
+provider permissions or production activation. The CLI tests use synthetic fixture data and
+metadata-created schemas; they do not establish current deployed-schema compatibility or an
+authenticated provider boundary. Record those missing prerequisites as `NOT_RUN`/`UNKNOWN`.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
