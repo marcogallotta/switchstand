@@ -27,6 +27,16 @@ does not own ordinary HTTP authentication or grant issuance.
 
 ## Runtime surfaces
 
+`recovery/coordinator/start` explicitly sends `sandbox=danger-full-access` and
+`approvalPolicy=never` on both app-server `thread/start` and `thread/resume`. Its startup
+message reads the Situation, focus-now Priorities and CURRENT notes, then advances approved
+priorities with at most three running jobs. `scripts/codex-job NAME ESTIMATE_MIB WORKTREE
+PROMPT_FILE LOG_FILE` runs resource admission, then detaches a worker under `agents.slice`
+with the dedicated `~/.local/state/switchstand/codex-bg-home` and explicit CLI approval/sandbox
+bypass. The Coordinator owns approval and the job limit; a printed PID is launch intent,
+and the log must be checked for the actual launch outcome. These repository adapters do not
+restart or activate the Coordinator.
+
 ### Authenticated ordinary HTTP MCP
 
 `chatgpt_mcp.py::build_ordinary_tools` is the canonical definition of the ordinary tool inventory
