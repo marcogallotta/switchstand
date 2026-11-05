@@ -57,7 +57,7 @@ failure_resolutions = Table(
 )
 
 _SECRET = re.compile(
-    r'''(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|((?:["']?(?:password|passwd|(?:access[_-]?|refresh[_-]?)?token|secret|api[_-]?key|authorization|cookie)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)|(?<=://)[^/@\s:]+:[^/@\s]+@'''
+    r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|((?:password|passwd|token|secret|api[_-]?key)\s*[:=]\s*)[^\s,;]+|(?<=://)[^/@\s:]+:[^/@\s]+@"
 )
 
 
@@ -68,12 +68,25 @@ def redact(value: str) -> str:
         if match.group(1):
             return f"{match.group(1)}[redacted]"
         if match.group(2):
-            value = match.group()[len(match.group(2)):]
-            quote = value[0] if value[0] in "\"'" else ""
-            return f"{match.group(2)}{quote}[redacted]{quote}"
+            return f"{match.group(2)}[redacted]"
         return "[redacted]@"
 
     return _SECRET.sub(replace, value)
+
+
+# Additive MCP diagnostics policy; persisted journal canonical bytes must stay stable.
+_MCP_CREDENTIAL = re.compile(
+    r'''(?i)((?:["']?(?:password|passwd|(?:access[_-]?|refresh[_-]?)?token|secret|api[_-]?key|authorization|cookie)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer|Basic)\s+[^\s,;}]+|[^\s,;}]+)'''
+)
+
+
+def redact_mcp_content(value: str) -> str:
+    """Extend canonical syntax for MCP copies without changing journal digests."""
+    def replace(match: re.Match[str]) -> str:
+        text = match.group()[len(match.group(1)):]
+        quote = text[0] if text[0] in "\"'" else ""
+        return f"{match.group(1)}{quote}[redacted]{quote}"
+    return redact(_MCP_CREDENTIAL.sub(replace, value))
 
 
 def redact_environment(value: str, environment: dict[str, str]) -> str:
