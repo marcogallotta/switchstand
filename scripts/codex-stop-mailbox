@@ -12,6 +12,7 @@ import urllib.request
 from typing import Any
 from uuid import UUID
 
+from codex_stop_intent import record as record_stop_intent
 from codex_stop_intent import requested as user_stop_requested
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:8790/internal/codex-stop-mailbox"
@@ -81,6 +82,15 @@ def _pending(endpoint: str, session_id: str) -> list[str]:
 def main() -> None:
     try:
         payload = json.load(sys.stdin)
+        if sys.argv[1:] == ["--record-stop"]:
+            if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":
+                raise ValueError("expected a UserPromptSubmit hook object")
+            if not any(key in payload for key in ("agent_id", "agent_type", "agent_transcript_path")):
+                record_stop_intent(payload)
+            _emit({})
+            return
+        if sys.argv[1:]:
+            raise ValueError("usage: codex-stop-mailbox [--record-stop]")
         if not isinstance(payload, dict) or payload.get("hook_event_name") != "Stop":
             raise ValueError("expected a Stop hook object")
         active = payload.get("stop_hook_active")

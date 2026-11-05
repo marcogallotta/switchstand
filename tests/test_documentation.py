@@ -324,21 +324,20 @@ def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
 
     codex = section(agents, "## Client-specific execution — do not universalize")
     assert "docs/how-marco-uses-switchstand.md" in markdown_links(codex)
-    assert "Only a stock session Marco directly addresses as `Codex Coordinator`" in usage
-    assert "retry passes Marco's full confirmation message" in usage
+    assert "Coordinator mailbox identity and any takeover require Marco's separate current direction" in usage
     assert "Mailbox registration or Marco-confirmed `Codex Coordinator` takeover restores only the durable messaging address" in usage
-    assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
+    assert "Neither creates a writer, manifest, Wakeful supervisor, or launch-bound WorkId" in usage
+    assert "The scripts bypass any `codex` command earlier on `PATH`" in usage
+    assert "Resume the exact session through the same role entry" in usage
     assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
-    assert "The first boundary starts five minutes" in architecture
-    assert "three LIGHT notifications, then HARD, repeating" in architecture
-    assert 'agent_takeover("Codex Coordinator", message=<Marco\'s full current message>)' in usage
+    assert "Worker configuration registers no PostToolUse reminder or standing-continuity hooks" in architecture
+    assert "codex-stop-mailbox --record-stop" in architecture
     assert "`/root` remains a temporary inbound alias" in usage
     assert "stops with `takeover_confirmation_required`" in usage
-    assert "tells the agent to ask Marco" in usage
-    assert "never retakes the name after losing it" in usage
+    assert "never retakes a lost name without a new direct instruction" in usage
     assert "checks pending mail at the start and end of each Marco turn" in usage
     assert "whenever Marco says `check mail`" in usage
-    assert "A fresh launch is independent" in usage
+    assert "A fresh `scripts/launch-coordinator` run is independent" in usage
     assert "Automatic transfer is disabled until a separate explicit addressed claim" in architecture
     assert "Bare `work_get` remains the launch-bound managed-worker behavior" in usage
 
