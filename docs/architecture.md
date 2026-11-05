@@ -1022,3 +1022,74 @@ launch path. It performs only a constant-time filesystem capacity probe, records
 SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
 It does not start Codex or deliver into Codex sessions. Without the optional inbound adapter, stock Codex consumes durable mailbox
 messages only while the user is actively running and prompting that session.
+
+### Opt-in local ChatGPT browser wake V1
+
+`SWITCHSTAND_CHATGPT_BROWSER_WAKE=1` adds the loopback-only `chatgpt_wake`
+adapter to the edge. Its poll route resolves an existing registered mailbox and
+uses the shared fenced `MessageState.all_pending_delivery_ids` collector; it
+returns endpoint/generation/IDs without mailbox content or delivery mutations.
+The extension manually pairs each mailbox with an exact open conversation tab.
+Per-binding pending/seen and a persisted pre-mutation halt prevent blind retries.
+Closed tabs remain observed without auto-reopening. The candidate uses owned
+TEST loopback18766, independently from the original mock18765.
+
+The local config route supplies an ephemeral report-only bearer capability. JSON
+reports require that capability and loopback peer/Host; ordinary web origins get
+no CORS access. By default reports go only to existing runtime logging and
+escalation remains unconfigured. An explicitly injected `HostReporter` adds the
+fixed `browser extension` alert path; it never registers or issues a grant on startup.
+Optional typed diagnostic metadata on the same report route logs independently of alerts.
+Each binding retains only its latest attempt and Pair result, with executing release/boot IDs;
+HALTED polls preserve the original cause. A separate optional fixed-enum current control snapshot
+uses read-only observation without input or retry; it is neither the original cause nor a freshness guarantee. A started-only receipt means no durable result,
+not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
+Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
+The popup lists chat names and plain status with Stop and Remove. Remove cancels queued wake dispatch before deleting only the extension pairing; backend diagnostics and mailbox/conversation records remain.
+The combined candidate retains conversation routing; explicit Pair grants one fresh wake,
+even with pending mail or a blocked composer, retaining the prior uncertain attempt as an archive.
+Seen history and incident state persist; automatic checks never renew this manual grant. It retains
+unique visible explicit Send selection. V1 uses one bounded Stop/insertion/readiness phase,
+then a fresh worker STOP/mailbox fence and synchronous final Send. Only a durable known no-click
+attempt with matching original pending identity may recover its exact wake draft once; reservation
+is consumed before effects. No ownership witness or retry loop exists. Timeout/error/restart
+after reservation remains HALTED; legacy UNKNOWN and prior-click HALTs require explicit manual
+Pair for a fresh wake. That grant may use an exact wake draft without attachments; other drafts stay protected.
+The flag is off by default; landing does not activate a service.
+
+`chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed
+incident envelope, message-only host grant checks and bootstrap manifest. The
+trusted `scripts/chatgpt-wake-reporter` plan/issue/check/revoke control path uses
+existing grant CAS and agent registration, with no takeover, schema or provider
+change. Live issuance/registration/activation are separate protected effects.
+A current host grant and actual session binding admit every alert; existing
+`agent_messages.py` owns the shared ordinary named-send path, preserving durable
+message replay and binding fences. Exact committed alert replay precedes fresh
+pending-evidence checks; changed arguments conflict. No caller chooses a sender,
+recipient, message body or grant. The browser's report-only capability exposes no
+actor credentials. Read-only observation and optional writable alert transport
+use separately owned engines.
+
+Existing Chrome binding storage reserves an incident before its report. Actual
+pending IDs observed continuously for60 seconds, or a closed tab with pending IDs,
+qualify one incident. Draft and closed-tab reasons remain explicit; other blockers
+use `pending-mail`, including HALT and seen IDs after a click. Only a fresh matching
+empty mailbox proves recovery. Restarts and observation gaps reset unqualified pending
+timers. A fresh empty poll clears a closed-tab incident while retaining the closed
+availability marker; a cached close callback cannot clear it. A frozen first-send
+observation that expires is retired only after an authoritative absent replay
+under the same reporter grant lock; fresh requalification uses a new incident
+identity, while ambiguous and committed operations keep their frozen arguments. STOP, busy and uncertain original sends remain distinct; no draft is
+copied or overwritten. A queued durable alert is not proof of Coordinator pickup.
+No new persistence table, OAuth flow, background Worker or native-input route is
+introduced.
+
+The wake prototype's local extras use a user-service template with restart-on-failure,
+three-second delay and three-starts-per-minute limit. Marco authorized user-login
+startup via default.target, without linger or administrator changes; the prototype
+[operations guide](../prototypes/chatgpt-wake/OPS.md) covers local recovery. The exact
+reviewed launcher preserves read-only observation and the existing admitted reporter.
+The sole current alert target is `browser extension`, fenced to its existing parent
+endpoint/generation; /config reports this runtime target while the immutable issued
+manifest retains its historical name. No new grant, registry identity or ChatGPT
+startup automation is introduced; the optional startup note is documentation only/OFF.

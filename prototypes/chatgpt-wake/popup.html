@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Switchstand chat wakes</title>
+<body style="width:390px;font:14px sans-serif;padding:12px">
+<p><b>REAL Switchstand mailbox — TEST backend</b><br>Requires candidate server on localhost:18766. This is not the old mock demo.</p>
+<p>Register this chat with Switchstand first. Enter its exact mailbox name.</p>
+<label>Mailbox <input id="name" maxlength="80"></label>
+<button id="verify">Verify mailbox</button>
+<p id="pairing"></p>
+<button id="bind" disabled>Pair and arm this chat</button>
+<p>Pending mail submits <b>Process your mailbox</b>. Keep paired tabs open.</p>
+<p><button id="check">Check now</button> <button id="disarm">Stop all</button></p>
+<p id="escalation">Alert configuration not checked yet.</p>
+<pre id="status" style="white-space:pre-wrap"></pre>
+<div id="bindings"></div>
+<script src="popup.js"></script>
