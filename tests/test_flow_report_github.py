@@ -7,6 +7,7 @@ import pytest
 
 from switchstand import flow_report
 from switchstand.flow_report import add_github_evidence, project_wall
+from switchstand.flow_report import runtime as flow_runtime
 from switchstand.repository_candidate import QualificationGate, RepositoryCandidateQualification
 
 HEAD = "a" * 40
@@ -232,12 +233,12 @@ async def test_run_qualifies_only_the_explicit_caller_supplied_pr(
         seen.append(pull_request)
         return qualification(head="c" * 40).model_copy(update={"pull_request": pull_request})
 
-    monkeypatch.setattr(flow_report, "create_async_engine", lambda url: Engine())
-    monkeypatch.setattr(flow_report, "report", fake_report)
-    monkeypatch.setattr(flow_report, "qualify_repository_candidate", fake_qualify)
+    monkeypatch.setattr(flow_runtime, "create_async_engine", lambda url: Engine())
+    monkeypatch.setattr(flow_runtime, "report", fake_report)
+    monkeypatch.setattr(flow_runtime, "qualify_repository_candidate", fake_qualify)
     monkeypatch.setenv("DATABASE_URL", "not-opened")
 
-    await flow_report._run(
+    await flow_runtime._run(
         UUID("10000000-0000-4000-8000-000000000001"),
         "json", 27, HEAD,
     )

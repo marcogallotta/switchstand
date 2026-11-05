@@ -26,6 +26,7 @@ from switchstand.failure_journal import (
     failure_records,
 )
 from switchstand.flow_report import report
+from switchstand.flow_report import runtime as flow_runtime
 from switchstand.human_reviews import human_review_consequences
 from switchstand.human_trajectory import (
     HumanTrajectoryData,
@@ -540,7 +541,7 @@ async def test_exact_failure_and_activation_sources_are_private_and_validated(
     assert result["elapsed"]["observed_interval_union_ms"] == 12_000
     assert result["source_coverage"]["failure_recovery"]["status"] == "KNOWN"
     assert result["source_coverage"]["activation"]["status"] == "PARTIAL"
-    monkeypatch.setattr(flow_report, "ACTIVATION_REVISION_LIMIT", 0)
+    monkeypatch.setattr(flow_runtime, "ACTIVATION_REVISION_LIMIT", 0)
     limited = await report(engine, target)
     assert limited["activation"]["reason"] == "REVISION_LIMIT_EXCEEDED"
 
@@ -631,7 +632,7 @@ async def test_activation_obligation_limit_names_deterministic_id_bound(
         ))
         values.append((contract.obligation_id, 1, value))
     await add_activation_revisions(engine, values)
-    monkeypatch.setattr(flow_report, "ACTIVATION_OBLIGATION_LIMIT", 1)
+    monkeypatch.setattr(flow_runtime, "ACTIVATION_OBLIGATION_LIMIT", 1)
 
     result = await report(engine, target)
 
@@ -655,7 +656,7 @@ async def test_failure_adapter_bounds_recent_records_truthfully(
             effect_state=EffectState.NOT_SENT,
             occurred_at=datetime.now(UTC) - timedelta(seconds=2 - offset),
         ))).status == "APPLIED"
-    monkeypatch.setattr(flow_report, "FAILURE_LIMIT", 1)
+    monkeypatch.setattr(flow_runtime, "FAILURE_LIMIT", 1)
 
     result = await report(engine, target, include_failure_detail=True)
 
@@ -781,14 +782,14 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
             id=target, provider="test", provider_work_id=str(target),
         ))
     entered, committed = asyncio.Event(), asyncio.Event()
-    original = flow_report._relations
+    original = flow_runtime._relations
 
     async def paused(connection, work_id):
         entered.set()
         await committed.wait()
         return await original(connection, work_id)
 
-    monkeypatch.setattr(flow_report, "_relations", paused)
+    monkeypatch.setattr(flow_runtime, "_relations", paused)
     pending = asyncio.create_task(report(engine, target))
     await entered.wait()
     async with engine.begin() as connection:
@@ -1186,10 +1187,10 @@ async def test_trajectory_headers_are_bounded_private_exact_and_fail_closed(
     raw = [tuple(row) for row in rows]
     naive_latest = list(raw[-1])
     naive_latest[10] = original[10].replace(tzinfo=None)
-    assert flow_report._trajectory_projection(
+    assert flow_runtime._trajectory_projection(
         [*raw[:-1], tuple(naive_latest)], target, datetime.now(UTC),
     )["reason"] == "UNSAFE_CREATED_AT"
-    assert flow_report._trajectory_projection(
+    assert flow_runtime._trajectory_projection(
         [tuple(row) for row in unrelated_rows], target, datetime.now(UTC),
     )["reason"] == "CORRUPT_OR_MISMATCHED_CHAIN"
 
