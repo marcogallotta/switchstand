@@ -9,7 +9,7 @@ from alembic import command
 from alembic.config import Config
 from chatgpt_fixture import PRINCIPAL, grant
 from pydantic import ValidationError
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -238,6 +238,13 @@ async def test_workspace_message_transition_uses_explicit_work_id(subject):
         recipient_principal, runtime, receive, work_id=target
     )
     assert explicit.status == "ok" and explicit.state == "RECEIVED"
+
+    runtime = RuntimeCurrentness(generation="session-b", current_generation="session-b")
+    assert (await state.recover(recipient_principal, runtime, receive)).reason == (
+        "delivery_not_for_current_work"
+    )
+    recovered = await state.recover(recipient_principal, runtime, receive, work_id=target)
+    assert recovered.status == "ok" and recovered.state == "RECEIVED"
 
     handles = {
         target: Handle(target, "asana", "222"),
@@ -639,3 +646,110 @@ async def test_pending_lists_newest_first_and_pages_through_backlog(subject):
             break
         cursor = page.next_cursor
     assert seen == sent[::-1]
+
+
+@pytest.mark.parametrize("operation", ["receive", "recover", "disposition"])
+@pytest.mark.parametrize("denial", ["revoked", "version"])
+@pytest.mark.parametrize("current_generation", [None, "replacement"])
+async def test_managed_admission_precedes_runtime(subject, operation, denial, current_generation):
+    state, engine, grants, sender_principal, sender, principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    delivery_id = original.message.delivery_id
+    async with engine.connect() as connection:
+        before = (await connection.execute(select(message_deliveries))).mappings().one()
+    replacement = recipient.model_copy(update={
+        "id": uuid4(), "version": 2, "state": "revoked" if denial == "revoked" else "active",
+    })
+    await grants.issue(replacement, 1)
+    evidence = DispositionEvidence(kind="result", result_message_id=uuid4())
+    transition = (MessageDispositionRequest(api_version="1", delivery_id=delivery_id,
+        grant_version=2 if denial == "revoked" else 1,
+        disposition_digest=digest(evidence), evidence=evidence) if operation == "disposition"
+        else MessageReceiveRequest(api_version="1", delivery_id=delivery_id,
+            grant_version=2 if denial == "revoked" else 1))
+    result = await getattr(state, operation)(principal,
+        RuntimeCurrentness(generation="original", current_generation=current_generation), transition)
+    assert (result.status, result.reason) == (
+        ("denied", "no_current_grant") if denial == "revoked"
+        else ("stale", "grant_version_changed")
+    )
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(message_deliveries))).mappings().one() == before
+
+
+async def test_managed_ack_disposition_ignores_old_receiving_binding(subject):
+    state, engine, _, sender_principal, sender, principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    delivery_id = original.message.delivery_id
+    runtime = RuntimeCurrentness(generation="current", current_generation="current")
+    receive = MessageReceiveRequest(api_version="1", delivery_id=delivery_id, grant_version=1)
+    async with engine.begin() as connection:
+        await connection.execute(update(message_deliveries).values(
+            state="ACKNOWLEDGED", recipient_grant_version=99, receiving_generation="old"))
+        before = (await connection.execute(select(message_deliveries))).mappings().one()
+    assert (await state.receive(principal, runtime, receive)).reason == "delivery_already_acknowledged"
+    assert (await state.recover(principal, runtime, receive)).reason == "delivery_not_received"
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(message_deliveries))).mappings().one() == before
+    reply = request(recipient, kind="result", in_reply_to_delivery_id=delivery_id)
+    assert (await state.submit(principal, route(sender), reply)).status == "ok"
+    evidence = DispositionEvidence(kind="result", result_message_id=reply.message_id)
+    disposition = MessageDispositionRequest(api_version="1", delivery_id=delivery_id,
+        grant_version=1, disposition_digest=digest(evidence), evidence=evidence)
+    assert (await state.disposition(principal, runtime, disposition)).state == "DISPOSITIONED"
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(message_deliveries).where(
+            message_deliveries.c.delivery_id == delivery_id))).mappings().one()
+    assert row["state"] == "DISPOSITIONED" and row["recipient_grant_version"] == 99
+    assert row["receiving_generation"] == "old"
+    assert row["evidence"] == evidence.model_dump(mode="json")
+    assert row["disposition_digest"] == digest(evidence)
+
+
+async def test_managed_grant_replacement_waits_for_delegated_transition(subject, monkeypatch):
+    state, engine, grants, sender_principal, sender, principal, recipient = subject
+    original = await state.submit(sender_principal, route(recipient), request(sender))
+    receive = MessageReceiveRequest(api_version="1", delivery_id=original.message.delivery_id,
+        grant_version=1)
+    runtime = RuntimeCurrentness(generation="current", current_generation="current")
+    entered, release = asyncio.Event(), asyncio.Event()
+    admitted = state.receive_admitted
+
+    async def paused(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await admitted(*args, **kwargs)
+
+    monkeypatch.setattr(state, "receive_admitted", paused)
+    transition = asyncio.create_task(state.receive(principal, runtime, receive))
+    replacement = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        replacement = asyncio.create_task(grants.issue(
+            recipient.model_copy(update={"id": uuid4(), "version": 2}), 1))
+        # Observe the actual PostgreSQL lock wait, rather than assuming task scheduling.
+        async with asyncio.timeout(2):
+            while True:
+                async with engine.connect() as connection:
+                    blocked = await connection.scalar(text(
+                        "SELECT EXISTS (SELECT FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                        "AND query LIKE '%work_grants%' AND cardinality(pg_blocking_pids(pid)) > 0)"
+                    ))
+                if blocked:
+                    break
+                assert not replacement.done(), "replacement overtook delegated transition"
+                await asyncio.sleep(0.01)
+        assert not replacement.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(transition, 2)
+        if replacement is not None:
+            await asyncio.wait_for(replacement, 2)
+    assert transition.result().status == "ok"
+    assert (await grants.current(principal.key)).version == 2
+    async with engine.connect() as connection:
+        row = (await connection.execute(select(message_deliveries))).mappings().one()
+    assert row["state"] == "RECEIVED" and row["recipient_grant_version"] == 1
+    assert row["receiving_generation"] == runtime.generation
+    assert (await state.receive(principal, runtime, receive)).reason == "grant_version_changed"
