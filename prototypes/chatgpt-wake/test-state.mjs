@@ -5,7 +5,7 @@ const code = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
 const backend = await readFile(new URL('../../src/switchstand/chatgpt_wake.py', import.meta.url), 'utf8');
 const acceptedOutcomes = new Set([...backend.match(/OUTCOMES = frozenset\(\{([\s\S]*?)\}\)/)[1].matchAll(/"([a-z-]+)"/g)].map(match => match[1]));
 const id = number => `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
-let saved = {}, handler, removed, outcome = 'click-attempted', blockName, releasePoll;
+let saved = {}, handler, removed, alarm, outcome = 'click-attempted', blockName, releasePoll;
 const observations = new Map(['A', 'B'].map((name, index) => [name,
   {status: 'ok', name, endpoint: id(index + 1), generation: 1, delivery_ids: []}]));
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
@@ -34,7 +34,7 @@ function load() {
       const value = typeof outcome === 'function' ? outcome(options) : observeOnly && outcome === 'click-attempted' ? 'idle' : outcome;
       return [{result: options.args[3] ? (typeof value === 'string' ? {outcome: value, facts: {editorFound: true}} : {...value, facts: {editorFound: true}}) : value}];
     }},
-    alarms: {onAlarm: {addListener() {}}, async get() { return {}; }}
+    alarms: {onAlarm: {addListener(value) { alarm = value; }}, async get() { return {}; }}
   };
   context = {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
     if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only', escalation: 'configured', recipient: 'ChatGPT Wake Setup 2026-11-04'})};
@@ -329,64 +329,26 @@ async function unsentWake() {
   observations.get('A').delivery_ids = [id(700)];
   outcome = options => ({outcome: 'inserted-not-submitted: no click', noClickToken: options.args[2].token});
   await message({type: 'check'});
-  assert.ok(state('A').retry, 'explicit no-click receipt durably retains one allowance');
+  assert.equal(state('A').retry, undefined, 'no click receipt creates no retry');
   assert.equal(state('A').halted, true);
 }
-await unsentWake();
-outcome = options => {
-  assert.equal(options.args[2].retry, true, 'retry requests no insertion');
-  assert.equal(state('A').retry, undefined, 'allowance consumed in storage before DOM dispatch');
-  assert.equal(state('A').halted, true, 'crash during retry stays fenced');
-  return 'click-attempted';
-};
-await message({type: 'check'});
-assert.deepEqual(state('A').seen, [id(700)]);
-await message({type: 'check'});
-assert.equal(attempts.length, 2, 'initial no-click and only one retry');
-
-for (const invalidate of [
-  () => load(),
-  () => { delete state('A').retry; }, // Legacy UNKNOWN has no evidence.
-  () => { observations.get('A').generation++; },
-  () => { observations.get('A').endpoint = id(9998); },
-  () => { observations.get('A').delivery_ids = [id(701)]; },
-  () => { observations.get('A').delivery_ids = []; },
-  () => { tabs.set(1, {url: 'https://chatgpt.com/c/other'}); },
-  async () => { await message({type: 'disarm'}); }
-]) {
-  observations.get('A').endpoint = id(1);
+for (const legacyRetry of [false, true]) {
   await unsentWake();
-  await invalidate();
-  const before = attempts.length;
+  if (legacyRetry) state('A').retry = {token: 'old-witness', boot: 'old-boot', tabId: 1};
   const originalDiagnostic = structuredClone(state('A').diagnostic);
-  await message({type: 'check'});
-  assert.equal(attempts.length, before, 'stale/missing evidence never dispatches');
-  assert.deepEqual(state('A').diagnostic, originalDiagnostic, 'retry fence retains original cause');
-  if (state('A').status === 'attempt-outcome-unknown: retry evidence no longer current') {
-    assert.equal(reports.at(-1).diagnostics.block, 'retry-evidence-not-current');
-    assert.ok(reports.at(-1).diagnostics.release);
+  outcome = 'click-attempted';
+  for (const change of [() => {}, () => load(),
+    () => { observations.get('A').delivery_ids = [id(701)]; },
+    () => { observations.get('A').delivery_ids = []; }]) {
+    change(); const before = attempts.length;
+    await alarm();
+    assert.equal(attempts.length, before, 'HALT prevents replay across checks, reload, and pending changes');
+    assert.equal(state('A').halted, true);
+    assert.deepEqual(state('A').diagnostic, originalDiagnostic, 'original cause is retained');
+    assert.deepEqual(state('A').seen, []);
   }
 }
-observations.get('A').endpoint = id(1);
-await unsentWake();
-let stopping;
-onSave = () => {
-  if (!state('A').retry && !stopping) stopping = message({type: 'disarm'});
-};
-await message({type: 'check'}); await stopping; onSave = undefined;
-assert.equal(attempts.length, 1, 'STOP during retry consumption preempts DOM dispatch');
-
-for (const failed of ['attempt-outcome-unknown: retry exhausted; control unavailable', 'throw', undefined, 'busy']) {
-  await unsentWake();
-  outcome = failed;
-  await message({type: 'check'});
-  const before = attempts.length;
-  await message({type: 'check'});
-  assert.equal(attempts.length, before, 'failed/ambiguous retry never becomes an endless loop');
-  assert.equal(state('A').halted, true);
-  assert.equal(state('A').retry, undefined);
-}
-console.log('PASS explicit no-click single retry; consume-before-dispatch, no insertion, legacy/restart/binding/pending/STOP fences and terminal retry failure.');
+console.log('PASS no automatic retry; legacy retry is inert and HALT survives checks/restart/new or empty IDs.');
 assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
 for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
 console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
@@ -484,9 +446,9 @@ await routingWake();
 tabs.set(10, {url: 'https://chatgpt.com/c/elsewhere'}); tabs.set(11, {url: state('A').url});
 outcome = options => ({outcome: 'inserted-not-submitted: no click', noClickToken: options.args[2].token});
 await message({type: 'check'});
-assert.equal(state('A').retry.tabId, 11, 'retry owns actual fallback page, not stored hint');
+assert.equal(state('A').retry, undefined, 'no retry allowance after an unsent fallback attempt');
 tabs.delete(11); tabs.set(12, {url: state('A').url}); await removed(11);
-assert.equal(state('A').retry, undefined, 'lost page forfeits retry immediately');
+assert.equal(state('A').retry, undefined, 'lost page cannot create retry');
 const beforeLost = attempts.length; await message({type: 'check'});
 assert.equal(attempts.length, beforeLost, 'replacement cannot inherit retry or clear UNKNOWN');
 assert.equal(state('A').halted, true);
@@ -498,7 +460,7 @@ for (const interruption of ['wrong-conversation', 'throw', 'draft-present']) {
   assert.deepEqual(state('A').seen, []);
   assert.equal(state('A').halted, interruption === 'throw');
 }
-console.log('PASS three conversation routing cases; duplicate single target, fallback removal, retained IDs, page-owned retry loss, URL race/draft/UNKNOWN fences.');
+console.log('PASS three conversation routing cases; duplicate single target, fallback removal, retained IDs, HALT after fallback page loss, URL race/draft/UNKNOWN fences.');
 // Persisted real-world failure states are distinct from a clean fixture binding.
 saved = {}; attempts.length = 0; reports.length = 0; alertMode = false;
 tabs.set(1, {url: 'https://chatgpt.com/c/a'});

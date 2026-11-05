@@ -1,4 +1,4 @@
-import {test as base, expect, chromium} from '@playwright/test';
+import {test as base, expect, chromium} from '/home/marco/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/test.mjs';
 import {createServer} from 'node:http';
 import {mkdtemp, readFile, writeFile, copyFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -123,12 +123,42 @@ test('waits for delayed render/Send enabling after insertion',async({wake})=>{
   expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(1);
 });
 
-test('temporarily blocked Send gets one owned no-click retry without reinsertion',async({wake})=>{
+test('editor normalization without text change does not revoke the send',async({wake})=>{
+  await wake.page.evaluate(()=>{
+    window.normalized=false;document.querySelector('form button').addEventListener('click',()=>window.normalizedAtClick=window.normalized,true);
+    document.querySelector('#prompt-textarea').addEventListener('input',()=>{
+    setTimeout(()=>{const editor=document.querySelector('#prompt-textarea');
+      const paragraph=document.createElement('p');paragraph.textContent=editor.textContent;editor.replaceChildren(paragraph);window.normalized=true;},20);
+  });});
+  wake.metadata.delivery_ids=[delivery(904)];await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
+  expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(1);
+  expect(await wake.page.evaluate(()=>window.normalizedAtClick)).toBe(true);
+});
+
+for (const changed of ['draft','url','busy']) {
+  test(`final ${changed} change while waiting prevents click`,async({wake})=>{
+    await wake.page.evaluate(changed=>document.querySelector('#prompt-textarea').addEventListener('input',()=>{
+      setTimeout(()=>{
+        if(changed==='draft') document.querySelector('#prompt-textarea').textContent='user changed draft';
+        if(changed==='url') history.pushState({},'', '/c/changed');
+        if(changed==='busy') {const stop=document.createElement('button');stop.dataset.testid='stop-button';document.body.append(stop);}
+      },20);
+    }),changed);
+    wake.metadata.delivery_ids=[delivery(905)];await wake.check();
+    await expect(wake.page.locator('#turns li')).toHaveCount(0);
+    const binding=await wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
+    expect(binding.halted).toBe(true);expect(binding.seen).toEqual([]);
+    expect(binding.diagnostic.facts.clickDispatched).not.toBe(true);
+  });
+}
+
+test('temporarily blocked Send stays halted without retry or reinsertion',async({wake})=>{
   await wake.page.evaluate(()=>fixture.blocked=true);wake.metadata.delivery_ids=[delivery(1)];
   await wake.check();await expect(wake.page.locator('#turns li')).toHaveCount(0);
   await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
   await wake.page.evaluate(()=>{fixture.blocked=false;document.querySelector('button').disabled=false;});
-  await wake.check();await wake.check();await expect(wake.page.locator('#turns li')).toHaveCount(1);
+  await wake.check();await wake.check();await expect(wake.page.locator('#turns li')).toHaveCount(0);
   expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(1);
 });
 
@@ -140,12 +170,12 @@ test('prior click retaining text is never retried; persistent error remains fenc
   await expect(wake.page.locator('#turns li')).toHaveCount(1);
 });
 
-test('persistent blocked Send stays halted after its sole retry',async({wake})=>{
+test('persistent blocked Send stays halted without retry',async({wake})=>{
   await wake.page.evaluate(()=>{fixture.blocked=true;document.body.insertAdjacentHTML('beforeend','<p role="alert">Fixture error</p>');});
   wake.metadata.delivery_ids=[delivery(1)];await wake.check();await wake.check();await wake.check();
   await expect(wake.page.locator('#turns li')).toHaveCount(0);
   expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(1);
-  expect(wake.reports.some(report=>report.outcome==='attempt-outcome-unknown')).toBe(true);
+  expect(wake.reports.some(report=>report.outcome==='inserted-not-submitted')).toBe(true);
 });
 
 test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft and UNKNOWN',async({wake})=>{
