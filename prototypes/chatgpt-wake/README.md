@@ -1,33 +1,37 @@
-# Exact mailbox pairing and automatic wake
+# ChatGPT mailbox wake
 
-The extension verifies existing Switchstand mailboxes and saves each confirmed
-ChatGPT conversation. Each exact conversation belongs to one mailbox identity. A Chrome alarm checks for new pending mail every 30 seconds;
-Check now requests the same check manually. Either path attempts one wake per new
-delivery-ID batch:
-it may stop an active response, wait up to ten seconds for Send, and submit exactly
-`Process your mailbox`. There is no alert delivery yet.
+Load this directory as an unpacked Chrome/Brave extension after starting the
+existing Switchstand wake backend on `127.0.0.1:18766`. In an open ChatGPT
+conversation, enter its registered mailbox name and click **Add chat**. The
+extension verifies the mailbox and current tab in one action and rejects an
+already paired mailbox or conversation. Saved chats appear alphabetically.
 
-Run the existing wake backend on localhost:18766, then load this directory as an
-unpacked extension. Open an existing ChatGPT conversation, verify its registered
-mailbox name, and confirm the displayed identity and conversation. Stop disables
-all saved pairings without clearing its history or mailbox. Pending mail does not
-prevent pairing. Unresolved attempts and changed identities are retained
-and rejected rather than reset. Pairing another mailbox preserves existing bindings.
-Checks use the saved exact-URL tab if available, otherwise the lowest-ID exact match.
-Closing a tab records its absence without opening a replacement; reopening the same
-conversation restores routing. An internal endpoint Stop isolates that pairing; the
-popup Stop still stops all pairings. Background checks defer while a draft is present or
-observation fails; they never renew an uncertain attempt or clear Stop. Chrome may
-delay alarms, so 30 seconds is a requested interval, not a delivery deadline.
+The extension polls pending delivery IDs about every 30 seconds. For an armed
+matching conversation it may stop a response, insert `Process your mailbox`,
+and click Send. It preserves an unrelated draft or attachment, and never opens
+a closed tab. Definite no-send conditions can be retried on later polls.
+An uncertain click remains fenced even after the mailbox becomes empty: an
+empty poll cannot prove whether ChatGPT received or processed the wake. The
+popup shows **Needs manual reconciliation** in that case. **Resume** rechecks
+one chat; **Resume all** rechecks every saved chat. Neither clears an uncertain
+send or alert. **Remove** requires a fresh empty mailbox observation and a
+resolved alert. It hides the chat but retains its pairing and safety history;
+the same mailbox or conversation cannot be added again automatically. A click
+is not proof that ChatGPT processed mail.
 
-Run `node prototypes/chatgpt-wake/test-binding.mjs` for pairing and dispatch state
-contracts. The focused Playwright fixture exercises actual MV3 storage, messaging
-and injected DOM execution in an isolated profile, including a real worker restart.
-No test accesses an existing browser profile or sends external mail.
+Pending mail blocked by a closed tab is reported immediately to the local wake
+backend. A persistent draft or any continuously pending mailbox is reported
+after a minute of observation.
+The popup shows whether an alert was confirmed. An uncertain report retains its
+incident identity for replay. A confirmed blocked incident remains active while
+any mail is pending; a fresh empty observation sends its recovery.
 
-The worker durably reserves the original pending IDs before any Stop or insertion.
-Stop cancels further dispatch across waits; fresh endpoint/generation and pending
-identity are rechecked before synchronous final DOM checks and Send. A click is
-not provider acceptance. An uncertain attempt stays blocked through Check, Pair
-and worker restart; this version cannot rearm it. Other drafts and attachments
-are preserved. Saved pairing history and backend mailbox records are not cleared.
+Focused checks:
+
+```sh
+node prototypes/chatgpt-wake/test-minimal.mjs
+node prototypes/chatgpt-wake/test-minimal-browser.mjs
+```
+
+The browser check uses an isolated temporary profile and intercepted ChatGPT
+fixture. It does not establish live ChatGPT delivery or mailbox pickup.

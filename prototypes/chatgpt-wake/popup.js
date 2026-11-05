@@ -1,23 +1,32 @@
-const output = document.querySelector('#status');
-const pairing = document.querySelector('#pairing');
-const confirm = document.querySelector('#bind');
-let verified;
-document.querySelector('#name').oninput = () => { verified = undefined; confirm.disabled = true; pairing.textContent = ''; };
-document.querySelector('#verify').onclick = async () => {
-  confirm.disabled = true;
-  const result = await chrome.runtime.sendMessage({type: 'verify', name: document.querySelector('#name').value.trim()});
-  if (result.error) { output.textContent = result.error; return; }
+const $ = id => document.getElementById(id);
+async function request(message) {
+  const reply = await chrome.runtime.sendMessage(message);
+  if (reply.error) throw Error(reply.error);
+  return reply;
+}
+async function show() {
+  const {minimalBindings = []} = await chrome.storage.local.get('minimalBindings');
+  $('bindings').replaceChildren();
+  for (const b of minimalBindings.filter(b => !b.removed).sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url))) {
+    const row = document.createElement('p');
+    row.textContent = `${b.name}: ${b.status || 'Armed'} ${b.report || ''} `;
+    for (const type of ['resume', 'remove']) {
+      const button = document.createElement('button');
+      button.textContent = type === 'resume' ? 'Resume' : 'Remove';
+      button.onclick = () => act(async () => { await request({type, id: b.id}); await show(); });
+      row.append(button);
+    }
+    $('bindings').append(row);
+  }
+}
+async function act(action) {
+  try { await action(); $('status').textContent = ''; }
+  catch (e) { $('status').textContent = e.message; }
+}
+$('add').onclick = () => act(async () => {
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
-  verified = {...result.status, tabId: tab?.id, url: tab?.url};
-  pairing.textContent = `Confirm ${verified.name} (generation ${verified.generation}) belongs to this chat: ${verified.url}`;
-  confirm.disabled = false;
-};
-confirm.onclick = async () => {
-  const result = await chrome.runtime.sendMessage({type: 'bind', ...verified});
-  output.textContent = result.error || result.status;
-  confirm.disabled = true;
-};
-for (const type of ['disarm', 'check']) document.getElementById(type).onclick = async () => {
-  const result = await chrome.runtime.sendMessage({type});
-  output.textContent = result.error || result.status;
-};
+  await request({type: 'add', name: $('name').value.trim(), tabId: tab?.id, url: tab?.url});
+  await show();
+});
+$('resume-all').onclick = () => act(async () => { await request({type: 'resume-all'}); await show(); });
+show().catch(e => { $('status').textContent = e.message; });

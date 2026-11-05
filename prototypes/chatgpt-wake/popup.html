@@ -1,13 +1,11 @@
 <!doctype html>
+<html lang="en">
 <meta charset="utf-8">
-<title>Switchstand mailbox pairing</title>
-<body style="width:390px;font:14px sans-serif;padding:12px">
-<p>Pair one mailbox, then Check to submit <b>Process your mailbox</b> once for new pending mail. An active response may be stopped first.</p>
-<label>Mailbox <input id="name" maxlength="80"></label>
-<button id="verify">Verify mailbox</button>
-<p id="pairing"></p>
-<button id="bind" disabled>Confirm pairing</button>
-<button id="disarm">Stop</button>
-<button id="check">Check now</button>
-<p id="status"></p>
+<title>Mailbox wake</title>
+<label>Mailbox <input id="name"></label>
+<button id="add">Add chat</button>
+<button id="resume-all">Resume all</button>
+<p id="status" role="status"></p>
+<div id="bindings"></div>
 <script src="popup.js"></script>
+</html>
