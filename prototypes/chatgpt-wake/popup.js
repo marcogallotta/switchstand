@@ -17,7 +17,7 @@ confirm.onclick = async () => {
   output.textContent = result.error || result.status;
   confirm.disabled = true;
 };
-for (const type of ['disarm', 'check']) document.getElementById(type).onclick = async () => {
-  const result = await chrome.runtime.sendMessage({type});
+document.querySelector('#disarm').onclick = async () => {
+  const result = await chrome.runtime.sendMessage({type: 'disarm'});
   output.textContent = result.error || result.status;
 };
