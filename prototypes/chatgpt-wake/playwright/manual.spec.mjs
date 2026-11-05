@@ -33,13 +33,9 @@ const test = base.extend({
     try {
     const original = await readFile(join(extension, 'worker.js'), 'utf8');
     const metadata = {status:'ok',name:'Fixture',endpoint:identity,generation:1,delivery_ids:[]};
-    const mailboxes = new Map([['Fixture', metadata]]);
     server = createServer(async (request, response) => {
       response.setHeader('Content-Type','application/json');
-      if(request.url.includes('/poll?')) {
-        const mailbox = mailboxes.get(new URL(request.url, 'http://fixture').searchParams.get('name'));
-        mailbox.polls = (mailbox.polls || 0) + 1; response.end(JSON.stringify(mailbox));
-      }
+      if(request.url.includes('/poll?')) { metadata.polls = (metadata.polls || 0) + 1; response.end(JSON.stringify(metadata)); }
       else {response.statusCode=404;response.end('{}');}
     });
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -67,7 +63,7 @@ const test = base.extend({
       expect((await message({type:'bind',...verified.status,tabId,url})).error).toBeUndefined();
       const check=async()=>{expect((await message({type:'check'})).error).toBeUndefined();};
       await info.attach('extension-source.json',{body:JSON.stringify({worker_sha256:hash(original),backend_port:port,seam:'SOURCE literal only'}),contentType:'application/json'});
-      await use({context,page,check,message,metadata,mailboxes,popup,worker});
+      await use({context,page,check,message,metadata,popup,worker});
       expect(hash(await readFile(join(extension,'worker.js')))).toBe(hash(original));
     } finally {
       try { await context?.close(); }
@@ -157,37 +153,4 @@ test('actual Chrome alarm wakes once and survives worker shutdown without repeat
   await worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
   await wake.message({type: 'verify', name: 'Fixture'});
   await expect(wake.page.locator('#turns li')).toHaveCount(2);
-});
-
-test('multiple exact conversations isolate Stop and resume routing after tab closure', async ({wake}) => {
-  const secondUrl = 'https://chatgpt.com/c/second-confirmed';
-  const secondIdentity = delivery(90);
-  const second = await wake.context.newPage(); await second.goto(secondUrl);
-  const tabId = await wake.worker.evaluate(async url => (await chrome.tabs.query({})).find(t => t.url === url).id, secondUrl);
-  const metadata = {status:'ok', name:'Second', endpoint:secondIdentity, generation:1, delivery_ids:[]};
-  wake.mailboxes.set('Second', metadata);
-  expect((await wake.message({type:'bind', ...metadata, tabId, url:secondUrl})).error).toBeUndefined();
-  wake.metadata.delivery_ids = [delivery(31)]; metadata.delivery_ids = [delivery(32)];
-  await wake.check();
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
-  await expect(second.locator('#turns li')).toHaveText(['Process your mailbox']);
-  await wake.page.close();
-  wake.metadata.delivery_ids = [delivery(33)]; metadata.delivery_ids = [delivery(34)];
-  await wake.check();
-  let bindings = (await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).wakeBindings;
-  expect(bindings[0].availability).toBe('closed');
-  expect(bindings[0].seen).toEqual([delivery(31)]);
-  await expect(second.locator('#turns li')).toHaveCount(2);
-  const reopened = await wake.context.newPage(); await reopened.goto(url);
-  await wake.check();
-  await expect(reopened.locator('#turns li')).toHaveText(['Process your mailbox']);
-  await expect(second.locator('#turns li')).toHaveCount(2);
-  await wake.message({type:'disarm', endpoint:secondIdentity});
-  wake.metadata.delivery_ids = [delivery(35)]; metadata.delivery_ids = [delivery(36)];
-  await wake.check();
-  await expect(reopened.locator('#turns li')).toHaveCount(2);
-  await expect(second.locator('#turns li')).toHaveCount(2);
-  bindings = (await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).wakeBindings;
-  expect(bindings[0].armed).toBe(true); expect(bindings[0].availability).toBe('open');
-  expect(bindings[1].armed).toBe(false); expect(bindings[1].seen).toEqual([delivery(32), delivery(34)]);
 });

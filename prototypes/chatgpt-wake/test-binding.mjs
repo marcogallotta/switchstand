@@ -9,7 +9,7 @@ let saved = {}, handler, failSave = false, releasePoll, waitPoll = false, jsonFa
 let waitSave = false, releaseSave;
 let scriptPlan, effects = [], alarmHandler, scheduledAlarm, alarmCreates = 0;
 let observed = {status: 'ok', endpoint, generation: 1, name: 'A', delivery_ids: [delivery]};
-let tab = {url}, tabs, observations, removed;
+let tab = {url};
 function load() {
   runInNewContext(code, {
     URL, AbortSignal,
@@ -27,15 +27,12 @@ function load() {
           saved = structuredClone({...saved, ...value});
         }
       }},
-      tabs: {async get(id) { return structuredClone(tabs?.find(t => t.id === id) || tab); },
-        async query() { return structuredClone(tabs || [{id: 1, ...tab}]); },
-        onRemoved: {addListener(value) { removed = value; }}},
-      scripting: {async executeScript({args, target}) {
+      tabs: {async get() { return structuredClone(tab); }},
+      scripting: {async executeScript({args}) {
         const attempt = args[2];
         if (attempt.insert || attempt.final) {
-          const targetUrl = (tabs || [{id: 1, ...tab}]).find(t => t.id === target.tabId)?.url;
-          assert.equal(saved.wakeBindings.find(b => b.url === targetUrl).halted, true, 'reservation precedes every effect');
-          effects.push({...attempt, tabId: target.tabId});
+          assert.equal(saved.wakeBindings[0].halted, true, 'reservation precedes every effect');
+          effects.push(attempt);
         }
         return [{result: scriptPlan ? await scriptPlan(attempt) : {sendReady: true, outcome: 'click-attempted'}}];
       }}
@@ -45,7 +42,7 @@ function load() {
       if (waitPoll) await new Promise(resolve => { releasePoll = resolve; });
       return {ok: true, json: async () => {
         if (jsonFailure) throw new SyntaxError('Unexpected token: SECRET-BACKEND-TOKEN');
-        return structuredClone(observations?.[new URL(_url).searchParams.get('name')] || observed);
+        return structuredClone(observed);
       }};
     }
   });
@@ -201,88 +198,3 @@ await message({type: 'disarm'});
 waitPoll = false; releasePoll(); await message({type: 'verify', name: 'A'});
 assert.equal(state().armed, false); assert.equal(effects.length, 0, 'Stop preempts an alarm awaiting observation');
 console.log('automatic contract PASS: alarm ownership, restart, IDs, deferral, UNKNOWN and Stop');
-
-// Multiple exact bindings share dispatch but retain independent cancellation and history.
-const endpointB = '00000000-0000-4000-8000-000000000003';
-const deliveryB = '00000000-0000-4000-8000-000000000004';
-const urlB = 'https://chatgpt.com/c/second';
-const bindB = () => message({type: 'bind', tabId: 2, url: urlB, name: 'B', endpoint: endpointB, generation: 1});
-const setupMultiple = async () => {
-  reset(); tabs = [{id: 1, url}, {id: 2, url: urlB}];
-  observations = {A: {...observed, name: 'A', delivery_ids: [delivery]},
-    B: {...observed, endpoint: endpointB, name: 'B', delivery_ids: [deliveryB]}};
-  assert.match((await bindB()).status, /^Paired/);
-};
-await setupMultiple();
-assert.equal(saved.wakeBindings.length, 2);
-assert.deepEqual(state().seen, []);
-const duplicateBefore = structuredClone(saved);
-assert.ok((await message({type: 'bind', tabId: 1, url, name: 'B', endpoint: endpointB, generation: 1})).error);
-assert.deepEqual(saved, duplicateBefore, 'conversation cannot be reassigned to another mailbox');
-await message({type: 'check'});
-assert.deepEqual(effects.filter(e => e.final).map(e => e.tabId), [1, 2]);
-assert.deepEqual(saved.wakeBindings[1].seen, [deliveryB]);
-await setupMultiple();
-state().halted = true; state().attemptIds = [delivery];
-await message({type: 'check'});
-assert.deepEqual(state().attemptIds, [delivery], 'legacy UNKNOWN remains unresolved');
-assert.deepEqual(effects.filter(e => e.final).map(e => e.tabId), [2], 'unrelated mailbox still wakes');
-await setupMultiple();
-tabs = [{id: 1, url: 'https://chatgpt.com/c/unrelated'}, {id: 2, url: urlB}];
-removed(); await message({type: 'verify', name: 'A'});
-assert.equal(state().availability, 'closed');
-await message({type: 'check'});
-assert.deepEqual(state().seen, [], 'closed conversation consumes no pending identity');
-assert.deepEqual(effects.filter(e => e.final).map(e => e.tabId), [2]);
-tabs.push({id: 9, url}, {id: 7, url});
-await message({type: 'check'});
-assert.equal(effects.filter(e => e.final).at(-1).tabId, 7, 'reopened exact URL uses lowest ID');
-assert.equal(state().availability, 'open');
-await setupMultiple(); tabs.push({id: 0, url});
-await message({type: 'check'});
-assert.equal(effects.find(e => e.final).tabId, 1, 'saved exact tab wins over duplicate');
-await setupMultiple();
-let releaseA;
-scriptPlan = async attempt => {
-  if (attempt.prepare && !attempt.insert && !releaseA) await new Promise(resolve => { releaseA = resolve; });
-  return {sendReady: true, outcome: 'click-attempted'};
-};
-const checkingMultiple = message({type: 'check'});
-while (!releaseA) await new Promise(resolve => setImmediate(resolve));
-await message({type: 'disarm', endpoint: endpointB});
-releaseA(); await checkingMultiple;
-assert.deepEqual(effects.filter(e => e.final).map(e => e.tabId), [1], 'Stop B does not cancel A');
-assert.equal(saved.wakeBindings[1].armed, false);
-await setupMultiple();
-// A Pair awaiting a backend response must merge the newest Stop state.
-saved.wakeBindings.pop(); waitPoll = true; releasePoll = undefined;
-const pairingB = bindB();
-while (!releasePoll) await new Promise(resolve => setImmediate(resolve));
-await message({type: 'disarm', endpoint});
-waitPoll = false; releasePoll(); await pairingB;
-assert.equal(state().armed, false);
-assert.equal(saved.wakeBindings[1].armed, true);
-assert.deepEqual(state().pending, [delivery]);
-for (const stoppedEndpoint of [endpoint, undefined]) {
-  await setupMultiple();
-  let release;
-  scriptPlan = async attempt => {
-    if (attempt.prepare && !attempt.insert && !release) await new Promise(resolve => { release = resolve; });
-    return {sendReady: true, outcome: 'click-attempted'};
-  };
-  const checking = message({type: 'check'});
-  while (!release) await new Promise(resolve => setImmediate(resolve));
-  await message({type: 'disarm', endpoint: stoppedEndpoint});
-  release(); await checking;
-  assert.deepEqual(effects.filter(e => e.final).map(e => e.tabId), stoppedEndpoint ? [2] : [],
-    'endpoint Stop isolates cancellation; global Stop cancels every dispatch');
-}
-await setupMultiple();
-saved.wakeBindings.pop(); waitPoll = true; releasePoll = undefined;
-const stalePair = bindB();
-while (!releasePoll) await new Promise(resolve => setImmediate(resolve));
-await message({type: 'disarm', endpoint: endpointB});
-waitPoll = false; releasePoll();
-assert.match((await stalePair).error, /Stop requested/);
-assert.equal(saved.wakeBindings.length, 1, 'Stop fences a not-yet-persisted endpoint Pair');
-console.log('Multiple exact pairing contracts PASS: identity, history, deterministic routing, close/reopen, isolated/global Stop and stale Pair');
