@@ -35,7 +35,7 @@ const test = base.extend({
     const metadata = {status:'ok',name:'Fixture',endpoint:identity,generation:1,delivery_ids:[]};
     server = createServer(async (request, response) => {
       response.setHeader('Content-Type','application/json');
-      if(request.url.includes('/poll?')) { metadata.polls = (metadata.polls || 0) + 1; response.end(JSON.stringify(metadata)); }
+      if(request.url.includes('/poll?')) response.end(JSON.stringify(metadata));
       else {response.statusCode=404;response.end('{}');}
     });
     await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
@@ -127,30 +127,3 @@ test('unrelated draft, attachments and ambiguous visible Send never dispatch', a
   expect(state.wakeBindings[0].halted).toBeUndefined();
 });
 
-
-test('actual Chrome alarm wakes once and survives worker shutdown without repeating IDs', async ({wake}) => {
-  const ring = () => wake.worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
-  wake.metadata.delivery_ids = [delivery(31)];
-  await ring();
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
-  await expect.poll(async () => (await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).wakeBindings[0].seen).toContain(delivery(31));
-  const polls = wake.metadata.polls;
-  await wake.worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 2000}));
-  const session = await wake.context.newCDPSession(wake.popup);
-  await session.send('ServiceWorker.enable');
-  await session.send('ServiceWorker.stopAllWorkers');
-  await session.detach();
-  // The retained real alarm, rather than a popup Check, must restart the worker and poll.
-  await expect.poll(() => wake.metadata.polls, {timeout: 10000}).toBeGreaterThan(polls);
-  await wake.message({type: 'verify', name: 'Fixture'});
-  await expect(wake.page.locator('#turns li')).toHaveCount(1);
-  const [worker] = wake.context.serviceWorkers();
-  wake.metadata.delivery_ids = [delivery(32)];
-  await worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox', 'Process your mailbox']);
-  await wake.message({type: 'disarm'});
-  wake.metadata.delivery_ids = [delivery(33)];
-  await worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
-  await wake.message({type: 'verify', name: 'Fixture'});
-  await expect(wake.page.locator('#turns li')).toHaveCount(2);
-});

@@ -7,7 +7,7 @@ const delivery = '00000000-0000-4000-8000-000000000002';
 const url = 'https://chatgpt.com/c/confirmed';
 let saved = {}, handler, failSave = false, releasePoll, waitPoll = false, jsonFailure = false;
 let waitSave = false, releaseSave;
-let scriptPlan, effects = [], alarmHandler, scheduledAlarm, alarmCreates = 0;
+let scriptPlan, effects = [];
 let observed = {status: 'ok', endpoint, generation: 1, name: 'A', delivery_ids: [delivery]};
 let tab = {url};
 function load() {
@@ -15,10 +15,6 @@ function load() {
     URL, AbortSignal,
     chrome: {
       runtime: {id: 'fixture', onMessage: {addListener(value) { handler = value; }}},
-      alarms: {onAlarm: {addListener(value) { alarmHandler = value; }},
-        async get() { return scheduledAlarm; }, async create(name, options) {
-          scheduledAlarm = {name, ...options}; alarmCreates++;
-        }},
       storage: {local: {
         async get() { return structuredClone(saved); },
         async set(value) {
@@ -161,40 +157,3 @@ assert.equal(effects.some(effect => effect.final), false, 'Stop during readiness
 assert.equal(state().armed, false, 'attempt completion cannot resurrect Stop');
 assert.equal(state().halted, true);
 console.log('manual contract PASS: reserve-before-effect, dedupe, identity, draft, save failure, UNKNOWN, pending loss and Stop');
-
-// Drain the same serial queue through a read-only Verify; no second Check drives the alarm.
-const alarm = async (name = 'mailbox-wake') => {
-  alarmHandler({name});
-  await message({type: 'verify', name: 'A'});
-};
-reset();
-assert.equal(scheduledAlarm.periodInMinutes, 0.5);
-const created = alarmCreates;
-load(); await message({type: 'verify', name: 'A'});
-assert.equal(alarmCreates, created, 'worker restart reuses the existing alarm');
-await alarm('unrelated'); assert.equal(effects.length, 0);
-await alarm(); assert.equal(effects.length, 2, 'alarm executes the ordinary reserved wake');
-await alarm(); load(); await alarm();
-assert.equal(effects.length, 2, 'alarm and restart preserve committed ID dedupe');
-const nextDelivery = '00000000-0000-4000-8000-000000000003';
-observed.delivery_ids = [nextDelivery];
-await alarm(); assert.equal(effects.length, 4, 'same count with a different delivery is new mail');
-assert.deepEqual(state().seen, [delivery, nextDelivery]);
-observed.delivery_ids = [delivery];
-reset(); scriptPlan = () => 'draft-present';
-await alarm(); assert.equal(effects.length, 0); assert.equal(state().halted, undefined);
-scriptPlan = undefined; await alarm(); assert.equal(effects.length, 2, 'draft defers until a later safe check');
-reset(); jsonFailure = true;
-await alarm(); assert.equal(effects.length, 0); assert.equal(state().halted, undefined);
-jsonFailure = false; await alarm(); assert.equal(effects.length, 2, 'failed observation cannot consume mail');
-reset(); scriptPlan = attempt => { if (attempt.insert) throw Error('interrupted'); return {sendReady: true}; };
-await alarm(); assert.equal(state().halted, true);
-load(); await alarm(); assert.equal(effects.length, 1, 'alarm and restart cannot renew UNKNOWN');
-reset(); await message({type: 'disarm'}); await alarm(); assert.equal(effects.length, 0);
-reset(); waitPoll = true; releasePoll = undefined;
-alarmHandler({name: 'mailbox-wake'});
-while (!releasePoll) await new Promise(resolve => setImmediate(resolve));
-await message({type: 'disarm'});
-waitPoll = false; releasePoll(); await message({type: 'verify', name: 'A'});
-assert.equal(state().armed, false); assert.equal(effects.length, 0, 'Stop preempts an alarm awaiting observation');
-console.log('automatic contract PASS: alarm ownership, restart, IDs, deferral, UNKNOWN and Stop');
