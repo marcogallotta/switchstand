@@ -265,6 +265,8 @@ def proven_primary_source_mutation(subcommand: str, args: list[str]) -> bool:
         return False
     if subcommand == "apply" and "--check" in args:
         return False
+    if subcommand == "pull" and "--ff-only" in args:
+        return False  # fast-forward only: cannot merge or overwrite local work
     if subcommand == "submodule":
         action = next((arg for arg in args if not arg.startswith("-")), "status")
         return action in {
