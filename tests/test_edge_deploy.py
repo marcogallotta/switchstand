@@ -1,9 +1,12 @@
 import io
 import json
 import os
+import socket
 import sys
+import threading
+import time
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -152,6 +155,7 @@ def test_rollback_uses_only_local_runtime_check(
         Path, "read_bytes", Mock(return_value=os.fsencode(subject.LAUNCHER) + b"\0")
     )
     monkeypatch.setattr(subject, "authenticated_smoke", Mock(side_effect=AssertionError))
+    monkeypatch.setattr(subject.socket, "create_connection", MagicMock())
     target.rollback()
     assert "--expected-sha" in doctor.call_args.args[0]
 
@@ -312,3 +316,52 @@ def test_cli_selects_remote_branch(
     monkeypatch.setattr(target, "run", Mock())
     assert subject.main([SHA, "--repo", str(target.repo), *options]) == 0
     assert factory.call_args.args[3] == expected
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_local_smoke_waits_for_listener_within_existing_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ready: bool
+) -> None:
+    target = deployer(tmp_path, monkeypatch)
+    subject.LAUNCHER.write_text(launcher(target.runtime))
+    monkeypatch.setattr(target, "service", Mock(return_value=Mock(stdout="42")))
+    monkeypatch.setattr(
+        Path, "read_bytes", Mock(return_value=os.fsencode(subject.LAUNCHER) + b"\0")
+    )
+    monkeypatch.setattr(subject, "SMOKE_BIND_SECONDS", 0.6)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        host, port = listener.getsockname()
+        monkeypatch.setattr(subject, "LOCAL_URL", f"http://{host}:{port}/mcp")
+        stop = threading.Event()
+
+        def activate() -> None:
+            if not stop.wait(0.1) and ready:
+                listener.listen()
+
+        worker = threading.Thread(target=activate)
+        worker.start()
+
+        def doctor(arguments: list[str]) -> subject.subprocess.CompletedProcess[str]:
+            # The pre-fix code calls doctor before this real socket is listening.
+            with socket.create_connection((host, port), timeout=0.2):
+                pass
+            assert arguments[-2:] == ["--expected-sha", SHA]
+            return subject.subprocess.CompletedProcess(arguments, 0, "", "")
+
+        probe = Mock(side_effect=doctor)
+        monkeypatch.setattr(subject, "command", probe)
+        started = time.monotonic()
+        try:
+            if ready:
+                target.local_smoke(target.runtime, SHA)
+                probe.assert_called_once()
+            else:
+                with pytest.raises(RuntimeError, match="edge listener did not become ready"):
+                    target.local_smoke(target.runtime, SHA)
+                probe.assert_not_called()
+                assert time.monotonic() - started < 1.2
+        finally:
+            stop.set()
+            worker.join(timeout=2)
+            assert not worker.is_alive()

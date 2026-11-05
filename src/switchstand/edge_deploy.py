@@ -10,11 +10,13 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO, cast
+from urllib.parse import urlparse
 
 from alembic.script import ScriptDirectory
 
@@ -268,6 +270,15 @@ class Deployer:
                     raise RuntimeError("service has no running MainPID")
                 raise RuntimeError("running service is not bound to the selected runtime")
             time.sleep(0.2)
+        endpoint = urlparse(LOCAL_URL)
+        while True:
+            try:
+                with socket.create_connection((endpoint.hostname, endpoint.port), timeout=0.2):
+                    break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("edge listener did not become ready") from exc
+                time.sleep(0.2)
         doctor = str(runtime / "scripts/switchstand-edge-doctor")
         command(
             [doctor, "--env-file", str(ENV_FILE), "--repo", str(runtime), "--expected-sha", sha]
