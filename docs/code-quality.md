@@ -380,20 +380,8 @@ F. **Scope / decomposition.** Does each PR/layer represent the smallest independ
 G. **Documentation currency.** For Implementation Specification-scoped work: verify the candidate's UPDATE/HISTORICALIZE/DELETE documentation-impact dispositions (under 1218218678917862) are reconciled to the actual retained candidate, not the spec's original projection. For work outside that process: does the candidate's diff touch something [architecture](architecture.md) describes? If so, does the same PR update `docs/architecture.md`? Either way, a qualifying diff that leaves its documentation stale is a material finding under Findings, remedies and challenge, not optional polish.
 H. **Approved-baseline conformance.** When a Human Review baseline governs, bind the exact candidate and baseline and return `CONFORMS_TO_APPROVED_BASELINE` only when protected requirements/non-goals remain intact, no deviation remains, and no new human-owned outcome, experience, architecture, trust/data boundary, burden, material risk, or protected effect was introduced. A conforming candidate needs no second Human Review solely because it is complete. `MATERIAL_DEVIATION`, `NEW_HUMAN_CHOICE`, or `UNKNOWN` holds only the affected readiness claim; landing and activation authority remain separate.
 
-Every approving or clearing review also checks this danger hotlist:
-- **D1 WRONG OUTCOME** — technically successful work solves a different problem from Marco's current outcome.
-- **D2 INVENTED SCOPE** — a new requirement, blocker, restriction, or capability lacks current authority.
-- **D3 WAR MACHINE / OVERENGINEERING** — machinery precedes a working slice that proves its need; name its concrete cost.
-- **D4 ANTI-MALICE OVERBUILD** — agents can fail but are not malicious; do not assume internal-agent malice without an explicit current threat or direction.
-- **D5 SECURITY LAUNDERING** — “security” grants no authority; name the actor, attack path/capability, and material consequence.
-- **D6 DUPLICATE / SHADOW MACHINERY** — a second owner or path exists where one canonical path plus a local guard suffices.
-- **D7 COMPLEXITY / EXTENSION RATCHET** — aggregate growth lacks causal review against original caps or compounds an extension; a >=500 PR lacks the concrete smaller-route challenge and exact exception. Splitting does not erase growth.
-- **D8 SAFEGUARD-GENERATED HARM** — protection removes required capability, blocks ordinary use, creates disproportionate burden, or makes Marco the routine control plane.
-- **D9 FALSE / PROXY SUCCESS** — PASS rests on proxy evidence while the real path, identity, or readback remains unproved.
-- **D10 UNAUTHORIZED REMOVAL / DEPLOYMENT** — removal/disablement and production deployment/activation require Marco's explicit go; calling something “security,” removing functions, then deploying without approval fires D5 + D10.
-A fire is a cue, not automatic blocker or remedy authority: record evidence, consequence, affected path, and minimum clearing condition; then use the smallest authorized fix/remove/reject/evidence route and focused rereview. Automatically resolved or clear cases produce no Marco noise; only a surviving genuine Human Input choice or separately protected effect reaches him with evidence, smaller routes tried, recommendation, and exact consequences. Otherwise report `DANGER CHECK: CLEAR`.
-
-PASS means materially good enough for the exact reviewed claim, not perfect and not approval/landing/activation authority. Style/nits do not serialize work.
+Reviewer conduct, learned-failure checks and verdict meaning are owned by the
+[review standard](review-standard.md), which every reviewer reads first.
 
 ## Findings, remedies and challenge
 
