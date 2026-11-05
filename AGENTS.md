@@ -117,7 +117,7 @@ Any agent doing research follows [research sources](docs/research-sources.md).
 - **Delegated Coordinator:** every other head follows exact lane/parent obligations + lane-required procedures; it does not inherit Root tracking or portfolio authority merely by being a head or Coordinator.
 - **Research/design Worker:** exact work + current bound research/design package; use [code quality](docs/code-quality.md) for material design review before Human Review.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
-- **Review Worker / eligible Coordinator reviewer:** exact review occurrence/candidate + bound review owner; for substantive code/config/test review also load [code quality](docs/code-quality.md). No implementation execution detail unless needed to judge the candidate.
+- **Review Worker / eligible Coordinator reviewer:** read [review standard](docs/review-standard.md) FIRST, then exact review occurrence/candidate + bound review owner; for substantive code/config/test review also load [code quality](docs/code-quality.md).
 - **Integration/landing Coordinator:** exact candidate/current target + [code quality](docs/code-quality.md) landing/composition guidance; do not preload implementation execution detail unless needed to resolve the integration.
 - **Incident / activation / Human Input / Human Review:** load only the applicable current owner when that phase/trigger is reached; the first-minute incident core above remains always loaded.
 
