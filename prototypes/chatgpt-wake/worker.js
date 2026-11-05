@@ -94,7 +94,10 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
       if (attempt.stop && stopReady) controls[0].click();
       if (!controls.length && attempt.insert && !draft() && !insert()) return 'insert-failed';
       const send = !controls.length && selectControl(form);
+      Object.assign(facts, {controlPresent: Boolean(send), controlEnabled: Boolean(enabled(send)),
+        inserted: Boolean(attempt.insert && !recover && draft() === text)});
       return {outcome: controls.length ? 'busy' : 'idle', stopReady,
+        prepareReady: Boolean(form && !recover && !draft() && !facts.busy && facts.controlSelection !== 'ambiguous'),
         sendReady: Boolean(send && (!(recover || attempt.insert) || enabled(send))),
         inserted: Boolean(attempt.insert && !recover && draft() === text)};
     }
@@ -140,7 +143,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '1f6fcb2b-63f9-4c66-a3f6-8d465cd6bbc4';
+const releaseId = '5b470ab6-1788-4407-8e58-0ef2bff173c1';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -331,7 +334,7 @@ async function checkBinding(binding, save) {
       args: [binding.url, false, {prepare: true, recover}, false]});
     ready = result?.result;
   } catch { return note('composer-unavailable: Stop/Send preflight failed'); }
-  if (!ready?.sendReady && !ready?.stopReady) return note(typeof ready === 'string' ? ready : 'busy');
+  if (!ready?.sendReady && !ready?.stopReady && !ready?.prepareReady) return note(typeof ready === 'string' ? ready : 'busy');
   const consumed = recover || ready.stopReady;
   const sendIds = recover ? binding.attemptIds : pending;
   // Reserve before Stop or Send; a consumed sequence never receives another allowance.
@@ -346,31 +349,36 @@ async function checkBinding(binding, save) {
     started: new Date().toISOString(), finished: null, outcome: null, reason: 'dispatch-start', facts: {}};
   await save();
   const cancelled = () => !binding.armed || stopRequested(binding) || stopVersion !== attemptStop;
+  const finish = (outcome, reason = 'result') => {
+    attemptResult(binding, outcome, ready, reason);
+    return note(outcome);
+  };
   try {
-    if (cancelled()) return note('stopped');
+    if (cancelled()) return finish('stopped', 'stopped-before-dispatch');
     const needsStop = ready.stopReady;
     {
-      for (let tick = 0; tick < 15; tick++) {
-        if (cancelled()) return note('stopped');
+      for (let tick = 0; tick < 100; tick++) {
+        if (cancelled()) return finish('stopped', 'stopped-before-dispatch');
         const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
-          args: [binding.url, false, {prepare: true, recover, insert: true, stop: needsStop && tick === 0}, false]});
+          args: [binding.url, false, {prepare: true, recover, insert: true, stop: needsStop && tick === 0}, true]});
         ready = result?.result;
         if (ready?.inserted) attempt.inserted = true;
+        if (attempt.inserted && ready?.facts) ready.facts.inserted = true;
         if (ready?.sendReady) break;
-        if (typeof ready === 'string') return note(ready);
+        if (typeof ready?.sendReady !== 'boolean') return finish('attempt-outcome-unknown: readiness-refused');
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      if (!ready?.sendReady) return note('inserted-not-submitted: Stop/Send readiness timed out');
+      if (!ready?.sendReady) return finish('attempt-outcome-unknown: readiness-timeout');
     }
     // Mail may change between browser phases: reobserve, but never claim an atomic mailbox/DOM lock.
     fresh = false;
     const current = await mailbox(binding.name);
-    if (current.endpoint !== binding.endpoint || current.generation !== binding.generation) return note('attempt-outcome-unknown: pending identity changed');
+    if (current.endpoint !== binding.endpoint || current.generation !== binding.generation) return finish('attempt-outcome-unknown: pending identity changed');
     observation = current; fresh = true;
     binding.observedPending = current.delivery_ids;
     binding.pending = current.delivery_ids.filter(id => !binding.seen.includes(id));
-    if (cancelled()) return note('stopped');
-    if (!current.delivery_ids.some(id => sendIds.includes(id))) return note('attempt-outcome-unknown: pending identity changed');
+    if (cancelled()) return finish('stopped', 'stopped-before-dispatch');
+    if (!current.delivery_ids.some(id => sendIds.includes(id))) return finish('attempt-outcome-unknown: pending identity changed');
     const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
       args: [binding.url, false, attempt, true]});
     const receipt = result?.result;
@@ -386,7 +394,7 @@ async function checkBinding(binding, save) {
     await note(outcome);
   } catch (error) {
     const outcome = 'attempt-outcome-unknown: ' + error.message;
-    if (!binding.diagnostic.finished) attemptResult(binding, outcome, null, 'execution-failed', error);
+    if (!binding.diagnostic.finished) attemptResult(binding, outcome, ready, 'execution-failed', error);
     await note(outcome);
   }
 

@@ -290,3 +290,23 @@ for(const obstruction of ['draft','attachment','ambiguous']) {
     await expect(wake.page.locator('#turns li')).toHaveCount(0);
   });
 }
+
+for (const stopDelay of [0, 2000]) {
+  test(`V1 Send created only after input; Stop delay ${stopDelay}ms`,async({wake})=>{
+    await wake.page.evaluate(stopDelay=>{
+      document.querySelector('form button').remove();window.stopClicks=0;
+      const editor=document.querySelector('#prompt-textarea');
+      editor.addEventListener('input',()=>{
+        if(document.querySelector('[aria-label="Send"]'))return;
+        const send=document.createElement('button');send.type='button';send.setAttribute('aria-label','Send');send.textContent='Send';send.disabled=true;
+        send.onclick=()=>{const turn=document.createElement('li');turn.textContent=editor.textContent;document.querySelector('#turns').append(turn);editor.textContent='';send.remove();};
+        document.querySelector('form').append(send);setTimeout(()=>{send.disabled=false;},200);
+      });
+      if(stopDelay){const stop=document.createElement('button');stop.type='button';stop.setAttribute('aria-label','Stop');
+        stop.onclick=()=>{window.stopClicks++;setTimeout(()=>stop.remove(),stopDelay);};document.querySelector('form').append(stop);}
+    },stopDelay);
+    wake.metadata.delivery_ids=[delivery(802)];await wake.check();await wake.check();
+    await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
+    expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(stopDelay?1:0);
+  });
+}

@@ -569,11 +569,11 @@ assert.equal(JSON.parse(binding.diagnosticAck.identity).pair.id, id(504));
 console.log('PASS diagnostic terminal retention/restart, outage retry, exact ack, registered Pair accepted/refused, inherited incident independence, unfinished and legacy HALT distinction.');
 
 // A Stop sequence consumes its allowance before the effect; all later failures stay HALTED.
-for (const failure of ['none', 'pending', 'stop', 'throw', 'timeout', 'draft', 'url']) {
+for (const failure of ['none', 'pending', 'stop', 'throw', 'timeout', 'refused', 'draft', 'url']) {
   saved = {}; reports.length = 0; attempts.length = 0;
   observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: [id(700)]});
   tabs.set(1, {url: 'https://chatgpt.com/c/a'}); outcome = 'click-attempted';
-  let stopClicks = 0;
+  let stopClicks = 0, prepareCalls = 0;
   stopPlan = async options => {
     if (options.args[2].stop) {
       stopClicks++;
@@ -584,7 +584,10 @@ for (const failure of ['none', 'pending', 'stop', 'throw', 'timeout', 'draft', '
       if (failure === 'draft') outcome = 'draft-present';
       if (failure === 'url') outcome = 'wrong-conversation';
     }
-    return {outcome: 'busy', stopReady: true, sendReady: stopClicks > 0 && failure !== 'timeout'};
+    if (options.args[2].insert) prepareCalls++;
+    if (failure === 'refused' && prepareCalls > 1) return {outcome: 'draft-present', facts: {draftPresent: true}};
+    return {outcome: 'busy', stopReady: true, sendReady: stopClicks > 0 && !['timeout', 'refused'].includes(failure), inserted: failure === 'refused' && prepareCalls === 1,
+      facts: {busy: failure === 'timeout', controlPresent: failure !== 'timeout', controlEnabled: failure !== 'timeout'}};
   };
   load(); await bind('A', 1);
   if (failure === 'pending') state('A').incident = {state: 'queued', evidence: {incident_id: id(705)}};
@@ -597,7 +600,13 @@ for (const failure of ['none', 'pending', 'stop', 'throw', 'timeout', 'draft', '
   assert.equal(stopClicks, 1);
   assert.equal(attempts.length, ['none', 'draft', 'url'].includes(failure) ? 1 : 0);
   assert.equal(state('A').halted, failure !== 'none');
-  if (failure === 'timeout') assert.match(state('A').status, /readiness timed out/);
+  assert.ok(state('A').diagnostic.finished, 'every reserved exit finishes diagnostic');
+  if (['timeout', 'refused'].includes(failure)) {
+    assert.equal(state('A').diagnostic.outcome, 'attempt-outcome-unknown');
+    assert.match(state('A').status, new RegExp('readiness-' + failure));
+    assert.equal(state('A').diagnostic.facts[failure === 'timeout' ? 'busy' : 'draftPresent'], true);
+    if (failure === 'refused') assert.equal(state('A').diagnostic.facts.inserted, true, 'retain own earlier insertion across a later refused preparation');
+  }
   load(); await message({type: 'check'});
   assert.equal(stopClicks, 1, 'checks/restart cannot repeat Stop');
 }
