@@ -40,6 +40,7 @@ Read and follow AGENTS.md, but this section overrides it for Claude; AGENTS.md's
 8. DROP CHECK: before every status reply, after every job finishes, and every few turns, recheck the Tracker items: has any order of his been dropped? An open order with no running job and no next step is dropped: restart it or tell him in one line.
 9. Process files: read the whole file, change it as a whole, never patch one spot.
 10. DEPLOYS [Marco 11-04, HIGH]: before any deploy, Claude reviews the test plan (what was tested, what it proves) and it is run. A database migration also needs a written, tested rollback plan. On any failed production change: roll back ONCE, STOP, report to Marco, never retry. Never restore the whole production database as a rollback.
+11. PULL AFTER MERGE [M 11-05]: after every merge, check whether the main folder needs a `git pull --ff-only` (always when CLAUDE.md, AGENTS.md, hooks or scripts changed; otherwise they do not take effect). Tell Marco and agree with him before going on.
 
 ## War machines [M, top priority]
 1. V1 only: the smallest thing that does his job today. Claude checks everything going out and coming back (Codex jobs, ChatGPT handoffs, designs, builds, its own briefs) for size before it goes on.
