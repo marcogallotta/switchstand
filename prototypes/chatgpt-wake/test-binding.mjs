@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import {readFile} from 'node:fs/promises';
+import {readFile, writeFile} from 'node:fs/promises';
+import {randomUUID} from 'node:crypto';
 import {runInNewContext} from 'node:vm';
 const code = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
 const endpoint = '00000000-0000-4000-8000-000000000001';
@@ -10,9 +11,12 @@ let waitSave = false, releaseSave;
 let scriptPlan, effects = [], alarmHandler, scheduledAlarm, alarmCreates = 0;
 let observed = {status: 'ok', endpoint, generation: 1, name: 'A', delivery_ids: [delivery]};
 let tab = {url}, tabs, observations, removed;
+let reports = [], reportFailure = false, holdReport = false, releaseReport, reportReply;
+const operational = value => JSON.parse(JSON.stringify(value, (key, item) =>
+  ['pairDiagnostic', 'diagnosticAck', 'currentControl'].includes(key) ? undefined : item));
 function load() {
   runInNewContext(code, {
-    URL, AbortSignal,
+    URL, AbortSignal, setTimeout, crypto: {randomUUID},
     chrome: {
       runtime: {id: 'fixture', onMessage: {addListener(value) { handler = value; }}},
       alarms: {onAlarm: {addListener(value) { alarmHandler = value; }},
@@ -31,6 +35,7 @@ function load() {
         async query() { return structuredClone(tabs || [{id: 1, ...tab}]); },
         onRemoved: {addListener(value) { removed = value; }}},
       scripting: {async executeScript({args, target}) {
+        if (args[1] === 'control') return [{result: {outcome: 'idle', facts: {controlSelection: 'unique'}}}];
         const attempt = args[2];
         if (attempt.insert || attempt.final) {
           const targetUrl = (tabs || [{id: 1, ...tab}]).find(t => t.id === target.tabId)?.url;
@@ -41,6 +46,14 @@ function load() {
       }}
     },
     fetch: async (_url, options) => {
+      if (_url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'SECRET-REPORT-TOKEN'})};
+      if (_url.endsWith('/report')) {
+        reports.push(JSON.parse(options.body));
+        assert.equal(options.headers.Authorization, 'Bearer SECRET-REPORT-TOKEN');
+        if (holdReport) await new Promise(resolve => { releaseReport = resolve; });
+        if (reportReply) reportReply();
+        return {ok: !reportFailure, json: async () => ({status: 'logged'})};
+      }
       assert.equal(options.cache, 'no-store', 'pairing uses a fresh backend observation');
       if (waitPoll) await new Promise(resolve => { releasePoll = resolve; });
       return {ok: true, json: async () => {
@@ -76,7 +89,7 @@ for (const replacement of [
 ]) {
   const prior = observed; observed = replacement;
   assert.ok((await bind()).error, 'stale or malformed mailbox identity refuses pairing');
-  assert.deepEqual(saved, paired);
+  assert.deepEqual(operational(saved), operational(paired));
   observed = prior;
 }
 tab.url = 'https://chatgpt.com/c/moved';
@@ -87,7 +100,7 @@ for (const patch of [{halted: true, attemptIds: [delivery]}, {pendingSend: {id: 
   const unresolved = structuredClone(saved);
   assert.match((await bind()).error, /Unresolved/);
   await message({type: 'disarm'});
-  assert.deepEqual(state(), {...unresolved.wakeBindings[0], armed: false}, 'Stop does not resolve UNKNOWN');
+  assert.deepEqual(operational(state()), operational({...unresolved.wakeBindings[0], armed: false}), 'Stop does not resolve UNKNOWN');
   load();
   assert.match((await bind()).error, /Unresolved/, 'restart does not renew an unresolved attempt');
 }
@@ -95,7 +108,7 @@ saved = structuredClone(paired);
 saved.wakeBindings.push({...state(), endpoint: delivery});
 const multiple = structuredClone(saved);
 assert.ok((await bind()).error);
-assert.deepEqual(saved, multiple, 'legacy multiple bindings are never truncated');
+assert.deepEqual(operational(saved), operational(multiple), 'legacy multiple bindings are never truncated');
 saved = structuredClone(paired); waitPoll = true;
 const inFlight = bind();
 while (!releasePoll) await new Promise(resolve => setImmediate(resolve));
@@ -118,7 +131,7 @@ assert.equal(state().armed, false, 'Stop is ordered after an already-started Pai
 failSave = true;
 const beforeFailure = structuredClone(saved);
 assert.match((await bind()).error, /^Could not update pairing\./);
-assert.deepEqual(saved, beforeFailure, 'failed persistence is not reported as paired');
+assert.deepEqual(operational(saved), operational(beforeFailure), 'failed persistence is not reported as paired');
 failSave = false;
 let foreignReplied = false;
 assert.equal(handler({type: 'disarm'}, {id: 'foreign'}, () => { foreignReplied = true; }), undefined);
@@ -218,7 +231,7 @@ assert.equal(saved.wakeBindings.length, 2);
 assert.deepEqual(state().seen, []);
 const duplicateBefore = structuredClone(saved);
 assert.ok((await message({type: 'bind', tabId: 1, url, name: 'B', endpoint: endpointB, generation: 1})).error);
-assert.deepEqual(saved, duplicateBefore, 'conversation cannot be reassigned to another mailbox');
+assert.deepEqual(operational(saved), operational(duplicateBefore), 'conversation cannot be reassigned to another mailbox');
 await message({type: 'check'});
 assert.deepEqual(effects.filter(e => e.final).map(e => e.tabId), [1, 2]);
 assert.deepEqual(saved.wakeBindings[1].seen, [deliveryB]);
@@ -286,3 +299,56 @@ waitPoll = false; releasePoll();
 assert.match((await stalePair).error, /Stop requested/);
 assert.equal(saved.wakeBindings.length, 1, 'Stop fences a not-yet-persisted endpoint Pair');
 console.log('Multiple exact pairing contracts PASS: identity, history, deterministic routing, close/reopen, isolated/global Stop and stale Pair');
+
+// Typed receipts preserve wake semantics; failures and ACKs touch metadata only.
+observations = undefined; tabs = undefined; tab = {url};
+reset(); reports = [];
+scriptPlan = attempt => ({sendReady: true, outcome: 'click-attempted',
+  inserted: Boolean(attempt.insert), facts: {inserted: Boolean(attempt.insert), clickDispatched: Boolean(attempt.final)}});
+await check();
+assert.equal(state().diagnostic.outcome, 'click-attempted');
+assert.ok(state().diagnostic.finished);
+assert.equal(state().diagnostic.facts.clickDispatched, true);
+assert.ok(state().diagnosticAck.identity);
+const accepted = reports.at(-1);
+assert.equal(accepted.diagnostics.pair.result, 'accepted');
+const count = reports.length;
+await check(); assert.equal(reports.length, count, 'unchanged exact snapshot is ACKed');
+assert.match((await bind()).status, /^Paired/, 'successful receipt does not block Pair');
+observed.delivery_ids = [nextDelivery];
+await check(); assert.equal(effects.filter(e => e.final).length, 2, 'success metadata permits new IDs');
+observed.delivery_ids = [delivery];
+reset(); reportFailure = true;
+await check(); assert.equal(state().diagnosticAck.failure, 'report-unavailable');
+assert.equal(effects.filter(e => e.final).length, 1, 'report outage cannot prevent completed wake');
+reportFailure = false; load(); await check();
+assert.equal(state().diagnosticAck.failure, null);
+assert.equal(effects.filter(e => e.final).length, 1, 'outage replay and restart never resend');
+reset(); state().halted = true; state().attemptIds = [delivery];
+await check(); assert.equal(reports.at(-1).diagnostics.legacy_halt, true);
+assert.equal(state().currentControl.reason, 'unique'); assert.equal(effects.length, 0);
+reset(); scriptPlan = attempt => attempt.insert ? {outcome: 'composer-unavailable: SECRET-DRAFT'} : {sendReady: true};
+await check(); assert.equal(state().status, 'readiness-refused');
+assert.equal(state().diagnostic.outcome, 'attempt-outcome-unknown', 'only diagnostic outcome is normalized');
+assert.equal(state().halted, true);
+await bind(); await check(); assert.equal(reports.at(-1).diagnostics.pair.reason, 'unresolved-attempt');
+reset(); scriptPlan = attempt => {
+  if (attempt.insert) return {sendReady: false, inserted: true, facts: {inserted: true, controlPresent: true, controlEnabled: false}};
+  return {sendReady: true};
+};
+await check(); assert.equal(state().status, 'readiness-timeout');
+assert.equal(state().diagnostic.outcome, 'attempt-outcome-unknown');
+assert.deepEqual(state().diagnostic.facts, {inserted: true, controlPresent: true, controlEnabled: false});
+reset(); holdReport = true; releaseReport = undefined;
+const reporting = check();
+while (!releaseReport) await new Promise(resolve => setImmediate(resolve));
+await message({type: 'disarm'});
+const replacement = {...state().diagnostic, id: randomUUID()};
+state().diagnostic = replacement;
+holdReport = false; releaseReport(); await reporting;
+assert.equal(state().armed, false, 'ACK merge cannot overwrite concurrent Stop');
+assert.equal(state().diagnostic.id, replacement.id);
+assert.equal(state().diagnosticAck, undefined, 'old snapshot cannot ACK a newer attempt');
+assert.doesNotMatch(JSON.stringify(reports), /SECRET|chatgpt.com|confirmed|composer-unavailable:/);
+if (process.env.DIAGNOSTIC_PAYLOADS) await writeFile(process.env.DIAGNOSTIC_PAYLOADS, JSON.stringify(reports));
+console.log('diagnostic contracts PASS: typed snapshots, privacy, normalization, success, legacy, ACK/outage/restart and Stop');

@@ -6,6 +6,56 @@ let writes = Promise.resolve();
 let stopVersion = 0;
 const endpointStops = new Map();
 class PairingError extends Error {}
+const releaseId = '57d98f58-9106-49c7-8cd1-c12153474457';
+const bootId = crypto.randomUUID();
+let reportToken;
+const unresolved = binding => binding.halted || binding.attemptIds?.length || binding.pendingSend ||
+  binding.stopSendAttempt || (binding.diagnostic &&
+    (!binding.diagnostic.finished || binding.diagnostic.outcome !== 'click-attempted'));
+const diagnosticSnapshot = binding => ({release: releaseId, boot: bootId,
+  legacy_halt: Boolean(binding.halted && !binding.diagnostic), attempt: binding.diagnostic || null,
+  pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null});
+async function diagnosticReport(binding) {
+  const matches = live => live?.endpoint === binding.endpoint && live.generation === binding.generation && live.url === binding.url;
+  const live = (await chrome.storage.local.get('wakeBindings')).wakeBindings?.find(matches);
+  if (!live) return;
+  const diagnostics = diagnosticSnapshot(live);
+  const identity = JSON.stringify(diagnostics);
+  if (live.diagnosticAck?.identity === identity && !live.diagnosticAck.failure) return;
+  let failure = 'report-unavailable';
+  try {
+    if (!reportToken) {
+      const config = await fetch(SOURCE + '/config', {signal: AbortSignal.timeout(3000), cache: 'no-store'});
+      if (!config.ok) throw Error();
+      const value = await config.json();
+      if (value.status !== 'ok' || typeof value.report_token !== 'string') throw Error();
+      reportToken = value.report_token;
+    }
+    const response = await fetch(SOURCE + '/report', {method: 'POST',
+      headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + reportToken},
+      body: JSON.stringify({name: live.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
+        diagnostics: {...diagnostics, report_failure: live.diagnosticAck?.failure || null}}),
+      signal: AbortSignal.timeout(3000)});
+    if (response.ok && (await response.json()).status === 'logged') failure = null;
+  } catch { /* Reporting cannot authorize or repeat a wake. */ }
+  await persist(async () => {
+    const current = await chrome.storage.local.get('wakeBindings');
+    const latest = current.wakeBindings?.find(matches);
+    if (!latest || JSON.stringify(diagnosticSnapshot(latest)) !== identity) return;
+    latest.diagnosticAck = {identity, failure};
+    await chrome.storage.local.set(current); // Merge only metadata; retain concurrent Stop.
+  });
+}
+function diagnosticResult(binding, outcome, receipt, reason, error) {
+  const admitted = new Set(['busy', 'draft-present', 'stopped', 'wrong-conversation', 'composer-unavailable',
+    'insert-failed', 'inserted-not-submitted', 'click-attempted', 'attempt-outcome-unknown']);
+  const value = outcome.split(':')[0];
+  Object.assign(binding.diagnostic, {finished: new Date().toISOString(),
+    outcome: admitted.has(value) ? value : 'attempt-outcome-unknown',
+    reason: reason || receipt?.reason || 'result', facts: receipt?.facts || {},
+    exception: error ? (['Error', 'TypeError', 'ReferenceError', 'DOMException'].includes(error.name) ? error.name : 'Other')
+      : receipt?.exception || null});
+}
 function persist(action) {
   const result = writes.then(action);
   writes = result.catch(() => {});
@@ -151,39 +201,60 @@ async function action(message, version, endpointVersion) {
   if (message.type === 'check') return check(version);
   if (message.type !== 'bind') throw new PairingError('Unknown action.');
   const {tabId, url, name, endpoint, generation} = message;
+  let pairReason = 'invalid-url';
+  try {
   if (!validConversation(url) || !Number.isInteger(tabId)) throw new PairingError('Open an existing ChatGPT conversation.');
+  pairReason = 'tab-moved';
   if ((await chrome.tabs.get(tabId)).url !== url) throw new PairingError('Tab moved; verify again.');
+  pairReason = 'mailbox-unavailable';
   const observed = await mailbox(name);
+  pairReason = 'identity-changed';
   if (observed.endpoint !== endpoint || observed.generation !== generation) throw new PairingError('Mailbox changed; verify again.');
   if ((await chrome.tabs.get(tabId)).url !== url) throw new PairingError('Tab moved; verify again.');
-  return persist(async () => {
+  return await persist(async () => {
     const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
     const prior = wakeBindings.find(binding => binding.endpoint === endpoint);
+    pairReason = 'conversation-already-bound';
     if (wakeBindings.some(binding => binding.endpoint !== endpoint && binding.url === url)) {
       throw new PairingError('Conversation already belongs to another mailbox.');
     }
+    pairReason = 'generation-changed';
     if (prior && (prior.generation !== generation || prior.url !== url)) throw new PairingError('Existing pairing identity differs.');
-    if (prior?.halted || prior?.pendingSend || prior?.attemptIds?.length || prior?.diagnostic || prior?.stopSendAttempt) {
+    pairReason = 'unresolved-attempt';
+    if (prior && unresolved(prior)) {
       throw new PairingError('Unresolved attempt preserved; pairing unchanged.');
     }
+    pairReason = 'stop-requested';
     if (stopVersion !== version || endpointStops.get(endpoint) !== endpointVersion) throw new PairingError('Stop requested during pairing.');
     const binding = {...prior, endpoint, generation, name: observed.name, tabId, url,
-      armed: true, seen: prior?.seen || [], pending: observed.delivery_ids.slice(), status: 'paired'};
+      armed: true, seen: prior?.seen || [], pending: observed.delivery_ids.slice(), status: 'paired',
+      pairDiagnostic: {id: crypto.randomUUID(), release: releaseId, boot: bootId, at: new Date().toISOString(),
+        result: 'accepted', reason: 'accepted', attempt: prior?.diagnostic?.id || null}};
     const index = wakeBindings.indexOf(prior);
     if (index < 0) wakeBindings.push(binding); else wakeBindings[index] = binding;
     await chrome.storage.local.set({wakeBindings});
     return 'Paired. Check manually to attempt one wake.';
   });
+  } catch (error) {
+    await persist(async () => {
+      const current = await chrome.storage.local.get('wakeBindings');
+      const live = current.wakeBindings?.find(item => item.endpoint === endpoint);
+      if (!live) return;
+      live.pairDiagnostic = {id: crypto.randomUUID(), release: releaseId, boot: bootId,
+        at: new Date().toISOString(), result: 'refused', reason: pairReason, attempt: live.diagnostic?.id || null};
+      await chrome.storage.local.set(current);
+    }).catch(() => {});
+    throw error;
+  }
 }
 async function check(version) {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
   const results = [];
   for (const binding of wakeBindings) {
-    if (!binding.armed) continue;
-    try { results.push(await checkBinding(binding, version)); } catch (error) {
+    try { if (binding.armed) results.push(await checkBinding(binding, version)); } catch (error) {
       if (wakeBindings.length === 1) throw error;
       results.push(error instanceof PairingError ? error.message : 'Mailbox observation unavailable.');
-    }
+    } finally { await diagnosticReport(binding).catch(() => {}); }
   }
   return results.join('\n') || 'No active pairing.';
 }
@@ -206,7 +277,23 @@ async function checkBinding(binding, version) {
   if (!validConversation(binding.url)) return 'Saved conversation is invalid; no wake attempted.';
   const tab = await conversationTab(binding);
   await availability(binding, Boolean(tab));
-  if (binding.halted || binding.attemptIds?.length || binding.pendingSend || binding.diagnostic || binding.stopSendAttempt) {
+  if (unresolved(binding)) {
+    const control = {release: releaseId, boot: bootId, reason: 'unavailable'};
+    if (tab && !tab.discarded && !tab.frozen) {
+      try {
+        const receipt = (await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
+          args: [binding.url, 'control', null, true]}))[0]?.result;
+        control.reason = receipt?.reason === 'dom-exception' ? 'unavailable'
+          : receipt?.facts?.controlSelection || (receipt?.outcome === 'wrong-conversation' ? 'url-mismatch' : 'editor-unavailable');
+      } catch { /* Read-only snapshot failure never changes the protected attempt. */ }
+    }
+    await persist(async () => {
+      const current = await chrome.storage.local.get('wakeBindings');
+      const live = current.wakeBindings?.find(item => item.endpoint === binding.endpoint);
+      if (live?.generation !== binding.generation || live.url !== binding.url) return;
+      live.currentControl = control;
+      await chrome.storage.local.set(current);
+    });
     return 'Previous attempt needs attention; it was not repeated.';
   }
   const matching = observed => observed.endpoint === binding.endpoint && observed.generation === binding.generation;
@@ -229,14 +316,18 @@ async function checkBinding(binding, version) {
         live.endpoint !== binding.endpoint || live.generation !== binding.generation || live.url !== binding.url) {
       throw new PairingError('Pairing stopped or changed; no wake attempted.');
     }
-    Object.assign(live, {halted: true, attemptIds: ids, status: 'attempt-outcome-unknown'});
+    Object.assign(live, {halted: true, attemptIds: ids, status: 'attempt-outcome-unknown',
+      diagnostic: {id: crypto.randomUUID(), boot: bootId, release: releaseId,
+        endpoint: binding.endpoint, generation: binding.generation, delivery_ids: ids.slice(0, 50),
+        started: new Date().toISOString(), finished: null, outcome: null, reason: 'dispatch-start', facts: {}}});
     await chrome.storage.local.set(current); // Must succeed before Stop, insertion or Send.
   });
-  const complete = outcome => persist(async () => {
+  const complete = (outcome, receipt = ready, reason, error) => persist(async () => {
     const current = await chrome.storage.local.get('wakeBindings');
     const live = current.wakeBindings?.find(item => item.endpoint === binding.endpoint);
     if (!live || live.generation !== binding.generation || live.url !== binding.url) return 'Pairing changed.';
     live.status = outcome;
+    diagnosticResult(live, outcome, receipt, reason, error);
     if (outcome === 'click-attempted') {
       live.seen = [...new Set([...live.seen, ...ids])];
       live.halted = false;
@@ -249,9 +340,10 @@ async function checkBinding(binding, version) {
     const needsStop = ready.stopReady;
     let inserted = false;
     for (let tick = 0; tick < 100; tick++) {
-      if (cancelled()) return complete('stopped');
+      if (cancelled()) return complete('stopped', ready, 'stopped-before-dispatch');
       ready = await invoke({prepare: true, insert: true, stop: needsStop && tick === 0});
       inserted ||= Boolean(ready?.inserted);
+      if (inserted && ready?.facts) ready.facts.inserted = true;
       if (ready?.sendReady) break;
       if (typeof ready?.sendReady !== 'boolean') return complete('readiness-refused');
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -259,10 +351,10 @@ async function checkBinding(binding, version) {
     if (!ready?.sendReady) return complete('readiness-timeout');
     const current = await mailbox(binding.name);
     if (!matching(current) || !current.delivery_ids.some(id => ids.includes(id))) return complete('pending-changed');
-    if (cancelled()) return complete('stopped');
+    if (cancelled()) return complete('stopped', ready, 'stopped-before-dispatch');
     const receipt = await invoke({final: true, inserted}); // Final DOM checks and click contain no wait.
-    return complete(receipt?.outcome === 'click-attempted' ? 'click-attempted' : 'attempt-outcome-unknown');
-  } catch { return complete('attempt-outcome-unknown'); }
+    return complete(receipt?.outcome === 'click-attempted' ? 'click-attempted' : 'attempt-outcome-unknown', receipt, receipt ? undefined : 'missing-result');
+  } catch (error) { return complete('attempt-outcome-unknown', ready, 'execution-failed', error); }
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;

@@ -31,3 +31,10 @@ identity are rechecked before synchronous final DOM checks and Send. A click is
 not provider acceptance. An uncertain attempt stays blocked through Check, Pair
 and worker restart; this version cannot rearm it. Other drafts and attachments
 are preserved. Saved pairing history and backend mailbox records are not cleared.
+
+The worker reports typed release/boot, latest Pair and reserved/finished attempt
+receipts through the existing loopback report route. Protected legacy attempts
+also get a read-only current-control summary. Reports contain no draft text,
+conversation URL, DOM labels or token; a click receipt never proves acceptance.
+Reporting failures retain a replayable snapshot without changing wake decisions,
+Stop, seen IDs or uncertain-attempt protection. These receipts do not send alerts.
