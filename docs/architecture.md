@@ -974,8 +974,10 @@ actor credentials. Read-only observation and optional writable alert transport
 use separately owned engines.
 
 Existing Chrome binding storage reserves an incident before its report. Actual
-pending IDs plus a continuous observed draft block of60 seconds, or a closed tab,
-qualify one incident; one observed recovery follows. Restarts and observation gaps reset unqualified draft
+pending IDs observed continuously for60 seconds, or a closed tab with pending IDs,
+qualify one incident. Draft and closed-tab reasons remain explicit; other blockers
+use `pending-mail`, including HALT and seen IDs after a click. Only a fresh matching
+empty mailbox proves recovery. Restarts and observation gaps reset unqualified pending
 timers. A fresh empty poll clears a closed-tab incident while retaining the closed
 availability marker; a cached close callback cannot clear it. A frozen first-send
 observation that expires is retired only after an authoritative absent replay
