@@ -1023,6 +1023,8 @@ identity and pending delivery IDs, never content. Check reserves before Stop or
 insertion, rechecks original pending identity, and finishes with synchronous DOM
 guards and Send. Chrome's `mailbox-wake` alarm requests the same serialized check
 every 30 seconds; seen IDs, Stop and unresolved attempts survive worker restarts.
+The worker serializes multiple exact mailbox/conversation bindings, routes only to
+existing exact-URL tabs, records closed tabs and isolates endpoint Stop from other bindings.
 
 `wakeful.py` remains the neutral SQLite/outbox owner.
 `disk_pressure.py` is a non-destructive, one-shot Wakeful producer that runs outside the Codex

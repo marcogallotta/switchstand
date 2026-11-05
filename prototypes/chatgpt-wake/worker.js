@@ -1,9 +1,10 @@
-// One verified pairing; manual and alarm checks share the same durable wake reservation.
+// Exact verified pairings; manual and alarm checks share the same durable wake reservation.
 const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let serial = Promise.resolve();
 let writes = Promise.resolve();
 let stopVersion = 0;
+const endpointStops = new Map();
 class PairingError extends Error {}
 function persist(action) {
   const result = writes.then(action);
@@ -145,7 +146,7 @@ async function mailbox(name) {
       !observed.delivery_ids.every(id => typeof id === 'string' && UUID.test(id))) throw new PairingError('Invalid mailbox identity.');
   return observed;
 }
-async function action(message, version) {
+async function action(message, version, endpointVersion) {
   if (message.type === 'verify') return mailbox(message.name);
   if (message.type === 'check') return check(version);
   if (message.type !== 'bind') throw new PairingError('Unknown action.');
@@ -158,46 +159,73 @@ async function action(message, version) {
   return persist(async () => {
     const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
     const prior = wakeBindings.find(binding => binding.endpoint === endpoint);
-    if (wakeBindings.length > 1 || wakeBindings.some(binding => binding.endpoint !== endpoint)) {
-      throw new PairingError('This version supports one saved pairing. Existing pairings are preserved.');
+    if (wakeBindings.some(binding => binding.endpoint !== endpoint && binding.url === url)) {
+      throw new PairingError('Conversation already belongs to another mailbox.');
     }
     if (prior && (prior.generation !== generation || prior.url !== url)) throw new PairingError('Existing pairing identity differs.');
     if (prior?.halted || prior?.pendingSend || prior?.attemptIds?.length || prior?.diagnostic || prior?.stopSendAttempt) {
       throw new PairingError('Unresolved attempt preserved; pairing unchanged.');
     }
-    if (stopVersion !== version) throw new PairingError('Stop requested during pairing.');
+    if (stopVersion !== version || endpointStops.get(endpoint) !== endpointVersion) throw new PairingError('Stop requested during pairing.');
     const binding = {...prior, endpoint, generation, name: observed.name, tabId, url,
       armed: true, seen: prior?.seen || [], pending: observed.delivery_ids.slice(), status: 'paired'};
-    await chrome.storage.local.set({wakeBindings: [binding]});
+    const index = wakeBindings.indexOf(prior);
+    if (index < 0) wakeBindings.push(binding); else wakeBindings[index] = binding;
+    await chrome.storage.local.set({wakeBindings});
     return 'Paired. Check manually to attempt one wake.';
   });
 }
 async function check(version) {
   const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
-  const [binding] = wakeBindings;
-  if (wakeBindings.length !== 1 || !binding.armed) return 'No active single pairing.';
+  const results = [];
+  for (const binding of wakeBindings) {
+    if (!binding.armed) continue;
+    try { results.push(await checkBinding(binding, version)); } catch (error) {
+      if (wakeBindings.length === 1) throw error;
+      results.push(error instanceof PairingError ? error.message : 'Mailbox observation unavailable.');
+    }
+  }
+  return results.join('\n') || 'No active pairing.';
+}
+async function conversationTab(binding) {
+  const tabs = (await chrome.tabs.query({url: 'https://chatgpt.com/*'}))
+    .filter(tab => Number.isInteger(tab.id) && tab.url === binding.url);
+  return tabs.find(tab => tab.id === binding.tabId) || tabs.sort((a, b) => a.id - b.id)[0];
+}
+async function availability(binding, open) {
+  return persist(async () => {
+    const current = await chrome.storage.local.get('wakeBindings');
+    const live = current.wakeBindings?.find(item => item.endpoint === binding.endpoint);
+    if (live?.generation !== binding.generation || live?.url !== binding.url) return;
+    live.availability = open ? 'open' : 'closed';
+    await chrome.storage.local.set(current);
+  });
+}
+async function checkBinding(binding, version) {
+  const endpointVersion = endpointStops.get(binding.endpoint);
   if (!validConversation(binding.url)) return 'Saved conversation is invalid; no wake attempted.';
+  const tab = await conversationTab(binding);
+  await availability(binding, Boolean(tab));
   if (binding.halted || binding.attemptIds?.length || binding.pendingSend || binding.diagnostic || binding.stopSendAttempt) {
     return 'Previous attempt needs attention; it was not repeated.';
   }
   const matching = observed => observed.endpoint === binding.endpoint && observed.generation === binding.generation;
-  const cancelled = () => stopVersion !== version;
+  const cancelled = () => stopVersion !== version || endpointStops.get(binding.endpoint) !== endpointVersion;
   const observed = await mailbox(binding.name);
   if (!matching(observed)) throw new PairingError('Mailbox changed; no wake attempted.');
   const ids = observed.delivery_ids.filter(id => !binding.seen.includes(id));
   if (!ids.length) return 'No new pending mail.';
-  const tab = await chrome.tabs.get(binding.tabId);
-  if (tab.url !== binding.url || tab.discarded || tab.frozen) return 'Open the paired conversation; no wake attempted.';
+  if (!tab || tab.discarded || tab.frozen) return 'Open the paired conversation; no wake attempted.';
   if (cancelled()) return 'Stopped.';
   const invoke = async attempt => (await chrome.scripting.executeScript({
-    target: {tabId: binding.tabId}, func: nudge, args: [binding.url, false, attempt, true]
+    target: {tabId: tab.id}, func: nudge, args: [binding.url, false, attempt, true]
   }))[0]?.result;
   let ready = await invoke({prepare: true});
   if (!ready?.sendReady && !ready?.stopReady && !ready?.prepareReady) return 'Chat not ready; existing draft left unchanged.';
   await persist(async () => {
     const current = await chrome.storage.local.get('wakeBindings');
-    const [live] = current.wakeBindings || [];
-    if (current.wakeBindings?.length !== 1 || !live?.armed || cancelled() || live.halted ||
+    const live = current.wakeBindings?.find(item => item.endpoint === binding.endpoint);
+    if (!live?.armed || cancelled() || live.halted ||
         live.endpoint !== binding.endpoint || live.generation !== binding.generation || live.url !== binding.url) {
       throw new PairingError('Pairing stopped or changed; no wake attempted.');
     }
@@ -239,18 +267,23 @@ async function check(version) {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
   const version = stopVersion;
+  const endpointVersion = endpointStops.get(message.endpoint);
   let result;
   if (message.type === 'disarm') {
-    ++stopVersion;
+    if (message.endpoint && !UUID.test(message.endpoint)) { reply({error: 'Invalid mailbox identity.'}); return; }
+    if (message.endpoint) endpointStops.set(message.endpoint, (endpointVersion || 0) + 1);
+    else ++stopVersion;
     // Storage writes retain order, but a held backend request never delays Stop.
     result = persist(async () => {
       const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
-      for (const binding of wakeBindings) binding.armed = false;
+      for (const binding of wakeBindings) {
+        if (!message.endpoint || binding.endpoint === message.endpoint) binding.armed = false;
+      }
       await chrome.storage.local.set({wakeBindings});
       return 'Stopped.';
     });
   } else {
-    result = serial.then(() => action(message, version));
+    result = serial.then(() => action(message, version, endpointVersion));
     serial = result.catch(() => {});
   }
   result.then(status => reply({status}), error => reply({error: error instanceof PairingError
@@ -268,3 +301,12 @@ chrome.alarms.onAlarm.addListener(alarm => {
 chrome.alarms.get('mailbox-wake').then(alarm => {
   if (!alarm) return chrome.alarms.create('mailbox-wake', {periodInMinutes: 0.5});
 }).catch(() => console.warn('Automatic mailbox watch unavailable.'));
+
+// Closing a tab only records availability; exact matching tabs are never opened here.
+chrome.tabs.onRemoved.addListener(() => {
+  const result = serial.then(async () => {
+    const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
+    for (const binding of wakeBindings) await availability(binding, Boolean(await conversationTab(binding)));
+  });
+  serial = result.catch(() => {});
+});
