@@ -636,10 +636,10 @@ def build_server(
         async def _agent_task_request(
             api_version: Literal["1"], execution_work_id: UUID,
             observed_revision: Annotated[str, Field(min_length=1, max_length=512)],
-            task_kind: Literal["INVESTIGATION", "VALIDATION"],
+            task_kind: Literal["VALIDATION"],
             objective: Annotated[str, Field(min_length=1, max_length=8000)],
             result_contract: dict[str, JsonValue],
-            continuation: Literal["START", "CONTINUE", "TAKEOVER"] = "START",
+            continuation: Literal["START"] = "START",
             candidate_ref: Annotated[str | None, Field(min_length=1, max_length=1024)] = None,
         ) -> TaskRunRequestResult:
             """Persist one launch-bound investigation or validation request; never launch it."""
