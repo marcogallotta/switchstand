@@ -143,7 +143,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = 'c71f141d-4abc-4634-8827-a948df306c6d';
+const releaseId = 'aa66c550-1df3-4c30-b353-0514c1624c4e';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -297,6 +297,27 @@ async function checkBinding(binding, save) {
   }
   binding.availability = 'open';
   const previous = binding.diagnostic;
+  // The duplicate-risk waiver grants legacy unresolved wakes two NEW attempts,
+  // without claiming how many sends happened before this policy existed.
+  let budget = binding.retryBudget;
+  if (binding.halted && !budget && Array.isArray(binding.attemptIds) && binding.attemptIds.length &&
+      binding.attemptIds.every(id => UUID.test(id)) && (!previous ||
+        (previous.endpoint === binding.endpoint && previous.generation === binding.generation))) {
+    budget = binding.retryBudget = {endpoint: binding.endpoint, generation: binding.generation, url: binding.url,
+      ids: binding.attemptIds.slice(), usedRetries: 0, historicalAttempts: 'unknown', previousAttempts: []};
+    await save();
+  }
+  const validBudget = budget && budget.endpoint === binding.endpoint && budget.generation === binding.generation &&
+    budget.url === binding.url && Array.isArray(budget.previousAttempts) && Array.isArray(budget.ids) && budget.ids.length && budget.ids.every(id => UUID.test(id)) &&
+    Number.isInteger(budget.usedRetries) && budget.usedRetries >= 0 && budget.usedRetries <= 2;
+  const originalPending = validBudget && budget.ids.some(id => observation.delivery_ids.includes(id));
+  if (binding.halted && budget && (!validBudget || !originalPending)) {
+    return note('attempt-outcome-unknown: original retry evidence no longer current');
+  }
+  if (binding.halted && validBudget && budget.usedRetries >= 2) {
+    return note('attempt-outcome-unknown: retry limit reached (2 retries)');
+  }
+  const retry = Boolean(binding.halted && validBudget && originalPending);
   const manual = Boolean(binding.manualWakeId);
   let recover = binding.halted && previous?.outcome === 'inserted-not-submitted' &&
     previous.endpoint === binding.endpoint && previous.generation === binding.generation &&
@@ -305,7 +326,7 @@ async function checkBinding(binding, save) {
     binding.attemptIds.some(id => observation.delivery_ids.includes(id)) &&
     previous.reason === 'result' && previous.facts?.inserted === true && !previous.facts.clickDispatched &&
     binding.stopSendAttempt !== previous.id;
-  if (binding.halted && !recover && !manual) {
+  if (binding.halted && !recover && !retry) {
     if (!tab.discarded && !tab.frozen) {
       try {
         const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
@@ -318,11 +339,12 @@ async function checkBinding(binding, save) {
       binding.status?.startsWith('inserted-not-submitted') ? binding.status : 'attempt-outcome-unknown');
   }
   if (!observation.delivery_ids.length) return note('idle');
+  if (manual && !binding.halted && originalPending) return note('click-attempted');
   if (tab.url !== binding.url) return note('wrong-conversation');
   if (tab.discarded) return note('tab-discarded');
   if (tab.frozen) return note('tab-frozen');
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
-  if (!pending.length && !recover && !manual) {
+  if (!pending.length && !recover && !manual && !retry) {
     try {
       const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, true]});
       return note(result?.result || 'composer-unavailable: observation returned no result');
@@ -332,9 +354,9 @@ async function checkBinding(binding, save) {
   let ready;
   try {
     const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
-      args: [binding.url, false, {prepare: true, recover: recover || manual}, false]});
+      args: [binding.url, false, {prepare: true, recover: recover || manual || retry}, false]});
     ready = result?.result;
-    if (manual) {
+    if (manual || retry) {
       recover = ready !== 'draft-present';
       if (!recover) {
         const [empty] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
@@ -344,10 +366,17 @@ async function checkBinding(binding, save) {
     }
   } catch { return note('composer-unavailable: Stop/Send preflight failed'); }
   if (!ready?.sendReady && !ready?.stopReady && !ready?.prepareReady) return note(typeof ready === 'string' ? ready : 'busy');
-  const consumed = manual || recover || ready.stopReady;
-  const sendIds = recover && !manual ? binding.attemptIds : pending;
+  const consumed = manual || retry || recover || ready.stopReady;
+  const sendIds = retry ? budget.ids : recover && !manual ? binding.attemptIds : pending;
+  if (retry) {
+    budget.usedRetries++;
+    if (previous) budget.previousAttempts.push(previous);
+  } else {
+    budget = binding.retryBudget = {endpoint: binding.endpoint, generation: binding.generation, url: binding.url,
+      ids: sendIds.slice(), usedRetries: 0, historicalAttempts: 1, previousAttempts: []};
+  }
   delete binding.manualWakeId;
-  // Reserve before Stop or Send; a consumed sequence never receives another allowance.
+  // The budget and reservation must persist together before any Stop, insertion or Send.
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
   binding.attemptIds = sendIds;
@@ -394,8 +423,6 @@ async function checkBinding(binding, save) {
     const receipt = result?.result;
     const outcome = (typeof receipt === 'string' ? receipt : receipt?.outcome) || 'attempt-outcome-unknown';
     attemptResult(binding, outcome, receipt, receipt ? undefined : 'missing-result');
-    const safe = ['busy', 'draft-present', 'wrong-conversation', 'insert-failed'].includes(outcome) || outcome.startsWith('composer-unavailable');
-    if (safe && !consumed) binding.halted = false;
     if (outcome === 'click-attempted') {
       binding.seen.push(...sendIds.filter(id => !binding.seen.includes(id)));
       binding.pending = [];

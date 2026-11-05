@@ -153,12 +153,12 @@ for (const changed of ['draft','url','busy']) {
   });
 }
 
-test('temporarily blocked Send stays halted without retry or reinsertion',async({wake})=>{
+test('temporarily blocked Send permits bounded exact-draft recovery without reinsertion',async({wake})=>{
   await wake.page.evaluate(()=>fixture.blocked=true);wake.metadata.delivery_ids=[delivery(1)];
   await wake.check();await expect(wake.page.locator('#turns li')).toHaveCount(0);
   await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
   await wake.page.evaluate(()=>{fixture.blocked=false;document.querySelector('button').disabled=false;});
-  await wake.check();await wake.check();await expect(wake.page.locator('#turns li')).toHaveCount(0);
+  await wake.check();await wake.check();await expect(wake.page.locator('#turns li')).toHaveCount(1);
   expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(1);
 });
 
@@ -178,42 +178,28 @@ test('persistent blocked Send stays halted without retry',async({wake})=>{
   expect(wake.reports.some(report=>report.outcome==='inserted-not-submitted')).toBe(true);
 });
 
-test('V1 final manual Pair preserves UNKNOWN, sends exact draft once after Stop and worker restart',async({wake})=>{
+test('Pair and worker restart preserve an exhausted UNKNOWN budget and its archive',async({wake})=>{
   wake.metadata.delivery_ids=[delivery(901)];
-  await wake.popup.evaluate(async({pending,oldAttempt,endpoint})=>{
+  await wake.popup.evaluate(async({pending,endpoint})=>{
     const data=await chrome.storage.local.get('wakeBindings'),binding=data.wakeBindings[0];
-    binding.halted=true;delete binding.manualWakeId;binding.seen=[pending];binding.pending=[pending];
-    binding.attemptIds=[oldAttempt];binding.stopSendAttempt=oldAttempt;binding.status='attempt-outcome-unknown';
-    binding.diagnostic={id:oldAttempt,boot:oldAttempt,release:oldAttempt,endpoint,generation:1,
-      delivery_ids:[oldAttempt],started:new Date().toISOString(),finished:null,outcome:null,reason:'dispatch-start',facts:{}};
+    binding.halted=true;delete binding.manualWakeId;binding.attemptIds=[pending];
+    binding.status='attempt-outcome-unknown';
+    binding.retryBudget={endpoint,generation:1,url:binding.url,ids:[pending],usedRetries:2,
+      historicalAttempts:'unknown',previousAttempts:[]};
+    binding.diagnostic={id:pending,endpoint,generation:1,delivery_ids:[pending],outcome:null,facts:{}};
     await chrome.storage.local.set(data);
-  },{pending:delivery(901),oldAttempt:delivery(900),endpoint:identity});
-  await wake.page.evaluate(()=>{
-    window.stopClicks=0;fixture.busy=true;
-    const editor=document.querySelector('#prompt-textarea'),send=document.querySelector('form button');
-    editor.textContent='Process your mailbox';editor.dispatchEvent(new InputEvent('input',{bubbles:true}));send.hidden=true;
-    const stop=document.createElement('button');stop.type='button';stop.setAttribute('aria-label','Stop');
-    stop.onclick=()=>{window.stopClicks++;setTimeout(()=>{fixture.busy=false;stop.remove();send.hidden=false;},2000);};
-    document.querySelector('form').append(stop);
-  });
+  },{pending:delivery(901),endpoint:identity});
+  await wake.page.locator('#prompt-textarea').fill('Process your mailbox');
   const binding=()=>wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
-  await wake.check();expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(0);
   const previous=await binding();expect((await wake.pair()).error).toBeUndefined();
-  const armed=await binding();expect(armed.manualWakeId).toBe(armed.pairDiagnostic.id);
-  expect(armed.lastArmedAttempt.diagnostic).toEqual(previous.diagnostic);
-  expect(armed.pending).toEqual([delivery(901)]);expect(armed.seen).toEqual(previous.seen);
-  await wake.check();await wake.check();
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
-  const sent=await binding();expect(sent.manualWakeId).toBeUndefined();expect(sent.diagnostic.id).not.toBe(previous.diagnostic.id);
-  expect(sent.diagnostic.facts.clickDispatched).toBe(true);expect(sent.lastArmedAttempt.diagnostic).toEqual(previous.diagnostic);
-  const boot=wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.boot;
+  expect((await binding()).lastArmedAttempt.diagnostic).toEqual(previous.diagnostic);
+  await wake.check();
   const session=await wake.context.newCDPSession(wake.popup);
   await session.send('ServiceWorker.enable');await session.send('ServiceWorker.stopAllWorkers');await session.detach();
-  await wake.check();await wake.check();
-  expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(1);
-  await expect(wake.page.locator('#turns li')).toHaveCount(1);
-  expect((await binding()).manualWakeId).toBeUndefined();
-  expect(wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.boot).not.toBe(boot);
+  await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveCount(0);
+  expect((await binding()).retryBudget).toEqual(previous.retryBudget);
+  await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
 });
 
 test('V1 final manual Pair arms with another draft and leaves it untouched',async({wake})=>{
@@ -337,3 +323,58 @@ for (const stopDelay of [0, 2000]) {
     expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(stopDelay?1:0);
   });
 }
+
+// The result-loss seam runs the real injected DOM operation before losing its receipt.
+async function loseFinalReceipt(wake) {
+  const worker = wake.context.serviceWorkers().find(w => w.url().endsWith('/worker.js'));
+  await worker.evaluate(() => {
+    const execute = chrome.scripting.executeScript.bind(chrome.scripting);
+    chrome.scripting.executeScript = async options => {
+      const result = await execute(options);
+      if (options.args?.[2]?.final) throw Error('fixture lost result after native execution');
+      return result;
+    };
+  });
+}
+test('bounded duplicate retry: possible click plus two retries survives restart and Pair', async ({wake}) => {
+  const binding = () => wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings').then(s => s.wakeBindings[0]));
+  wake.metadata.delivery_ids = [delivery(990)];
+  await loseFinalReceipt(wake); await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveCount(1);
+  expect((await binding()).halted).toBe(true); expect((await binding()).retryBudget.usedRetries).toBe(0);
+  const session = await wake.context.newCDPSession(wake.popup);
+  await session.send('ServiceWorker.enable'); await session.send('ServiceWorker.stopAllWorkers'); await session.detach();
+  await wake.message({type:'verify', name:'Fixture'}); // Wake the restarted worker without dispatching.
+  await loseFinalReceipt(wake); await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveCount(2);
+  expect((await binding()).retryBudget.usedRetries).toBe(1);
+  await wake.pair(); wake.metadata.delivery_ids.push(delivery(991)); await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveCount(3);
+  expect((await binding()).retryBudget.usedRetries).toBe(2);
+  await wake.pair(); await wake.check(); await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveCount(3);
+  expect((await binding()).status).toContain('retry limit');
+  expect((await binding()).retryBudget.ids).toEqual([delivery(990)]);
+});
+test('bounded duplicate retry: legacy UNKNOWN respects original IDs, drafts and attachments', async ({wake}) => {
+  wake.metadata.delivery_ids = [delivery(992)];
+  await wake.popup.evaluate(async pending => {
+    const s = await chrome.storage.local.get('wakeBindings'), b = s.wakeBindings[0];
+    b.halted = true; b.attemptIds = [pending]; delete b.manualWakeId;
+    await chrome.storage.local.set(s);
+  }, delivery(992));
+  const editor = wake.page.locator('#prompt-textarea');
+  await editor.fill('Human draft'); await wake.check();
+  await expect(editor).toHaveText('Human draft'); await expect(wake.page.locator('#turns li')).toHaveCount(0);
+  await editor.fill('Process your mailbox');
+  await wake.page.evaluate(() => document.querySelector('form').insertAdjacentHTML('beforeend', '<button data-testid="remove-file-button">Attachment</button>'));
+  await wake.check(); await expect(wake.page.locator('#turns li')).toHaveCount(0);
+  await wake.page.locator('[data-testid="remove-file-button"]').evaluate(el => el.remove());
+  await wake.check(); await expect(wake.page.locator('#turns li')).toHaveCount(1);
+  const b = await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings').then(s => s.wakeBindings[0]));
+  expect(b.retryBudget.historicalAttempts).toBe('unknown'); expect(b.retryBudget.usedRetries).toBe(1);
+  // A fresh old-ID disappearance forbids consuming an allowance for replacement mail.
+  await wake.popup.evaluate(async () => { const s = await chrome.storage.local.get('wakeBindings'); s.wakeBindings[0].halted = true; await chrome.storage.local.set(s); });
+  wake.metadata.delivery_ids = [delivery(993)]; await wake.pair(); await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveCount(1);
+});

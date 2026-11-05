@@ -43,9 +43,16 @@ stale observation, without a new monitoring service.
 
 Closed tabs retain their pairings and mailbox observation, report undeliverable
 mail, and never reopen automatically. Drafts/busy/frozen/discarded/wrong-URL tabs
-are deferred. Uncertain outcomes halt that binding, including across extension
-reload; a new delivery cannot clear that halt. Reconcile the actual conversation
-before any operator recovery. `click-attempted` is not provider acceptance or proof
+are deferred. Uncertain outcomes allow at most two automatic retries of the original pending
+batch. The existing check/alarm path persists each allowance before any Stop,
+insertion or Send; reload, Check, Pair and new arrivals cannot replenish it.
+Armed legacy UNKNOWN bindings with stored original IDs get two NEW allowances;
+the historical send count stays unknown. Missing original IDs, identity changes,
+Stop and disappearance of all original mail prevent retries. Exact wake drafts
+may be reused, while other drafts and attachments remain untouched. After the
+limit the binding stays halted and the existing pending-mail alert path remains
+active. This implements Marco's explicit acceptance of possible duplicate wakes.
+It does not fix every stuck draft or retry a recorded successful click. `click-attempted` is not provider acceptance or proof
 that the chat processed its mailbox. A draft inserted without a send is retained.
 
 ## Focused evidence

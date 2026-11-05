@@ -42,9 +42,11 @@ coordinator notification. Parent knows this qualification.
 3. Keep per-binding seen/pending/attempt/status in chrome.storage.local, serialize
    checks. Coalesce still-pending delivery IDs; reserve those IDs before DOM
    mutation. Refresh server IDs before retrying definite pre-submit deferrals.
-   Never retry submitted/uncertain IDs automatically, including after reload or
-   re-pair. A new ID is a new notification, not permission to retry an unknown
-   previous attempt. Unknown halts that binding for explicit reconciliation.
+   Marco's later duplicate-risk waiver permits at most two retries of an uncertain
+   original batch, persisted before effects and never replenished by reload, Pair,
+   Check or arrivals. Armed legacy UNKNOWN with stored IDs gets two NEW allowances
+   with historical count unknown; missing IDs remain halted. Fresh same-identity
+   original mail must remain pending. Exhaustion halts; Stop/drafts stay protected.
 4. Preserve existing exact URL and empty composer checks; busy/draft defer;
    disarmed/STOP never sends. Frozen/discarded/missing/wrong-url tabs report
    disconnected/deferred without activating/focusing/navigating them. A click

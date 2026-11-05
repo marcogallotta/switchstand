@@ -939,7 +939,7 @@ adapter to the edge. Its poll route resolves an existing registered mailbox and
 uses the shared fenced `MessageState.all_pending_delivery_ids` collector; it
 returns endpoint/generation/IDs without mailbox content or delivery mutations.
 The extension manually pairs each mailbox with an exact open conversation tab.
-Per-binding pending/seen and a persisted pre-mutation halt prevent blind retries.
+Per-binding pending/seen and a persisted pre-mutation retry budget bound uncertain wakes.
 Closed tabs remain observed without auto-reopening. The candidate uses owned
 TEST loopback18766, independently from the original mock18765.
 
@@ -949,21 +949,22 @@ no CORS access. By default reports go only to existing runtime logging and
 escalation remains unconfigured. An explicitly injected `HostReporter` adds the
 fixed `browser extension` alert path; it never registers or issues a grant on startup.
 Optional typed diagnostic metadata on the same report route logs independently of alerts.
-Each binding retains only its latest attempt and Pair result, with executing release/boot IDs;
-HALTED polls preserve the original cause. A separate optional fixed-enum current control snapshot
+Each binding retains its latest attempt and Pair result, with executing release/boot IDs;
+the retry budget archives up to two preceding attempts. HALTED polls preserve recorded causes. A separate optional fixed-enum current control snapshot
 uses read-only observation without input or retry; it is neither the original cause nor a freshness guarantee. A started-only receipt means no durable result,
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
 The popup lists chat names and plain status with Stop and Remove. Remove cancels queued wake dispatch before deleting only the extension pairing; backend diagnostics and mailbox/conversation records remain.
-The combined candidate retains conversation routing; explicit Pair grants one fresh wake,
-even with pending mail or a blocked composer, retaining the prior uncertain attempt as an archive.
-Seen history and incident state persist; automatic checks never renew this manual grant. It retains
-unique visible explicit Send selection. V1 uses one bounded Stop/insertion/readiness phase,
-then a fresh worker STOP/mailbox fence and synchronous final Send. Only a durable known no-click
-attempt with matching original pending identity may recover its exact wake draft once; reservation
-is consumed before effects. No ownership witness or retry loop exists. Timeout/error/restart
-after reservation remains HALTED; legacy UNKNOWN and prior-click HALTs require explicit manual
-Pair for a fresh wake. That grant may use an exact wake draft without attachments; other drafts stay protected.
+The combined candidate retains exact conversation routing and unique visible Send selection.
+Marco's explicit duplicate-risk waiver permits an initial wake plus at most two retries of an
+uncertain outcome in the same canonical check path. A per-binding `retryBudget` pins original
+IDs, endpoint/generation/URL and retries used; budget and attempt persist before Stop/insertion/Send.
+Armed legacy UNKNOWN with valid stored original IDs gets two NEW allowances with prior count
+unknown; missing IDs remain HALTED. Fresh original pending evidence is required before preparation
+and final Send. Check, alarm, reload, Pair and new arrivals never replenish an unresolved budget.
+The existing bounded Stop/readiness phase and synchronous final DOM guards protect unrelated
+drafts/attachments and preserve Stop preemption. Exhaustion stays HALTED with the existing pending
+alert path. A recorded click retains ordinary seen-ID behavior; it does not prove mailbox processing.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed

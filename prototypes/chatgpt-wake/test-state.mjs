@@ -83,7 +83,8 @@ load(); // Restart from persisted crash/unknown state, new IDs do not clear halt
 observations.get('B').delivery_ids.push(id(13));
 const beforeRestartCheck = attempts.length;
 await message({type: 'check'});
-assert.equal(attempts.length, beforeRestartCheck);
+assert.equal(attempts.length, beforeRestartCheck + 1, 'restart permits only a persisted bounded retry');
+assert.equal(state('B').retryBudget.usedRetries, 1);
 assert.equal(state('B').manualWakeId, undefined, 'restart never creates a manual grant');
 tabs.delete(1);
 await removed(1);
@@ -93,7 +94,7 @@ await message({type: 'check'});
 assert.equal(state('A').status, 'bound-tab-missing');
 assert.equal(state('A').armed, true, 'closed binding remains observed');
 assert.deepEqual(state('A').pending, [id(14)]);
-assert.equal(attempts.length, beforeClosed, 'closed tab never receives DOM attempt');
+assert.deepEqual(attempts.slice(beforeClosed), [2], 'closed A never receives DOM attempt; B may consume its final retry');
 assert.ok(reports.some(report => report.outcome === 'bound-tab-missing' && report.delivery_ids.includes(id(14))), 'new undeliverable mail reported after close');
 tabs.delete(2);
 await removed(2);
@@ -381,19 +382,20 @@ for (const legacyRetry of [false, true]) {
   await unsentWake();
   if (legacyRetry) state('A').retry = {token: 'old-witness', boot: 'old-boot', tabId: 1};
   const originalDiagnostic = structuredClone(state('A').diagnostic);
+  state('A').retryBudget.usedRetries = 2; // Exhaustion replaces the old unconditional HALT.
   outcome = 'click-attempted';
   for (const change of [() => {}, () => load(),
     () => { observations.get('A').delivery_ids = [id(701)]; },
     () => { observations.get('A').delivery_ids = []; }]) {
     change(); const before = attempts.length;
     await alarm();
-    assert.equal(attempts.length, before, 'HALT prevents replay across checks, reload, and pending changes');
+    assert.equal(attempts.length, before, 'exhausted budget prevents replay across checks, reload, and pending changes');
     assert.equal(state('A').halted, true);
     assert.deepEqual(state('A').diagnostic, originalDiagnostic, 'original cause is retained');
     assert.deepEqual(state('A').seen, []);
   }
 }
-console.log('PASS no automatic retry; legacy retry is inert and HALT survives checks/restart/new or empty IDs.');
+console.log('PASS exhausted budget survives checks/restart/new or empty IDs; retired retry field remains inert.');
 assert.ok(reports.some(report => report.outcome === 'attempt-outcome-unknown'));
 for (const report of reports) assert.ok(acceptedOutcomes.has(report.outcome), `backend rejects reported outcome ${report.outcome}`);
 console.log('PASS every actual emitted report outcome conforms to the backend OUTCOMES contract.');
@@ -407,6 +409,7 @@ for (const legacy of [false, true]) {
   const prior = structuredClone(state('A'));
   observations.get('A').delivery_ids = [id(700)];
   const count = attempts.length;
+  outcome = 'draft-present';
   await message({type:'verify', name:'A'}); await message({type:'check'});
   assert.equal(state('A').halted, true, 'empty observation cannot release a halt');
   await message({type:'disarm',endpoint:id(1)});
@@ -522,7 +525,8 @@ assert.equal(state('A').retry, undefined, 'no retry allowance after an unsent fa
 tabs.delete(11); tabs.set(12, {url: state('A').url}); await removed(11);
 assert.equal(state('A').retry, undefined, 'lost page cannot create retry');
 const beforeLost = attempts.length; await message({type: 'check'});
-assert.equal(attempts.length, beforeLost, 'replacement cannot inherit retry or clear UNKNOWN');
+assert.equal(attempts.length, beforeLost + 1, 'same exact conversation may consume one persisted retry after reopen');
+assert.equal(state('A').retryBudget.usedRetries, 1);
 assert.equal(state('A').halted, true);
 
 for (const interruption of ['wrong-conversation', 'throw', 'draft-present']) {
@@ -547,10 +551,10 @@ assert.equal(failedAttempt.reason, 'execution-failed');
 assert.equal(state('A').diagnosticAck.identity, null, 'failed diagnostic POST is not acknowledged');
 assert.equal(state('A').diagnosticAck.failure, 'report-unavailable');
 const beforeDiagnosticRestart = attempts.length;
-load(); diagnosticFailure = false;
+load(); diagnosticFailure = false; outcome = 'draft-present';
 await message({type: 'check'});
 assert.equal(attempts.length, beforeDiagnosticRestart, 'logging never retries unresolved DOM work');
-assert.equal(state('A').status, failureStatus, 'first detailed error survives HALTED Check and worker restart');
+assert.equal(state('A').status, 'draft-present', 'current retry blocker is reported without replacing the prior attempt diagnostic');
 assert.deepEqual(state('A').diagnostic, failedAttempt);
 assert.ok(state('A').diagnosticAck, 'same retained receipt logged on next ordinary Check');
 assert.equal(reports.filter(item => item.diagnostics?.attempt?.id === failedAttempt.id).length, 2);
@@ -636,8 +640,9 @@ for (const failure of ['none', 'pending', 'stop', 'throw', 'timeout', 'refused',
     assert.equal(state('A').diagnostic.facts[failure === 'timeout' ? 'busy' : 'draftPresent'], true);
     if (failure === 'refused') assert.equal(state('A').diagnostic.facts.inserted, true, 'retain own earlier insertion across a later refused preparation');
   }
+  if (state('A').retryBudget) state('A').retryBudget.usedRetries = 2;
   load(); await message({type: 'check'});
-  assert.equal(stopClicks, 1, 'checks/restart cannot repeat Stop');
+  assert.equal(stopClicks, 1, 'exhausted budget/restart cannot repeat Stop');
 }
 // Only durable known no-click can promote an existing exact wake draft; legacy/previous click cannot.
 for (const kind of ['known-no-click', 'clicked', 'legacy', 'drained', 'generation', 'endpoint']) {
@@ -652,7 +657,7 @@ for (const kind of ['known-no-click', 'clicked', 'legacy', 'drained', 'generatio
   if (kind === 'generation') state('A').diagnostic.generation = 2;
   if (kind === 'endpoint') state('A').diagnostic.endpoint = id(704);
   outcome = 'click-attempted'; await message({type: 'check'});
-  assert.equal(attempts.length, kind === 'known-no-click' ? 1 : 0);
+  assert.equal(attempts.length, ['known-no-click', 'clicked', 'legacy'].includes(kind) ? 1 : 0, 'fresh original IDs allow only bounded retries; mismatched evidence remains fenced');
   if (kind === 'known-no-click') assert.equal(state('A').stopSendAttempt, state('A').diagnostic.id);
 }
 stopPlan = undefined;
@@ -687,3 +692,61 @@ assert.equal(attempts.length, 0);
 assert.match((await message({type: 'remove'})).error, /Choose a chat/);
 assert.ok(state('B'), 'malformed remove never becomes Stop all or remove all');
 console.log('PASS Remove cancels in-flight readiness, retains backend evidence/other pairings, and survives restart.');
+
+// Explicit duplicate acceptance is bounded by one durable original-ID episode.
+async function retryWake(legacy = false) {
+  saved = {}; attempts.length = 0; reports.length = 0; stopPlan = undefined; onSave = undefined;
+  observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: []});
+  tabs.clear(); tabs.set(1, {url: 'https://chatgpt.com/c/a'}); outcome = 'throw';
+  load(); await bind('A', 1); observations.get('A').delivery_ids = [id(950)];
+  if (legacy) { state('A').halted = true; state('A').attemptIds = [id(950)]; delete state('A').manualWakeId; }
+}
+await retryWake(); await message({type: 'check'});
+const original = structuredClone(state('A').diagnostic);
+assert.equal(state('A').retryBudget.usedRetries, 0);
+load(); await message({type: 'check'});
+assert.equal(state('A').retryBudget.usedRetries, 1);
+assert.deepEqual(state('A').retryBudget.previousAttempts[0], original);
+observations.get('A').delivery_ids.push(id(951)); await bind('A', 1); await alarm();
+assert.equal(state('A').retryBudget.usedRetries, 2);
+assert.deepEqual(state('A').retryBudget.ids, [id(950)], 'new mail and Pair never expand the original episode');
+load(); await bind('A', 1); await message({type: 'check'}); await alarm();
+assert.equal(attempts.length, 3, 'initial attempt plus exactly two retries across restart/Pair/alarm');
+assert.match(state('A').status, /retry limit/);
+clock += 30000; await message({type: 'check'}); clock += 30000; await message({type: 'check'});
+assert.ok(reports.some(r => r.incident?.phase === 'blocked'), 'existing pending alert survives exhaustion');
+for (const legacy of [false, true]) {
+  await retryWake(legacy);
+  if (!legacy) await message({type: 'check'});
+  const before = attempts.length;
+  observations.get('A').delivery_ids = [id(951)];
+  await bind('A', 1); await message({type: 'check'});
+  assert.equal(attempts.length, before, 'gone original mail cannot authorize a retry from replacement mail');
+}
+await retryWake(true); await message({type: 'check'}); load(); await message({type: 'check'}); await message({type: 'check'});
+assert.equal(attempts.length, 2, 'legacy UNKNOWN has two NEW allowances, never an invented initial send');
+assert.equal(state('A').retryBudget.historicalAttempts, 'unknown');
+assert.equal(state('A').retryBudget.usedRetries, 2);
+await retryWake(true); delete state('A').attemptIds; await bind('A', 1); await message({type: 'check'});
+assert.equal(attempts.length, 0, 'legacy without original IDs stays HALTED even after Pair');
+assert.equal(state('A').retryBudget, undefined);
+await retryWake(true); state('A').armed = false; await message({type: 'check'});
+assert.equal(state('A').retryBudget, undefined, 'stopped bindings gain no automatic allowance');
+for (const blocker of ['draft-present', 'busy', 'wrong-conversation']) {
+  await retryWake(true); outcome = blocker; await message({type: 'check'});
+  assert.equal(attempts.length, 0); assert.equal(state('A').retryBudget.usedRetries, 0, 'preflight refusal spends no allowance');
+}
+await retryWake(true);
+onSave = value => { if (value.wakeBindings?.[0].retryBudget?.usedRetries === 1) throw Error('ambiguous durable write'); };
+await message({type: 'check'});
+assert.equal(attempts.length, 0, 'failed reservation acknowledgement prevents DOM effect');
+assert.equal(state('A').retryBudget.usedRetries, 1, 'ambiguous persisted budget is never reset');
+onSave = undefined; load(); await message({type: 'check'}); await message({type: 'check'});
+assert.equal(attempts.length, 1, 'only remaining allowance survives ambiguous save/restart');
+await retryWake(true); blockName = 'A'; releasePoll = undefined;
+const retrying = message({type: 'check'});
+while (!releasePoll) await new Promise(resolve => setTimeout(resolve, 0));
+const stoppingRetry = message({type: 'disarm', endpoint: id(1)});
+blockName = undefined; releasePoll(); await retrying; await stoppingRetry;
+assert.equal(attempts.length, 0); assert.equal(state('A').armed, false);
+console.log('PASS bounded retries: initial+2, legacy2/historyUNKNOWN, durable reserve, Pair/restart/alarm/new-mail cap, original gone, draft and Stop fences, exhaustion alert');
