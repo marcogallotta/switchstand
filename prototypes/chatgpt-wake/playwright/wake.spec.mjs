@@ -178,26 +178,53 @@ test('persistent blocked Send stays halted without retry',async({wake})=>{
   expect(wake.reports.some(report=>report.outcome==='inserted-not-submitted')).toBe(true);
 });
 
-test('only explicit Pair reconciles whole-mailbox-empty halt, preserving draft and UNKNOWN',async({wake})=>{
-  wake.metadata.delivery_ids=[delivery(1)];await wake.check();
-  await wake.page.evaluate(()=>fixture.blocked=true);
-  wake.metadata.delivery_ids=[delivery(2)];await wake.check();
-  wake.metadata.delivery_ids=[delivery(1)];
-  expect((await wake.pair()).error).toMatch(/must be empty/);
-  wake.metadata.delivery_ids=[];
-  await wake.message({type:'verify',name:'Fixture'});await wake.check();
+test('V1 final manual Pair preserves UNKNOWN, sends exact draft once after Stop and worker restart',async({wake})=>{
+  wake.metadata.delivery_ids=[delivery(901)];
+  await wake.popup.evaluate(async({pending,oldAttempt,endpoint})=>{
+    const data=await chrome.storage.local.get('wakeBindings'),binding=data.wakeBindings[0];
+    binding.halted=true;delete binding.manualWakeId;binding.seen=[pending];binding.pending=[pending];
+    binding.attemptIds=[oldAttempt];binding.stopSendAttempt=oldAttempt;binding.status='attempt-outcome-unknown';
+    binding.diagnostic={id:oldAttempt,boot:oldAttempt,release:oldAttempt,endpoint,generation:1,
+      delivery_ids:[oldAttempt],started:new Date().toISOString(),finished:null,outcome:null,reason:'dispatch-start',facts:{}};
+    await chrome.storage.local.set(data);
+  },{pending:delivery(901),oldAttempt:delivery(900),endpoint:identity});
+  await wake.page.evaluate(()=>{
+    window.stopClicks=0;fixture.busy=true;
+    const editor=document.querySelector('#prompt-textarea'),send=document.querySelector('form button');
+    editor.textContent='Process your mailbox';editor.dispatchEvent(new InputEvent('input',{bubbles:true}));send.hidden=true;
+    const stop=document.createElement('button');stop.type='button';stop.setAttribute('aria-label','Stop');
+    stop.onclick=()=>{window.stopClicks++;setTimeout(()=>{fixture.busy=false;stop.remove();send.hidden=false;},2000);};
+    document.querySelector('form').append(stop);
+  });
   const binding=()=>wake.popup.evaluate(()=>chrome.storage.local.get('wakeBindings').then(s=>s.wakeBindings[0]));
-  expect((await binding()).halted).toBe(true);
-  await wake.message({type:'disarm',endpoint:identity});
-  expect((await wake.pair()).error).toBeUndefined();
-  const reconciled=await binding();
-  expect(reconciled.armed).toBe(true);expect(reconciled.halted).toBeFalsy();
-  expect(reconciled.seen).toEqual([delivery(1)]);
-  expect(reconciled.lastReconciledAttempt).toMatchObject({outcome:'attempt-outcome-unknown',delivery_ids:[delivery(2)]});
+  await wake.check();expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(0);
+  const previous=await binding();expect((await wake.pair()).error).toBeUndefined();
+  const armed=await binding();expect(armed.manualWakeId).toBe(armed.pairDiagnostic.id);
+  expect(armed.lastArmedAttempt.diagnostic).toEqual(previous.diagnostic);
+  expect(armed.pending).toEqual([delivery(901)]);expect(armed.seen).toEqual(previous.seen);
+  await wake.check();await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
+  const sent=await binding();expect(sent.manualWakeId).toBeUndefined();expect(sent.diagnostic.id).not.toBe(previous.diagnostic.id);
+  expect(sent.diagnostic.facts.clickDispatched).toBe(true);expect(sent.lastArmedAttempt.diagnostic).toEqual(previous.diagnostic);
+  const boot=wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.boot;
+  const session=await wake.context.newCDPSession(wake.popup);
+  await session.send('ServiceWorker.enable');await session.send('ServiceWorker.stopAllWorkers');await session.detach();
+  await wake.check();await wake.check();
+  expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(1);
   await expect(wake.page.locator('#turns li')).toHaveCount(1);
-  await expect(wake.page.locator('#prompt-textarea')).toHaveText('Process your mailbox');
+  expect((await binding()).manualWakeId).toBeUndefined();
+  expect(wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.boot).not.toBe(boot);
 });
 
+test('V1 final manual Pair arms with another draft and leaves it untouched',async({wake})=>{
+  wake.metadata.delivery_ids=[delivery(902)];
+  await wake.page.evaluate(()=>{document.querySelector('#prompt-textarea').textContent='Human draft sentinel';window.stopClicks=0;
+    const stop=document.createElement('button');stop.type='button';stop.setAttribute('aria-label','Stop');
+    stop.onclick=()=>window.stopClicks++;document.querySelector('form').append(stop);});
+  expect((await wake.pair()).error).toBeUndefined();await wake.check();await wake.check();
+  await expect(wake.page.locator('#prompt-textarea')).toHaveText('Human draft sentinel');
+  await expect(wake.page.locator('#turns li')).toHaveCount(0);expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(0);
+});
 
 for (const variant of ['hidden-generic', 'hidden-explicit', 'multiple', 'multiple-disabled', 'missing', 'missing-form', 'all-hidden', 'disabled', 'aria-disabled', 'voice', 'send-label']) {
   test(`Send selection: ${variant}`, async ({wake}) => {
