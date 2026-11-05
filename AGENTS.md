@@ -34,7 +34,7 @@ Before any status or plan update—or any portfolio, attention, completion, or a
   One admission covers one exact action. Missing evidence or an unreadable trial config means
   `WAIT`; this procedural check never authorizes a cgroup-limit change or activation.
 - A meaningful RCA request follows the canonical [root-cause analysis procedure](docs/root-cause-analysis.md), whether or not it arises from a live incident.
-- Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Root coordination, delegation, child challenge/disposition, scheduling, priority uncertainty, selection, and compaction continuity follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md).
+- Ordinary sessions execute Marco's assigned work directly. Role and launch topology live in [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md). Only explicitly appointed Coordinators follow the [Root Coordinator tracking contract](docs/coordinator-tracker-contract.md) for their assigned coordination scope.
 
 ## Repository bootstrap and safety
 
@@ -78,7 +78,7 @@ assignment or an explicit current grant for the exact WorkId.
 
 WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing that does Marco's job today. Anything beyond V1 (new table, tool, feature, cross-track requirement, reviewer finding outside V1) is never folded in: list it separately as an add-on with size and why it is needed now. Never set a size cap around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject.
 
-Codex: ALL work executes in context-free native forks, except parent-session mail operations and [basic parent checks when OOM/memory blocks a fork](docs/how-marco-uses-switchstand.md#native-fork-operating-boundary). The parent otherwise only talks with Marco
+Explicitly appointed Codex Coordinators: execution in their assigned coordination scope runs in context-free native forks, except parent-session mail operations and [basic parent checks when OOM/memory blocks a fork](docs/how-marco-uses-switchstand.md#native-fork-operating-boundary). This topology does not apply to ordinary sessions doing their own assigned work. The Coordinator parent otherwise only talks with Marco
 and dispatches, actively supervises, and receives concise fork results. Document/WorkId
 reads, Tracker/feedback operations, investigation, design, implementation, testing,
 review, and integration belong in forks; requirements elsewhere to read or act are fulfilled
@@ -101,7 +101,7 @@ Implementation/landing, deployment/activation, migration, credentials, and provi
 
 ## Codex roles and shared engineering process
 
-Codex has exactly two roles: **Coordinator** and **Worker**. Root owns the overall assigned portfolio/integration; a delegated Coordinator owns only its lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
+Ordinary Codex sessions do their assigned work directly; opening the repository or registering a mailbox does not appoint a Coordinator. Explicit coordination uses **Coordinator** and delegated **Worker** roles. An explicitly appointed Root owns only its assigned portfolio/integration; a delegated Coordinator owns only its lane. Research, design, implementation, and review are bounded functions. Role/function never grants authority.
 
 - A Worker owns one bounded task/work item and does not self-expand scope. Worker questions go to its parent; only the appropriate parent/Root asks Marco.
 - Review independence depends on actual authorship/design/implementation/disposition participation, not role label.
@@ -113,7 +113,8 @@ Any agent doing research follows [research sources](docs/research-sources.md).
 
 ### Route only the current function
 
-- **Root:** Root Coordinator only. Have forks apply [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md), returning concise supervision and communication requirements. Follow the ALL-work fork rule above; do not load detailed work or logs into the parent.
+- **Ordinary session:** follow the applicable research/design, implementation, review, or integration guidance below for Marco's exact assignment. No Coordinator portfolio, delegation mandate, or parent is inferred.
+- **Root:** Root Coordinator only. Have forks apply [Root tracking](docs/coordinator-tracker-contract.md) and [human interaction](docs/human-interaction.md), returning concise supervision and communication requirements. Follow the scoped Coordinator fork rule above; do not load detailed work or logs into the parent.
 - **Delegated Coordinator:** every other head follows exact lane/parent obligations + lane-required procedures; it does not inherit Root tracking or portfolio authority merely by being a head or Coordinator.
 - **Research/design Worker:** exact work + current bound research/design package; use [code quality](docs/code-quality.md) for material design review before Human Review.
 - **Implementation Worker:** exact task + current Implementation Specification + current Design Specification + [code quality](docs/code-quality.md), plus only named/currently relevant dependencies.
