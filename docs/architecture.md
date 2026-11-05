@@ -1016,6 +1016,13 @@ are removal predicates, not removal decisions:
 - `marcogallotta/switchstandold` is read-only evidence, never an implementation base or architectural
   ancestor.
 
+The manual prototype in `prototypes/chatgpt-wake/` keeps exact pairing and durable
+wake reservations in extension storage; its popup requests Verify, Pair, Check and
+Stop from the worker. `/internal/chatgpt-wake/poll` supplies registered mailbox
+identity and pending delivery IDs, never content. Check reserves before Stop or
+insertion, rechecks original pending identity, and finishes with synchronous DOM
+guards and Send. Uncertain attempts stay blocked; there is no background watch yet.
+
 `wakeful.py` remains the neutral SQLite/outbox owner.
 `disk_pressure.py` is a non-destructive, one-shot Wakeful producer that runs outside the Codex
 launch path. It performs only a constant-time filesystem capacity probe, records an atomic private
