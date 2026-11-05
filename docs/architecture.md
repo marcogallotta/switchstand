@@ -840,7 +840,8 @@ canonical PostgreSQL work and reads the protected source request from its notes;
 `candidate.py::prepare_launch_source` verifies and materializes the exact Git repository/ref before
 preflight. This is a transitional trusted-host bridge, not a provider API for agent code.
 
-Ordinary Codex uses the official npm-installed CLI directly. Repository configuration and
+Codex Workers and Coordinators use the official npm-installed CLI directly. The two explicit
+repository scripts select their role working directories. Repository configuration and
 instructions supply project behavior; Switchstand does not own, wrap, repair, or redirect the
 global `codex` command. A repository hook re-injects the existing Feedback V1 obligation
 on every user prompt and immediately after compaction. Compact recovery precedes feedback context:
@@ -904,7 +905,7 @@ configuration, hooks, filters, fsmonitor, pagers, credentials, alternate protoco
 submodule fetch disabled or rejected.
 This control only synchronizes Git; it does not refresh session-frozen controls, launch a successor,
 deploy, or activate anything.
-For ordinary stock-Codex checkout freshness, `scripts/sync-canonical-main` is a separate narrow
+For stock-Codex checkout freshness, `scripts/sync-canonical-main` is a separate narrow
 host path: its user timer fetches and runs `git pull --ff-only` only when the fixed canonical
 checkout is clean, on `main`, and strictly behind `origin/main`. Dirty, non-main, ahead, and
 diverged checkouts are left unchanged. It does not launch or resume agents.
