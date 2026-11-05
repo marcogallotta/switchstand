@@ -1,4 +1,4 @@
-import {test as base, expect, chromium} from '/home/marco/.npm/_npx/e41f203b7505f1fb/node_modules/playwright/test.mjs';
+import {test as base, expect, chromium} from '@playwright/test';
 import {createServer} from 'node:http';
 import {mkdtemp, readFile, writeFile, copyFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
