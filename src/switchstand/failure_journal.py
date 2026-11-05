@@ -57,7 +57,7 @@ failure_resolutions = Table(
 )
 
 _SECRET = re.compile(
-    r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|((?:password|passwd|token|secret|api[_-]?key)\s*[:=]\s*)[^\s,;]+|(?<=://)[^/@\s:]+:[^/@\s]+@"
+    r'''(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+|((?:["']?(?:password|passwd|(?:access[_-]?|refresh[_-]?)?token|secret|api[_-]?key|authorization|cookie)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)|(?<=://)[^/@\s:]+:[^/@\s]+@'''
 )
 
 
@@ -68,7 +68,9 @@ def redact(value: str) -> str:
         if match.group(1):
             return f"{match.group(1)}[redacted]"
         if match.group(2):
-            return f"{match.group(2)}[redacted]"
+            value = match.group()[len(match.group(2)):]
+            quote = value[0] if value[0] in "\"'" else ""
+            return f"{match.group(2)}{quote}[redacted]{quote}"
         return "[redacted]@"
 
     return _SECRET.sub(replace, value)

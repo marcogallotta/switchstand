@@ -85,6 +85,25 @@ _active_call: ContextVar[CallTiming | None] = ContextVar(
 )
 
 
+class _RequestDiagnosticFilter(logging.Filter):
+    """Keep dependency failure identity without rejected inputs or tracebacks."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _active_call.get() is not None:
+            kind = record.exc_info[0] if record.exc_info else None
+            record.msg = "MCP request diagnostic: %s"
+            record.args = (kind.__name__ if kind else "TOOL_DIAGNOSTIC",)
+            record.exc_info = record.exc_text = record.stack_info = None
+        return True
+
+
+def _protect_request_diagnostics() -> None:
+    for name in ("fastmcp.server.server", "mcp.server.mcpserver.server"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(item, _RequestDiagnosticFilter) for item in logger.filters):
+            logger.addFilter(_RequestDiagnosticFilter())
+
+
 class TimingPersistence:
     """One bounded, non-retrying append path independent of the business result."""
 
@@ -169,6 +188,7 @@ class CallTimingMiddleware(Middleware):
         persist: Callable[[Mapping[str, object]], Awaitable[None]] | None = None,
         allowed_tools: Collection[str] = (),
     ) -> None:
+        _protect_request_diagnostics()
         self.identity = identity
         self.emit = emit or self._log
         self.persist = persist

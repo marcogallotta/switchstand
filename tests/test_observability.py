@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -96,6 +97,28 @@ async def test_emission_failures_do_not_suppress_persistence_or_change_result() 
         middleware = CallTimingMiddleware(identity, emit, persist, {"safe"})
         assert await middleware.on_call_tool(context("safe"), succeed) is expected
     assert len(persisted) == 2
+
+
+async def test_dependency_diagnostics_are_request_local_and_remove_tracebacks(caplog) -> None:
+    middleware = CallTimingMiddleware(dict, lambda _record: None)
+    expected = ToolResult(structured_content={"notes": "ordinary response"})
+
+    async def diagnostic(_context):
+        for name in ("fastmcp.server.server", "mcp.server.mcpserver.server"):
+            logger = logging.getLogger(name)
+            try:
+                raise ValueError("diagnostic-secret-canary")
+            except ValueError:
+                logger.exception("rejected diagnostic-secret-canary")
+            logger.warning("invalid arguments: diagnostic-secret-canary")
+        return expected
+
+    assert await middleware.on_call_tool(context("diagnostics"), diagnostic) is expected
+    assert "diagnostic-secret-canary" not in caplog.text
+    assert "ValueError" in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+    logging.getLogger("fastmcp.server.server").warning("outside request remains visible")
+    assert "outside request remains visible" in caplog.text
 
 
 def test_default_emitter_uses_stable_prefix_and_compact_json(

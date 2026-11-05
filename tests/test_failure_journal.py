@@ -15,12 +15,25 @@ from switchstand.failure_journal import (
     FailureJournal,
     FailureRecord,
     FailureResolution,
+    redact,
     redact_environment,
     validate_failure_resolution_row,
 )
 
 NOW = datetime(2026, 10, 3, 10, 0, tzinfo=UTC)
 WORK_ID = "20000000-0000-4000-8000-000000000001"
+
+
+@pytest.mark.parametrize("value", [
+    '{"access_token": "quoted secret canary", "notes": "ordinary prose"}',
+    "{'password': 'quoted secret canary', 'notes': 'ordinary prose'}",
+    'authorization="quoted secret canary" ordinary prose',
+    'cookie="quoted secret canary" ordinary prose',
+])
+def test_quoted_credentials_preserve_neighboring_prose(value):
+    result = redact(value)
+    assert "secret canary" not in result
+    assert "[redacted]" in result and "ordinary prose" in result
 
 
 def failure(*, attempt_id=None, operation_id=None, result="connection refused"):
