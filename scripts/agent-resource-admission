@@ -174,6 +174,7 @@ def agents_cgroup() -> Path:
 
 def direct_slice_properties(root: Path) -> dict[str, str]:
     limits = []
+    ancestor_headroom = []
     for ancestor in (root, *root.parents):
         if not ancestor.is_relative_to(CGROUP_ROOT):
             break
@@ -182,10 +183,15 @@ def direct_slice_properties(root: Path) -> dict[str, str]:
         value = (ancestor / "memory.max").read_text().strip()
         if value != "max":
             limits.append(int(value))
+            if ancestor != root:
+                ancestor_headroom.append(
+                    int(value) - int((ancestor / "memory.current").read_text())
+                )
     return {
         "TasksCurrent": str(int((root / "pids.current").read_text())),
         "MemoryCurrent": str(int((root / "memory.current").read_text())),
         "MemoryMax": str(min(limits)) if limits else "infinity",
+        "AncestorHeadroom": str(min(ancestor_headroom)) if ancestor_headroom else "infinity",
     }
 
 
@@ -277,6 +283,9 @@ def main() -> int:
     max_memory_jobs = int(config["max_memory_jobs"])
     if max_memory_jobs and len(active) >= max_memory_jobs:
         reasons.append("active_jobs")
+    ancestor_headroom = slice_properties.get("AncestorHeadroom", "infinity")
+    if ancestor_headroom != "infinity" and args.estimate_mib * 1024 * 1024 > int(ancestor_headroom):
+        reasons.append("ancestor_capacity")
     if memory_max_mib is not None:
         used_mib = slice_memory_mib if slice_tasks else 0
         if used_mib + args.estimate_mib > memory_max_mib:

@@ -26,7 +26,7 @@ def test_direct_evidence_without_user_bus(tmp_path, monkeypatch):
     monkeypatch.setattr(admission, "agents_cgroup", lambda: root)
     monkeypatch.setattr(admission, "systemctl", lambda *args: pytest.fail("user bus required"))
     props, jobs = admission.slice_measurements("ss-codex-*.scope")
-    assert props == {"TasksCurrent": "2", "MemoryCurrent": "512", "MemoryMax": "8192"}
+    assert props == {"TasksCurrent": "2", "MemoryCurrent": "512", "MemoryMax": "8192", "AncestorHeadroom": "8192"}
     assert jobs == ([], [], None, 0)
 
 
@@ -59,3 +59,34 @@ def test_both_measurement_sources_fail(tmp_path, monkeypatch):
     monkeypatch.setattr(admission, "show_properties", unavailable)
     with pytest.raises(OSError, match="no user bus"):
         admission.slice_measurements("ss-codex-*.scope")
+
+
+def test_finite_ancestor_uses_own_current_including_siblings(tmp_path, monkeypatch):
+    monkeypatch.setattr(admission, "CGROUP_ROOT", tmp_path)
+    parent = cgroup(tmp_path / "user.slice", limit=1024, current=950)
+    root = cgroup(parent / "agents.slice", limit=2048, current=100, tasks=1)
+    props = admission.direct_slice_properties(root)
+    assert props["AncestorHeadroom"] == "74"
+    # Even an idle own slice must respect memory held by its siblings.
+    (root / "pids.current").write_text("0")
+    assert admission.direct_slice_properties(root)["AncestorHeadroom"] == "74"
+
+
+@pytest.mark.parametrize('tasks', [0, 1])
+def test_main_waits_when_siblings_exhaust_ancestor(tmp_path, monkeypatch, capsys, tasks):
+    from types import SimpleNamespace
+    mib = 1024 * 1024
+    monkeypatch.setattr(admission, 'CGROUP_ROOT', tmp_path)
+    parent = cgroup(tmp_path / 'user.slice', limit=1024 * mib, current=950 * mib)
+    root = cgroup(parent / 'agents.slice', limit=2048 * mib, current=100 * mib, tasks=tasks)
+    monkeypatch.setattr(admission, 'agents_cgroup', lambda: root)
+    monkeypatch.setattr(admission, 'parse_args', lambda: SimpleNamespace(
+        estimate_mib=100, config=tmp_path, scope_pattern='ss-codex-*.scope'))
+    monkeypatch.setattr(admission, 'read_config', lambda _: dict(
+        reserve_mib=0, swap_window_seconds=0, max_swap_growth_kib=0,
+        psi_avg10_max=2, max_memory_jobs=0))
+    monkeypatch.setattr(admission, 'read_mem_available_mib', lambda: 4096)
+    monkeypatch.setattr(admission, 'read_psi_avg10', lambda: 0)
+    monkeypatch.setattr(admission, 'read_swap_pages', lambda: (0, 0))
+    assert admission.main() == 1
+    assert 'WAIT reason=ancestor_capacity ' in capsys.readouterr().out

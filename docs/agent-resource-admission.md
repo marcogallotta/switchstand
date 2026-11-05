@@ -51,7 +51,8 @@ Immediately before the action, run `scripts/agent-resource-admission <estimate_m
    host_page_size_bytes) / 1024`. A missing counter or either negative delta/reset means `WAIT`.
 3. Re-read `MemAvailable` and PSI after the swap window. Read `pids.current`,
    `memory.current`, and `memory.max` for the user's `agents.slice` directly from cgroup v2,
-   including finite ancestor memory limits. The hierarchy root has no memory controller files.
+   including finite ancestor limits and their own current memory usage (including siblings).
+   The hierarchy root has no memory controller files.
    If direct measurement is unavailable, fall back to the named systemd `TasksCurrent`,
    `MemoryCurrent`, and `MemoryMax` properties; do not infer property order.
 4. Count active memory-bearing jobs from live `ss-codex-*.scope` units in `agents.slice` that
