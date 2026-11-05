@@ -171,6 +171,8 @@ def test_role_contract_preserves_boundaries_without_execution_detail():
 
     assert "**Codex roles today:** Coordinator and Worker." in roles
     assert "A Worker owns its bounded assignment and does not self-expand" in roles
+    assert "**Codex Coordinator only:** within its assigned coordination scope" in roles
+    assert "A Worker executes its own bounded assignment directly" in roles
     assert "Root owns overall integration" in roles
     assert "delegated Coordinators own only their assigned lane" in roles
     assert "Role, tool, login, canary, review, document or mailbox registration grants nothing" in agents
