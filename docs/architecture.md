@@ -168,10 +168,13 @@ acquiring an agent-authored stage label.
 
 **Private Flow Report: invocation and test route.** Implementation, projection and rendering live
 in [`flow_report.py`](../src/switchstand/flow_report.py). The
-[`switchstand-flow-report` entry point](../pyproject.toml) accepts one exact UUID:
+[`switchstand-flow-report` entry point](../pyproject.toml) calls the public `main()` callable.
+The normal dependency-only checkout environment does not install that console script; invoke
+the same callable with one exact UUID:
 
 ```bash
-DATABASE_URL="$TEST_DATABASE_URL" .venv/bin/switchstand-flow-report --work-id <WorkId> --format json
+DATABASE_URL="$TEST_DATABASE_URL" PYTHONPATH=src .venv/bin/python -c \
+  'from switchstand.flow_report import main; raise SystemExit(main())' --work-id <WorkId> --format json
 ```
 
 Run from an [owned writer with its prepared environment](development.md#normal-local-workflow).
@@ -203,15 +206,16 @@ sh scripts/check tests/test_flow_report.py tests/test_flow_report_render.py test
 
 [`test_flow_report.py`](../tests/test_flow_report.py) uses real disposable PostgreSQL for exact
 correlation, snapshot consistency, validation and privacy; its fixture creates and drops a private
-database. Its `test_installed_cli_reads_exact_private_pg_evidence` invokes the actual entry point
+database. Its `test_cli_main_reads_exact_private_pg_evidence` invokes the public CLI callable in a subprocess
 in JSON/concise formats with an unrelated decoy, checks coverage/privacy and unchanged canonical
-rows; `test_installed_cli_unknown_work_exits_without_success_output` checks missing-work failure.
+rows; `test_cli_main_unknown_work_exits_without_success_output` checks missing-work failure.
 [`test_flow_report_render.py`](../tests/test_flow_report_render.py) checks faithful output,
 and [`test_flow_report_github.py`](../tests/test_flow_report_github.py) checks supplied candidate
 projection/CLI validation with synthetic provider data. These tests do not prove live GitHub access,
 provider permissions or production activation. The CLI tests use synthetic fixture data and
 metadata-created schemas; they do not establish current deployed-schema compatibility or an
-authenticated provider boundary. Record those missing prerequisites as `NOT_RUN`/`UNKNOWN`.
+authenticated provider boundary. The tests clear the child PATH and invoke the active Python
+interpreter; installed-console packaging acceptance remains `NOT_RUN`. Record missing prerequisites as `NOT_RUN`/`UNKNOWN`.
 
 `stable_auth.py` is the inert single-host split-auth owner. It can build a stable application that
 owns the existing `SwitchstandGitHubProvider`, public OAuth routes, encrypted FastMCP state, JTI
