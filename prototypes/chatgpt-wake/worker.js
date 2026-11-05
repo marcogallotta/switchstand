@@ -143,7 +143,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '24855ab9-124a-4fb0-a5c8-5908454fc479';
+const releaseId = 'c71f141d-4abc-4634-8827-a948df306c6d';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -426,9 +426,10 @@ async function check() {
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
+  if (message.type === 'remove' && !UUID.test(message.endpoint || '')) { reply({error: 'Choose a chat to remove.'}); return; }
   const stopSnapshot = {all: stopAll, endpoint: stopEndpoints.get(message.endpoint)};
   // Stop intent preempts asynchronous checks before its persisted update is queued.
-  if (message.type === 'disarm') {
+  if (message.type === 'disarm' || message.type === 'remove') {
     const version = ++stopVersion;
     if (message.endpoint) stopEndpoints.set(message.endpoint, version);
     else stopAll = version;
@@ -489,11 +490,12 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         throw error;
       }
     }
-    if (message.type === 'disarm') {
+    if (message.type === 'disarm' || message.type === 'remove') {
       const {wakeBindings = []} = await chrome.storage.local.get('wakeBindings');
       for (const binding of wakeBindings) if (!message.endpoint || binding.endpoint === message.endpoint) binding.armed = false;
-      await chrome.storage.local.set({wakeBindings});
-      return status('stopped; delivery history retained');
+      await chrome.storage.local.set({wakeBindings: message.type === 'remove'
+        ? wakeBindings.filter(binding => binding.endpoint !== message.endpoint) : wakeBindings});
+      return status(message.type === 'remove' ? 'Chat removed.' : 'Stopped.');
     }
     if (message.type === 'check') return check();
     throw new Error('unknown action');

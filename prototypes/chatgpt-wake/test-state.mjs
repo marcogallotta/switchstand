@@ -657,3 +657,33 @@ for (const kind of ['known-no-click', 'clicked', 'legacy', 'drained', 'generatio
 }
 stopPlan = undefined;
 console.log('PASS one consumed Stop sequence: pending loss/STOP/error/timeout/draft/URL/restart; exact known NOCLICK versus clicked/legacy HALT');
+
+// Remove uses immediate STOP fencing before its queued pairing deletion.
+tabs.set(1, {url: 'https://chatgpt.com/c/a'});
+tabs.set(2, {url: 'https://chatgpt.com/g/g-project/c/b'});
+saved = {}; attempts.length = 0; outcome = 'click-attempted'; stopPlan = undefined;
+for (const name of ['A', 'B']) Object.assign(observations.get(name), {generation: 1, delivery_ids: []});
+load(); await bind('A', 1); await bind('B', 2);
+const otherBinding = structuredClone(state('B'));
+observations.get('A').delivery_ids = [id(980)];
+let releaseReady;
+stopPlan = async options => {
+  if (!options.args[2].insert) return {outcome: 'busy', stopReady: true, sendReady: false};
+  await new Promise(resolve => { releaseReady = resolve; });
+  return {outcome: 'busy', stopReady: false, sendReady: false};
+};
+const removingCheck = message({type: 'check'});
+while (!releaseReady) await new Promise(resolve => setTimeout(resolve, 0));
+const removing = message({type: 'remove', endpoint: id(1)});
+releaseReady(); await removingCheck; await removing;
+assert.equal(state('A'), undefined, 'remove forgets only the extension pairing');
+assert.deepEqual(state('B').seen, otherBinding.seen);
+assert.equal(state('B').armed, otherBinding.armed);
+assert.equal(attempts.length, 0, 'remove cancels Send while readiness is in flight');
+assert.ok(reports.some(r => r.diagnostics?.attempt?.reason === 'stopped-before-dispatch'), 'backend cancellation evidence retained');
+stopPlan = undefined; load(); await message({type: 'check'});
+assert.equal(state('A'), undefined, 'restart/check cannot resurrect a removed pairing');
+assert.equal(attempts.length, 0);
+assert.match((await message({type: 'remove'})).error, /Choose a chat/);
+assert.ok(state('B'), 'malformed remove never becomes Stop all or remove all');
+console.log('PASS Remove cancels in-flight readiness, retains backend evidence/other pairings, and survives restart.');

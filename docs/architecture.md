@@ -954,6 +954,7 @@ HALTED polls preserve the original cause. A separate optional fixed-enum current
 uses read-only observation without input or retry; it is neither the original cause nor a freshness guarantee. A started-only receipt means no durable result,
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
+The popup lists chat names and plain status with Stop and Remove. Remove cancels queued wake dispatch before deleting only the extension pairing; backend diagnostics and mailbox/conversation records remain.
 The combined candidate retains conversation routing; explicit Pair grants one fresh wake,
 even with pending mail or a blocked composer, retaining the prior uncertain attempt as an archive.
 Seen history and incident state persist; automatic checks never renew this manual grant. It retains
