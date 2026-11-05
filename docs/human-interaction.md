@@ -50,6 +50,22 @@ Effect: none / not sent / applied / unknown
 
 No activity logs or invented percentages.
 
+## When Marco asks about a specific PR
+
+Answer with the known checkpoint immediately, then refresh current evidence if needed. Identify
+that PR and its exact current head when known. Keep the update concise, in prose or a small table:
+
+- CI: current-head PASS, RUNNING, FAIL or NOT_RUN; use UNKNOWN when current evidence is unavailable.
+- Feature E2E: the actual result and tested revision. Tests added or pushed are not a passing run.
+- Independent review: full-change PASS, PENDING, or explicitly deferred, with the responsible owner
+  when known. A first-stage or partial review does not establish full-change approval.
+- Landing: MERGED, or the exact remaining blocker and next checkpoint.
+
+Label prior-head or last-verified evidence separately from current evidence. Never carry a prior
+PASS onto a changed head, imply a missing result, or hide an open gate behind “ready” or “almost
+done”. Preserve explicit review deferral without turning it back into a pre-landing wait. This is
+an ordinary status answer, not a new approval request or a requirement for a separate status store.
+
 ## Portfolio snapshot
 
 | Work | Purpose | Worker | Milestone | Constraint | Next | Effect |
