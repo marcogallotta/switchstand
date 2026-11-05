@@ -41,9 +41,12 @@ def test_quoted_credentials_preserve_neighboring_prose(value):
     assert "[redacted]" in result and "ordinary prose" in result
 
 
+@pytest.mark.parametrize("header", ["Cookie: session=first-secret; csrf=second-secret",
+                                    "Cookie: session=; csrf=second-secret",
+                                    "Cookie: session=first-secret; empty=; csrf=second-secret"])
 @pytest.mark.parametrize("ending", ["\nordinary prose", " ordinary prose", r"\nordinary prose"])
-def test_complete_cookie_header_masks_all_pairs_and_preserves_neighboring_prose(ending):
-    value = 'Cookie: session=first-secret; csrf=second-secret' + ending
+def test_complete_cookie_header_masks_all_pairs_and_preserves_neighboring_prose(header, ending):
+    value = header + ending
     result = redact_mcp_content(value)
     assert "first-secret" not in result and "second-secret" not in result
     assert result.endswith(ending) and "[redacted]" in result
