@@ -2,8 +2,10 @@ import asyncio
 import hashlib
 import json
 import os
+import sys
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -829,6 +831,71 @@ async def test_repeatable_snapshot_excludes_relation_committed_mid_report(
 async def test_unknown_work_fails_without_fabricating_a_report(engine: AsyncEngine) -> None:
     with pytest.raises(LookupError, match="does not exist"):
         await report(engine, uuid4())
+
+
+@pytest.mark.parametrize("output_format", [None, "concise"])
+async def test_installed_cli_reads_exact_private_pg_evidence(
+    engine: AsyncEngine, output_format: str | None,
+) -> None:
+    """Exercise the entry point and DB together, without replacing report or rendering."""
+    target, unrelated = uuid4(), uuid4()
+    for work_id in (target, unrelated):
+        await add_work(engine, work_id)
+    private_note = "private CLI fixture note must stay out of reports"
+    async with engine.begin() as connection:
+        await connection.execute(update(canonical_work).values(notes=private_note))
+        before = (await connection.execute(select(canonical_work))).mappings().all()
+    command = [str(Path(sys.executable).with_name("switchstand-flow-report")),
+               "--work-id", str(target)]
+    if output_format is not None:
+        command.extend(["--format", output_format])
+    process = await asyncio.create_subprocess_exec(
+        *command, env={**os.environ, "DATABASE_URL": engine.url.render_as_string(
+            hide_password=False,
+        )}, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    assert process.returncode == 0, stderr.decode()
+    assert stderr == b""
+    output = stdout.decode()
+    assert private_note not in output
+    assert str(unrelated) not in output
+    if output_format is None:
+        value = json.loads(output)
+        assert value["schema"] == "switchstand.flow_report.v1"
+        assert value["work_id"] == str(target)
+        assert value["status"] == "PARTIAL"
+        assert value["snapshot"]["read_only"] == "on"
+        assert value["admission"]["status"] == "UNKNOWN"
+        assert value["elapsed"]["wall_ms"] is None
+        assert value["coverage"]["timing_journal"] == {
+            "status": "UNKNOWN", "reason": "SOURCE_TABLE_UNAVAILABLE",
+        }
+    else:
+        assert f"status=PARTIAL work_id={target} " in output
+        assert "read_only=on" in output
+        assert "admission status=UNKNOWN at=None reason=NOT_CAPTURED" in output
+        assert "coverage timing_journal=UNKNOWN:SOURCE_TABLE_UNAVAILABLE" in output
+        assert "elapsed wall_status=UNKNOWN wall_reason=NOT_CAPTURED wall_ms=None" in output
+    async with engine.connect() as connection:
+        after = (await connection.execute(select(canonical_work))).mappings().all()
+    assert after == before
+
+
+async def test_installed_cli_unknown_work_exits_without_success_output(
+    engine: AsyncEngine,
+) -> None:
+    missing = uuid4()
+    process = await asyncio.create_subprocess_exec(
+        str(Path(sys.executable).with_name("switchstand-flow-report")),
+        "--work-id", str(missing),
+        env={**os.environ, "DATABASE_URL": engine.url.render_as_string(hide_password=False)},
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+    assert process.returncode != 0
+    assert stdout == b""
+    assert b"does not exist" in stderr
 
 
 async def test_uninstalled_human_review_source_is_explicitly_unknown(
