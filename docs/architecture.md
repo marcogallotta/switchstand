@@ -109,8 +109,13 @@ delivery receipt alone is insufficient. Both mailboxes lock in name order before
 Metadata supplies no global lookup or deployment authority.
 Migration0027 refuses downgrade while durable PR identities remain.
 
-`observability.py` owns request-local, redacted terminal timing records and active-request SQL
-interval aggregation and appends a bounded, privacy-safe subset after the business result through
+`observability.py` owns request-local terminal audit/timing records across all Switchstand MCP
+servers, including bounded, per-field redacted input/output copies at the SDK wire boundary.
+HTTP uses the existing logger and STDIO raw stderr; capture failures preserve business responses.
+Traversal exhaustion is explicitly PARTIAL; retention and historical coverage require runtime proof.
+`failure_journal.redact_mcp_content` extends credential masking for audit copies without changing
+persisted failure-journal canonicalization. Existing active-request SQL interval aggregation
+appends only the unchanged timing subset after the business result through
 one non-retrying transaction. Failures leave coverage partial. Migration
 `0024_mcp_operation_timings` stores no SQL, parameters, payloads, prompts, notes, tokens, bodies,
 or principal identity.

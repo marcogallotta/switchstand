@@ -1,5 +1,8 @@
 import asyncio
+import json
+import logging
 import os
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -86,6 +89,58 @@ async def approve(reviews: HumanReviewState) -> HumanReviewConsequence:
 async def request_count(engine) -> int:
     async with engine.connect() as connection:
         return await connection.scalar(select(func.count()).select_from(task_run_requests)) or 0
+
+
+async def test_http_audit_denial_preserves_missing_effect_and_creates_no_request(subject, monkeypatch, caplog):
+    import httpx2
+    from chatgpt_fixture import service
+    from fastmcp import Client
+    from fastmcp.client.transports import StreamableHttpTransport
+    from key_value.aio.stores.memory import MemoryStore
+    from mcp.server.auth.provider import AccessToken
+
+    from switchstand.chatgpt_edge import (
+        REQUIRED_SCOPE,
+        MCPAuthConfig,
+        SwitchstandGitHubProvider,
+        create_app,
+    )
+
+    facade, _reviews, engine, _grant, _occurrences = subject
+    fixture = service()
+    fixture.implementation_requests = facade
+    issuer = "https://switchstand.example.com/"
+    principal = PRINCIPAL.model_copy(update={"issuer": issuer, "assurance": "authenticated"})
+    await GrantState(engine).issue(_grant.model_copy(update={"id": uuid4(), "principal": principal}), None)
+
+    async def verify(_self, _token):
+        return AccessToken(token="fixture", client_id=PRINCIPAL.client_id,
+                           subject=PRINCIPAL.subject, scopes=[REQUIRED_SCOPE],
+                           claims={"iss": issuer}, resource=issuer + "mcp",
+                           expires_at=int(time.time()) + 60)
+
+    monkeypatch.setattr(SwitchstandGitHubProvider, "verify_token", verify)
+    app = create_app(fixture, MCPAuthConfig("fixture", "fixture", "192548", issuer + "mcp"),
+                     client_storage=MemoryStore())
+    def http_client(**kwargs):
+        return httpx2.AsyncClient(transport=httpx2.ASGITransport(app=app), base_url=issuer, **kwargs)
+    transport = StreamableHttpTransport(issuer + "mcp", auth="fixture", httpx_client_factory=http_client)
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    assert await request_count(engine) == 0
+    async with app.router.lifespan_context(app), Client(transport) as client:
+        result = await client.call_tool_mcp("implementation_request", {
+            "api_version": "1", "operation_id": str(uuid4()),
+            "package_work_id": str(PACKAGE), "observed_revision": canonical_revision(PACKAGE, 1),
+        })
+    assert result.structured_content["status"] == "DENIED"
+    assert result.structured_content["reason"] == "human_review_not_approved"
+    assert not result.is_error and "effect" not in result.structured_content
+    assert await request_count(engine) == 0
+    records = [json.loads(row.getMessage().removeprefix("switchstand_mcp_timing "))
+               for row in caplog.records if row.getMessage().startswith("switchstand_mcp_timing ")]
+    assert len(records) == 1 and records[0]["status"] == "ok"
+    output = records[0]["output"]["value"]["structuredContent"]
+    assert output["status"] == "DENIED" and "effect" not in output
 
 
 async def test_approved_current_send_authority_creates_one_inert_request(subject):

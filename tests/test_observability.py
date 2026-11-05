@@ -19,6 +19,8 @@ from switchstand.observability import (
     CallTiming,
     CallTimingMiddleware,
     annotate_target,
+    capture_content,
+    install_call_audit,
     register_sqlalchemy_timing,
 )
 
@@ -74,6 +76,7 @@ async def test_success_error_result_and_exception_each_emit_one_redacted_record(
     assert set(records[0]) == {
         "schema", "call_id", "tool", "wall_started_at", "duration_ms", "status",
         "error_class",
+        "input", "output",
         "identity", "target_work_id", "db_count", "db_sum_ms", "db_max_ms", "pool_wait_ms",
         "child_union_ms", "server_residual_ms",
     }
@@ -119,6 +122,75 @@ async def test_dependency_diagnostics_are_request_local_and_remove_tracebacks(ca
     assert all(record.exc_info is None for record in caplog.records)
     logging.getLogger("fastmcp.server.server").warning("outside request remains visible")
     assert "outside request remains visible" in caplog.text
+
+
+def test_content_preserves_structure_prose_and_marks_each_long_string_and_limits():
+    original = {"notes": "ordinary notes " + "x" * 2100,
+                "messages": [{"body": "ordinary message " + "y" * 2100,
+                              "access_token": "hidden-secret-canary"}],
+                "response": '{"password": "quoted secret canary", "notes": "ordinary response"}'}
+    captured = capture_content(original)
+    assert captured["coverage"] == "CAPTURED"
+    copied = captured["value"]
+    assert copied["notes"].startswith("ordinary notes ") and "TRUNCATED" in copied["notes"]
+    assert "TRUNCATED" in copied["messages"][0]["body"]
+    assert copied["messages"][0]["access_token"] == "[redacted]"
+    assert "ordinary response" in copied["response"] and "secret canary" not in str(copied)
+    assert original["messages"][0]["access_token"] == "hidden-secret-canary"
+    for value in (list(range(1000)), {"notes": "x" * 2000} | {str(i): "y" * 2000 for i in range(20)}):
+        limited = capture_content(value)
+        assert limited["coverage"] == "PARTIAL" and "CAPTURE_LIMIT" in str(limited)
+    assert capture_content({"boundary": "x" * 2000})["value"]["boundary"] == "x" * 2000
+    cycle = []
+    cycle.append(cycle)
+    assert capture_content(cycle)["coverage"] == "PARTIAL"
+
+
+async def test_capture_failure_preserves_business_response(monkeypatch):
+    records = []
+    expected = ToolResult(structured_content={"notes": "ordinary response"})
+    async def succeed(_context):
+        return expected
+    def broken(_text):
+        raise ValueError("secret capture failure")
+    middleware = CallTimingMiddleware(dict, records.append)
+    monkeypatch.setattr(observability, "redact", broken)
+    # A safe tool identity is metadata; payload-copy failures remain independent.
+    assert await middleware.on_call_tool(context("safe"), succeed) is expected
+    assert records[0]["input"]["coverage"] == "UNKNOWN"
+    assert "secret capture failure" not in json.dumps(records)
+
+
+@pytest.mark.parametrize("factory", ["managed", "context", "development", "control", "ordinary"])
+async def test_sdk_factories_capture_real_wire_validation_once(factory, caplog, capsys):
+    from chatgpt_fixture import service
+    from mcp import Client
+
+    from switchstand.chatgpt_mcp import build_chatgpt_server
+    from switchstand.coordinator_sync import build_server as control_server
+    from switchstand.development import build_server as development_server
+    from switchstand.mcp import build_context_server, build_server
+
+    work = UUID("10000000-0000-4000-8000-000000000001")
+    server, tool = {
+        "managed": lambda: (build_server(object(), work), "work_get"),
+        "context": lambda: (build_context_server(object(), work), "work_get"),
+        "development": lambda: (development_server(), "run_status"),
+        "control": lambda: (control_server(object()), "coordinator_currentness_get"),
+        "ordinary": lambda: (build_chatgpt_server(service()), "work_get"),
+    }[factory]()
+    install_call_audit(server)  # Repeated installation must not duplicate terminal records.
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+    async with Client(server, mode="legacy") as client:
+        result = await client.call_tool(tool, {"api_version": "1", "extra": "password=sdk-secret-canary"})
+    assert result.is_error
+    stdout, stderr = capsys.readouterr()
+    assert observability.TIMING_PREFIX not in stdout
+    records = [json.loads(line.removeprefix(observability.TIMING_PREFIX))
+               for line in stderr.splitlines() if line.startswith(observability.TIMING_PREFIX)]
+    assert len(records) == 1 and records[0]["tool"] == tool
+    assert records[0]["output"]["value"]["isError"] is True
+    assert "sdk-secret-canary" not in caplog.text + stderr
 
 
 def test_default_emitter_uses_stable_prefix_and_compact_json(

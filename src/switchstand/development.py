@@ -24,6 +24,7 @@ from .docker import (
 from .docker import command as docker_command
 from .docker import labels as docker_labels
 from .mcp import closed_tool
+from .observability import install_call_audit
 from .run import RECEIPT, RunStatus, inspect_receipt
 
 CREATE_SECONDS = 30
@@ -566,6 +567,7 @@ async def _run_owned_workload(
 
 def build_server(bound: bool = True) -> MCPServer:
     server = MCPServer("Switchstand Development Boundary")
+    install_call_audit(server)
     if not bound:
         return server
     workload_locks: dict[tuple[str, str], asyncio.Lock] = {}
