@@ -4,11 +4,13 @@
 The unified pass does these steps in order:
 1. list every open PRIORITIES.md/JOBS.md item with its age;
 2. flag an item older than four hours when no matching Codex job is live;
-3. flag stale PRIORITIES.md, duplicate JOBS.md rows, dead declared jobs, and
+3. flag duplicate JOBS.md rows, dead declared jobs, and
    live jobs missing from JOBS.md;
 4. atomically persist one SYNC-ALERT.md for SessionStart and Stop hooks.
 The five-minute --mailbox-due pass persists an alert for bound Claude to read
 and acknowledge because systemd has no mailbox session.
+Only alerts are printed by default; --verbose includes the full item inventory.
+Priorities freshness belongs to Tracker, not the legacy PRIORITIES.md mtime.
 """
 
 import argparse
@@ -25,7 +27,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 STALE_ITEM_SECONDS = 4 * 60 * 60
-STALE_PRIORITIES_SECONDS = 20 * 60
 TERMINAL = {"DONE", "STOPPED", "FAILED", "SUPERSEDED"}
 OPEN_REMAINDERS = ("not deployed", "not activated", "not checked", "unverified")
 WAITING_MARCO = re.compile(r"\bWAITING[- ]MARCO\b", re.IGNORECASE)
@@ -176,11 +177,6 @@ def scan(args: argparse.Namespace, now: datetime) -> tuple[str, str]:
     unknown_ages = 0
     waiting: dict[str, tuple[str, bool]] = {}
 
-    priority_age = int(now.timestamp() - args.priorities.stat().st_mtime)
-    if priority_age > STALE_PRIORITIES_SECONDS:
-        blockers.append(
-            f"PRIORITIES_STALE: {module.duration(now, datetime.fromtimestamp(args.priorities.stat().st_mtime, tz=now.tzinfo))[0]} old"
-        )
     if live_error:
         blockers.append(f"LIVE_JOBS_UNKNOWN: {live_error}")
 
@@ -302,6 +298,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--plan-script", type=Path, default=Path(__file__).with_name("claude-plan"))
     result.add_argument("--now")
     result.add_argument("--live-unit", action="append", default=None)
+    result.add_argument("--verbose", action="store_true", help="also print the full scan inventory")
     modes = result.add_mutually_exclusive_group()
     modes.add_argument("--mailbox-due", action="store_true")
     modes.add_argument("--ack-mailbox", action="store_true")
@@ -343,7 +340,8 @@ def main() -> int:
             alert = args.state_dir / "SYNC-ALERT.md"
             if alert.exists():
                 print(alert.read_text(), end="")
-            print(report, end="")
+            if args.verbose:
+                print(report, end="")
     return 0
 
 

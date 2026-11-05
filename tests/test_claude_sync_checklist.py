@@ -62,11 +62,11 @@ references
         "ss-codex-live-123456.scope",
         "--live-unit",
         "ss-codex-orphan-123456.scope",
+        "--verbose",
     )
     alert = (state / "SYNC-ALERT.md").read_text()
     assert result.returncode == 0 and "## Every open item" in result.stdout
     for expected in (
-        "PRIORITIES_STALE",
         "STALE_NO_JOB: priority:",
         "AGE_UNKNOWN: 1 open items",
         "DEAD_JOB: job:dead",
@@ -76,6 +76,7 @@ references
     ):
         assert expected in alert
     assert "job:repeated" not in alert
+    assert "PRIORITIES_STALE" not in result.stdout
     assert '"decision": "block"' in reminder(tmp_path / "home", alert).stdout
 
 
@@ -83,18 +84,31 @@ def test_clean_scan_and_mailbox_due_ack_share_one_alert(tmp_path: Path) -> None:
     priorities = "# PRIORITIES\n## DONE\nclosed\n## FILES\nreferences\n"
     jobs = "Stages: RUNNING -> DONE\n"
     result, state = run(tmp_path, priorities, jobs, "--live-unit", "none")
-    assert result.returncode == 0 and "- none" in result.stdout
+    assert result.returncode == 0 and result.stdout == ""
     assert not (state / "SYNC-ALERT.md").exists()
     run(tmp_path, priorities, jobs, "--mailbox-due")
     alert = (state / "SYNC-ALERT.md").read_text()
     assert "MAILBOX CHECK DUE" in alert
     assert '"decision": "block"' in reminder(tmp_path / "home", alert).stdout
     shown = run(tmp_path, priorities, jobs, "--live-unit", "none")[0].stdout
-    assert shown.startswith("# MAILBOX CHECK DUE")
+    assert shown == (state / "SYNC-ALERT.md").read_text()
     run(tmp_path, priorities, jobs, "--ack-mailbox")
     assert not (state / "SYNC-ALERT.md").exists()
     result = run(tmp_path, priorities + "## SURPRISE\nwork\n", jobs, "--live-unit", "none")[0]
     assert "SCAN_UNKNOWN: unclassified PRIORITIES.md section: SURPRISE" in result.stdout
+
+
+def test_old_priority_file_is_not_a_freshness_alert_and_inventory_is_opt_in(tmp_path: Path) -> None:
+    # The legacy file can remain untouched while Tracker priorities change.
+    priorities = "# PRIORITIES\n## RUNNING\n- live: started 10-18 13:55; working\n"
+    jobs = "Stages: RUNNING -> DONE\n| live | thread | RUNNING since 13:55 10-18 | finish |\n"
+    result, state = run(tmp_path, priorities, jobs, "--live-unit", "ss-codex-live.scope")
+    assert result.returncode == 0 and result.stdout == ""
+    assert not (state / "SYNC-ALERT.md").exists()
+    verbose = run(tmp_path, priorities, jobs, "--live-unit", "ss-codex-live.scope", "--verbose")[0]
+    assert "## Every open item" in verbose.stdout
+    assert "priority:" in verbose.stdout and "job:live" in verbose.stdout
+    assert "PRIORITIES_STALE" not in verbose.stdout
 
 
 def reminder(tmp_path: Path, alert: str) -> subprocess.CompletedProcess[str]:
