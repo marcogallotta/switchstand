@@ -79,7 +79,7 @@ _MCP_CREDENTIAL = re.compile(
     r'''(?i)((?:["']?(?:password|passwd|(?:access[_-]?|refresh[_-]?)?token|secret|api[_-]?key|authorization|cookie)["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:Bearer|Basic)\s+[^\s,;}]+|[^\s,;}]+)'''
 )
 _MCP_COOKIE = re.compile(
-    r'''(?i)(\bcookie\s*:\s*)(?:[^;\s,"{}=]+=(?:"[^"\r\n]*"|[^;\s,"{}]+))(?:[ \t]*;[ \t]*[^;\s,"{}=]+=(?:"[^"\r\n]*"|[^;\s,"{}]+))*'''
+    r'''(?i)(\bcookie\s*:\s*)(?:[^;\s,"{}=]+=(?:"[^"\r\n]*"|[^;\s,"{}\\]+))(?:[ \t]*;[ \t]*[^;\s,"{}=]+=(?:"[^"\r\n]*"|[^;\s,"{}\\]+))*'''
 )
 
 
