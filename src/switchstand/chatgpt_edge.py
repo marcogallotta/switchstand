@@ -40,9 +40,7 @@ from .activation_continuity_store import ActivationContinuity
 from .activation_contract_loader import load_activation_contracts_from_environment
 from .agent_mailboxes import CODEX_COORDINATOR_NAME, AgentMailbox, AgentMailboxState
 from .chatgpt import ChatGPTService
-from .chatgpt_alerts import HostReporter
 from .chatgpt_mcp import build_ordinary_tools, ordinary_tool_annotations
-from .chatgpt_wake import install_browser_wake
 from .codex_inbound_wake import InboundWake
 from .grant_state import GrantState
 from .grants import PrincipalContext, WorkGrant
@@ -595,7 +593,6 @@ def managed_activation_proof(
 def create_app(
     service: ChatGPTService, config: MCPAuthConfig, *, client_storage: Any | None = None,
     certification_runtime: tuple[str, str] | None = None,
-    browser_wake_reporter: HostReporter | None = None,
 ):
     """Build the current combined OAuth/resource application."""
     auth_options: dict[str, Any] = {}
@@ -618,7 +615,6 @@ def create_app(
         resource_url=config.resource_url,
         auth=auth,
         certification_runtime=certification_runtime,
-        browser_wake_reporter=browser_wake_reporter,
     )
 
 
@@ -627,7 +623,6 @@ def create_delegated_app(
     verifier: IntrospectionTokenVerifier,
     *,
     certification_runtime: tuple[str, str] | None = None,
-    browser_wake_reporter: HostReporter | None = None,
 ):
     """Build an inert resource edge with no GitHub or OAuth signing state."""
     return _create_resource_app(
@@ -636,7 +631,6 @@ def create_delegated_app(
         resource_url=verifier.contract.resource_url,
         auth=delegated_auth(verifier),
         certification_runtime=certification_runtime,
-        browser_wake_reporter=browser_wake_reporter,
     )
 
 
@@ -647,7 +641,6 @@ def _create_resource_app(
     resource_url: str,
     auth: Any,
     certification_runtime: tuple[str, str] | None,
-    browser_wake_reporter: HostReporter | None = None,
 ):
     service = ChatGPTService(
         RequestPrincipal(issuer_url, resource_url, REQUIRED_SCOPE),
@@ -749,9 +742,6 @@ def _create_resource_app(
     ))
     for name, tool in ordinary_tools:
         server.tool(tool, annotations=ordinary_tool_annotations(name))
-
-    if os.getenv("SWITCHSTAND_CHATGPT_BROWSER_WAKE") == "1":
-        install_browser_wake(server, service.messages, browser_wake_reporter)
 
     @server.custom_route(CLAUDE_MAIL_SUMMARY_PATH, methods=["GET"], include_in_schema=False)
     async def _claude_mail_summary(  # pyright: ignore[reportUnusedFunction]
