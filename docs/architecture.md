@@ -853,8 +853,8 @@ V1-A tools and their readback. Its one-second local timeout preserves prompt ack
 first response, and failures are visible and nonblocking.
 Worker configuration registers no PostToolUse reminder or standing-continuity hooks.
 The feedback hook treats residual PostToolUse calls from older registrations as inert and writes no
-notification state. A question creates neither an assignment nor a Coordinator role; ordinary
-sessions execute their assigned work directly and can finish with normal prose.
+notification state. A question creates neither an assignment nor a Coordinator role; Workers
+execute their assigned work directly and can finish with normal prose.
 The prompt-only `codex-stop-mailbox --record-stop` hook records the existing minimal same-turn
 STOP intent for top-level sessions without injecting context, calling the network, or supervising work.
 The synchronous mailbox `Stop` hook calls the loopback-only
