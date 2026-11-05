@@ -5,7 +5,8 @@ const code = await readFile(new URL('./worker.js', import.meta.url), 'utf8');
 const endpoint = '00000000-0000-4000-8000-000000000001';
 const delivery = '00000000-0000-4000-8000-000000000002';
 const url = 'https://chatgpt.com/c/confirmed';
-let saved = {}, handler, failSave = false, releasePoll, waitPoll = false;
+let saved = {}, handler, failSave = false, releasePoll, waitPoll = false, jsonFailure = false;
+let waitSave = false, releaseSave;
 let observed = {status: 'ok', endpoint, generation: 1, name: 'A', delivery_ids: [delivery]};
 let tab = {url};
 function load() {
@@ -15,7 +16,11 @@ function load() {
       runtime: {id: 'fixture', onMessage: {addListener(value) { handler = value; }}},
       storage: {local: {
         async get() { return structuredClone(saved); },
-        async set(value) { if (failSave) throw Error('save failed'); saved = structuredClone({...saved, ...value}); }
+        async set(value) {
+          if (failSave) throw Error('private storage error');
+          if (waitSave) await new Promise(resolve => { releaseSave = resolve; });
+          saved = structuredClone({...saved, ...value});
+        }
       }},
       tabs: {async get() { return structuredClone(tab); }}
       // No scripting API: this feature cannot touch the composer or Send/Stop.
@@ -23,7 +28,10 @@ function load() {
     fetch: async (_url, options) => {
       assert.equal(options.cache, 'no-store', 'pairing uses a fresh backend observation');
       if (waitPoll) await new Promise(resolve => { releasePoll = resolve; });
-      return {ok: true, json: async () => structuredClone(observed)};
+      return {ok: true, json: async () => {
+        if (jsonFailure) throw new SyntaxError('Unexpected token: SECRET-BACKEND-TOKEN');
+        return structuredClone(observed);
+      }};
     }
   });
 }
@@ -32,6 +40,11 @@ const bind = () => message({type: 'bind', tabId: 1, url, name: 'A', endpoint, ge
 const state = () => saved.wakeBindings[0];
 load();
 assert.equal((await message({type: 'verify', name: 'A'})).status.endpoint, endpoint);
+jsonFailure = true;
+const malformed = await message({type: 'verify', name: 'A'});
+assert.match(malformed.error, /^Could not update pairing\./);
+assert.doesNotMatch(JSON.stringify(malformed), /SECRET|Unexpected token/);
+jsonFailure = false;
 assert.match((await bind()).status, /^Paired/);
 assert.deepEqual(state().pending, [delivery], 'pending mail does not block pairing');
 assert.equal(state().url, url);
@@ -72,13 +85,24 @@ saved = structuredClone(paired); waitPoll = true;
 const inFlight = bind();
 while (!releasePoll) await new Promise(resolve => setImmediate(resolve));
 const stopping = message({type: 'disarm'});
+await stopping;
+assert.equal(state().armed, false, 'Stop persists before the held backend request is released');
+load();
+assert.equal(state().armed, false, 'worker restart sees the durable Stop while network is held');
 waitPoll = false; releasePoll();
 assert.match((await inFlight).error, /Stop requested/);
-await stopping;
 assert.equal(state().armed, false, 'Stop preempts pairing across backend await');
+waitSave = true;
+const savingPair = bind();
+while (!releaseSave) await new Promise(resolve => setImmediate(resolve));
+const stopAfterSaveStarted = message({type: 'disarm'});
+waitSave = false; releaseSave();
+await savingPair;
+await stopAfterSaveStarted;
+assert.equal(state().armed, false, 'Stop is ordered after an already-started Pair storage write');
 failSave = true;
 const beforeFailure = structuredClone(saved);
-assert.match((await bind()).error, /save failed/);
+assert.match((await bind()).error, /^Could not update pairing\./);
 assert.deepEqual(saved, beforeFailure, 'failed persistence is not reported as paired');
 failSave = false;
 let foreignReplied = false;
