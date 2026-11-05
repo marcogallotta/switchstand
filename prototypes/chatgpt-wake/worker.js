@@ -36,6 +36,7 @@ async function diagnosticReport(binding) {
       body: JSON.stringify({name: live.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
         diagnostics: {...diagnostics, report_failure: live.diagnosticAck?.failure || null}}),
       signal: AbortSignal.timeout(3000)});
+    if (response.status === 403) reportToken = undefined;
     if (response.ok && (await response.json()).status === 'logged') failure = null;
   } catch { /* Reporting cannot authorize or repeat a wake. */ }
   await persist(async () => {

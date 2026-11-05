@@ -12,6 +12,7 @@ let scriptPlan, effects = [], alarmHandler, scheduledAlarm, alarmCreates = 0;
 let observed = {status: 'ok', endpoint, generation: 1, name: 'A', delivery_ids: [delivery]};
 let tab = {url}, tabs, observations, removed;
 let reports = [], reportFailure = false, holdReport = false, releaseReport, reportReply;
+let backendToken = 'SECRET-REPORT-TOKEN', configReads = 0;
 const operational = value => JSON.parse(JSON.stringify(value, (key, item) =>
   ['pairDiagnostic', 'diagnosticAck', 'currentControl'].includes(key) ? undefined : item));
 function load() {
@@ -46,10 +47,13 @@ function load() {
       }}
     },
     fetch: async (_url, options) => {
-      if (_url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'SECRET-REPORT-TOKEN'})};
+      if (_url.endsWith('/config')) {
+        configReads++;
+        return {ok: true, json: async () => ({status: 'ok', report_token: backendToken})};
+      }
       if (_url.endsWith('/report')) {
         reports.push(JSON.parse(options.body));
-        assert.equal(options.headers.Authorization, 'Bearer SECRET-REPORT-TOKEN');
+        if (options.headers.Authorization !== 'Bearer ' + backendToken) return {ok: false, status: 403};
         if (holdReport) await new Promise(resolve => { releaseReport = resolve; });
         if (reportReply) reportReply();
         return {ok: !reportFailure, json: async () => ({status: 'logged'})};
@@ -349,6 +353,22 @@ holdReport = false; releaseReport(); await reporting;
 assert.equal(state().armed, false, 'ACK merge cannot overwrite concurrent Stop');
 assert.equal(state().diagnostic.id, replacement.id);
 assert.equal(state().diagnosticAck, undefined, 'old snapshot cannot ACK a newer attempt');
+reset(); scriptPlan = undefined;
+await check();
+backendToken = 'SECRET-ROTATED-TOKEN';
+state().pairDiagnostic.id = randomUUID(); // A new snapshot after the host restart.
+const retained = structuredClone(state().diagnostic);
+await message({type: 'disarm'});
+const beforeRotation = reports.length, beforeConfig = configReads;
+await check();
+assert.equal(reports.length, beforeRotation + 1, '403 does not retry within the check');
+assert.equal(state().diagnosticAck.failure, 'report-unavailable');
+await check();
+assert.equal(configReads, beforeConfig + 1, 'next ordinary check refreshes the rejected token');
+assert.equal(state().diagnosticAck.failure, null);
+assert.deepEqual(state().diagnostic, retained);
+assert.equal(state().armed, false);
+assert.equal(effects.filter(e => e.final).length, 1, 'report replay cannot renew the wake');
 assert.doesNotMatch(JSON.stringify(reports), /SECRET|chatgpt.com|confirmed|composer-unavailable:/);
 if (process.env.DIAGNOSTIC_PAYLOADS) await writeFile(process.env.DIAGNOSTIC_PAYLOADS, JSON.stringify(reports));
 console.log('diagnostic contracts PASS: typed snapshots, privacy, normalization, success, legacy, ACK/outage/restart and Stop');
