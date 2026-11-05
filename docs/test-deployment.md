@@ -1,24 +1,28 @@
 # Replace the existing TEST edge
 
 Qualify an authorized candidate on the existing TEST service while preserving its OAuth connection.
-Use [TEST lifecycle](chatgpt-mcp-edge.md#isolated-real-chatgpt-test-mcp) for identities and detailed checks.
+Read current WorkId `9411a0ab-be9b-54ab-ab42-f9f649139b59` and [TEST lifecycle](chatgpt-mcp-edge.md#isolated-real-chatgpt-test-mcp) first.
+Obtain the operator window, exact clean candidate/environment and compatible schema/recovery plan before effects.
 
-1. Read current WorkId `9411a0ab-be9b-54ab-ab42-f9f649139b59` and reconcile its operator window.
-   Obtain the exact candidate, compatible recovery target and action-specific resource admission.
-2. Create a clean checkout with `scripts/switchstand-worktree <name> <full-sha>`.
-   Match both dependency manifests and verify the retained environment against the lock before shutdown.
-3. Read the TEST database owner, privilege flags and Alembic revision without printing credentials.
-   A revision absent from the candidate blocks ordinary migration. Reset only explicitly disposable app-state.
-4. Retain host `runtime.py` and logs; stage only its `WRITER`, `HEAD`, `VENV` assignments for review.
-   Preserve the TEST database identity, OAuth configuration, `FASTMCP_HOME`, port and endpoint.
-5. Stop only `switchstand-test-9411-527bd6f0.service` during the operator window.
-   Apply the authorized TEST schema plan with readback, install the launcher, then start that same service.
-6. Read `systemctl --user show switchstand-test-9411-527bd6f0.service -p MainPID -p InvocationID`.
-   Bind that PID's executable, cwd and source to the clean SHA; verify loopback/public HTTP readiness.
-7. Perform real authenticated `work_get` through the existing TEST connection, then test Mailbox behavior.
-   Check the full tool result; record server authentication and fresh-client acceptance separately.
-8. On failure retain diagnostics with `journalctl --user -u switchstand-test-9411-527bd6f0.service`.
-   Stop the candidate, restore the compatible old launcher/schema, and repeat live checks for the old SHA.
-
-Reconcile ambiguous effects before retrying. Preserve OAuth and shared resources during recovery.
-Record exact commits, results and full elapsed time on current work; under 15 seconds requires measurement.
+Set `APP`, `VENV` to assigned absolute paths and `CANDIDATE_SHA` to the full assigned SHA; run this read-only preflight:
+```bash
+set -eu
+test "$(git -C "$APP" rev-parse HEAD)" = "$CANDIDATE_SHA"
+test -z "$(git -C "$APP" status --porcelain)"
+UV=$("$APP/scripts/bootstrap" --print-uv)
+UV_PROJECT_ENVIRONMENT="$VENV" "$UV" sync --project "$APP" --locked --all-groups --no-install-project --dry-run --offline
+docker exec -i switchstand-postgres-1 psql -X -v ON_ERROR_STOP=1 -U switchstand -d switchstand_test_9411_527bd6f0 -At <<'SQL'
+BEGIN READ ONLY;
+SELECT current_database(),r.rolname,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolreplication,r.rolbypassrls,
+       (SELECT version_num FROM alembic_version)
+FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE d.datname=current_database();
+ROLLBACK;
+SQL
+```
+Require uv to report no changes, the exact TEST database/owner, five false privilege flags and a candidate-recognized revision; otherwise stop.
+The recorded `0027_agent_status` branch blocks ordinary candidate migration. Reset only explicitly disposable app-state.
+Retain host `runtime.py` and logs; review only its `WRITER`, `HEAD`, `VENV` replacements. Preserve OAuth/`FASTMCP_HOME` and shared resources.
+During the window, stop only `switchstand-test-9411-527bd6f0.service`; execute the authorized schema plan, install the launcher and start that service.
+Bind its new MainPID/InvocationID, executable, cwd and source to the clean SHA; verify TEST loopback/public HTTP and real authenticated `work_get`, then Mailbox behavior.
+On failure retain its journal, stop the candidate, restore the compatible old launcher/schema and repeat live checks. Reconcile ambiguous effects before retrying.
+Record exact commits, server/client/recovery results and full elapsed time; under 15 seconds requires measurement.
