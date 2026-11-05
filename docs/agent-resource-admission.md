@@ -36,7 +36,8 @@ this script; it is not the native-agent slot count and must not be used as an id
 ready-work signal. Native slots remain separately reported by the host. Do not add automatic
 idle dispatch until a trustworthy ready-work signal is available.
 
-The effective `agents.slice` values reported by systemd are the containment truth. They are not
+The effective `agents.slice` values read from cgroup v2 are the containment truth; systemd is a
+fallback when those files are unavailable. They are not
 duplicated here, and changing them is a separately authorized activation action.
 
 ## GO or WAIT
@@ -48,11 +49,15 @@ Immediately before the action, run `scripts/agent-resource-admission <estimate_m
 2. Read `pswpin` and `pswpout` from `/proc/vmstat`, wait `swap_window_seconds`, and read them
    again. Calculate `swap_growth_kib = ((delta_pswpin + delta_pswpout) *
    host_page_size_bytes) / 1024`. A missing counter or either negative delta/reset means `WAIT`.
-3. Re-read `MemAvailable` and PSI after the swap window. Read the named `TasksCurrent`,
-   `MemoryCurrent`, and `MemoryMax` properties for `agents.slice`; do not infer property order.
+3. Re-read `MemAvailable` and PSI after the swap window. Read `pids.current`,
+   `memory.current`, and `memory.max` for the user's `agents.slice` directly from cgroup v2,
+   including finite ancestor memory limits. The hierarchy root has no memory controller files.
+   If direct measurement is unavailable, fall back to the named systemd `TasksCurrent`,
+   `MemoryCurrent`, and `MemoryMax` properties; do not infer property order.
 4. Count active memory-bearing jobs from live `ss-codex-*.scope` units in `agents.slice` that
    contain a live `codex exec` process. Report a live scope without that process as `LEFTOVER`
-   with its name and age, but do not count it. When called from inside one of those active job
+   with its name and age (unknown when cgroup v2 provides no timestamp), but do not count it.
+   When called from inside one of those active job
    scopes, exclude that caller scope from the count and report it as `self_scope`. Report the
    summed `memory.current` for all active job scopes (including the caller) as information only;
    `MemAvailable` already accounts for that memory.

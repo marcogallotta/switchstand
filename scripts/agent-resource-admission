@@ -167,6 +167,63 @@ def memory_jobs(
     return active, leftovers, excluded_scope, memory_bytes
 
 
+def agents_cgroup() -> Path:
+    """Locate the user's slice without depending on the systemd user bus."""
+    return CGROUP_ROOT / f"user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/agents.slice"
+
+
+def direct_slice_properties(root: Path) -> dict[str, str]:
+    limits = []
+    for ancestor in (root, *root.parents):
+        if not ancestor.is_relative_to(CGROUP_ROOT):
+            break
+        if ancestor == CGROUP_ROOT:
+            break  # The unified hierarchy root has no memory controller files.
+        value = (ancestor / "memory.max").read_text().strip()
+        if value != "max":
+            limits.append(int(value))
+    return {
+        "TasksCurrent": str(int((root / "pids.current").read_text())),
+        "MemoryCurrent": str(int((root / "memory.current").read_text())),
+        "MemoryMax": str(min(limits)) if limits else "infinity",
+    }
+
+
+def direct_memory_jobs(root: Path, scope_pattern: str):
+    active, leftovers = [], []
+    own_scope = caller_scope(scope_pattern)
+    excluded_scope = None
+    memory_bytes = 0
+    for scope in sorted(root.glob(scope_pattern)):
+        if not scope.is_dir():
+            continue
+        # Empty cgroups are disappearing units, not live leftover jobs.
+        if not any(int(path.read_text()) for path in scope.rglob("pids.current")):
+            continue
+        cgroup = str(scope.relative_to(CGROUP_ROOT))
+        if has_codex_exec(cgroup):
+            memory_bytes += cgroup_memory_bytes(cgroup)
+            if scope.name == own_scope:
+                excluded_scope = scope.name
+            else:
+                active.append(scope.name)
+        else:
+            # Cgroup v2 has no activation timestamp. Do not invent its age.
+            leftovers.append((scope.name, "unknown"))
+    return active, leftovers, excluded_scope, memory_bytes
+
+
+def slice_measurements(scope_pattern: str):
+    try:
+        root = agents_cgroup()
+        properties = direct_slice_properties(root)
+        jobs = direct_memory_jobs(root, scope_pattern)
+    except (OSError, ValueError):
+        properties = show_properties("agents.slice", "TasksCurrent", "MemoryCurrent", "MemoryMax")
+        jobs = memory_jobs(scope_pattern)
+    return properties, jobs
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("estimate_mib", type=int, help="conservative memory estimate for the job")
@@ -196,10 +253,8 @@ def main() -> int:
         swap_growth_kib = sum(deltas) * os.sysconf("SC_PAGE_SIZE") // 1024
         mem_available_mib = read_mem_available_mib()
         psi_avg10 = read_psi_avg10()
-        slice_properties = show_properties(
-            "agents.slice", "TasksCurrent", "MemoryCurrent", "MemoryMax"
-        )
-        active, leftovers, self_scope, jobs_memory_bytes = memory_jobs(args.scope_pattern)
+        slice_properties, measurements = slice_measurements(args.scope_pattern)
+        active, leftovers, self_scope, jobs_memory_bytes = measurements
         memory_max = slice_properties["MemoryMax"]
         memory_max_mib = None if memory_max == "infinity" else int(memory_max) // (1024 * 1024)
         slice_tasks = int(slice_properties["TasksCurrent"])
