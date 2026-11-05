@@ -12,13 +12,13 @@ function validConversation(value) {
 }
 async function mailbox(name) {
   const response = await fetch(SOURCE + '/poll?name=' + encodeURIComponent(name),
-    {signal: AbortSignal.timeout(3000)});
+    {signal: AbortSignal.timeout(3000), cache: 'no-store'});
   if (!response.ok) throw new Error('Mailbox service unavailable.');
   const observed = await response.json();
   if (observed.status !== 'ok' || !UUID.test(observed.endpoint) ||
       !Number.isInteger(observed.generation) || observed.generation < 1 ||
       typeof observed.name !== 'string' || !Array.isArray(observed.delivery_ids) ||
-      !observed.delivery_ids.every(id => UUID.test(id))) throw new Error('Invalid mailbox identity.');
+      !observed.delivery_ids.every(id => typeof id === 'string' && UUID.test(id))) throw new Error('Invalid mailbox identity.');
   return observed;
 }
 async function action(message, version) {

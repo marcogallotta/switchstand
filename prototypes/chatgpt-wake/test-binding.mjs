@@ -20,7 +20,8 @@ function load() {
       tabs: {async get() { return structuredClone(tab); }}
       // No scripting API: this feature cannot touch the composer or Send/Stop.
     },
-    fetch: async () => {
+    fetch: async (_url, options) => {
+      assert.equal(options.cache, 'no-store', 'pairing uses a fresh backend observation');
       if (waitPoll) await new Promise(resolve => { releasePoll = resolve; });
       return {ok: true, json: async () => structuredClone(observed)};
     }
