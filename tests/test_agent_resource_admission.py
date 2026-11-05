@@ -82,9 +82,9 @@ def test_main_waits_when_siblings_exhaust_ancestor(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(admission, 'agents_cgroup', lambda: root)
     monkeypatch.setattr(admission, 'parse_args', lambda: SimpleNamespace(
         estimate_mib=100, config=tmp_path, scope_pattern='ss-codex-*.scope'))
-    monkeypatch.setattr(admission, 'read_config', lambda _: dict(
-        reserve_mib=0, swap_window_seconds=0, max_swap_growth_kib=0,
-        psi_avg10_max=2, max_memory_jobs=0))
+    monkeypatch.setattr(admission, 'read_config', lambda _: {
+        'reserve_mib': 0, 'swap_window_seconds': 0, 'max_swap_growth_kib': 0,
+        'psi_avg10_max': 2, 'max_memory_jobs': 0})
     monkeypatch.setattr(admission, 'read_mem_available_mib', lambda: 4096)
     monkeypatch.setattr(admission, 'read_psi_avg10', lambda: 0)
     monkeypatch.setattr(admission, 'read_swap_pages', lambda: (0, 0))
