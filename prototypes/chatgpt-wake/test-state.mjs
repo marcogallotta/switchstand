@@ -11,7 +11,7 @@ const observations = new Map(['A', 'B'].map((name, index) => [name,
 const tabs = new Map([[1, {url: 'https://chatgpt.com/c/a'}], [2, {url: 'https://chatgpt.com/g/g-project/c/b'}]]);
 const attempts = [], reports = [], readOnlyChecks = [];
 let clock = Date.now(), alertMode = false, diagnosticFailure = false, diagnosticWait, releaseDiagnostic, context;
-let onSave;
+let onSave, stopPlan;
 class ClockDate extends Date {
   constructor(value = clock) { super(value); }
   static now() { return clock; }
@@ -27,6 +27,8 @@ function load() {
       async query() { return [...tabs].map(([id, tab]) => ({id, ...tab})); },
       onRemoved: {addListener(value) { removed = value; }}},
     scripting: {async executeScript(options) {
+      if (options.args[2]?.prepare && stopPlan) return [{result: await stopPlan(options)}];
+      if (options.args[2]?.prepare) return [{result: ['draft-present', 'busy', 'wrong-conversation'].includes(outcome) ? outcome : {outcome: 'idle', sendReady: true, stopReady: false}}];
       if (options.args[1] === 'control') { readOnlyChecks.push(options.target.tabId); return [{result: {outcome: 'idle', facts: {controlSelection: 'unique'}}}]; }
       const observeOnly = options.args[1] === true;
       (observeOnly ? readOnlyChecks : attempts).push(options.target.tabId);
@@ -36,7 +38,7 @@ function load() {
     }},
     alarms: {onAlarm: {addListener(value) { alarm = value; }}, async get() { return {}; }}
   };
-  context = {chrome, URL, Date: ClockDate, crypto, AbortSignal, fetch: async (url, options) => {
+  context = {chrome, URL, Date: ClockDate, crypto, AbortSignal, setTimeout, fetch: async (url, options) => {
     if (url.endsWith('/config')) return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture-only', escalation: 'configured', recipient: 'ChatGPT Wake Setup 2026-11-04'})};
     if (url.endsWith('/report')) { const report = JSON.parse(options.body); reports.push(report); if (report.diagnostics && diagnosticFailure) throw Error('offline'); if (report.diagnostics && diagnosticWait) await new Promise(resolve => { releaseDiagnostic = resolve; }); if (alertMode === 'expired' && report.incident) { alertMode = true; return {ok: true, json: async () => ({status: 'logged', alert: {status: 'denied', reason: 'observation_expired'}})}; } return {ok: true, json: async () => ({status: 'logged', ...(alertMode && report.incident ? {alert: {status: 'queued', delivery_id: id(999)}} : {})})}; }
     const name = new URL(url).searchParams.get('name');
@@ -318,11 +320,12 @@ console.log('PASS pending idle/HALT/wrong-chat59/60s, changing backlog, dedupe, 
 // Execute the actual page function: read-only mode must never focus or edit.
 const pageUrl = 'https://chatgpt.com/c/a';
 const editor = {isContentEditable: true, textContent: '', getClientRects: () => [{}],
-  querySelector: () => null, focus() { throw Error('read-only observation focused editor'); }};
+  closest: () => ({querySelectorAll: () => []}), querySelector: () => null, focus() { throw Error('read-only observation focused editor'); }};
 let pageBusy = false;
 const pageObserve = runInNewContext(code.slice(code.indexOf('async function nudge('), code.indexOf('const SOURCE')) + ';nudge', {
   location: {href: pageUrl}, HTMLTextAreaElement: class {},
-  document: {getElementById: () => editor, querySelector: selector => pageBusy && selector.includes('stop-button') ? {} : null}
+  getComputedStyle: () => ({visibility: 'visible'}),
+  document: {getElementById: () => editor, querySelectorAll: () => pageBusy ? [{getBoundingClientRect: () => ({width: 1, height: 1})}] : [], querySelector: () => null}
 });
 assert.equal(await pageObserve(pageUrl, true), 'idle');
 editor.textContent = 'private draft';
@@ -498,9 +501,9 @@ assert.equal(state('A').halted, true);
 for (const interruption of ['wrong-conversation', 'throw', 'draft-present']) {
   await routingWake(); tabs.set(11, {url: state('A').url});
   outcome = interruption; await message({type: 'check'});
-  assert.deepEqual(attempts, [10], 'URL race/draft/uncertainty cannot fallback immediately');
+  assert.deepEqual(attempts, interruption === 'throw' ? [10] : [], 'preflight URL/draft defer; execution uncertainty cannot fallback');
   assert.deepEqual(state('A').seen, []);
-  assert.equal(state('A').halted, interruption === 'throw');
+  assert.equal(Boolean(state('A').halted), interruption === 'throw');
 }
 console.log('PASS three conversation routing cases; duplicate single target, fallback removal, retained IDs, HALT after fallback page loss, URL race/draft/UNKNOWN fences.');
 // Persisted real-world failure states are distinct from a clean fixture binding.
@@ -564,3 +567,55 @@ assert.equal(JSON.parse(binding.diagnosticAck.identity).pair.id, id(503));
 await context.diagnosticReport(binding, async () => {});
 assert.equal(JSON.parse(binding.diagnosticAck.identity).pair.id, id(504));
 console.log('PASS diagnostic terminal retention/restart, outage retry, exact ack, registered Pair accepted/refused, inherited incident independence, unfinished and legacy HALT distinction.');
+
+// A Stop sequence consumes its allowance before the effect; all later failures stay HALTED.
+for (const failure of ['none', 'pending', 'stop', 'throw', 'timeout', 'draft', 'url']) {
+  saved = {}; reports.length = 0; attempts.length = 0;
+  observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: [id(700)]});
+  tabs.set(1, {url: 'https://chatgpt.com/c/a'}); outcome = 'click-attempted';
+  let stopClicks = 0;
+  stopPlan = async options => {
+    if (options.args[2].stop) {
+      stopClicks++;
+      assert.equal(state('A').stopSendAttempt, state('A').diagnostic.id, 'consumed durably before Stop');
+      if (failure === 'pending') observations.get('A').delivery_ids = [];
+      if (failure === 'stop') void message({type: 'disarm'});
+      if (failure === 'throw') throw Error('lost after Stop');
+      if (failure === 'draft') outcome = 'draft-present';
+      if (failure === 'url') outcome = 'wrong-conversation';
+    }
+    return {outcome: 'busy', stopReady: true, sendReady: stopClicks > 0 && failure !== 'timeout'};
+  };
+  load(); await bind('A', 1);
+  if (failure === 'pending') state('A').incident = {state: 'queued', evidence: {incident_id: id(705)}};
+  await message({type: 'check'});
+  if (failure === 'pending') {
+    assert.equal(state('A').blockSince, undefined);
+    assert.equal(state('A').observedPending.length, 0);
+    assert.equal(reports.find(item => item.incident).incident.phase, 'recovered');
+  }
+  assert.equal(stopClicks, 1);
+  assert.equal(attempts.length, ['none', 'draft', 'url'].includes(failure) ? 1 : 0);
+  assert.equal(state('A').halted, failure !== 'none');
+  if (failure === 'timeout') assert.match(state('A').status, /readiness timed out/);
+  load(); await message({type: 'check'});
+  assert.equal(stopClicks, 1, 'checks/restart cannot repeat Stop');
+}
+// Only durable known no-click can promote an existing exact wake draft; legacy/previous click cannot.
+for (const kind of ['known-no-click', 'clicked', 'legacy', 'drained', 'generation', 'endpoint']) {
+  saved = {}; attempts.length = 0;
+  observations.set('A', {status: 'ok', name: 'A', endpoint: id(1), generation: 1, delivery_ids: []});
+  stopPlan = undefined; load(); await bind('A', 1);
+  observations.get('A').delivery_ids = [id(701)]; state('A').halted = true;
+  state('A').attemptIds = [id(701)];
+  if (kind !== 'legacy') state('A').diagnostic = {id: id(702), endpoint: id(1), generation: 1, delivery_ids: [id(701)], reason: 'result', outcome: 'inserted-not-submitted',
+    facts: {inserted: true, ...(kind === 'clicked' ? {clickDispatched: true} : {})}};
+  if (kind === 'drained') observations.get('A').delivery_ids = [id(703)];
+  if (kind === 'generation') state('A').diagnostic.generation = 2;
+  if (kind === 'endpoint') state('A').diagnostic.endpoint = id(704);
+  outcome = 'click-attempted'; await message({type: 'check'});
+  assert.equal(attempts.length, kind === 'known-no-click' ? 1 : 0);
+  if (kind === 'known-no-click') assert.equal(state('A').stopSendAttempt, state('A').diagnostic.id);
+}
+stopPlan = undefined;
+console.log('PASS one consumed Stop sequence: pending loss/STOP/error/timeout/draft/URL/restart; exact known NOCLICK versus clicked/legacy HALT');

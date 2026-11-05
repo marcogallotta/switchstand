@@ -112,5 +112,7 @@ Facts contain booleans/fixed reasons only, never drafts, URLs, labels or raw exc
 The latest failed diagnostic report is retried during ordinary Check; there is no queue or
 history. A new attempt may replace an older unreported receipt. Logging does not itself repair HALT. The combined candidate retains conversation routing,
 unique visible explicit Send selection (including exact case-insensitive aria-label Send),
-with the original insertion/wait/final-check/click sequence and no ownership witness or automatic retry.
-Existing HALTs, even with a legacy stored retry, remain until explicit safe reconciliation.
+with a bounded Stop/readiness phase, then a fresh worker STOP/mailbox fence and synchronous final Send.
+Only a durable known no-click attempt with original pending identity can consume one exact-wake-draft recovery.
+Stop requires a unique visible enabled control and an empty or proven exact wake draft without attachments.
+Timeout/error/restart after reservation stays HALTED; legacy UNKNOWN and prior-click HALTs remain protected.

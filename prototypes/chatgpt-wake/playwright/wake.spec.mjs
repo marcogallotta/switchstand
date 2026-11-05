@@ -262,3 +262,31 @@ test('HALTED current control snapshot preserves draft, busy state and legacy cau
   expect(wake.reports.filter(r=>r.diagnostics).at(-1).diagnostics.current_control.reason).toBe('unavailable');
   expect(JSON.stringify(wake.reports)).not.toContain('private draft sentinel');
 });
+
+for(const label of ['Stop','Stop streaming','testid']) {
+  test(`V1 Stop then delayed Send once: ${label}`,async({wake})=>{
+    await wake.page.evaluate(label=>{
+      window.stopClicks=0;fixture.busy=true;const send=document.querySelector('form button');send.hidden=true;
+      const stop=document.createElement('button');stop.type='button';stop.setAttribute('aria-label',label==='testid'?'Cancel generation':label);
+      if(label==='testid')stop.dataset.testid='stop-button';document.querySelector('form').append(stop);
+      stop.addEventListener('click',()=>{window.stopClicks++;setTimeout(()=>{fixture.busy=false;stop.remove();send.hidden=false;},120);});
+    },label);
+    wake.metadata.delivery_ids=[delivery(800)];await wake.check();await wake.check();
+    await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
+    expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(1);
+  });
+}
+for(const obstruction of ['draft','attachment','ambiguous']) {
+  test(`V1 no Stop for ${obstruction}`,async({wake})=>{
+    await wake.page.evaluate(obstruction=>{
+      window.stopClicks=0;const send=document.querySelector('form button');send.hidden=true;
+      for(let i=0;i<(obstruction==='ambiguous'?2:1);i++) {const stop=document.createElement('button');stop.type='button';stop.setAttribute('aria-label','Stop');stop.onclick=()=>window.stopClicks++;document.querySelector('form').append(stop);}
+      if(obstruction==='draft')document.querySelector('#prompt-textarea').textContent='Human draft';
+      if(obstruction==='attachment')document.querySelector('#prompt-textarea').append(document.createElement('img'));
+    },obstruction);
+    wake.metadata.delivery_ids=[delivery(801)];await wake.check();
+    expect(await wake.page.evaluate(()=>window.stopClicks)).toBe(0);
+    expect(await wake.page.evaluate(()=>fixture.insertions)).toBe(0);
+    await expect(wake.page.locator('#turns li')).toHaveCount(0);
+  });
+}

@@ -955,9 +955,11 @@ uses read-only observation without input or retry; it is neither the original ca
 not proof of insertion or click. Missing legacy receipts have no recorded cause. Ordinary
 Checks retry the latest unacknowledged diagnostic without changing wake decisions or timers.
 The combined candidate retains conversation routing, explicit empty-mailbox Pair reconciliation,
-unique visible explicit Send selection and the original insertion/wait/final-check/click sequence.
-No ownership witness or automatic retry remains. HALT wins even with a legacy stored retry;
-logging preserves the original attempt receipt and never clears unresolved attempts.
+unique visible explicit Send selection. V1 uses one bounded Stop/insertion/readiness phase,
+then a fresh worker STOP/mailbox fence and synchronous final Send. Only a durable known no-click
+attempt with matching original pending identity may recover its exact wake draft once; reservation
+is consumed before effects. No ownership witness or retry loop exists. Timeout/error/restart
+after reservation remains HALTED; legacy UNKNOWN and prior-click HALTs stay protected.
 The flag is off by default; landing does not activate a service.
 
 `chatgpt_alerts.py` owns the optional fixed ChatGPT Wake Reporter identity, typed

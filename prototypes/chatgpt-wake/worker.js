@@ -62,37 +62,60 @@ async function nudge(expectedUrl, observeOnly = false, attempt, diagnostic = fal
     if (!editor.getClientRects().length) return 'composer-unavailable: #prompt-textarea is hidden';
     if (textarea && (editor.disabled || editor.readOnly)) return 'composer-unavailable: textarea is disabled or read-only';
     if (observeOnly === 'control') { selectControl(editor.closest('form')); return 'idle'; }
-    facts.busy = Boolean(document.querySelector('[data-testid="stop-button"], button[aria-label="Stop streaming"]'));
-    if (facts.busy) return 'busy';
+    const form = editor.closest('form');
+    const stops = (root = form) => [...(root?.querySelectorAll('[data-testid="stop-button"], button[aria-label="Stop streaming" i], button[aria-label="Stop" i]') || [])]
+      .filter(button => { const rect = button.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && getComputedStyle(button).visibility === 'visible'; });
+    const enabled = send => send && !send.disabled && !send.matches(':disabled') &&
+      send.getAttribute('aria-disabled')?.toLowerCase() !== 'true' &&
+      !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
+    facts.busy = Boolean(stops(document).length);
     const draft = () => textarea ? editor.value : editor.textContent;
     const text = 'Process your mailbox';
     const attached = () => editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]');
     facts.draftPresent = Boolean(draft().trim() || attached());
-    if (facts.draftPresent) return 'draft-present';
-    if (observeOnly) return 'idle';
-    const form = editor.closest('form');
-    const sendControl = () => selectControl(form);
-    const enabled = send => send && !send.disabled && !send.matches(':disabled') &&
-      send.getAttribute('aria-disabled')?.toLowerCase() !== 'true' &&
-      !/voice|dictat/i.test(send.getAttribute('aria-label') || '');
-    editor.focus();
-    if (textarea) {
-      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
-      editor.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: text}));
-    } else if (!document.execCommand('insertText', false, text)) return 'insert-failed';
-    facts.inserted = draft() === text;
-    let send;
-    for (let attempt = 0; attempt < 15; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      send = sendControl();
-      if (enabled(send)) break;
+    const recover = attempt?.recover === true;
+    if (facts.busy && !attempt?.prepare) return 'busy';
+    const exactDraft = recover || attempt?.final || attempt?.insert;
+    if (attached() || (exactDraft ? draft() && draft() !== text : facts.draftPresent) ||
+        ((recover || attempt?.final) && draft() !== text)) return 'draft-present';
+    const insert = () => {
+      editor.focus();
+      if (textarea) {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
+        editor.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: text}));
+      } else if (!document.execCommand('insertText', false, text)) return false;
+      return draft() === text;
+    };
+    if (attempt?.prepare) {
+      const controls = stops();
+      if (!controls.length && facts.busy) return 'busy';
+      if (controls.length > 1) return 'composer-unavailable: ambiguous Stop';
+      const stopReady = controls.length === 1 && Boolean(enabled(controls[0]));
+      if (attempt.stop && stopReady) controls[0].click();
+      if (!controls.length && attempt.insert && !draft() && !insert()) return 'insert-failed';
+      const send = !controls.length && selectControl(form);
+      return {outcome: controls.length ? 'busy' : 'idle', stopReady,
+        sendReady: Boolean(send && (!(recover || attempt.insert) || enabled(send))),
+        inserted: Boolean(attempt.insert && !recover && draft() === text)};
     }
+    if (facts.busy) return 'busy';
+    if (observeOnly) return 'idle';
+    const sendControl = () => selectControl(form);
+    if (!attempt?.final) {
+      if (!recover && !insert()) return 'insert-failed';
+      for (let tick = 0; tick < 15; tick++) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (enabled(sendControl())) break;
+      }
+    }
+    facts.inserted = attempt?.final ? Boolean(attempt.inserted) : !recover;
+    let send;
     send = sendControl(); // Recheck uniqueness and state after the render wait.
     facts.controlPresent = Boolean(send);
     facts.controlEnabled = Boolean(enabled(send));
     if (location.href !== expectedUrl || draft().trim() !== text ||
         !enabled(send) ||
-        document.querySelector('[data-testid="stop-button"]')) {
+        stops(document).length || attached()) {
       const controls = [...(form?.querySelectorAll('button') || [])].slice(0, 5)
         .map(button => `id=${button.id},testid=${button.getAttribute('data-testid') || ''},type=${button.type},label=${button.getAttribute('aria-label') || ''},disabled=${button.disabled}`);
       const outcome = `inserted-not-submitted: no click; editor=${editor.tagName}[role=${editor.getAttribute('role') || ''}]; form=${Boolean(form)}; controls: ${controls.join('; ') || 'none'}`;
@@ -117,7 +140,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 let reportToken;
 const bootId = crypto.randomUUID();
 // Release ID is mapped to exact artifact hashes by the immutable activation proof.
-const releaseId = '3abfeeb7-fb34-49ab-9ad3-cda62b8c1b08';
+const releaseId = '1f6fcb2b-63f9-4c66-a3f6-8d465cd6bbc4';
 async function diagnosticReport(binding, save) {
   const diagnostics = {release: releaseId, boot: bootId, legacy_halt: Boolean(binding.halted && !binding.diagnostic),
     attempt: binding.diagnostic || null, pair: binding.pairDiagnostic || null, current_control: binding.currentControl || null,
@@ -270,7 +293,15 @@ async function checkBinding(binding, save) {
     return note('bound-tab-missing');
   }
   binding.availability = 'open';
-  if (binding.halted) {
+  const previous = binding.diagnostic;
+  const recover = binding.halted && previous?.outcome === 'inserted-not-submitted' &&
+    previous.endpoint === binding.endpoint && previous.generation === binding.generation &&
+    Array.isArray(binding.attemptIds) && binding.attemptIds.length &&
+    binding.attemptIds.every(id => previous.delivery_ids?.includes(id)) &&
+    binding.attemptIds.some(id => observation.delivery_ids.includes(id)) &&
+    previous.reason === 'result' && previous.facts?.inserted === true && !previous.facts.clickDispatched &&
+    binding.stopSendAttempt !== previous.id;
+  if (binding.halted && !recover) {
     if (!tab.discarded && !tab.frozen) {
       try {
         const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
@@ -287,36 +318,68 @@ async function checkBinding(binding, save) {
   if (tab.discarded) return note('tab-discarded');
   if (tab.frozen) return note('tab-frozen');
   if (stopRequested(binding)) { binding.armed = false; return note('stopped'); }
-  if (!pending.length) {
+  if (!pending.length && !recover) {
     try {
       const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, true]});
       return note(result?.result || 'composer-unavailable: observation returned no result');
     } catch (error) { return note('composer-unavailable: observation failed: ' + error.message); }
   }
-  // Persist a halt before DOM mutation. A crash cannot silently retry these IDs.
+  // Preflight is read-only: an unrelated draft never causes even a Stop click.
+  let ready;
+  try {
+    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
+      args: [binding.url, false, {prepare: true, recover}, false]});
+    ready = result?.result;
+  } catch { return note('composer-unavailable: Stop/Send preflight failed'); }
+  if (!ready?.sendReady && !ready?.stopReady) return note(typeof ready === 'string' ? ready : 'busy');
+  const consumed = recover || ready.stopReady;
+  const sendIds = recover ? binding.attemptIds : pending;
+  // Reserve before Stop or Send; a consumed sequence never receives another allowance.
   binding.halted = true;
   binding.status = 'attempt-outcome-unknown';
-  binding.attemptIds = pending;
-  const attempt = {token: crypto.randomUUID()};
+  binding.attemptIds = sendIds;
+  const attempt = {token: crypto.randomUUID(), recover, final: true};
   const attemptStop = stopVersion;
+  if (consumed) binding.stopSendAttempt = attempt.token;
   binding.diagnostic = {id: attempt.token, boot: bootId, release: releaseId,
-    endpoint: binding.endpoint, generation: binding.generation, delivery_ids: pending.slice(0, 50),
+    endpoint: binding.endpoint, generation: binding.generation, delivery_ids: sendIds.slice(0, 50),
     started: new Date().toISOString(), finished: null, outcome: null, reason: 'dispatch-start', facts: {}};
   await save();
-  if (stopRequested(binding) || stopVersion !== attemptStop) {
-    binding.armed = false; binding.halted = false; binding.attemptIds = [];
-    attemptResult(binding, 'stopped', null, 'stopped-before-dispatch');
-    return note('stopped');
-  }
+  const cancelled = () => !binding.armed || stopRequested(binding) || stopVersion !== attemptStop;
   try {
-    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge, args: [binding.url, false, attempt, true]});
+    if (cancelled()) return note('stopped');
+    const needsStop = ready.stopReady;
+    {
+      for (let tick = 0; tick < 15; tick++) {
+        if (cancelled()) return note('stopped');
+        const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
+          args: [binding.url, false, {prepare: true, recover, insert: true, stop: needsStop && tick === 0}, false]});
+        ready = result?.result;
+        if (ready?.inserted) attempt.inserted = true;
+        if (ready?.sendReady) break;
+        if (typeof ready === 'string') return note(ready);
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (!ready?.sendReady) return note('inserted-not-submitted: Stop/Send readiness timed out');
+    }
+    // Mail may change between browser phases: reobserve, but never claim an atomic mailbox/DOM lock.
+    fresh = false;
+    const current = await mailbox(binding.name);
+    if (current.endpoint !== binding.endpoint || current.generation !== binding.generation) return note('attempt-outcome-unknown: pending identity changed');
+    observation = current; fresh = true;
+    binding.observedPending = current.delivery_ids;
+    binding.pending = current.delivery_ids.filter(id => !binding.seen.includes(id));
+    if (cancelled()) return note('stopped');
+    if (!current.delivery_ids.some(id => sendIds.includes(id))) return note('attempt-outcome-unknown: pending identity changed');
+    const [result] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: nudge,
+      args: [binding.url, false, attempt, true]});
     const receipt = result?.result;
     const outcome = (typeof receipt === 'string' ? receipt : receipt?.outcome) || 'attempt-outcome-unknown';
     attemptResult(binding, outcome, receipt, receipt ? undefined : 'missing-result');
     const safe = ['busy', 'draft-present', 'wrong-conversation', 'insert-failed'].includes(outcome) || outcome.startsWith('composer-unavailable');
-    if (safe) binding.halted = false;
+    if (safe && !consumed) binding.halted = false;
     if (outcome === 'click-attempted') {
-      binding.seen.push(...pending);
+      binding.seen.push(...sendIds);
       binding.pending = [];
       binding.halted = false;
     }
@@ -326,6 +389,7 @@ async function checkBinding(binding, save) {
     if (!binding.diagnostic.finished) attemptResult(binding, outcome, null, 'execution-failed', error);
     await note(outcome);
   }
+
 }
 async function check() {
   try {
