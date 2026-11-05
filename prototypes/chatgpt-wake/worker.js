@@ -29,7 +29,7 @@ async function nudge(expectedUrl, observeOnly = false, attempt = {}, diagnostic 
   const text = 'Process your mailbox';
   const draft = () => textarea ? editor.value : editor.textContent;
   const attached = () => editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]');
-  const exact = attempt.insert || attempt.final;
+  const exact = attempt.recover || attempt.insert || attempt.final;
   if (attached() || (exact ? draft() && draft() !== text : draft().trim())) return result('draft-present');
   const visible = selector => [...form.querySelectorAll(selector)].filter(button => {
     const rect = button.getBoundingClientRect();
@@ -135,29 +135,48 @@ async function checkBinding(binding, version) {
   if (!validConversation(binding.url)) return 'Saved conversation is invalid; no wake attempted.';
   const tab = await conversationTab(binding);
   await availability(binding, Boolean(tab));
-  if (binding.halted || binding.attemptIds?.length || binding.pendingSend || binding.diagnostic || binding.stopSendAttempt) {
-    return 'Previous attempt needs attention; it was not repeated.';
-  }
   const matching = observed => observed.endpoint === binding.endpoint && observed.generation === binding.generation;
   const cancelled = () => stopVersion !== version || endpointStops.get(binding.endpoint) !== endpointVersion;
   const observed = await mailbox(binding.name);
   if (!matching(observed)) throw new PairingError('Mailbox changed; no wake attempted.');
-  const ids = observed.delivery_ids.filter(id => !binding.seen.includes(id));
-  if (!ids.length) return 'No new pending mail.';
+  const budget = binding.retryBudget;
+  if (!observed.delivery_ids.length) {
+    await persist(async () => {
+      const current = await chrome.storage.local.get('wakeBindings');
+      const live = current.wakeBindings?.find(item => item.endpoint === binding.endpoint);
+      if (live?.generation === binding.generation && live.url === binding.url) {
+        delete live.retryBudget;
+        delete live.attemptIds;
+        live.halted = false;
+      }
+      await chrome.storage.local.set(current);
+    });
+    return 'No new pending mail.';
+  }
+  const original = budget?.ids || binding.attemptIds;
+  const unresolved = binding.halted || binding.pendingSend || binding.diagnostic || binding.stopSendAttempt;
+  if (unresolved && !original?.length) return 'Previous attempt lacks original delivery IDs.';
+  if (budget && (budget.endpoint !== binding.endpoint || budget.generation !== binding.generation || budget.url !== binding.url ||
+      !Number.isInteger(budget.usedRetries) || budget.usedRetries < 0 || budget.usedRetries >= 2)) return 'Retry limit reached or budget invalid.';
+  const ids = original ? original.filter(id => observed.delivery_ids.includes(id)) : observed.delivery_ids.filter(id => !binding.seen.includes(id));
+  if (!ids.length) return 'No original pending mail.';
   if (!tab || tab.discarded || tab.frozen) return 'Open the paired conversation; no wake attempted.';
   if (cancelled()) return 'Stopped.';
   const invoke = async attempt => (await chrome.scripting.executeScript({
     target: {tabId: tab.id}, func: nudge, args: [binding.url, false, attempt, true]
   }))[0]?.result;
-  let ready = await invoke({prepare: true});
+  let ready = await invoke({prepare: true, recover: Boolean(original?.length)});
   if (!ready?.sendReady && !ready?.stopReady && !ready?.prepareReady) return 'Chat not ready; existing draft left unchanged.';
   await persist(async () => {
     const current = await chrome.storage.local.get('wakeBindings');
     const live = current.wakeBindings?.find(item => item.endpoint === binding.endpoint);
-    if (!live?.armed || cancelled() || live.halted ||
+    if (!live?.armed || cancelled() ||
         live.endpoint !== binding.endpoint || live.generation !== binding.generation || live.url !== binding.url) {
       throw new PairingError('Pairing stopped or changed; no wake attempted.');
     }
+    live.retryBudget = budget ? {...budget, usedRetries: budget.usedRetries + 1} : {
+      endpoint: binding.endpoint, generation: binding.generation, url: binding.url, ids,
+      usedRetries: unresolved ? 1 : 0};
     Object.assign(live, {halted: true, attemptIds: ids, status: 'attempt-outcome-unknown'});
     await chrome.storage.local.set(current); // Must succeed before Stop, insertion or Send.
   });

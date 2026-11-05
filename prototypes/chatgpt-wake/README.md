@@ -28,6 +28,9 @@ No test accesses an existing browser profile or sends external mail.
 The worker durably reserves the original pending IDs before any Stop or insertion.
 Stop cancels further dispatch across waits; fresh endpoint/generation and pending
 identity are rechecked before synchronous final DOM checks and Send. A click is
-not provider acceptance. An uncertain attempt stays blocked through Check, Pair
-and worker restart; this version cannot rearm it. Other drafts and attachments
+not provider acceptance. The original pending delivery IDs permit an initial
+attempt and at most two persisted retries, including ambiguous outcomes. Pair
+and worker restart never renew that budget. Legacy uncertainty with stored
+original IDs gets two retry allowances; missing original IDs remain blocked.
+A fresh matching empty mailbox permits a new batch. Other drafts and attachments
 are preserved. Saved pairing history and backend mailbox records are not cleared.
