@@ -46,6 +46,7 @@ For candidate diagnostics, `repository_candidate_qualification_get` is the prefe
 - [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md): current modes, identities, routing, and messaging model.
 - [Architecture](docs/architecture.md): runtime surfaces, semantic owners, durable state, and edit map.
 - [Development](docs/development.md): writers, checks, evidence subjects, launch, and recovery.
+- [TEST replacement](docs/test-deployment.md): reuse the existing isolated edge, verify the live candidate, and recover a compatible prior version.
 - [Code quality and Code Review](docs/code-quality.md): implementation, review, qualification, and candidate/current-target rules.
 - [Work, messaging, and source compatibility](docs/source-history-feedback.md): WorkId reads, durable messages, feedback, and legacy source boundaries.
 - [North Star](docs/north-star.md): durable strategic direction; a guiding reference only, not an execution owner.
