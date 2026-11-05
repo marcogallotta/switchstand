@@ -8,6 +8,8 @@ from .mailbox.agent_messages import (
     AgentRegistrationResult,
     AgentTransferRequestResult,
     public_message,
+    replay_agent_request,
+    send_agent_request,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "AgentRegistrationResult",
     "AgentTransferRequestResult",
     "public_message",
+    "replay_agent_request",
+    "send_agent_request",
 ]
