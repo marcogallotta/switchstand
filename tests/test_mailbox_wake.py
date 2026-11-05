@@ -67,3 +67,36 @@ def test_shared_projection_needs_only_standard_library():
         "assert MailboxSummary.parse({'status': 'ok', 'count': 0, 'senders': []}).count == 0"),
         source], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+async def test_advisory_observation_works_readonly_without_weakening_fences(state_database_schema):
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from switchstand.agent_mailboxes import AgentMailboxState
+    from switchstand.grant_state import GrantState
+
+    writer = create_async_engine(state_database_schema)
+    reader = create_async_engine(state_database_schema,
+        connect_args={"options": "-c default_transaction_read_only=on"})
+    try:
+        mailbox = (await AgentMailboxState(writer).register_agent(
+            f"Readonly {uuid4()}", "test-owner", str(uuid4()))).mailbox
+        assert mailbox
+        async with reader.connect() as connection:
+            assert (await connection.execute(text("SHOW transaction_read_only"))).scalar_one() == "on"
+        ordinary = MessageState(writer, GrantState(writer))
+        assert await ordinary.all_pending_delivery_ids(mailbox) == ()
+        advisory = MessageState(reader, GrantState(reader))
+        with pytest.raises(DBAPIError, match="SELECT FOR SHARE"):
+            await advisory.all_pending_delivery_ids(mailbox)
+        with pytest.raises(DBAPIError, match="SELECT FOR SHARE"):
+            async with advisory.pending_delivery_fence(mailbox, uuid4()):
+                pytest.fail("native admission fence must retain its lock")
+        assert await advisory.all_pending_delivery_ids(mailbox, observation_only=True) == ()
+        stale = mailbox.model_copy(update={"generation": mailbox.generation + 1})
+        assert await advisory.all_pending_delivery_ids(stale, observation_only=True) is None
+    finally:
+        await reader.dispose()
+        await writer.dispose()
