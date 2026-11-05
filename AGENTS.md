@@ -42,6 +42,8 @@ Shared canonical `main` is read-only for edits. Use an authorized linked writer 
 
 ## Routes: load when the trigger is reached
 
+Before any status or plan update—or any portfolio, attention, completion, or activation message—follow [human interaction](docs/human-interaction.md).
+
 | Trigger | Owner |
 | --- | --- |
 | Bootstrap, identity, task creation, activation/topology, host mechanics | [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md), [architecture](docs/architecture.md) |

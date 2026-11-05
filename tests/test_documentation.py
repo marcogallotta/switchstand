@@ -82,11 +82,12 @@ def test_bootstrap_has_a_small_stable_section_shape():
     headings = re.findall(r"(?m)^## .+$", agents)
 
     assert headings == [
-        "## Authority and grounding",
-        "## Working with Marco",
-        "## Repository bootstrap and safety",
-        "## Work, messages, and routing",
-        "## Codex roles and shared engineering process",
+        "## First minute: identity, work and authority",
+        "## Keep the solution small, and preserve human judgment",
+        "## Effects, continuity and feedback",
+        "## When something is live or unsafe",
+        "## Client-specific execution — do not universalize",
+        "## Routes: load when the trigger is reached",
     ]
     size = len(agents.encode())
     if size > 15_000:
@@ -133,47 +134,50 @@ def test_tracker_decomposition_requires_outcomes_and_control_benefit():
 
 
 def test_role_router_has_exact_function_routes_and_owner_links():
-    router = section(read("AGENTS.md"), "### Route only the current function")
+    agents = read("AGENTS.md")
+    router = section(agents, "## Routes: load when the trigger is reached")
     routes = {
         label: body
-        for label, body in re.findall(r"(?m)^- \*\*(.+?):\*\* (.+)$", router)
+        for label, body in re.findall(r"(?m)^\| ([^|]+) \| ([^|]+) \|$", router)
+        if label not in {"Trigger", "---"}
     }
 
     assert set(routes) == {
-        "Root",
-        "Delegated Coordinator",
-        "Research/design Worker",
-        "Implementation Worker",
-        "Review Worker / eligible Coordinator reviewer",
-        "Integration/landing Coordinator",
-        "Incident / activation / Human Input / Human Review",
+        "Bootstrap, identity, task creation, activation/topology, host mechanics",
+        "Research, design, spec, code, testing, independent review or landing",
+        "Human decision, Human Review, explanation or on-demand status",
+        "Work state, messages, history, uncertain effects, feedback",
+        "Root or delegated coordination, supervision, handoff",
+        "Live incident and consequential RCA",
+        "Repository authoring, execution, CI, qualification, activation",
     }
-    assert markdown_links(routes["Root"]) == {
+    assert markdown_links(routes["Root or delegated coordination, supervision, handoff"]) == {
         "docs/coordinator-tracker-contract.md",
-        "docs/human-interaction.md",
     }
-    assert "docs/code-quality.md" in markdown_links(routes["Implementation Worker"])
+    assert "docs/human-interaction.md" in markdown_links(router)
+    assert {"docs/code-quality.md", "docs/research-sources.md"} <= markdown_links(
+        routes["Research, design, spec, code, testing, independent review or landing"]
+    )
     assert "docs/code-quality.md" in markdown_links(
-        routes["Review Worker / eligible Coordinator reviewer"]
+        routes["Repository authoring, execution, CI, qualification, activation"]
     )
-    assert "docs/code-quality.md" in markdown_links(routes["Integration/landing Coordinator"])
-    assert (
-        "Any agent doing research follows [research sources](docs/research-sources.md)."
-        in read("AGENTS.md").split("### Route only the current function", 1)[0]
-    )
+    assert "Research also follows [research-sources.md](docs/research-sources.md)." in agents
 
 
 def test_role_contract_preserves_boundaries_without_execution_detail():
-    roles = section(read("AGENTS.md"), "## Codex roles and shared engineering process")
-    before_router = roles.split("### Route only the current function", 1)[0]
+    agents = read("AGENTS.md")
+    roles = section(agents, "## Client-specific execution — do not universalize")
+    tracker = normalized("docs/coordinator-tracker-contract.md")
 
-    assert "exactly two roles: **Coordinator** and **Worker**" in before_router
-    assert "Root owns the overall assigned portfolio/integration" in before_router
-    assert "delegated Coordinator owns only its lane" in before_router
-    assert "Role/function never grants authority" in before_router
-    assert "Review independence depends on actual" in before_router
-    assert "one mutation owner per writable surface" in before_router
-    assert "one integration owner for shared surfaces" in before_router
+    assert "**Codex roles today:** Coordinator and Worker." in roles
+    assert "A Worker owns its bounded assignment and does not self-expand" in roles
+    assert "Root owns overall integration" in roles
+    assert "delegated Coordinators own only their assigned lane" in roles
+    assert "Role, tool, login, canary, review, document or mailbox registration grants nothing" in agents
+    assert "Independence depends on actual participation, not role label" in roles
+    assert "one writer per shared surface" in roles
+    assert "Root owns only its assigned portfolio" in tracker
+    assert "Root owns tracking, steering, result absorption, integration" in tracker
     assert len(roles.encode()) <= 4_000
     assert "Target advancement alone does not require rebasing" not in roles
     assert "Activating any client-visible ChatGPT MCP schema" not in roles
@@ -209,7 +213,8 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "There is no automatic third reviewer" in quality
     assert "run in parallel unless a genuine dependency makes them serial" in quality
     assert "only for an actual integration/composition claim" in quality
-    assert "Only current direct assignment or a `CURRENT` grant authorizes" in agents
+    assert "Marco's current direct assignment" in agents
+    assert "or a `CURRENT` grant controls scope and effects" in agents
     assert "intended operating scale" in human_input
     assert "deliberate V1 deferrals" in human_review
     assert "Never present default-off or inert readiness as ordinary-use product completion" in human_review
@@ -220,9 +225,10 @@ def test_process_owners_preserve_lean_delivery_challenge_and_activation_fences()
     assert "WHAT YOU ASKED —" not in human_review
     assert "CONFORMS_TO_APPROVED_BASELINE" in human_review
     assert "does not become a portfolio hold" in human_review
-    assert "does not require repeat review solely because implementation or landing is ready" in agents
-    assert "current authority separately authorizes it" in agents
-    assert "Report completed work as status, not another permission request" in agents
+    assert "Do not ask for repeat approval of an unchanged already-approved solution" in agents
+    assert "merely because implementation/landing is ready" in agents
+    assert "remain distinct and require their own current authority and quality gates" in agents
+    assert "an unchanged approved solution needs status, not another permission request" in human_review
     assert "Approved-baseline conformance" in quality
 
 
@@ -248,47 +254,52 @@ def test_aggregate_extension_and_per_pr_exception_have_distinct_authority():
 
 def test_human_and_incident_triggers_remain_always_loaded():
     agents = read("AGENTS.md")
-    triggers = section(agents, "### Always-loaded triggers")
-    incident = section(agents, "### Live incidents")
+    triggers = section(agents, "## Keep the solution small, and preserve human judgment")
+    incident = section(agents, "## When something is live or unsafe")
+    usage = normalized("docs/how-marco-uses-switchstand.md")
 
     assert markdown_links(triggers) >= {"docs/human-input.md", "docs/human-review.md"}
-    assert "Before a new material solution hardens" in triggers
-    assert "an unchanged already-approved solution does not require repeat review" in triggers
-    assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
+    assert "before that choice hardens" in triggers
+    assert "Do not ask for repeat approval of an unchanged already-approved solution" in triggers
+    assert "docs/how-marco-uses-switchstand.md" in markdown_links(agents)
+    assert "mechanically established required-currentness/applicable-invariant contradiction" in usage
     assert markdown_links(incident) >= {
         "docs/operations-live-incident.md",
         "docs/root-cause-analysis.md",
     }
-    assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
+    assert {"`CURRENT`", "`HISTORICAL`", "`UNKNOWN`"} <= set(re.findall(r"`[^`]+`", incident))
 
 
 def test_authority_and_work_routing_keep_their_causal_fences():
     agents = read("AGENTS.md")
-    authority = section(agents, "## Authority and grounding")
-    routing = " ".join(section(agents, "## Work, messages, and routing").split())
+    authority = section(agents, "## First minute: identity, work and authority")
     usage = normalized("docs/how-marco-uses-switchstand.md")
+    quality = normalized("docs/code-quality.md")
 
-    assert "Role, docs, placement, readability, login/tools and procedures never grant authority" in authority
-    assert "An ordinary unbound Coordinator uses an assigned/handoff WorkId" in authority
-    assert "Mailbox registration/takeover supplies neither work identity nor authority" in authority
-    assert "never create work from a question, status, correction, approval" in authority
-    assert "Landing requires current independent review and exact-head/composition gates" in authority
-    assert "docs/code-quality.md#explicit-human-fasttrack" in authority
+    assert "Role, tool, login, canary, review, document or mailbox registration grants nothing" in authority
+    assert "Otherwise use the exact assigned WorkId" in authority
+    assert "Never infer assignment from a readable record, role, mailbox, previous agent or search result" in authority
+    assert "Do not create tasks for questions, status, corrections, approvals" in authority
+    assert "docs/code-quality.md" in markdown_links(agents)
+    assert "independent Code Review, CI, exact-head/composition, landing" in quality
+    assert "## Explicit human fasttrack" in read("docs/code-quality.md")
     assert "work_type=\"Task\"" in usage
     assert 'owner_key=\"SELF\"' in usage
     assert "Use one stable OperationId" in usage
     assert "replay only the identical OperationId and arguments" in usage
-    assert "never supplies assignment" in routing
+    assert "it cannot assign work, select focus, transfer ownership, or grant an effect" in usage
 
 
 def test_repository_safety_routes_detail_to_the_operational_owner():
-    safety = section(read("AGENTS.md"), "## Repository bootstrap and safety")
+    agents = read("AGENTS.md")
+    safety = section(agents, "## When something is live or unsafe")
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
-    assert "Shared canonical `main` is read-only except Git reads/fetches" in safety
-    assert "Source edits, staging, commits, and worktree mutation stay in that writer" in safety
-    assert "docs/how-marco-uses-switchstand.md" in markdown_links(safety)
-    assert "docs/development.md" in markdown_links(safety)
+    assert "Shared canonical `main` is read-only for edits" in safety
+    assert "Use an authorized linked writer for source changes" in safety
+    assert "do not reset/clean/switch primary `main`" in safety
+    assert "docs/how-marco-uses-switchstand.md" in markdown_links(agents)
+    assert "docs/development.md" in markdown_links(agents)
     assert "friction register" in usage
     assert "attempted claim, observed result, state-change truth, and smallest clearing action" in usage
     assert "`repository_bundle_get`, accepts only `current`" in usage
@@ -307,14 +318,15 @@ def test_repository_safety_routes_detail_to_the_operational_owner():
 
 
 def test_stock_codex_mailbox_and_unbound_grounding_have_one_consistent_owner():
-    agents = normalized("AGENTS.md")
+    agents = read("AGENTS.md")
     architecture = normalized("docs/architecture.md")
     usage = normalized("docs/how-marco-uses-switchstand.md")
 
-    assert "asks this session to take over `Codex Coordinator`" in agents
-    assert "pass his full current confirmation message to `agent_takeover`" in agents
-    assert "must stop and ask Marco for confirmation" in agents
-    assert "never retake the Coordinator after losing it" in agents
+    codex = section(agents, "## Client-specific execution — do not universalize")
+    assert "docs/how-marco-uses-switchstand.md" in markdown_links(codex)
+    assert "Only a stock session Marco directly addresses as `Codex Coordinator`" in usage
+    assert "retry passes Marco's full confirmation message" in usage
+    assert "Mailbox registration or Marco-confirmed `Codex Coordinator` takeover restores only the durable messaging address" in usage
     assert "without a launcher-created writer, manifest, Wakeful supervisor" in usage
     assert "A repository hook re-injects the existing Feedback V1 obligation" in usage
     assert "The first boundary starts five minutes" in architecture
@@ -338,6 +350,10 @@ def test_human_guidance_is_linked_not_duplicated_in_bootstrap():
     assert "docs/human-interaction.md" in markdown_links(agents)
     assert "docs/human-input.md" in markdown_links(agents)
     assert "docs/human-review.md" in markdown_links(agents)
+    assert (
+        "Before any status or plan update—or any portfolio, attention, completion, or activation message—follow "
+        "[human interaction](docs/human-interaction.md)."
+    ) in agents
     assert {"## Item update", "## Portfolio snapshot", "## Human attention"}.issubset(
         set(re.findall(r"(?m)^## .+$", interaction))
     )
@@ -350,22 +366,23 @@ def test_performance_feedback_and_definitive_receipt_rules_stay_bounded():
     source = normalized("docs/source-history-feedback.md")
 
     assert "docs/source-history-feedback.md#feedback-capture-and-triage" in agents
-    assert "before unrelated work" in agents
+    assert "before unrelated work" in source
     assert "Sample ordinary work that produced no report" in source
     assert "four `mcp__switchstand__file_*`" not in agents
-    assert "definitive semantic receipt is the readback" in agents
+    assert "a definitive semantic receipt normally suffices as readback" in agents
     assert "Stop once the requested postcondition is established" in interaction
-    assert "do not add a redundant client reread" in agents
+    assert "No speculative second read is required" in agents
     assert "server's own readback remains mandatory" in source
     assert "different targets may be issued together" in source
     assert "same-target effects" in source
 
 
 def test_chatgpt_connection_url_is_copy_safe():
-    agents = normalized("AGENTS.md")
+    agents = read("AGENTS.md")
     usage = read("docs/how-marco-uses-switchstand.md")
 
-    assert "give the exact bare MCP endpoint and one trusted WorkId separately" in agents
+    assert "docs/how-marco-uses-switchstand.md" in markdown_links(agents)
+    assert "Give the new chat exactly one trusted WorkId separately" in usage
     assert "https://laptop.tail46f0b9.ts.net/switchstand/mcp" in usage
     assert "on its own line with no trailing punctuation" in usage
 
@@ -375,17 +392,18 @@ def test_polling_trigger_is_small_and_detail_lives_with_message_owners():
     usage = normalized("docs/how-marco-uses-switchstand.md")
     source = normalized("docs/source-history-feedback.md")
 
-    assert "`poll` or `keep polling` means continue the exact review/message/watch until terminal result" in agents
+    assert "`poll` means continue the exact live watch until terminal, user stop or real execution blocker" in agents
+    assert "`poll` or `keep polling`" in source
     assert "Interactive polling." in usage
     assert "Empty reads and arbitrary check counts are nonterminal" in source
     assert "Scheduled task or condition watch is a different future-running product" in source
 
 
 def test_root_delegation_detail_lives_in_tracker_owner():
-    agents = normalized("AGENTS.md")
+    agents = read("AGENTS.md")
     tracker = normalized("docs/coordinator-tracker-contract.md")
 
-    assert "Root coordination, delegation, child challenge/disposition, scheduling" in agents
+    assert "docs/coordinator-tracker-contract.md" in markdown_links(agents)
     assert "All execution belongs in context-free native forks" in tracker
     assert "use safe available slots without filler" in tracker
     assert "serialize heavy shared writers" in tracker
@@ -398,7 +416,7 @@ def test_root_delegation_detail_lives_in_tracker_owner():
 def test_material_design_review_and_root_agents_admission_live_in_code_quality():
     agents = read("AGENTS.md")
     quality = normalized("docs/code-quality.md")
-    router = section(agents, "### Route only the current function")
+    router = section(agents, "## Routes: load when the trigger is reached")
 
     assert "docs/code-quality.md" in markdown_links(router)
     assert "Root `AGENTS.md` is a bootstrap/router, not a process manual" in quality
@@ -412,28 +430,27 @@ def test_material_design_review_and_root_agents_admission_live_in_code_quality()
 def test_always_loaded_bootstrap_anchors_remain_explicit():
     raw_agents = read("AGENTS.md")
     agents = normalized("AGENTS.md")
-    triggers = section(raw_agents, "### Always-loaded triggers")
-    incident = " ".join(section(raw_agents, "### Live incidents").split())
+    triggers = section(raw_agents, "## Keep the solution small, and preserve human judgment")
+    incident = " ".join(section(raw_agents, "## When something is live or unsafe").split())
+    usage = normalized("docs/how-marco-uses-switchstand.md")
 
-    war_machines = (
-        "WAR MACHINES (overrides): every design, spec and build is V1, the smallest thing "
-        "that does Marco's job today. Anything beyond V1 (new table, tool, feature, "
-        "cross-track requirement, reviewer finding outside V1) is never folded in: list it "
-        "separately as an add-on with size and why it is needed now. Never set a size cap "
-        "around a bundle; challenge the bundle. Never hand Marco a big package to approve or reject."
-    )
-    assert war_machines in " ".join(triggers.split())
-    assert "Effects need Marco's active assignment" in agents
-    assert "via exact mailbox sender `claude-coordinator` in recipient Work" in agents
-    assert "or a `CURRENT` grant for exact WorkId/surface/effect" in agents
-    assert "challenge and confirm seriously destructive or irreversible action" in agents
-    assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident
-    assert "Prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
-    assert "do not delay mitigation for repository synchronization" in incident
-    assert "Before a new material solution hardens, follow [Human Input]" in triggers
-    assert "and [Human Review](docs/human-review.md) for any still-open human-owned choice" in triggers
-    assert "mechanically established required-currentness/applicable-invariant contradiction" in triggers
-    assert "agent resource admission" in agents
+    assert "Default to the smallest useful V1" in triggers
+    assert "new table, feature, tool, role, persistent state, cross-track mechanism or out-of-scope review suggestion" in triggers
+    assert "**separate add-on** with estimated size and reason it is needed now" in triggers
+    assert "Challenge the package before setting a size envelope" in triggers
+    assert "Never make Marco accept or reject a large all-or-nothing bundle" in triggers
+    assert "Marco's current direct assignment" in agents
+    assert "verified relay from exact mailbox sender `claude-coordinator` within recipient Work" in agents
+    assert "or a `CURRENT` grant controls scope and effects" in agents
+    assert "challenges seriously destructive or irreversible action" in usage
+    assert all(label in incident for label in ("`CURRENT`", "`HISTORICAL`", "`UNKNOWN`"))
+    assert "prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
+    assert "Do not delay mitigation to synchronize a stale repository" in incident
+    assert "before that choice hardens" in triggers
+    assert {"docs/human-input.md", "docs/human-review.md"} <= markdown_links(triggers)
+    assert "docs/how-marco-uses-switchstand.md" in markdown_links(raw_agents)
+    assert "mechanically established required-currentness/applicable-invariant contradiction" in usage
+    assert "docs/agent-resource-admission.md" in markdown_links(raw_agents)
     assert "Shared canonical `main` is read-only" in agents
 
 
