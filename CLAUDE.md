@@ -7,13 +7,12 @@ Read and follow AGENTS.md, but this section overrides it for Claude; AGENTS.md's
 ## Start, compaction, handoff
 1. FIRST read /home/marco/switchstand-recovery/coordinator/GOAL.md (shared with the Codex Coordinator; only Marco changes it).
 2. Read in full the three shared Tracker items (`work_get`): Situation 40581c1e-04c5-5ab4-94d9-3c5ce21fcd35, Priorities focus-now 332857d1-6c4d-51e8-af19-ed77b4f19e69, coordinator notes a8ec90d7-8f20-5e44-9551-03fbfea22474. They replace a private priority file. Keep them current: update the notes item (CURRENT) yourself; Situation and Priorities change only with Marco's approval.
-3. Read his recent rulings in ~/.local/state/switchstand/independent-audit-claude-20261008/marco-decisions.md (Marco verbatim; overruled rulings marked SUPERSEDED). Check all of it against reality, then put a watcher on every running Codex job (list in ~/.local/state/switchstand/codex-runs/JOBS.md) and carry each to its next step.
+3. Check the Tracker items against reality, then put a watcher on every running Codex job (list in ~/.local/state/switchstand/codex-runs/JOBS.md) and carry each to its next step. Marco's past words are found by a context-free agent running `/home/marco/switchstand-recovery/coordinator/tools/transcript-search.py --date YYYY-MM-DD --grep WORDS`; never read big files yourself.
 4. SYNC: systemd timers run `$SWITCHSTAND_PRIMARY/scripts/claude-sync-checklist` every 20 minutes and mark mailbox checks due every 5. Follow its alert at session start and after replies, then rerun/ack it. While Marco is talking use `scripts/claude-sync-reminder --punt` (at most 3 times).
 5. MAIL WAKE: at start and after every wake run `scripts/claude-mail-watch "<your registered mailbox name>"` with `run_in_background: true`. On mail: `agent_message_pending`, then rearm. On a nonzero exit: report the error; it is not "no mail".
 6. HANDOFF (before any replacement, or when Marco says hand off): update the notes item (pick up here, his unanswered questions, running jobs), check JOBS.md against live jobs, then tell him "synced at HH:MM, safe to replace". If that line never came (crash, angry replace), the new agent first checks the Tracker items against live jobs and JOBS.md.
 7. REFRESH [M 10-17]: when his rulings change how Claude works, put them in CLAUDE.md at once (PR, his merge), do the HANDOFF, tell him "CLAUDE.md changed: replace me". A running Claude keeps the old rules until replaced.
 8. JOBS.md: one line per job (thread id, stage, next step); launch and watcher commands at the top; the ChatGPT design sessions Marco runs. Check it against live jobs before any status reply.
-9. Priority now: the Codex Coordinator is not running; getting it running comes first (Marco 11-05).
 
 ## Marco
 1. Answer him first, one or two plain lines, before any tool. No IDs or codes: say what a PR, WorkId or bug is in words. Never use him as a relay; check your tools first.
@@ -40,6 +39,7 @@ Read and follow AGENTS.md, but this section overrides it for Claude; AGENTS.md's
 7. LOOP [M 10-17]: document, tweak, launch, learn, tweak, launch more. Tweak means process or config, never scope. Launch means the next already-approved stage only; record what it measured in JOBS.md. Every job gets a background watcher that fires the next stage when its check-in file appears, plus a 90-minute timer for a job that never finishes; a job with neither is dropped work. No blocking waits (`gh pr checks --watch` banned).
 8. DROP CHECK: before every status reply, after every job finishes, and every few turns, recheck the Tracker items: has any order of his been dropped? An open order with no running job and no next step is dropped: restart it or tell him in one line.
 9. Process files: read the whole file, change it as a whole, never patch one spot.
+10. DEPLOYS [Marco 11-04, HIGH]: before any deploy, Claude reviews the test plan (what was tested, what it proves) and it is run. A database migration also needs a written, tested rollback plan. On any failed production change: roll back ONCE, STOP, report to Marco, never retry. Never restore the whole production database as a rollback.
 
 ## War machines [M, top priority]
 1. V1 only: the smallest thing that does his job today. Claude checks everything going out and coming back (Codex jobs, ChatGPT handoffs, designs, builds, its own briefs) for size before it goes on.
