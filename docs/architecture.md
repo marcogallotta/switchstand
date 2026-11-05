@@ -104,7 +104,7 @@ interval aggregation and appends a bounded, privacy-safe subset after the busine
 one non-retrying transaction. Failures leave coverage partial. Migration
 `0024_mcp_operation_timings` stores no SQL, parameters, payloads, prompts, notes, tokens, bodies,
 or principal identity.
-`flow_report.py` owns a private read-only JSON snapshot for one exact WorkId. The report remains
+`flow_report/` owns a private read-only JSON snapshot for one exact WorkId. The report remains
 partial: it reports canonical current state and relations plus observed target events from one
 read-only, repeatable-read transaction. It projects only digest-validated failure/resolution rows
 whose owner is that exact WorkId, excluding private prose by default, and digest-validates
@@ -166,8 +166,10 @@ an exact WorkId correlation, including host-maintenance receipts, remain `UNKNOW
 acquiring an agent-authored stage label.
 
 
-**Private Flow Report: invocation and test route.** Implementation, projection and rendering live
-in [`flow_report.py`](../src/switchstand/flow_report.py). The
+**Private Flow Report: invocation and test route.** The public API is
+[`flow_report/__init__.py`](../src/switchstand/flow_report/__init__.py); snapshot, projection and CLI
+live in [`runtime.py`](../src/switchstand/flow_report/runtime.py), and deterministic presentation in
+[`rendering.py`](../src/switchstand/flow_report/rendering.py). The
 [`switchstand-flow-report` entry point](../pyproject.toml) calls the public `main()` callable.
 The normal dependency-only checkout environment does not install that console script; invoke
 the same callable with one exact UUID:
@@ -967,7 +969,7 @@ waiting-writer proof; a failed post-commit receipt is explicitly `UNKNOWN`.
 | Change provider-neutral work discovery or WorkId binding | `discovery.py`, `state.py` | `chatgpt.py`, provider search/structure implementation, migrations when storage changes |
 | Change canonical Tracker work/relations/event behavior | `tracker/work.py`, `tracker/relations.py`, `priority_claims.py`, `tracker/events.py`, `tracker/event_reads.py`, `tracker/runtime.py` | explicit canonical metadata, migrations `0008`, `0014_canonical_routing`, `0015_work_admission_time`, and `0017_priority_claims`, real-PostgreSQL repository tests, public projection tests, ordinary/managed wiring, and protected create/update/relation atomicity |
 | Change recorded human-direction continuity | `human_trajectory.py` | migration `0009` and trajectory tests; preserve append-only provenance without turning it into implementation authority |
-| Change private flow evidence reporting | `flow_report.py` | exact WorkId database correlation, bounded digest-validated failure/activation reads, and source coverage; no external inference, mutation, or process control |
+| Change private flow evidence reporting | `flow_report/` | exact WorkId database correlation, bounded digest-validated failure/activation reads, and source coverage; no external inference, mutation, or process control |
 | Change Asana payload or relation semantics | `provider.py::AsanaProvider` | `tracker/provider_relations.py` when the provider-neutral contract changes, plus provider and gateway tests |
 | Change protected-effect recovery or UNKNOWN behavior | the relevant gateway and `grant_state.py` | provider readback implementation and causal ambiguity/retry tests |
 | Change message lifecycle/currentness | `mailbox/messages.py` | managed and ordinary adapters; `mailbox/agent_mailboxes.py` for name/principal/generation binding changes |

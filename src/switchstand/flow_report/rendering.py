@@ -198,5 +198,3 @@ def render(value: dict[str, object], output_format: Literal["json", "concise"]) 
     if output_format == "concise":
         return render_concise(value)
     return json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
-
-
