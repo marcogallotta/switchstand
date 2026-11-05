@@ -20,9 +20,11 @@ async def start(*, fresh=False):
     try:
         if THREAD_FILE.exists() and not fresh:
             thread = THREAD_FILE.read_text().strip()
-            await rpc.call("thread/resume", {"threadId": thread, "cwd": ROOT, "excludeTurns": True})
+            await rpc.call("thread/resume", {"threadId": thread, "cwd": ROOT, "excludeTurns": True,
+                                             "sandbox": "danger-full-access", "approvalPolicy": "never"})
         else:
-            result = await rpc.call("thread/start", {"cwd": ROOT})
+            result = await rpc.call("thread/start", {"cwd": ROOT, "sandbox": "danger-full-access",
+                                                      "approvalPolicy": "never"})
             thread = result["thread"]["id"]
             THREAD_FILE.write_text(thread + "\n")
         await rpc.call("turn/start", {"threadId": thread, "input": [{"type": "text", "text": "Start a fresh Codex Coordinator. Before any other tool or content read, "
@@ -32,8 +34,12 @@ async def start(*, fresh=False):
                     "a8ec90d7-8f20-5e44-9551-03fbfea22474 (notes; CURRENT only). "
                     "Then read GOAL.md and recovery AGENTS.md, reconcile current authority, "
                     "and check mail. Do not resume the old thread 01a1a811. "
-                    "For this startup qualification, report readiness and wait for mail; "
-                    "do not dispatch substantive work until the mail/wake test completes."}]})
+                    "Then work the approved priority list: check running jobs and launch the next "
+                    "approved step for every item without a running job, in priority order, "
+                    "with at most 3 jobs running at once and resource admission before each launch. "
+                    "As jobs finish, continue the next approved steps. Ask Marco via "
+                    "claude-coordinator only for choices that are his calls; keep other approved "
+                    "work moving. Use /home/marco/switchstand/scripts/codex-job for background workers."}]})
     finally:
         await rpc.__aexit__(None, None, None)
 if __name__ == "__main__":

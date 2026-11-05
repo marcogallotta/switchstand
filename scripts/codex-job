@@ -1,0 +1,24 @@
+#!/bin/bash
+# Launch one already-authorized worker; the Coordinator owns priority and the three-job limit.
+set -euo pipefail
+if [ "$#" -ne 5 ]; then
+    echo "usage: codex-job NAME ESTIMATE_MIB WORKTREE PROMPT_FILE LOG_FILE" >&2
+    exit 2
+fi
+name=$1
+estimate_mib=$2
+worktree=$3
+prompt_file=$4
+log_file=$5
+if [[ ! $name =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "NAME must contain only letters, digits, underscores or hyphens" >&2
+    exit 2
+fi
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+"$repo/scripts/agent-resource-admission" "$estimate_mib"
+unit="ss-codex-$name-$(date +%H%M%S)-$$"
+nohup setsid env CODEX_HOME="$HOME/.local/state/switchstand/codex-bg-home" \
+    systemd-run --user --scope --quiet --slice=agents.slice --unit="$unit" \
+    codex exec --dangerously-bypass-approvals-and-sandbox -C "$worktree" - \
+    < "$prompt_file" > "$log_file" 2>&1 &
+echo "started pid=$! unit=$unit.scope log=$log_file; check log for launch outcome"
