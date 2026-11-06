@@ -21,7 +21,6 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
@@ -331,33 +330,3 @@ class CanonicalRelationsRepository:
         if bool(confirmed) != add:
             raise SQLAlchemyError("project membership readback did not converge")
         return await _bump(connection, work_id, version)
-
-    async def replace_placements(
-        self, work_id: UUID, values: tuple[ProjectPlacement, ...], observed_version: int,
-    ) -> int:
-        if len({value.project_id for value in values}) != len(values):
-            raise ValueError("project placements must be unique")
-        if any(not value.name or value.asana_project_gid == "" or value.section_name == ""
-               for value in values):
-            raise ValueError("project placement text must be non-empty")
-        async with self.engine.begin() as connection:
-            version = await _locked_version(connection, work_id, observed_version)
-            for value in values:
-                await connection.execute(pg_insert(projects).values(
-                    project_id=value.project_id, asana_project_gid=value.asana_project_gid,
-                    name=value.name,
-                ).on_conflict_do_nothing(index_elements=[projects.c.project_id]))
-                stored = (await connection.execute(select(
-                    projects.c.name, projects.c.asana_project_gid,
-                ).where(projects.c.project_id == value.project_id))).one()
-                if stored != (value.name, value.asana_project_gid):
-                    raise ValueError("project identity conflicts with stored project")
-            await connection.execute(delete(project_memberships).where(
-                project_memberships.c.work_id == work_id
-            ))
-            if values:
-                await connection.execute(insert(project_memberships), [{
-                    "project_id": value.project_id, "work_id": work_id,
-                    "section_name": value.section_name,
-                } for value in values])
-            return await _bump(connection, work_id, version)
