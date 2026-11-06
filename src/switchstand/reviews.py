@@ -1029,30 +1029,6 @@ class ReviewService:
             focused_from=focused_from,
         )
 
-    async def _send(
-        self, sender: AgentMailbox, recipient: AgentMailbox, message_id: UUID,
-        route_ref: Literal["review.request", "review.acquisition", "review.outcome"],
-        payload: JsonValue, *, reply_to: UUID | None = None,
-    ) -> PendingMessage | None:
-        route = MessageRoute(
-            recipient_work_id=recipient.endpoint_id,
-            recipient_grant_version=recipient.generation,
-        )
-        request = MessageSubmitRequest(
-            api_version="1", message_id=message_id, grant_version=sender.generation,
-            route_ref=route_ref, kind="result" if reply_to is not None else "request",
-            payload=payload, in_reply_to_delivery_id=reply_to,
-        )
-        submitted = (
-            await self.messages.submit_received_result(
-                sender.endpoint_id, sender.generation, str(sender.generation),
-                route, request, agent_binding=sender,
-            ) if reply_to is not None else await self.messages.submit_admitted(
-                sender.endpoint_id, route, request, agent_binding=sender,
-            )
-        )
-        return submitted.message if submitted.status == "ok" else None
-
     async def _record_basis_in_transaction(
         self, connection: AsyncConnection, brief: CanonicalReviewBrief,
         requester: AgentMailbox,

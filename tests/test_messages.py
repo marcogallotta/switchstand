@@ -169,7 +169,11 @@ async def test_route_identity_contract_storage_seam_and_restart(subject):
         (selected_route.model_copy(update={"recipient_grant_version": 2}), submitted),
     ]
     for selected, candidate in variants:
-        assert (await state.submit(sender_principal, selected, candidate)).status == "conflict"
+        conflict = await state.submit(sender_principal, selected, candidate)
+        assert (conflict.status, conflict.reason) == ("conflict", "message_identity_conflict")
+    assert await state.submit(sender_principal, selected_route, submitted) == first
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(message_deliveries.c.delivery_id))).scalars().all() == [first.message.delivery_id]
     sender2 = sender.model_copy(update={"id": uuid4(), "version": 2})
     await grants.issue(sender2, 1)
     replay = await state.submit(sender_principal, selected_route,
