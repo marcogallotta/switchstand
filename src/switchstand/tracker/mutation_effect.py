@@ -45,6 +45,21 @@ def blocked_effect_next_action(operation: str) -> str:
     )
 
 
+def with_blocked_effect(outcome: GuardOutcome, prior: GuardOutcome) -> GuardOutcome:
+    """Decorate an unsent guard with the selected unresolved effect's public view."""
+    assert prior.operation_id is not None and prior.work_id is not None
+    return outcome.model_copy(update={
+        "next_action": blocked_effect_next_action(prior.operation),
+        "blocked_by": EffectBlocker(
+            operation=prior.operation, operation_id=prior.operation_id,
+            work_id=prior.work_id, outcome=EffectOutcomeView(
+                status=prior.status, reason=prior.reason,
+                effect=prior.effect, retry=prior.retry,
+            ),
+        ),
+    })
+
+
 async def run_update_or_relation(
     grants: GrantState,
     principal: PrincipalContext,
@@ -92,20 +107,11 @@ async def run_update_or_relation(
             if blocked is not None:
                 outcome = blocked[2]
                 assert outcome.operation_id is not None and outcome.work_id is not None
-                return guard(
-                    "unknown", "target_has_unresolved_effect", False,
-                ).model_copy(update={
-                    "next_action": blocked_effect_next_action(outcome.operation),
-                    "blocked_by": EffectBlocker(
-                        operation=outcome.operation,
-                        operation_id=outcome.operation_id,
-                        work_id=outcome.work_id,
-                        outcome=EffectOutcomeView(
-                            status=outcome.status, reason=outcome.reason,
-                            effect=outcome.effect, retry=outcome.retry,
-                        ),
-                    ),
-                })
+                return with_blocked_effect(
+                    guard(
+                        "unknown", "target_has_unresolved_effect", False,
+                    ), outcome,
+                )
 
             prepared = await prepare(grant, qualification)
             if isinstance(prepared, GuardOutcome):

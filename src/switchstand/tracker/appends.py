@@ -17,8 +17,6 @@ from ..core import (
 )
 from ..grant_state import GrantState, effect_intents
 from ..grants import (
-    EffectBlocker,
-    EffectOutcomeView,
     EffectReceipt,
     GuardOutcome,
     PrincipalContext,
@@ -26,7 +24,7 @@ from ..grants import (
     WorkGrant,
 )
 from .events import OperationConflictError, StaleWorkVersion, WorkEventRepository
-from .mutation_effect import blocked_effect_next_action
+from .mutation_effect import with_blocked_effect
 from .runtime import confirmation_message, pending_review_id
 from .work import canonical_revision, canonical_work
 
@@ -83,20 +81,11 @@ class AppendGateway:
                     if outcome.operation_id == request.operation_id:
                         return self.guard(request, "denied", "operation_identity_conflict")
                     assert outcome.operation_id is not None and outcome.work_id is not None
-                    return self.guard(
-                        request, "unknown", "target_has_unresolved_effect",
-                    ).model_copy(update={
-                        "next_action": blocked_effect_next_action(outcome.operation),
-                        "blocked_by": EffectBlocker(
-                            operation=outcome.operation,
-                            operation_id=outcome.operation_id,
-                            work_id=outcome.work_id,
-                            outcome=EffectOutcomeView(
-                                status=outcome.status, reason=outcome.reason,
-                                effect=outcome.effect, retry=outcome.retry,
-                            ),
-                        ),
-                    })
+                    return with_blocked_effect(
+                        self.guard(
+                            request, "unknown", "target_has_unresolved_effect",
+                        ), outcome,
+                    )
                 handle = await self.state.get(request.work_id)
                 if handle is None:
                     return self.guard(request, "denied", "work_not_bound")
@@ -212,18 +201,11 @@ class CanonicalAppendGateway:
                     if blocked is not None:
                         prior = GuardOutcome.model_validate(blocked["outcome"])
                         assert prior.operation_id is not None and prior.work_id is not None
-                        return AppendGateway.guard(
-                            request, "unknown", "target_has_unresolved_effect"
-                        ).model_copy(update={
-                            "next_action": blocked_effect_next_action(prior.operation),
-                            "blocked_by": EffectBlocker(
-                                operation=prior.operation, operation_id=prior.operation_id,
-                                work_id=prior.work_id, outcome=EffectOutcomeView(
-                                    status=prior.status, reason=prior.reason,
-                                    effect=prior.effect, retry=prior.retry,
-                                ),
-                            ),
-                        })
+                        return with_blocked_effect(
+                            AppendGateway.guard(
+                                request, "unknown", "target_has_unresolved_effect"
+                            ), prior,
+                        )
                     if current.completed:
                         return AppendGateway.guard(request, "denied", "work_is_terminal")
                     if request.observed_revision != canonical_revision(

@@ -202,10 +202,36 @@ async def test_append_preserves_existing_unknown_effect_barrier(subject: Subject
             intent={"authority": "provider"}, outcome=blocked.model_dump(mode="json"),
         ))
 
-    result = await subject.gateway.append(subject.principal, request(subject))
-    assert result.reason == "target_has_unresolved_effect"
-    assert result.blocked_by is not None and result.blocked_by.operation_id == blocked_id
+    attempt = request(subject)
+    before = blocked.model_dump(mode="json")
+    result = await subject.gateway.append(subject.principal, attempt)
+    assert result.model_dump(mode="json") == {
+        "status": "unknown", "operation": "work_append",
+        "work_id": str(attempt.work_id), "operation_id": str(attempt.operation_id),
+        "reason": "target_has_unresolved_effect", "effect": "not_sent", "retry": "none",
+        "next_action": (
+            "No ordinary exact recovery exists for the blocking work_update effect; do not "
+            "resend or start a new effect. Escalate for trusted operator adjudication."
+        ),
+        "receipt": None,
+        "blocked_by": {
+            "operation": "work_update", "operation_id": str(blocked.operation_id),
+            "work_id": str(blocked.work_id),
+            "outcome": {"status": blocked.status, "reason": blocked.reason,
+                        "effect": blocked.effect, "retry": blocked.retry},
+        },
+    }
+    assert blocked.model_dump(mode="json") == before
     async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(canonical_work.c.row_version).where(
+            canonical_work.c.work_id == subject.work_id
+        )) == 1
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(attempt.operation_id)
+        )) is None
+        assert await connection.scalar(select(effect_intents.c.outcome).where(
+            effect_intents.c.operation_id == str(blocked_id)
+        )) == before
         assert await connection.scalar(select(func.count()).select_from(work_events).where(
             work_events.c.work_id == subject.work_id
         )) == 0
