@@ -137,7 +137,7 @@ try {
     if((await evaluate(session,'submissions.length'))===1) break;
     await pause(50);
   }
-  assert.deepEqual(await evaluate(session,'submissions'),['Process your mailbox']);
+  assert.deepEqual(await evaluate(session,'submissions'),['Process your mailbox'],'initial alarm dispatches exactly one wake');
   assert.equal(await evaluate(session,'stops'),1,'one Stop before enabled Send');
   await evaluate(session,`document.querySelector('textarea').value='protected draft'`);
   await evaluate(workerSession,`load().then(check)`);
