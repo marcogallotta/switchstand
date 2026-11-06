@@ -47,9 +47,10 @@ Raw `codex` is the official npm-installed CLI; it must not be intercepted.
 `CODEX_HOME`. These homes must already contain their configuration and authentication;
 the launcher does not create or migrate them. Worker starts at the checkout root;
 Coordinator starts in `roles/coordinator` for scoped instructions and resume filtering.
-Both use the official CLI from NVM's current default Node installation, bypass any
-`codex` earlier on `PATH`, and forward arguments unchanged. Resume with the same role
-entrypoint; `resume --all` includes other working directories within that role's home.
+Both use the official CLI from NVM's current default Node installation and forward arguments unchanged.
+The scripts bypass any `codex` command earlier on `PATH`.
+Resume the exact session through the same role entry; `resume --all` includes other working
+directories within that role's home.
 
 Neither creates a writer, manifest, Wakeful supervisor, or launch-bound WorkId. A Worker does Marco's assigned work directly; opening the repository or registering a mailbox does not appoint a Coordinator or require delegation. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Coordinator mailbox identity and any takeover require Marco's separate current direction; launching a role does not take over a mailbox. A first cross-principal attempt without his full confirmation stops with `takeover_confirmation_required`. `/root` remains a temporary inbound alias for old senders. An explicitly appointed Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes a lost name without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
 
