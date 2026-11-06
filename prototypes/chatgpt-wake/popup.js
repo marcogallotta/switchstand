@@ -13,10 +13,22 @@ async function show() {
     for (const type of ['resume', ...(b.uncertain ? ['rearm'] : []), 'remove']) {
       const button = document.createElement('button');
       button.textContent = {resume: 'Resume', rearm: 'Re-arm', remove: 'Remove'}[type];
-      button.onclick = () => act(async () => {
-        if (type === 'rearm' && !confirm(`Re-arm ${b.name} for future mail? An earlier wake may already have been sent. This does not prove delivery or mailbox processing, and sends nothing now.`)) return;
+      const sendAction = async () => {
         await request({type, id: b.id, ...(type === 'rearm' ? {expectedAttempt: b.wakeAttempt?.id || null} : {})});
         await show();
+      };
+      button.onclick = () => act(async () => {
+        if (type !== 'rearm') return sendAction();
+        button.disabled = true;
+        const warning = document.createElement('span');
+        warning.style.display = 'block';
+        warning.textContent = `Re-arm ${b.name} for future mail? An earlier wake may already have been sent. This does not prove delivery or mailbox processing, and sends nothing now. `;
+        const accept = document.createElement('button'), cancel = document.createElement('button');
+        accept.textContent = 'Confirm re-arm'; cancel.textContent = 'Cancel';
+        accept.onclick = () => act(sendAction);
+        cancel.onclick = () => act(show);
+        warning.append(accept, cancel);
+        row.append(warning);
       });
       row.append(button);
     }
