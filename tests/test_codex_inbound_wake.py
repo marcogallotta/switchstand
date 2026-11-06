@@ -128,11 +128,11 @@ async def test_gate_rechecks_after_admission(subject, boundary):
 async def test_receipts_ignore_nonuser_text_and_follow_pages(subject):
     _, rpc, _, identity, delivery = subject
     forbidden_delivery = uuid4()
-    forbidden_marker = {"type": "text", "text": MARKER + json.dumps([str(forbidden_delivery)])}
+    forbidden_marker = MARKER + json.dumps([str(forbidden_delivery)])
     marker = {"type": "text", "text": MARKER + json.dumps([str(delivery)])}
-    rpc.call.side_effect = [{"data": [{"items": [{"type": "agentMessage", "content": [forbidden_marker]}]}],
+    rpc.call.side_effect = [{"data": [{"items": [{"id": "agent", "type": "agentMessage", "text": forbidden_marker}]}],
                              "nextCursor": "next"},
-                            {"data": [{"items": [{"type": "userMessage", "content": [marker]}]}]}]
+                            {"data": [{"items": [{"id": "user", "type": "userMessage", "content": [marker]}]}]}]
     assert await module.receipts(rpc, identity) == {str(delivery)}
     assert [(call.args[0], call.args[1]["threadId"], call.args[1]["cursor"])
             for call in rpc.call.call_args_list] == [
