@@ -225,15 +225,6 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       if (duplicate) throw Error(duplicate.removed ? 'Removed chat retains safety history; cannot Add again' : 'Chat already added; use Resume');
       cancelled.delete(p.endpoint);
       bindings.push({id: p.endpoint, name: p.name, generation: p.generation, url: m.url, armed: true, status: 'Armed'});
-    } else if (m.type === 'rearm') {
-      const b = bindings.find(b => b.id === m.id && !b.removed);
-      if (!b?.uncertain || m.expectedAttempt !== (b.wakeAttempt?.id || null)) throw Error('Uncertain wake changed; reopen the popup');
-      const p = await poll(b.name);
-      if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
-      if (p.delivery_ids.length || b.alert || cancelled.has(b.id)) throw Error('Pending mail or alert must clear before Re-arm');
-      b.uncertain = false;
-      b.armed = true;
-      b.status = 'Armed';
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
       for (const b of bindings) if (!b.removed && (m.type === 'resume-all' || b.id === m.id)) { b.armed = true; cancelled.delete(b.id); }
@@ -254,3 +245,10 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
 });
 chrome.alarms.create('poll', {periodInMinutes: 0.5});
 chrome.alarms.onAlarm.addListener(a => { if (a.name === 'poll') exclusive(async () => check(await load())); });
+
+function rearmAll() { return exclusive(async () => {
+  const bindings = await load();
+  for (const b of bindings) if (!b.removed) { b.uncertain = false; b.armed = true; b.status = 'Armed'; cancelled.delete(b.id); }
+  await save(bindings);
+}); }
+chrome.action.onClicked.addListener(rearmAll);
