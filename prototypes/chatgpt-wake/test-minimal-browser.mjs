@@ -193,10 +193,14 @@ try {
   await evaluate(restartedSession,`load().then(check)`);
   const priorRearm = (await evaluate(restartedSession,'load()'))[0];
   const sendsBeforeRearm = await evaluate(session,'submissions.length');
-  await evaluate(popupSession,`show().then(()=>{window.confirm=()=>false;[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
+  await command('Emulation.setDeviceMetricsOverride',{width:200,height:600,deviceScaleFactor:1,mobile:false},popupSession);
+  await evaluate(popupSession,`show().then(()=>{window.confirm=()=>{throw Error('native modal forbidden')};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
+  assert.match(await evaluate(popupSession,`document.querySelector('#bindings p span').textContent`),/earlier wake may already have been sent/);
+  assert.equal(await evaluate(popupSession,`[...document.querySelectorAll('#bindings p span button')].every(b=>{const r=b.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth})`),true,'inline confirmation buttons fit a 200px popup');
+  await evaluate(popupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Cancel').click()`);
   await pause(100);
   assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,true,'cancelled confirmation preserves the fence');
-  await evaluate(popupSession,`window.confirm=text=>{window.rearmWarning=text;return true};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()`);
+  await evaluate(popupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='Confirm re-arm').click()`);
   for(let attempt=0;attempt<50;attempt++) {
     if(!(await evaluate(restartedSession,'load()'))[0].uncertain) break;
     await pause(50);
@@ -204,7 +208,6 @@ try {
   const rearmed = (await evaluate(restartedSession,'load()'))[0];
   assert.equal(rearmed.uncertain,false);
   for(const key of ['ids','seen','wakeAttempt']) assert.deepEqual(rearmed[key],priorRearm[key],`${key} preserved`);
-  assert.match(await evaluate(popupSession,'rearmWarning'),/earlier wake may already have been sent/);
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'Re-arm sends nothing inline');
   const rearmVersion = versions.find(v=>v.scriptURL===worker.url && v.runningStatus==='running');
   assert.ok(rearmVersion);
