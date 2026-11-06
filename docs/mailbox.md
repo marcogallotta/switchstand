@@ -65,6 +65,10 @@ use `test_messages.py`; its tests exercise the database boundary, not just rende
    reconsideration. When idle, enabled, admitted and current, it submits `turn/start`. A marker
    proves notice injection, not receive, ACK, reply, disposition or completed work.
 
+A complete current pending observation releases captured terminal fresh bodies before transcript
+lookup. Pending bodies, other recipients and entries newly signalled or replaced during observation
+remain; stale observations retain intent. A transcript receipt alone does not release pending intent.
+
 A restart loses in-memory freshness and baselines pending mail again. Old unseen mail therefore
 remains durable but is not automatically redispatched (`OLDER_UNCERTAIN`). Ambiguous `turn/start`
 acceptance suspends the recipient: preserve exact delivery/turn evidence and reconcile rather than
