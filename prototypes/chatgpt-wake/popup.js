@@ -10,10 +10,14 @@ async function show() {
   for (const b of minimalBindings.filter(b => !b.removed).sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url))) {
     const row = document.createElement('p');
     row.textContent = `${b.name}: ${b.status || 'Armed'} ${b.report || ''} `;
-    for (const type of ['resume', 'remove']) {
+    for (const type of ['resume', ...(b.uncertain ? ['rearm'] : []), 'remove']) {
       const button = document.createElement('button');
-      button.textContent = type === 'resume' ? 'Resume' : 'Remove';
-      button.onclick = () => act(async () => { await request({type, id: b.id}); await show(); });
+      button.textContent = {resume: 'Resume', rearm: 'Re-arm', remove: 'Remove'}[type];
+      button.onclick = () => act(async () => {
+        if (type === 'rearm' && !confirm(`Re-arm ${b.name} for future mail? An earlier wake may already have been sent. This does not prove delivery or mailbox processing, and sends nothing now.`)) return;
+        await request({type, id: b.id, ...(type === 'rearm' ? {expectedAttempt: b.wakeAttempt?.id || null} : {})});
+        await show();
+      });
       row.append(button);
     }
     $('bindings').append(row);

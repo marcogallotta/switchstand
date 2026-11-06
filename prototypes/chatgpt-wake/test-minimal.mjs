@@ -428,3 +428,71 @@ assert.equal(run(`composer('${url}', 'prepare', true).detail`), 'attachment-pres
 attached = false;
 assert.ok(observations.some(p => p.observation.attempt?.detail === 'click-dispatched'));
 console.log('PASS: composer logs distinguish disabled Send, unrelated draft, attachment and dispatched click');
+
+// Explicit reconciliation never composes/sends and cannot discard current evidence.
+const rearmRequest = m => new Promise(resolve => handlers[0](m, {id: 'test'}, resolve));
+const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncertain: true,
+  ids: [id], seen: [nextId], wakeAttempt: {id, action: 'send', started_at: new Date().toISOString()}, status: 'Wake outcome unknown'};
+const rearmMessage = {type: 'rearm', id, expectedAttempt: id};
+const emptyPoll = {status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []};
+let rearmPoll = emptyPoll;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => structuredClone(rearmPoll)} : originalFetch(request, options);
+let rearmScripts = 0;
+const beforeRearmScript = context.chrome.scripting.executeScript;
+context.chrome.scripting.executeScript = async (...args) => { rearmScripts++; return beforeRearmScript(...args); };
+for (const variant of ['pending', 'endpoint', 'generation', 'unavailable', 'attempt', 'alert', 'removed', 'cancelled']) {
+  state = {minimalBindings: [structuredClone(rearmBinding)]};
+  rearmPoll = {...emptyPoll};
+  run('cancelled.clear()');
+  if (variant === 'pending') rearmPoll.delivery_ids = [id];
+  if (variant === 'endpoint') rearmPoll.endpoint = nextId;
+  if (variant === 'generation') rearmPoll.generation = 2;
+  if (variant === 'unavailable') rearmPoll.status = 'unavailable';
+  if (variant === 'attempt') state.minimalBindings[0].wakeAttempt.id = nextId;
+  if (variant === 'alert') state.minimalBindings[0].alert = {incident_id: nextId};
+  if (variant === 'removed') state.minimalBindings[0].removed = true;
+  if (variant === 'cancelled') run(`cancelled.add('${id}')`);
+  const unchanged = structuredClone(state);
+  assert.ok((await rearmRequest(rearmMessage)).error, variant);
+  assert.deepEqual(state, unchanged, `${variant} cannot clear or overwrite evidence`);
+}
+run('cancelled.clear()'); rearmPoll = emptyPoll;
+state = {minimalBindings: [structuredClone(rearmBinding), {id: nextId, name: 'other', armed: false}]};
+const beforeRearm = structuredClone(state);
+const realSave = context.chrome.storage.local.set;
+context.chrome.storage.local.set = async () => { throw Error('storage failed'); };
+assert.match((await rearmRequest(rearmMessage)).error, /storage failed/);
+assert.deepEqual(state, beforeRearm, 'failed persistence cannot pretend reconciliation succeeded');
+context.chrome.storage.local.set = realSave;
+assert.equal((await rearmRequest(rearmMessage)).error, undefined);
+assert.deepEqual(state.minimalBindings[0], {...rearmBinding, uncertain: false, armed: true, status: 'Armed'});
+assert.deepEqual(state.minimalBindings[1], beforeRearm.minimalBindings[1], 'per-chat reconciliation leaves other bindings untouched');
+assert.equal(rearmScripts, 0, 'every accepted/rejected reconciliation made zero browser execution calls');
+const freshRearmContext = vm.createContext({...context});
+vm.runInContext(source, freshRearmContext);
+assert.equal((await vm.runInContext('load()', freshRearmContext))[0].uncertain, false, 'new worker context restores persisted reconciliation');
+handlers.pop(); // Subsequent fault injection belongs to the original fixture context.
+state = {minimalBindings: [{...rearmBinding, wakeAttempt: undefined}]};
+assert.equal((await rearmRequest({...rearmMessage, expectedAttempt: null})).error, undefined, 'legacy uncertainty has explicit null attempt identity');
+
+state = {minimalBindings: [structuredClone(rearmBinding)]};
+let enterPoll, releasePoll;
+const pollEntered = new Promise(resolve => { enterPoll = resolve; });
+let holdPoll = new Promise(resolve => { releasePoll = resolve; });
+context.fetch = async () => {
+  if (holdPoll) { const hold = holdPoll; holdPoll = null; enterPoll(); await hold; }
+  return {ok: true, json: async () => emptyPoll};
+};
+const racingRearm = rearmRequest(rearmMessage);
+await pollEntered;
+const racingRemove = rearmRequest({type: 'remove', id});
+releasePoll();
+assert.ok((await racingRearm).error, 'Remove arriving during fresh poll cancels reconciliation');
+assert.equal((await racingRemove).error, undefined);
+assert.equal(state.minimalBindings[0].uncertain, true, 'racing Remove retains uncertain history');
+assert.equal(state.minimalBindings[0].removed, true);
+assert.equal(rearmScripts, 0);
+context.fetch = originalFetch;
+context.chrome.scripting.executeScript = beforeRearmScript;
+console.log('PASS: explicit per-chat Re-arm guards, unchanged evidence, save failure, restart and Remove race; zero inline DOM actions');
