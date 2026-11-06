@@ -12,17 +12,7 @@ Human Review closes the material decision trajectory. Prior Human Input is expec
 
 ## Before Human Review
 
-The owner should know:
-
-- the intended ordinary-use outcome;
-- the exact reviewed package;
-- material review findings and dispositions;
-- material cuts, deferrals, and remainder;
-- decision-changing aggregate implementation/test/support size;
-- important operating assumptions;
-- any materially different smaller alternative.
-- intended operating scale, introduced complexity and why it is required now, the smallest credible alternative, and deliberate V1 deferrals;
-- the first representative useful end-to-end stage, or why an independently stable non-speculative foundation must precede it and the immediate route from that foundation to the proof.
+Know the ordinary-use outcome, exact reviewed package, findings/dispositions, material cuts, deliberate V1 deferrals and remainder, aggregate implementation/test/support size, operating assumptions and scale, introduced complexity and why needed now, and strongest smaller alternative. Identify the first useful end-to-end stage; if a stable non-speculative foundation comes first, explain why a vertical stage is impractical and its immediate route to useful proof.
 
 If a load-bearing assumption, major scope question, or decision-changing size remains unknown, the work is not ready unless the decision is specifically whether to fund the investigation needed to determine it.
 
@@ -55,26 +45,11 @@ explain that or imply that every service advanced. Quoted deployment logs alone 
 
 Match context to what the human already knows. If the trajectory is current, give the delta only. If context has been lost, briefly restore the outcome and settled direction, then give the delta.
 
-A useful Human Review states:
+State the ordinary-use change, what is new, material consequence/risk/limit/scale/aggregate cost or support burden, meaningful cut/deferral/alternative, recommendation and decisive reason, exact approval effects, what remains separate, and the real decision. For identity/mailbox renames include every changed recipient, authority boundary and routed behavior before/after. Judge usefulness and scale. Never present default-off or inert readiness as ordinary-use product completion.
 
-- what changes in ordinary use;
-- what is genuinely new or changed;
-- for an identity or mailbox rename, every changed recipient, authority boundary, and routed
-  behavior in before/after terms;
-- material consequence, risk, limit, scale, size, cost, or support burden;
-- meaningful cut, deferral, or alternative;
-- the recommendation and decisive reason;
-- exactly what yes approves;
-- what remains separate;
-- the real decision, if one remains.
+Before asking Marco, establish whether a genuinely new material human-owned decision remains. A roadmap or outcome agreement is not authorization for a new material solution. Unchanged approved solutions continue within current authority. A completed or deployed change is reported as status, not a fresh approval request.
 
-Judge whether this is the right thing and scale to build before rewarding internal completeness. Never present default-off or inert readiness as ordinary-use product completion.
-
-Do not dump the specification, review chronology, IDs, or implementation detail unless they change the decision.
-
-Before asking Marco, establish whether a genuinely new material human-owned decision remains. A roadmap or outcome agreement is not authorization for a new material solution. If an exact already-approved solution is unchanged, continue within existing effect authority rather than asking again. A completed or deployed change is reported as status, not a fresh approval request.
-
-For a real decision, use a natural, compact explanation in Marco's own context: what he asked for, what materially differs, the recommendation and its decisive reason against the strongest simpler alternative, relevant consequence or cut, and what his response would authorize. Do not replace reasoning with technical labels, a compulsory four-line opening, blanket multi-item permissions, or repeated "Go?" prompts. Do not exaggerate normal V1 staging as a crisis. Include material facts without making Marco read a specification.
+For an actual decision, use a compact natural explanation in Marco’s context, including why the recommendation beats the strongest simpler route. Avoid technical labels, a compulsory four-line opening, blanket permissions, repeated bare approval prompts, manufactured crisis and specification/history dumps.
 
 When a material decision needs Human Review, include the actual proposed explanation in the existing independent design or implementation review; substantive corrections receive focused rereview, not a separate format-review stage.
 

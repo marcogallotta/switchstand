@@ -5,21 +5,15 @@ Ordinary Codex uses the official CLI and repository configuration. Neutral Wakef
 edge monitoring, and the optional disk-pressure producer remain independent components; installing
 the disk-pressure timer is still a separate activation effect.
 
-`scripts/launch-worker` and `scripts/launch-coordinator` delegate to
-`scripts/launch-codex worker|coordinator`, which selects the corresponding existing home under
-`~/.local/state/switchstand/roles/`, overriding an inherited `CODEX_HOME`. Worker starts at the
-checkout root; Coordinator starts in `roles/coordinator`. Both use the official CLI from NVM's
-current default Node installation and forward Codex arguments unchanged.
+For role launchers, homes, working directories and official CLI selection, follow
+[the Codex host mechanics](how-marco-uses-switchstand.md#codex-worker-and-coordinator-sessions).
 
-Governed implementation tasks carry the inline package projection and review handoff
-defined in [Code quality: governed implementation packages](code-quality.md#governed-implementation-packages).
-Keep its package base fixed across delivery branches and use its solution disposition
-before revising PR decomposition; routine implementation remains worker-owned.
+Governed implementation tasks follow
+[Code quality: governed implementation packages](code-quality.md#governed-implementation-packages).
 
-Marco's explicit fasttrack follows [Code quality: explicit human fasttrack](code-quality.md#explicit-human-fasttrack):
-current CI and required E2E pass, review deferred through landing/deployment, and Coordinator-owned
-post-deployment review. The exception changes review timing, with exact effect authority and
-candidate/composition qualification preserved. It also applies to the stack review waits below.
+For Marco's explicit fasttrack, follow
+[Code quality: explicit human fasttrack](code-quality.md#explicit-human-fasttrack),
+including its exception to the stack review waits below.
 
 ## Normal local workflow
 
@@ -165,13 +159,9 @@ The governing distinctions and review rules live in
 Link to the applicable qualification document rather than copying its procedure into
 a task or review handoff.
 
-GitHub-native stacks may be authored, self-checked, and sent for focused layer review
-asynchronously. Each layer remains a bounded semantic change. Fix a defect in the lowest
-layer that owns it and cascade the restack upward. A restack preserves a focused review
-only when both the layer-diff identity and the reviewed dependency/interface-contract
-identity are unchanged and no conflict was resolved. Every included layer still waits for
-fresh exact-top cumulative review and qualification before landing; partial early landing
-is outside V1. Manual or unrecognized stacks keep the ordinary unstacked gates.
+For asynchronous GitHub-native stacks, layer review, restacking and cumulative landing gates,
+follow [Code quality: test quality and qualification](code-quality.md#test-quality-and-qualification).
+Manual or unrecognized stacks keep the ordinary unstacked gates.
 
 Quality also runs the same authoritative Quality and Docker lifecycle jobs daily against
 the exact default-branch head supplied by GitHub. Scheduled runs are labeled separately

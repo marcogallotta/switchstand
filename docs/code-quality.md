@@ -1,6 +1,20 @@
 # Code quality and Code Review
 
-This is the repository semantic owner for substantive code/config/test implementation and Code Review. It complements current active work, approved Design/Implementation Contract, worker-owned Execution Plan, and routed review procedure; it never grants scope, effect, merge, activation, or approval authority.
+This owns substantive code/config/test implementation and Code Review alongside assigned work,
+its approved Design/Contract and worker Execution Plan; it grants no scope, effect or approval authority.
+
+Use applicable AGENTS phase routes. Authors use [Author](#author--implementer),
+[qualification](#test-quality-and-qualification), [refresh](#refresh-check) and
+[execution truth](#deterministic-and-execution-truth); reviewers also use [Code Review](#code-review)
+and [Findings](#findings-remedies-and-challenge). [Cleanup](#cleanup-prove-less-work-to-understand-and-change)
+loads for cleanup work. Material design or independent material judgment also loads
+[independence](#independent-material-judgment) and [design review](#material-design-review-before-human-review);
+material Design/Implementation Specifications include [scope blocks](#mandatory-scope-blocks), even outside packages.
+Governed work uses [package controls](#governed-implementation-packages) and their accounting/handoff routes.
+[Forecast/cap](#forecast-miss-and-hard-cap-handling), [PR-size](#exceptional-loc-exemption-gate),
+[root admission](#root-agents-admission) and [fasttrack](#explicit-human-fasttrack) rules load at their named triggers.
+Follow embedded owner links. This index makes no applicable requirement optional; UNKNOWN applicability
+requires reading its owner before the affected decision.
 
 ## Governing standard
 
@@ -89,7 +103,7 @@ exclude speculative later-stage machinery, and name the immediate route to the f
 Inert readiness is a landing claim, not ordinary-use completion.
 
 Before material coding:
-1. Bind the exact governing outcome, non-goals, current Design/Contract/Plan, candidate/base and writable surfaces. When an approved Human Review baseline governs, record the exact baseline identity and compare the implementation package's scope and ordinary-use consequence as `BASELINE_PRESERVED`, `MATERIAL_DEVIATION`, or `UNKNOWN`; independent design/implementation review validates the comparison before dispatch. `UNKNOWN` blocks only dispatch while minimum evidence, correction, and unaffected authorized work continue.
+1. Bind the governing outcome/non-goals, current Design/Contract/Plan, candidate/base and writable surfaces. When Human Review governs, complete the exact pre-dispatch baseline comparison under [baseline preservation and deviation](human-review.md#baseline-preservation-and-deviation); UNKNOWN holds only dispatch while evidence/correction and unaffected work continue.
 2. For nontrivial work, make the worker-owned Execution Plan identify the canonical owner/reuse/delete
    route, changed surfaces/boundaries, strongest materially smaller architecture-sensitive alternative,
    earliest discriminating proof, implementation/test-support envelope and material unknowns.
@@ -254,14 +268,7 @@ any multiplier. Evidence can justify necessary test growth/same-task underestima
 sunk cost, schedule pressure or "almost done" cannot. Preserve useful approved behavior, necessary
 causal tests and readability rather than cutting them to fit.
 
-Record on the existing task/Execution Plan: exact WorkId and approved baseline/package revision,
-base/head, reproducible production/support/total counts, growth cause, remaining forecast, credible
-KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE routes and engineering benefit/functional loss, independent
-judgment and Coordinator approval/challenge/escalation with absolute ceilings. Include approved
-margin, current approved ceiling and requested final ceiling with explicit contingency. Approval
-binds that scope/ceilings; crossing an extended ceiling triggers review again. This replaces the
-mandatory two-reviewer aggregate-extension permission stage. Genuinely new Marco-directed scope
-requires explicit re-scope, not an underestimated-continuation label.
+Record the current [package projection](#governed-implementation-packages) and [fixed-base count report](#fixed-base-accounting), growth cause, complete remaining forecast, prior extensions, KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE alternatives with benefit/loss, independent judgment and Coordinator disposition. Include current approved and requested absolute ceilings with explicit contingency. Approval binds scope/ceilings; crossing an extended ceiling requires review again. New Marco-directed scope requires explicit re-scope.
 
 Human choices about outcome, scope, architecture, trust/authority, risk or burden return while cheap
 at any count. Preserve current HOLD/DENIED, independent Code Review, CI, exact-head/composition, landing
@@ -288,16 +295,7 @@ below rejects convenience, sunk cost and ordinary test growth. Never cut approve
 force invalid partial states, compress/omit necessary work or choose 499 lines to avoid a boundary.
 Estimate the smallest sound implementation honestly and apply every crossed control.
 
-Use existing task/Execution Plan evidence: exact WorkId and approved package/specification revision,
-base/head where applicable, reproducible counts and disclosed classifications/exclusions, original
-forecast/margin/cap, approved ceiling, exact count, complete remaining forecast and requested absolute
-final ceiling with explicit contingency. Explain why the original plan failed, why the added lines
-are essential and concrete KEEP ONE PR / SPLIT / REPLAN alternatives, strongest smaller design/cut
-and evidence rejecting it. The exception binds the exact stable merge-base/head and measured actual
-diff; a material candidate/base change invalidates it. Check coupled stack/follow-up work against the
-aggregate baseline; do not sum legitimate independent PRs to invent a per-PR exception. A split must
-be independently useful, valid, reviewable, testable, landable and recoverable/revertible, without
-placeholder/dead sibling code.
+Use the existing [package projection](#governed-implementation-packages) and [fixed-base count report](#fixed-base-accounting), plus the exact actual-PR merge-base/head and reproducible count/classification/exclusions. State current ceiling, complete remaining forecast, requested absolute final ceiling and contingency, why the original plan failed, why growth is essential, and the best KEEP ONE PR / SPLIT / REPLAN and smaller-design alternatives with rejecting evidence. The exception binds that measured diff; material candidate/base change invalidates it. Check coupled follow-ups against aggregate history without summing independent PRs into an invented exception. Any split must be useful, valid, reviewable, testable, landable and recoverable independently, without placeholder/dead sibling code.
 
 ### Canonical exception challenge
 
@@ -330,12 +328,7 @@ cannot justify additional machinery.
 
 ### Existing exact-head review handoff
 
-Supply the governing projection and exact `package-size.py` report with the exact head. Review the
-[accounting](#fixed-base-accounting), patterns/counts, original forecasts/caps, UNKNOWN, forecast-miss
-disposition and actual PR size. For each material defensive mechanism require a concrete contract
-failure, reproducible fault or discriminating boundary case a simpler solution mishandles.
-Unresolved limits/composition or undispositioned triggers hold only affected readiness; use focused
-rereview, not another ceremony.
+Supply the current [package projection](#governed-implementation-packages) and exact-head [count report](#fixed-base-accounting). Review their fields, forecast-miss disposition and actual PR size. Each material defensive mechanism needs a concrete failure or discriminating boundary case the smaller solution mishandles. Unresolved limits/composition/triggers hold affected readiness only; use focused rereview.
 
 ## Test quality and qualification
 
@@ -440,7 +433,11 @@ G. **Documentation currency.** For Implementation Specification work, reconcile 
    dispositions (under 1218218678917862) to the actual retained candidate. Otherwise, if the diff touches
    something architecture describes, update `docs/architecture.md` in the same PR. Stale qualifying
    documentation is a material finding, not optional polish.
-H. **Approved-baseline conformance.** When a Human Review baseline governs, bind the exact candidate and baseline and return `CONFORMS_TO_APPROVED_BASELINE` only when protected requirements/non-goals remain intact, no deviation remains, and no new human-owned outcome, experience, architecture, trust/data boundary, burden, material risk, or protected effect was introduced. A conforming candidate needs no second Human Review solely because it is complete. `MATERIAL_DEVIATION`, `NEW_HUMAN_CHOICE`, or `UNKNOWN` holds only the affected readiness claim; landing and activation authority remain separate.
+H. **Approved-baseline conformance.** When a Human Review baseline governs, bind it to the exact
+   candidate and apply [Human Review: baseline preservation and deviation](human-review.md#baseline-preservation-and-deviation).
+   Return `CONFORMS_TO_APPROVED_BASELINE`, `MATERIAL_DEVIATION`, `NEW_HUMAN_CHOICE` or `UNKNOWN`
+   against that contract. A conforming build needs no repeat Human Review solely for completion;
+   landing and activation authority remain separate.
 
 Every approving or clearing review also checks this danger hotlist:
 - **D1 WRONG OUTCOME** — technically successful work solves a different problem from Marco's current outcome.
