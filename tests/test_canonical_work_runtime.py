@@ -96,25 +96,36 @@ async def test_get_retries_when_placements_cross_a_row_version() -> None:
 
 @pytest.mark.asyncio
 async def test_search_retries_whole_page_when_placements_cross_a_row_version() -> None:
-    work_id = uuid4()
-    before, after = _work(work_id), _work(work_id, 2)
-    old_relations, new_relations = _relations("Mailbox", "Doing"), _relations("Tracker", "Review")
+    first_id, second_id = uuid4(), uuid4()
+    first_before, first_after = _work(first_id), _work(first_id, 2)
+    second_before, second_after = _work(second_id), _work(second_id, 2)
+    current = {
+        first_id: iter((first_before, first_after)),
+        second_id: iter((second_after, second_after)),
+    }
+    placements = {
+        first_id: iter((_relations("Mailbox", "Doing"), _relations("Tracker", "Review"))),
+        second_id: iter((_relations("Before", "Doing"), _relations("After", "Review"))),
+    }
     works = SimpleNamespace(
-        get=AsyncMock(side_effect=[after, after]),
+        get=AsyncMock(side_effect=lambda work_id: next(current[work_id])),
         search=AsyncMock(side_effect=[
-            CurrentWorkPage((before,), "old-cursor"),
-            CurrentWorkPage((after,), "new-cursor"),
+            CurrentWorkPage((first_before, second_before), "old-cursor"),
+            CurrentWorkPage((first_after, second_after), "new-cursor"),
         ]),
     )
-    relations = SimpleNamespace(get=AsyncMock(side_effect=[old_relations, new_relations]))
+    relations = SimpleNamespace(get=AsyncMock(side_effect=lambda work_id: next(placements[work_id])))
     runtime = CanonicalWorkRuntime(works, relations)  # type: ignore[arg-type]
 
     result = await runtime.search(WorkSearchRequest(api_version="1", limit=7))
 
     assert result.status == "ok"
     assert result.next_cursor == "new-cursor"
-    assert len(result.items) == 1
-    assert result.items[0].revision == canonical_revision(work_id, 2)
-    assert result.items[0].context.model_dump()["placements"] == (
-        {"area": "Tracker", "stage": "Review"},
-    )
+    assert [
+        (item.id, item.revision, item.context.model_dump()["placements"])
+        for item in result.items
+    ] == [
+        (first_id, canonical_revision(first_id, 2), ({"area": "Tracker", "stage": "Review"},)),
+        (second_id, canonical_revision(second_id, 2), ({"area": "After", "stage": "Review"},)),
+    ]
+    assert works.search.await_count == 2
