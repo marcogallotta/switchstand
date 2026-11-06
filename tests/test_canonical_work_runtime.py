@@ -18,9 +18,9 @@ def _work(work_id: UUID, version: int = 1) -> CurrentWork:
     )
 
 
-def _relations() -> WorkRelations:
+def _relations(area: str = "Switchstand", stage: str = "Doing") -> WorkRelations:
     return WorkRelations(
-        None, (), (ProjectPlacement(uuid4(), "Switchstand", "123", "Doing"),),
+        None, (), (ProjectPlacement(uuid4(), area, "123", stage),),
     )
 
 
@@ -79,7 +79,7 @@ async def test_search_projects_page_and_cursor() -> None:
 async def test_get_retries_when_placements_cross_a_row_version() -> None:
     work_id = uuid4()
     before, after = _work(work_id), _work(work_id, 2)
-    old_relations, new_relations = _relations(), _relations()
+    old_relations, new_relations = _relations("Mailbox", "Doing"), _relations("Tracker", "Review")
     works = SimpleNamespace(get=AsyncMock(side_effect=[before, after, after, after]))
     relations = SimpleNamespace(get=AsyncMock(side_effect=[old_relations, new_relations]))
     runtime = CanonicalWorkRuntime(works, relations)  # type: ignore[arg-type]
@@ -89,14 +89,16 @@ async def test_get_retries_when_placements_cross_a_row_version() -> None:
     assert result.status == "ok"
     assert result.item is not None
     assert result.item.revision == canonical_revision(work_id, 2)
-    assert result.item.context.placements[0].area == new_relations.placements[0].name
+    assert result.item.context.model_dump()["placements"] == (
+        {"area": "Tracker", "stage": "Review"},
+    )
 
 
 @pytest.mark.asyncio
 async def test_search_retries_whole_page_when_placements_cross_a_row_version() -> None:
     work_id = uuid4()
     before, after = _work(work_id), _work(work_id, 2)
-    old_relations, new_relations = _relations(), _relations()
+    old_relations, new_relations = _relations("Mailbox", "Doing"), _relations("Tracker", "Review")
     works = SimpleNamespace(
         get=AsyncMock(side_effect=[after, after]),
         search=AsyncMock(side_effect=[
@@ -111,5 +113,8 @@ async def test_search_retries_whole_page_when_placements_cross_a_row_version() -
 
     assert result.status == "ok"
     assert result.next_cursor == "new-cursor"
+    assert len(result.items) == 1
     assert result.items[0].revision == canonical_revision(work_id, 2)
-    assert result.items[0].context.placements[0].area == new_relations.placements[0].name
+    assert result.items[0].context.model_dump()["placements"] == (
+        {"area": "Tracker", "stage": "Review"},
+    )
