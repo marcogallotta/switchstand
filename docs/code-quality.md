@@ -168,54 +168,43 @@ Review supplies evidence, never implementation, landing, activation or provider-
 
 ### Mandatory scope blocks
 
-Before Human Review, every material Design Specification records the intended repository
-surfaces/patterns; original production/config and support forecasts; production, support and
-total hard caps; the V1 binary allowance fixed at zero changed files and zero changed bytes;
-counts of new tables, tools, services, processes, flags, grant operations, persistent stores or
-state machines, and runtime-config crossings; the strongest materially smaller route; and the
-exact breach/replan condition. Missing or unresolved fields mean **NOT READY**.
+Before Human Review, every material Design Specification records repository surfaces/patterns;
+original production/config and support forecasts; production, support and total hard caps; V1 binary
+allowance of zero changed files/bytes; counts of new tables, tools, services, processes, flags, grant
+operations, persistent stores/state machines and runtime-config crossings; strongest materially
+smaller route; and exact breach/replan condition. Missing/unresolved fields mean **NOT READY**.
 
-Before dispatch, its material Implementation Specification reconciles those fields, freezes one
-immutable package base SHA, declares package patterns covering every base-to-final-head changed
-path, uses support patterns only to classify covered paths, copies the original forecasts/caps,
-records the exact `package-size.py` command, and names one cumulative package/integration owner.
-Missing fields or unresolved `UNKNOWN` mean **NOT READY**. Revised estimates, rebases and PR
-slicing never reset the base, forecasts or caps.
+Before dispatch, the material Implementation Specification reconciles those fields, freezes the
+immutable package base, declares patterns covering every base-to-final-head changed path (support
+patterns only classify covered paths), copies original forecasts/caps, records the exact
+`package-size.py` command and names one cumulative package/integration owner. Missing fields or
+unresolved `UNKNOWN` mean **NOT READY**. Apply the accounting below without resetting the projection.
 
-The report requires the base to be an ancestor of the combined head and measures their one Git
-diff. Any uncovered changed path returns `UNKNOWN` without a cap comparison. Any added, deleted
-or content-changed binary also returns `UNKNOWN`; only a Git-detected pure rename whose old and
-new blob OIDs are identical is reported at zero gross and allowed by V1. Configurable nonzero
-binary allowances are deferred.
-
-Repository gross LOC and external activation effects remain separate. A process-note or receipt
-update is outside the Git report and cannot be estimated by a second counter or used to reset its
-cap. When a governing package includes such effects, bind them to exact existing WorkIds and
-fields, preserve unrelated text, use exact CAS/operation receipts, reread exact resulting text
-and revisions, and require replan for any broader durable surface or policy effect. Repository
-landing alone never proves that process activation occurred.
-
-Forecasts are alarms, not targets. Later re-estimates may guide execution but never reset the
-original-forecast denominator or raise an approved cap. Do not maintain a running line-count
-ledger. Recompute retained fixed-base counts from Git with `python scripts/package-size.py`
-using the governing record's base, exact combined head, package patterns, support patterns,
-original forecasts and approved caps. The script reports facts only; it never sets a forecast,
-cap, exemption, authority decision or compliance verdict.
+Repository LOC and external effects are separate. Notes/receipt updates are outside the Git report,
+not a second counter or cap reset. For included effects bind exact existing WorkIds/fields, preserve
+unrelated text, use exact CAS/operation receipts, reread resulting text/revisions, and replan broader
+durable surface/policy effects. Landing never proves process activation.
 
 ### Fixed-base accounting
 
-Measure the retained aggregate once from the immutable package base to the exact combined
-candidate/head across all included delivery slices. Count additions plus deletions as gross
-changed lines; production and support remain separate and total is their sum. Package patterns
-are the evidenced inclusion boundary; changes outside them are unrelated and excluded. Do not
-invent ad-hoc exclusions to improve the result.
+Recompute retained additions plus deletions as gross changed lines from the immutable package base to one exact combined
+head across all delivery slices; production and support are separate and total is their sum.
+Use `python scripts/package-size.py` with that base/head, package/support patterns, original forecasts
+and approved caps, not a running line ledger. The script reports facts, not forecasts, caps,
+exemptions, authority or compliance. Forecasts are alarms, not targets; re-estimates cannot erase a
+miss, reset the original denominator or raise an approved cap.
 
-Renames and deletions remain in the fixed-base result. A rename crossing the approved package
-boundary or production/support classification, an uncountable/binary package change, or missing
-exact composition/attribution is `UNKNOWN`; do not assert envelope compliance. Splitting,
-stacking, rebasing, closing, superseding or landing PRs cannot reset the base or erase retained
-changes. A stack or partially landed package must be measured at one exact combined retained
-head; per-PR diffs or summed overlapping diffs are not the package aggregate.
+The base must be an ancestor of the combined head. Package patterns define evidenced inclusion;
+exclude unrelated paths outside them, never ad-hoc exclusions. Any uncovered path means `UNKNOWN`
+without cap comparison. Added/deleted/content-changed binaries mean `UNKNOWN`; V1 allows only a
+Git-detected pure rename with identical old/new blob OIDs at zero gross. Nonzero binary allowances
+remain deferred. Renames/deletions remain counted; a rename across package boundary or
+production/support classification, uncountable change or missing exact composition/attribution
+means `UNKNOWN`, not envelope compliance.
+
+Splitting, stacking, rebasing, closing, superseding, landing, WorkId or line-category changes cannot
+reset the base, original forecasts/caps or governing history, nor erase retained changes. Measure a
+stack/partly landed package at one exact combined retained head, not per-PR or summed overlapping diffs.
 
 ### Forecast miss and hard-cap handling
 
@@ -232,77 +221,70 @@ solution and identifies what it supersedes.
 
 ### Coordinator extension review
 
-Approved aggregate production, support and total caps remain separate review triggers. Before
-further affected expansion would exceed an approved ceiling, stop that expansion and bring the
-causal reason to the responsible Coordinator. A breach never grants automatic permission, even
-below 2x. Reconcile already-observed overruns before continuing; unaffected authorized work proceeds.
+Before further affected expansion exceeds an approved production, support or total ceiling, stop
+and bring the causal reason to the responsible Coordinator. Reconcile observed overruns before
+continuing; a breach grants no permission, even below 2x. Unaffected authorized work proceeds.
 
-Keep the ORIGINAL approved baseline caps and immutable package base. For each applicable dimension,
-record its original cap, current fixed-base retained count, complete remaining forecast, proposed
-absolute final ceiling and any prior extension. The Coordinator may approve a justified extension
-for the SAME approved task only when every proposed extended ceiling is strictly below twice its
-corresponding ORIGINAL approved cap. A later extension gets a new causal review against that same
-original baseline, never the last extension. A zero original cap cannot become a positive allowance
-by multiplication. Missing baseline/counts or UNKNOWN composition cannot establish this route.
-At 2x or above in ANY breached dimension, take the prepared decision to Marco before further
-affected expansion. A total below 2x does not clear a support or production dimension at 2x;
-unused allowance in one dimension does not transfer to another.
+For each dimension record its ORIGINAL cap, fixed-base retained count, complete remaining forecast,
+proposed absolute final ceiling and prior extensions. Coordinator may extend the SAME approved task
+only when every ceiling is strictly below twice its corresponding ORIGINAL approved cap. Later
+extensions receive fresh causal review against the original baseline, never the last extension.
+A zero cap cannot become positive by multiplication; missing baseline/counts or UNKNOWN composition
+cannot establish this route. At 2x or above in ANY breached dimension, take the prepared decision to
+Marco before further affected expansion. Lower total does not clear a 2x production/support dimension;
+allowances do not transfer.
 
-Review WHY the cost grew: necessary work for the approved outcome, underestimated implementation
-or assurance cost, a changed external fact, or invented scope/mechanism. Use a fresh independent
-judgment under the section above; Coordinator approval remains a separate reasoned disposition.
-Challenge scope creep at any multiplier. An estimate miss or necessary test growth can justify
-same-task continuation when evidence supports it; convenience, sunk cost, schedule pressure and
-"almost done" alone do not. Do not remove useful approved behavior, necessary causal tests or
-readability just to make the count fit.
+Use [independent material judgment](#independent-material-judgment) to challenge WHY cost grew:
+necessary approved work, underestimated implementation/assurance, changed external fact or invented
+scope/mechanism. Coordinator approval is a separate reasoned disposition. Challenge scope creep at
+any multiplier. Evidence can justify necessary test growth/same-task underestimate; convenience,
+sunk cost, schedule pressure or "almost done" cannot. Preserve useful approved behavior, necessary
+causal tests and readability rather than cutting them to fit.
 
-The existing task/Execution Plan carries exact WorkId, approved baseline/package revision,
-base/head, reproducible production/support/total counts, causal growth explanation, remaining
-forecast, credible KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE routes and their engineering benefit
-or functional loss, independent judgment, and Coordinator approval/challenge/escalation with
-absolute ceilings. Approval binds that same scope and those ceilings. Crossing an extended ceiling
-triggers review again; it never compounds the original denominator or silently admits new scope.
-This replaces the mandatory two-reviewer aggregate-extension permission stage.
+Record on the existing task/Execution Plan: exact WorkId and approved baseline/package revision,
+base/head, reproducible production/support/total counts, growth cause, remaining forecast, credible
+KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE routes and engineering benefit/functional loss, independent
+judgment and Coordinator approval/challenge/escalation with absolute ceilings. Include approved
+margin, current approved ceiling and requested final ceiling with explicit contingency. Approval
+binds that scope/ceilings; crossing an extended ceiling triggers review again. This replaces the
+mandatory two-reviewer aggregate-extension permission stage. Genuinely new Marco-directed scope
+requires explicit re-scope, not an underestimated-continuation label.
 
-Existing human choices about outcome, scope, architecture, trust/authority, risk or burden still
-return while cheap, at any count. Preserve current HOLD/DENIED, independent Code Review, CI,
-exact-head/composition, landing and separate deployment/activation authority.
+Human choices about outcome, scope, architecture, trust/authority, risk or burden return while cheap
+at any count. Preserve current HOLD/DENIED, independent Code Review, CI, exact-head/composition, landing
+and separate deployment/activation authority. Coordinator extension never waives the per-PR gate below.
 
 ### Exceptional LOC exemption gate
 
-The per-PR rule is separate from aggregate task caps. Aim for coherent PRs around 300 gross changed
-lines as a norm, not another hard gate. Agents split independently useful, reviewable PRs without
-asking Marco, keeping required related tests with the relevant behavior. Splitting never resets
-the aggregate baseline, hides cumulative growth or admits scope creep. An aggregate package above
-500 lines is not itself a `>=500` PR exception; measure each actual PR against its exact stable
-merge-base/head separately from the fixed-base retained package.
+Aim for coherent PRs around 300 gross changed lines as a norm, not a hard gate. Agents split
+independently useful, reviewable PRs without asking Marco, keeping related required tests with the
+behavior. An aggregate package above 500 lines is not itself a `>=500` PR exception: measure each
+actual PR at its exact stable merge-base/head, separately from fixed-base package accounting.
 
-A `>=500` actual PR/diff remains on **HOLD** absent an exact Marco exception before landing. Such
-requests should basically never be necessary: first attempt coherent smaller delivery boundaries
-and explain the concrete technical inability to split safely. An indivisible correctness,
-migration, compatibility, recovery or reviewability constraint needs evidence; convenience,
-deadlines, laziness, already-written code, sunk cost, ordinary test growth or avoiding another PR
-do not qualify. Do not cut approved functionality or synthetically slice invalid partial states.
-Use the existing independent review and canonical challenge below; no mandatory second reviewer
-unless a concrete unresolved reason requires one. Coordinator may approve an aggregate extension
-within the rule above, but cannot waive this distinct per-PR ceiling. Conversely, splitting a large
-PR needs no human permission and cannot waive an aggregate cap.
+A `>=500` actual PR/diff remains on **HOLD** absent an exact Marco exception before landing. First
+attempt coherent smaller delivery boundaries and the [canonical challenge](#canonical-exception-challenge).
+Requests should basically never be necessary. Coordinator cannot waive this ceiling; splitting needs
+no human permission but cannot waive package caps. Use the existing independent review, not a
+mandatory second reviewer without a concrete unresolved reason.
 
-LOC bounds are controls, not optimization targets. Never compress or omit necessary work, choose
-499 lines, or otherwise shape a change to sit just below a review boundary. Estimate the smallest
-sound implementation honestly and apply every boundary it crosses.
+An exception requires a demonstrated indivisible correctness, migration, compatibility, recovery or
+reviewability invariant, externally fixed contract/artifact size, or necessary mechanical
+movement/deletion whose splitting would materially reduce reviewability. Merely asserting atomicity,
+deadlines, laziness, already-written code or avoiding another PR is insufficient; the challenge
+below rejects convenience, sunk cost and ordinary test growth. Never cut approved functionality,
+force invalid partial states, compress/omit necessary work or choose 499 lines to avoid a boundary.
+Estimate the smallest sound implementation honestly and apply every crossed control.
 
-Use existing task/Execution Plan evidence for an extension or per-PR exception. It contains the exact
-WorkId and approved package/specification revision; immutable package base and exact candidate/head
-where applicable; the reproducible count and disclosed classifications/exclusions; original
-forecast, approved margin, original cap, approved ceiling, exact count, complete remaining forecast,
-and one requested absolute final ceiling with explicit contingency; the causal reason the original
-plan failed; why the additional lines are essential to the approved outcome; and concrete
-`KEEP ONE PR / SPLIT / REPLAN` alternatives, including the strongest smaller design or cut and the
-evidence for rejecting it. A legitimate per-PR exception must rest on a demonstrated indivisible
-correctness, migration, compatibility, recovery or reviewability invariant, a size fixed by an
-external contract/artifact, or necessary mechanical movement/deletion for which splitting would
-materially reduce reviewability. Merely asserting that the change is atomic is insufficient.
+Use existing task/Execution Plan evidence: exact WorkId and approved package/specification revision,
+base/head where applicable, reproducible counts and disclosed classifications/exclusions, original
+forecast/margin/cap, approved ceiling, exact count, complete remaining forecast and requested absolute
+final ceiling with explicit contingency. Explain why the original plan failed, why the added lines
+are essential and concrete KEEP ONE PR / SPLIT / REPLAN alternatives, strongest smaller design/cut
+and evidence rejecting it. The exception binds the exact stable merge-base/head and measured actual
+diff; a material candidate/base change invalidates it. Check coupled stack/follow-up work against the
+aggregate baseline; do not sum legitimate independent PRs to invent a per-PR exception. A split must
+be independently useful, valid, reviewable, testable, landable and recoverable/revertible, without
+placeholder/dead sibling code.
 
 ### Canonical exception challenge
 
@@ -328,19 +310,6 @@ Apply Coordinator extension authority only to aggregate caps, never as a per-PR 
 PR exception reaches Marco only after concrete evidence establishes why sound splitting fails;
 review agreement does not grant it. Preserve genuine tradeoff dissent verbatim.
 
-An aggregate extension requests absolute ceilings measured against the immutable original limits,
-never a renewed multiplier on the last extension. Same-task underestimate continuation follows
-Coordinator causal review below 2x; at 2x or above it goes to Marco. Genuinely new Marco-directed
-scope requires explicit re-scope, never laundering as an underestimated continuation.
-
-The `>=500` exemption binds the exact stable merge-base/head and measured actual diff and must be
-granted before landing. Material candidate or base change invalidates it. Check coupled stacked
-and follow-up work against the aggregate baseline; do not sum legitimate independent PRs to invent
-a per-PR exception. A legitimate
-split must be independently useful, valid, reviewable, testable, landable and recoverable/revertible,
-without placeholder or dead sibling code. Changing bases, WorkIds, PR boundaries, or line-category
-labels does not reset the governing history.
-
 Before approving defensive machinery, exercise the smallest credible implementation at the real
 boundary, or use a precise skeleton where execution is not yet practical. Name the contract,
 boundary case, expected result and remaining unproved claims. Hypothetical completeness alone
@@ -348,13 +317,12 @@ cannot justify additional machinery.
 
 ### Existing exact-head review handoff
 
-Supply the governing package projection and exact `package-size.py` report with the exact head.
-Review verifies the immutable base, original forecasts, caps, package/support patterns, retained
-counts, UNKNOWN state, any forecast-miss disposition and actual PR size. Revised forecasts never
-erase an earlier miss or raise a cap. Review each material defensive mechanism against a concrete
-contract failure, reproducible fault or credible discriminating boundary case that a simpler
-solution would mishandle. Unresolved limits, UNKNOWN composition or an undispositioned trigger
-holds only the affected readiness claim; use normal focused rereview, not a second ceremony.
+Supply the governing projection and exact `package-size.py` report with the exact head. Review the
+[accounting](#fixed-base-accounting), patterns/counts, original forecasts/caps, UNKNOWN, forecast-miss
+disposition and actual PR size. For each material defensive mechanism require a concrete contract
+failure, reproducible fault or discriminating boundary case a simpler solution mishandles.
+Unresolved limits/composition or undispositioned triggers hold only affected readiness; use focused
+rereview, not another ceremony.
 
 ## Test quality and qualification
 
