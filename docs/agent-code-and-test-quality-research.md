@@ -173,11 +173,10 @@ DP-04/05 reserve scarce human attention for consequential choices; DP-06 treats 
 DP-08/09 preserve exact lineage and explicit decision reversals. These support challenging unnecessary
 mechanisms and review burden. They are predecessor evidence, not imported Switchstand authority.
 
-DP-06 and the strategic candidate [North Star](north-star.md)'s rejection of permanent LOC thresholds
-conflict with the current human-controlled `>=500` gross actual-PR HOLD. Deletions count too.
-Recommendation for a separate human decision: reconsider numeric-only escalation while preserving
-consequential-risk review. This response preserves the gate and distinct governed-package caps;
-neither predecessor principles nor strategic candidates waive [current policy](code-quality.md#exceptional-loc-exemption-gate).
+The current human-controlled `>=500` gross actual-PR HOLD remains unchanged; deletions count too.
+Marco explicitly refused changing this limit. Neither predecessor principles nor strategic
+candidates waive [current policy](code-quality.md#exceptional-loc-exemption-gate) or its distinct
+governed-package caps.
 
 ### A concrete risk example to retain
 
