@@ -9,11 +9,11 @@ duplicated decisions, unnecessary machinery, or evidence that cannot distinguish
 from a plausible mistake. Adding more patches, assertions, or instructions can preserve the same
 problem in a larger form.
 
-The research findings below remain separate from executable project instructions. The practical
-ending records the cleanup direction approved on 5 November 2026; it does not select a replacement
-architecture or complete the broader whole-system analysis. The local examples establish specific
-limitations; they do not measure how much of Switchstand is defective or establish who authored
-the affected code.
+The research findings remain separate from executable instructions. The ending preserves
+comparative evidence and design provenance; the
+[cleanup standard](code-quality.md#cleanup-prove-less-work-to-understand-and-change) owns the
+current method and acceptance. This snapshot grants no execution authority. Local examples
+establish specific limitations, not defect prevalence or authorship.
 
 ## What the research supports
 
@@ -140,13 +140,10 @@ behavioral adoption are separate questions.
 
 ## A practical cleanup approach
 
-Marco approved correcting this document, landing the documentation through independent review and
-CI, then auditing Mailbox before Tracker with Code Cleanup and Code Cleanup 2. Both agents challenge
-the resulting plan before implementation, testing, deployment, and testing the deployed behavior.
-The aim is substantial simplification that makes ordinary agent changes faster and safer. Existing
-[code quality guidance](code-quality.md) owns design, review, implementation and qualification;
-this research adds no competing framework or new approval ceremony. Migrations and new consequential
-choices return to Marco under [Human Input](human-input.md) and [Human Review](human-review.md).
+The [canonical cleanup standard](code-quality.md#cleanup-prove-less-work-to-understand-and-change)
+consolidates inventory, before/after evidence, test simplification, calibrated acceptance and
+fresh-agent timing. This research is supporting evidence, not a second strategy or approval.
+Historical approval of the 5 November sequence does not resume work stopped by Marco.
 
 ### What the comparative reviews actually established
 
@@ -154,96 +151,38 @@ The full document review (WorkId `2396ed80-11de-587e-a596-a85d358b1455`) and cod
 (`a32da801-cc4d-5568-bbca-5b850609eb30`), dated 5 November 2026, distinguish navigation gains from
 simplification. The code comparison used `37f86f7defa1fe1a3cd18ef567ccb8ad426c3bfd` to
 `41f84f197498726bebd20e5be29553bdb3f58b3a`; the verified bundle SHA-256 was
-`93c2cbc33651cb87fd3fba867971061539380114cf3225c6100210ccb76d0b88`. These were static reviews,
-with no new live qualification or comparable agent-change timing experiment.
+`93c2cbc33651cb87fd3fba867971061539380114cf3225c6100210ccb76d0b88`. Static reviews supplied no live or comparable change-time qualification.
 
 Tracker's eleven core owners changed from about 3,300 lines/111 functions to 3,266/110; five long
 critical methods retained their lengths. Mailbox's six owners grew from about 2,904 lines/117
 functions to 2,998/119, plus about 200 lines of compatibility shims. Many moves had 92–99% Git
-similarity. These figures direct inspection; they neither establish defects nor measure quality.
-Moving files did improve owner navigation, but broad complexity reduction and developer-speed
-payoff were not demonstrated.
+similarity. Moves improved navigation; these counts establish neither defects nor quality. Broad complexity
+and speed gains remained unproved.
 
-There are substantive counterexamples: removing the unprotected Tracker writer retired a duplicate
-API and stale tests; named mailbox send/replay gained a common owner. Real PostgreSQL near-match
-search tests, restart/ACK/result tests and wake-fencing tests reject meaningful mistakes. Preserve
-that evidence. The sampled test growth and green checks do not establish a suite-wide oracle audit.
-The document review withdrew its uncalibrated global 4/10; the code review's subjective 5.5-to-6.0
-comparison is also no measured baseline. Historical predecessor cleanup principles support one
-owner per rule and lower change fanout, but are evidence rather than current approval.
+Substantive gains included retiring the duplicate unprotected Tracker writer/API/tests and sharing
+mailbox send/replay ownership. Real PostgreSQL search, restart/ACK/result and wake-fencing tests
+reject meaningful faults; this is not a suite-wide oracle audit. The document review withdrew its
+uncalibrated 4/10; the code review's subjective 5.5-to-6.0 is also no measured baseline.
 
-### Start with consumers and remove a real burden
+### Historical Dish principles and current boundaries
 
-Use the current [Mailbox](mailbox.md) and [Tracker](tracker.md) owner maps and
-[observed usage](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06)
-to trace actual journeys and consumers. Mailbox comes first: follow named send, replay, receipt,
-restart, result and ACK through their current owners. Then examine Tracker read/search and protected
-writes. Confirm required behavior and non-goals against the approved work; do not infer that a
-feature is dispensable from low observed use or invent scale to justify a framework.
+The source is Dish's `dish/docs/agents/design-principles.md`, inspected clean at ai-tools commit
+`070e462a8037e66745755c37251490a1cdb8fbe6` ([exact source](https://github.com/marcogallotta/ai-tools/blob/070e462a8037e66745755c37251490a1cdb8fbe6/dish/docs/agents/design-principles.md)).
+DP-01 reserves serialization for consequential authority/state; DP-03 rejects invented gates;
+DP-04/05 reserve scarce human attention for consequential choices; DP-06 treats PR shape as judgment;
+DP-08/09 preserve exact lineage and explicit decision reversals. These support challenging unnecessary
+mechanisms and review burden. They are predecessor evidence, not imported Switchstand authority.
 
-For a candidate, show a concrete wrong result or ordinary maintenance change that exposes the cost:
-the same decision implemented twice, needless coordinated edits, an obsolete compatibility caller,
-or scaffolding that costs more than the regression it protects. Inspect real callers, guards and
-contracts before choosing KEEP, CUT, MERGE or RETIRE. Compare keeping the current mechanism with the
-strongest smaller route. Name the production, tests and documentation that disappear or become
-simpler, and the remaining authoritative owner. A forwarding layer moved to a new folder is not
-that outcome. A long function alone is not a reason to split one transaction or authority decision.
+DP-06 and the strategic candidate [North Star](north-star.md)'s rejection of permanent LOC thresholds
+conflict with the current human-controlled `>=500` gross actual-PR HOLD. Deletions count too.
+Recommendation for a separate human decision: reconsider numeric-only escalation while preserving
+consequential-risk review. This response preserves the gate and distinct governed-package caps;
+neither predecessor principles nor strategic candidates waive [current policy](code-quality.md#exceptional-loc-exemption-gate).
 
-Rank candidates by useful burden removed, confidence and risk rather than lines deleted. Existing
-mailbox import shims, for example, remain needed while current consumers use them; retirement needs
-a bounded consumer migration or proof that the last supported consumer is gone. A tiny assertion
-repair can improve evidence, but does not substitute for the requested substantive simplification.
-Do not add a scheduler, state store, general framework or broad documentation bundle to conduct
-this audit. Keep findings, alternatives and dispositions in the existing work and plan.
+### A concrete risk example to retain
 
-### Evaluate risk and what tests can mitigate
-
-For each proposed cut or merger, explain the plausible failure, affected users/data/effects and
-impact; the evidence that reduces that risk; and the residual unknowns. Name the first safe
-verification and how to revert or recover if it fails. Distinguish a reversible code change from
-an irreversible external effect: rolling back code does not undo a sent message or corrupted state.
-Tests reduce uncertainty about the cases and boundaries they exercise; they cannot settle intended
-product scope, prove absent consumers or make an untested recovery path safe.
-
-Treat tests and their support code as cleanup subjects. Name a plausible faulty implementation
-and show the oracle rejects it, using distinct old/new values or hostile input where relevant.
-A targeted counterexample or mutation is useful when it changes the decision; broad mutation quotas
-and coverage totals do not follow. Preserve demonstrated causal regressions while cutting duplicate
-or implementation-coupled scaffolding. Use real or hermetic dependency boundaries when mocks cannot
-represent transaction, restart, provider or subprocess semantics. Static caller/ownership evidence
-can justify structural simplification without manufacturing a runtime defect.
-
-For example, the identical placement fixtures described above leave stale-placement risk untested:
-distinct public values and an old-value counterexample can improve that oracle, without proving all
-currentness races safe. Mailbox's optional native wake holds a database row lock during daemon RPC;
-a disposable-PostgreSQL experiment recorded in feedback WorkId
-`0e590127-94f4-5277-b003-0d5553dbcf48` blocked takeover and ACK during a synthetic wait. Live activation
-and latency remain UNKNOWN, and the lock also prevents stale effects. Removing it needs evidence
-that stale owners cannot act and that delayed/failed RPC, takeover and ACK remain safe. This is a
-risk to investigate, not an approved one-line deletion or a demonstrated live incident.
-
-Keep authority, identity/currentness, idempotency/replay, truthful unknown outcomes, transaction
-atomicity and recovery intact. A smaller implementation that weakens those guarantees is not a
-successful cleanup. Review and test the exact changed candidate through the existing quality route;
-verify deployed behavior separately before claiming operational success.
-
-### Make the 7–8 ambition defensible
-
-Marco's desired 7–8/10 is an ambition for a lean, understandable system with meaningful evidence,
-not a measured score or a new scoring scheme. Assess each dimension in plain language with before
-and after examples; do not average away a serious weakness in a critical function or journey.
-
-| Dimension | Evidence that would support the target |
-| --- | --- |
-| Useful scope | Retained mechanisms have required consumers; an actual unnecessary path and its tests/docs are retired, or a justified KEEP explains why cutting would lose needed behavior. |
-| Ownership and complexity | A rule has one authoritative implementation; a representative change needs fewer coordinated owners/edits, and inspecting the difficult methods confirms the burden fell rather than moved. |
-| Tests and maintenance | Plausible faults are rejected at the relevant boundary; valuable regressions survive with less duplicate setup, coupling or runtime. Record support cost as well as production cost. |
-| Agent work | Comparable ordinary changes show time to find the owner, reach the first valid test and deliver a correct change, with rework and Marco interruptions recorded. Distinguish measured improvement from a hypothesis and explain task differences. |
-| Documentation | One maintained authority per subject leads a fresh agent to the right owner; obsolete or duplicate guidance disappears, with an actual navigation example rather than a new checklist. |
-
-Use the audit to choose the smallest useful vertical change that removes real burden, challenge it
-with both Cleanup agents, then implement and compare the resulting evidence with the baseline.
-Report weak dimensions, untested cases and residual risks explicitly. If agent-speed trials or
-important boundary evidence are missing, improvement can be reported narrowly; claiming the target
-has been achieved remains unsupported. Research, file moves, passing CI and a successful deployment
-each establish different things. None alone completes the cleanup goal.
+Mailbox native wake holds a row lock during daemon RPC. Disposable-PostgreSQL feedback
+`0e590127-94f4-5277-b003-0d5553dbcf48` recorded blocked takeover/ACK during synthetic waiting.
+Live latency remains UNKNOWN; the lock prevents stale effects. Removal requires stale-owner,
+delayed/failed RPC, takeover and ACK safety evidence. This finding proves neither a live incident
+nor retirement approval.

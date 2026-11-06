@@ -6,6 +6,81 @@ This is the repository semantic owner for substantive code/config/test implement
 
 A good change delivers the exact governing behavior with the simplest sound current design, lives in the correct owner, preserves explicit authority/trust/resource/dependency boundaries, avoids duplicate truth and speculative machinery, has discriminating maintainable evidence, and leaves the touched system no harder for a fresh competent agent to understand and safely change. Green tests are evidence, not the definition of correctness or quality.
 
+### Cleanup: prove less work to understand and change
+
+This owns acceptance of authorized cleanup and 7–8/10 claims; [research](agent-code-and-test-quality-research.md)
+supplies evidence and limits. It grants no work or effect authority.
+
+Before choosing cuts, read the current owner maps ([Mailbox](mailbox.md), [Tracker](tracker.md))
+and [observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06).
+Record exact baseline SHA, bounded journeys, supported consumers and critical invariants in the
+existing Work/plan. Inventory every service, state, workflow, rule owner, test group and shared
+fixture in scope, including the hardest functions and recovery paths. Give exact source, actual-use evidence
+(caller, observed journey or supported contract), purpose, maintenance cost and KEEP/CUT/MERGE/
+RETIRE disposition. A test-only caller is not production-use justification; low observed use
+does not disprove a required recovery or compatibility contract. Unknown consumers remain
+UNKNOWN, not permission to retire. Compare the strongest smaller route with keeping the mechanism.
+
+The next audit artifact uses one entry per item in that Work/plan:
+`source@SHA; consumer/contract evidence; purpose; cost; disposition and reason; remaining owner;
+before → after evidence; risk and safeguard; unresolved question/owner`. Include concrete
+redundant test groups, costly fixtures (setup/runtime/dependencies), mocks duplicating runtime
+semantics and machinery maintained only for tests. For each proposed removal, name the unique
+fault it would cease to catch or show where that oracle survives. Remove redundant setup,
+assertions and test-only machinery with their obsolete mechanism; preserve causal regressions.
+If nothing can safely be removed, justify KEEP with evidence and do not claim simplification.
+
+Compare the same inventory at exact baseline/candidate commits. Report unnecessary mechanisms
+removed, duplicated decisions removed, coordinated edit sites, production/support gross and net
+LOC, test/fixture counts and focused runtime with command/environment. Counts diagnose burden;
+relocation and green CI alone establish no simplification. Remove demonstrated burden without
+moving it into wrappers, fixtures or instructions.
+
+Calibrate the baseline and candidate separately for these five dimensions. **7** requires every
+condition below for every in-scope unit; **8** additionally requires a second distinct representative
+change to reproduce the result, with no unresolved demonstrated maintenance burden in that
+dimension. These anchors calibrate this assessment, not universal quality:
+
+- **Useful scope:** every retained service/state/workflow has a supported consumer or necessary
+  invariant; each proposed unnecessary mechanism is removed with its obsolete tests/docs, or a
+  justified KEEP explains the needed behavior. Unsupported leftovers fail this dimension.
+- **Ownership:** each rule has one authoritative decision owner, with no duplicated decisions.
+  Representative changes require only that owner and necessary tests/docs; show reduced edit sites
+  or justify the existing minimum. Inspect the hardest function/transaction, not a substitute helper.
+- **Tests:** every retained test group names a distinct plausible fault and an observable oracle.
+  Targeted counterexamples establish that critical oracles reject those faults at the relevant
+  real/hermetic boundary. Identified redundant groups/fixtures/test-only machinery are removed or
+  reduced with unique regression coverage preserved, or justified as necessary. Show support cost.
+- **Agent change-time:** repeat the same bounded ordinary maintenance task on baseline and candidate
+  with separate fresh agents, equivalent context, tools, model and environment, and independent
+  correctness review. Predeclare the task, start/finish rules and repeats; record time to owner,
+  first valid test and accepted change, rework, interventions and all failed runs. Require lower
+  end-to-end time with candidate/baseline observed ranges separated, no worse correctness or human
+  intervention, and explain confounders. Overlapping ranges or unmatched tasks leave speed UNKNOWN.
+- **Documentation:** one maintained authority per rule; duplicate/obsolete guidance is removed.
+  Fresh agents in those tasks reach the correct owner through the main entry route without
+  contradictory instructions or a human supplying missing context.
+
+Report baseline, candidate, worst unit, evidence and weakness per dimension. A
+demonstrated unmet condition is **below 7**; missing or unexamined evidence is **UNKNOWN**, not
+a guessed baseline score. The claimed subsystem result is bounded by its weakest unit/dimension,
+never an average: one tangled critical function, unjustified mechanism or weak critical oracle
+vetoes a 7–8 claim. Sampling supports only the named sample; it cannot establish whole-system quality.
+
+Improvement requires actual burden removed; justified KEEP alone proves none. Safety vetoes any
+score. State affected users/data/effects, plausible failures, first
+falsification check, recovery and residual risk. Preserve authority, identity/currentness,
+replay/idempotency, truthful UNKNOWN, fencing, transaction atomicity and recovery with boundary
+evidence proportionate to the cut. Tests cannot prove absent consumers, decide product intent or
+undo external effects. Missing critical proof prevents acceptance, while narrower proven gains
+remain reportable. Use existing review/qualification routes; an explicitly required external
+review is not satisfied by local/native review. Review PASS never grants merge, deployment or
+continuation authority.
+
+Governed-specification package mechanics apply only when that process governs the work. The separate
+[per-PR LOC gate](#exceptional-loc-exemption-gate) remains in force; changing it needs Marco's
+explicit policy decision, not an agent interpreting simplicity as a waiver.
+
 ### Root AGENTS admission
 
 Root `AGENTS.md` is a bootstrap/router, not a process manual. Any addition to it must satisfy
