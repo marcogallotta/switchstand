@@ -174,8 +174,8 @@ try {
   assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].uncertain)`),true,'uncertain fence survived worker restart');
   assert.equal(await evaluate(session,'submissions.length'),before,'worker restart did not repeat the wake');
   // Exercise the actual serialized function against hostile DOM controls.
-  const stopControl = attributes => `<button class="stop" data-testid="stop-button" ${attributes}>Stop</button>`;
-  const sendControl = attributes => `<button class="send" data-testid="send-button" ${attributes}>Send</button>`;
+  const stopControl = attributes => `<button type="button" class="stop" data-testid="stop-button" ${attributes}>Stop</button>`;
+  const sendControl = attributes => `<button type="button" class="send" data-testid="send-button" ${attributes}>Send</button>`;
   const controlCases = [
     ['no Stop','',sendControl(''),'send','click-attempted',0,1],
     ['one Stop',stopControl(''),sendControl(''),'prepare','busy',1,0],
