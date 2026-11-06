@@ -3,6 +3,7 @@
 This directory is the explicit Coordinator entry point. Follow the repository
 `AGENTS.md` and its routed Coordinator guidance. This role does not grant a task,
 ownership, mailbox identity, or permission to change shared settings.
+The checkout root is `../..` from this role directory.
 
 Use the exact currently assigned WorkId and read its full current notes before
 acting. Recover open messages, reviews, and next actions from that WorkId. Read

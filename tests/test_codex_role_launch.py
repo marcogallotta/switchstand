@@ -1,4 +1,4 @@
-"""Role entries use isolated Codex homes and the official CLI."""
+"""Official Codex role entries share one home and select instructions by cwd."""
 
 import json
 import os
@@ -10,274 +10,122 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _fake_nvm(home: Path, version: str = "v24.16.0") -> Path:
-    auth = home / ".codex" / "auth.json"
-    auth.parent.mkdir(parents=True, exist_ok=True)
+def _fixture(tmp_path: Path):
+    home = tmp_path / "user home"
+    auth = home / ".codex/auth.json"
+    auth.parent.mkdir(parents=True)
     auth.write_text("{}")
     legacy = home / ".local/state/switchstand/codex/coordinator"
-    legacy.mkdir(parents=True, exist_ok=True)
+    legacy.mkdir(parents=True)
     (legacy / "config.toml").write_text('model = "gpt-6-sol"\n')
-    (legacy / "hooks.json").write_text('{"hooks": {"PreToolUse": []}}')
-    nvm_dir = home / ".nvm"
-    (nvm_dir / "alias").mkdir(parents=True, exist_ok=True)
-    (nvm_dir / "alias" / "default").write_text(version)
-    (nvm_dir / "nvm.sh").write_text(
-        'nvm() {\n'
-        '  [[ "$1" == which && "$2" == default ]] || return 1\n'
-        '  printf "%s\\n" "$HOME/.nvm/versions/node/$(cat "$HOME/.nvm/alias/default")/bin/node"\n'
-        '}\n'
+    (legacy / "hooks.json").write_text('{"hooks":{"PreToolUse":[]}}')
+    nvm = home / ".nvm"
+    (nvm / "alias").mkdir(parents=True)
+    (nvm / "alias/default").write_text("v24.16.0")
+    (nvm / "nvm.sh").write_text(
+        'nvm() { [[ "$1" == which && "$2" == default ]] || return 1; '
+        'printf "%s\\n" "$HOME/.nvm/versions/node/$(cat "$HOME/.nvm/alias/default")/bin/node"; }\n'
     )
-    node_bin = nvm_dir / "versions" / "node" / version / "bin"
-    node_bin.mkdir(parents=True)
-    return node_bin
-
-
-@pytest.mark.parametrize(
-    ("script", "expected_cwd"),
-    [
-        ("launch-worker", ROOT),
-        ("launch-coordinator", ROOT),
-    ],
-)
-@pytest.mark.parametrize("supplied_home", [False, True])
-def test_explicit_role_launch_preserves_arguments_home_and_exit(
-    tmp_path: Path, script: str, expected_cwd: Path, supplied_home: bool
-) -> None:
-    fake_home = tmp_path / "user home"
-    official_bin = _fake_nvm(fake_home)
-    official_codex = official_bin / "codex"
-    official_codex.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        "print(json.dumps({'cwd': os.getcwd(), 'argv': sys.argv[1:], "
-        "'home': os.environ.get('CODEX_HOME')}))\n"
-        "sys.exit(37)\n"
+    bin_dir = nvm / "versions/node/v24.16.0/bin"
+    bin_dir.mkdir(parents=True)
+    cli = bin_dir / "codex"
+    cli.write_text(
+        "#!/usr/bin/env python3\nimport json,os,sys\n"
+        "print(json.dumps({'cwd':os.getcwd(),'home':os.environ['CODEX_HOME'],"
+        "'argv':sys.argv[1:]}))\n"
     )
-    official_codex.chmod(0o755)
-    wrapper_bin = tmp_path / "wrapper on PATH"
-    wrapper_bin.mkdir()
-    wrapper = wrapper_bin / "codex"
-    wrapper.write_text("#!/bin/sh\nexit 99\n")
-    wrapper.chmod(0o755)
-
-    caller = tmp_path / "unrelated caller"
-    caller.mkdir()
+    cli.chmod(0o755)
     env = os.environ.copy()
-    env["HOME"] = str(fake_home)
-    env["PATH"] = f"{wrapper_bin}:{env['PATH']}"
+    env["HOME"] = str(home)
     env.pop("NVM_DIR", None)
     env.pop("CODEX_HOME", None)
-    if supplied_home:
-        env["CODEX_HOME"] = str(tmp_path / "shared codex home")
+    return home, legacy, cli, env
 
-    result = subprocess.run(
-        [str(ROOT / "scripts" / script), "exec", "two words", "--", "-c", "x=y"],
-        cwd=caller,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
+
+def _run(role: str, env: dict, *args: str):
+    return subprocess.run(
+        [str(ROOT / "scripts" / f"launch-{role}"), *args],
+        cwd="/tmp", env=env, text=True, capture_output=True, check=False,
     )
 
-    assert result.returncode == 37
-    assert result.stderr == ""
+
+def test_worker_coordinator_worker_share_home_but_keep_role_cwd(tmp_path: Path):
+    home, legacy, _, env = _fixture(tmp_path)
+    shared = home / ".local/state/switchstand/codex/switchstand"
+    for role in ("worker", "coordinator", "worker"):
+        result = _run(role, env, "resume")
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "cwd": str(ROOT / "roles" / role),
+            "home": str(shared), "argv": ["resume"],
+        }
+        assert "../.." in (ROOT / "roles" / role / "AGENTS.md").read_text()
+    assert (shared / ".switchstand-home").read_text() == "switchstand\n"
+    assert (shared / "auth.json").resolve() == home / ".codex/auth.json"
+    assert (shared / "config.toml").read_text() == 'model = "gpt-6-sol"\n'
+    assert not (shared / "AGENTS.md").exists()
+    assert not (shared / "hooks.json").exists()
+    assert (legacy / "hooks.json").is_file()
+
+
+def test_exact_legacy_recovery_and_old_home_preservation(tmp_path: Path):
+    home, legacy, _, env = _fixture(tmp_path)
+    old_worker = home / ".local/state/switchstand/codex/role-homes/worker"
+    old_worker.mkdir(parents=True)
+    (old_worker / "old-session").write_text("preserve")
+    result = subprocess.run(
+        [str(ROOT / "scripts/launch-legacy-codex"), "resume", "exact-id"],
+        env=env, text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
-        "cwd": str(expected_cwd),
-        "argv": ["exec", "two words", "--", "-c", "x=y"],
-        "home": env.get(
-            "CODEX_HOME", str(fake_home / ".local/state/switchstand/codex/role-homes" / script.removeprefix("launch-"))
-        ),
+        "cwd": str(ROOT), "home": str(legacy), "argv": ["resume", "exact-id"],
     }
-    role_home = Path(json.loads(result.stdout)["home"])
-    assert (role_home / "AGENTS.md").is_symlink()
-    assert (role_home / "AGENTS.md").resolve() == ROOT / "roles" / script.removeprefix("launch-") / "AGENTS.md"
-    assert (role_home / "auth.json").is_symlink()
-    assert (role_home / "auth.json").resolve() == fake_home / ".codex" / "auth.json"
-    assert (role_home / "config.toml").read_text() == 'model = "gpt-6-sol"\n'
-    if script == "launch-coordinator":
-        assert (role_home / "hooks.json").is_file()
-    else:
-        assert not (role_home / "hooks.json").exists()
+    assert (old_worker / "old-session").read_text() == "preserve"
+    assert (legacy / "config.toml").read_text() == 'model = "gpt-6-sol"\n'
 
 
-@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
-def test_missing_official_cli_does_not_fall_back_to_path_wrapper(
-    tmp_path: Path, script: str
-) -> None:
-    _fake_nvm(tmp_path)
-    wrapper_bin = tmp_path / "bin"
-    wrapper_bin.mkdir()
-    wrapper = wrapper_bin / "codex"
-    wrapper.write_text("#!/bin/sh\nexit 99\n")
-    wrapper.chmod(0o755)
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env["PATH"] = f"{wrapper_bin}:{env['PATH']}"
-    env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
-
-    result = subprocess.run(
-        [str(ROOT / "scripts" / script), "resume", "session-id"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 127
-    assert "Official Codex CLI is missing" in result.stderr
-
-
-@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
-def test_role_launch_follows_nvm_default_upgrade_and_passes_resume_without_id(
-    tmp_path: Path, script: str
-) -> None:
-    older = _fake_nvm(tmp_path)
-    newer = _fake_nvm(tmp_path, "v24.17.0")
-    for node_bin, marker in ((older, "older"), (newer, "newer")):
-        cli = node_bin / "codex"
-        cli.write_text(
-            "#!/usr/bin/env python3\n"
-            "import json, sys\n"
-            f"print(json.dumps({{'installation': '{marker}', 'argv': sys.argv[1:]}}))\n"
-        )
-        cli.chmod(0o755)
-
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
-    expected = {
-        "installation": "newer",
-        "argv": ["resume"],
-    }
-    result = subprocess.run(
-        [str(ROOT / "scripts" / script), "resume"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+def test_dynamic_nvm_default_and_raw_codex_unintercepted(tmp_path: Path):
+    home, _, _, env = _fixture(tmp_path)
+    second = home / ".nvm/versions/node/v24.17.0/bin"
+    second.mkdir(parents=True)
+    cli = second / "codex"
+    cli.write_text("#!/bin/sh\necho new-version\n")
+    cli.chmod(0o755)
+    (home / ".nvm/alias/default").write_text("v24.17.0")
+    wrapper = tmp_path / "bin"
+    wrapper.mkdir()
+    (wrapper / "codex").write_text("#!/bin/sh\necho wrong-wrapper\n")
+    (wrapper / "codex").chmod(0o755)
+    env["PATH"] = f"{wrapper}:{env['PATH']}"
+    result = _run("worker", env, "--version")
     assert result.returncode == 0
-    assert json.loads(result.stdout) == expected
-
-    (tmp_path / ".nvm" / "alias" / "default").write_text("v24.16.0")
-    previous = subprocess.run(
-        [str(ROOT / "scripts" / script), "resume"],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert previous.returncode == 0
-    assert json.loads(previous.stdout) == {"installation": "older", "argv": ["resume"]}
+    assert result.stdout.strip() == "new-version"
+    raw = subprocess.run(["codex", "--version"], env=env, text=True, capture_output=True, check=False)
+    assert raw.stdout.strip() == "wrong-wrapper"
 
 
 @pytest.mark.parametrize("entry", ["AGENTS.md", "auth.json", "config.toml", "hooks.json"])
-def test_role_home_rejects_unexpected_existing_entries(tmp_path: Path, entry: str) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text("#!/bin/sh\necho should-not-run\n")
-    cli.chmod(0o755)
-    role_home = tmp_path / "role-home"
-    role_home.mkdir()
-    (role_home / entry).write_text("unexpected")
-    env = os.environ.copy()
-    env.update(HOME=str(tmp_path), CODEX_HOME=str(role_home))
-    env.pop("NVM_DIR", None)
-
-    result = subprocess.run(
-        [str(ROOT / "scripts" / "launch-worker"), "--version"],
-        env=env, capture_output=True, text=True, check=False,
-    )
+def test_existing_unexpected_home_is_not_overwritten(tmp_path: Path, entry: str):
+    _, _, _, env = _fixture(tmp_path)
+    shared = tmp_path / "existing"
+    shared.mkdir()
+    (shared / entry).write_text("preserve")
+    env["CODEX_HOME"] = str(shared)
+    result = _run("worker", env, "--version")
     assert result.returncode != 0
+    assert (shared / entry).read_text() == "preserve"
     assert "Unexpected" in result.stderr
-    assert "should-not-run" not in result.stdout
 
 
-def test_preexisting_empty_home_is_not_replaced(tmp_path: Path) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text("#!/bin/sh\necho should-not-run\n")
-    cli.chmod(0o755)
-    role_home = tmp_path / "role-home"
-    role_home.mkdir()
-    original_inode = role_home.stat().st_ino
-    env = os.environ.copy()
-    env.update(HOME=str(tmp_path), CODEX_HOME=str(role_home))
-    env.pop("NVM_DIR", None)
-
-    result = subprocess.run(
-        [str(ROOT / "scripts/launch-worker"), "--version"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert result.returncode != 0
-    assert role_home.stat().st_ino == original_inode
-    assert list(role_home.iterdir()) == []
-    assert "should-not-run" not in result.stdout
-
-
-@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
-def test_simultaneous_first_launch_uses_one_complete_home(tmp_path: Path, script: str) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text("#!/bin/sh\nexit 0\n")
-    cli.chmod(0o755)
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
-    processes = [
-        subprocess.Popen(
-            [str(ROOT / "scripts" / script), "--version"],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        for _ in range(12)
-    ]
-    results = [process.communicate(timeout=15) for process in processes]
-    assert all(process.returncode == 0 for process in processes), results
-    role = script.removeprefix("launch-")
-    homes = tmp_path / ".local/state/switchstand/codex/role-homes"
-    role_home = homes / role
-    assert (role_home / ".switchstand-role").read_text().strip() == role
-    assert (role_home / "AGENTS.md").resolve() == ROOT / "roles" / role / "AGENTS.md"
-    assert (role_home / "auth.json").resolve() == tmp_path / ".codex/auth.json"
-    assert (role_home / "config.toml").is_file()
-    assert list(homes.glob(".codex-role-home.*")) == []
-
-
-def test_worker_config_is_one_time_copy_and_legacy_launcher_keeps_old_home(tmp_path: Path) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        "print(json.dumps({'home': os.environ['CODEX_HOME'], 'args': sys.argv[1:]}))\n"
-    )
-    cli.chmod(0o755)
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
-    worker = tmp_path / ".local/state/switchstand/codex/role-homes/worker"
-    legacy = tmp_path / ".local/state/switchstand/codex/coordinator"
-
-    first = subprocess.run([str(ROOT / "scripts/launch-worker"), "resume"], env=env,
-                           capture_output=True, text=True, check=False)
-    assert first.returncode == 0
-    (legacy / "config.toml").write_text('model = "changed"\n')
-    second = subprocess.run([str(ROOT / "scripts/launch-worker"), "resume"], env=env,
-                            capture_output=True, text=True, check=False)
-    assert second.returncode == 0
-    assert (worker / "config.toml").read_text() == 'model = "gpt-6-sol"\n'
-    assert not (worker / "hooks.json").exists()
-
-    recovered = subprocess.run(
-        [str(ROOT / "scripts/launch-legacy-codex"), "resume", "exact-id"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert recovered.returncode == 0
-    assert json.loads(recovered.stdout) == {"home": str(legacy), "args": ["resume", "exact-id"]}
+def test_concurrent_first_launch_uses_one_complete_home(tmp_path: Path):
+    home, _, _, env = _fixture(tmp_path)
+    processes = [subprocess.Popen(
+        [str(ROOT / "scripts" / f"launch-{role}"), "--version"], env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) for role in ("worker", "coordinator") * 6]
+    results = [p.communicate(timeout=15) for p in processes]
+    assert all(p.returncode == 0 for p in processes), results
+    shared = home / ".local/state/switchstand/codex/switchstand"
+    assert (shared / ".switchstand-home").read_text() == "switchstand\n"
+    assert not list(shared.parent.glob(".codex-home.*"))
