@@ -5,6 +5,12 @@ Ordinary Codex uses the official CLI and repository configuration. Neutral Wakef
 edge monitoring, and the optional disk-pressure producer remain independent components; installing
 the disk-pressure timer is still a separate activation effect.
 
+`scripts/launch-worker` and `scripts/launch-coordinator` delegate to
+`scripts/launch-codex worker|coordinator`, which selects the corresponding existing home under
+`~/.local/state/switchstand/roles/`, overriding an inherited `CODEX_HOME`. Worker starts at the
+checkout root; Coordinator starts in `roles/coordinator`. Both use the official CLI from NVM's
+current default Node installation and forward Codex arguments unchanged.
+
 Governed implementation tasks carry the inline package projection and review handoff
 defined in [Code quality: governed implementation packages](code-quality.md#governed-implementation-packages).
 Keep its package base fixed across delivery branches and use its solution disposition

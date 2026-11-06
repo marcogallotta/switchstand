@@ -1,4 +1,4 @@
-"""Role entries use isolated Codex homes and the official CLI."""
+"""Role entries share launch logic and select their own homes despite inherited state."""
 
 import json
 import os
@@ -11,13 +11,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _fake_nvm(home: Path, version: str = "v24.16.0") -> Path:
-    auth = home / ".codex" / "auth.json"
-    auth.parent.mkdir(parents=True, exist_ok=True)
-    auth.write_text("{}")
-    legacy = home / ".local/state/switchstand/codex/coordinator"
-    legacy.mkdir(parents=True, exist_ok=True)
-    (legacy / "config.toml").write_text('model = "gpt-6-sol"\n')
-    (legacy / "hooks.json").write_text('{"hooks": {"PreToolUse": []}}')
     nvm_dir = home / ".nvm"
     (nvm_dir / "alias").mkdir(parents=True, exist_ok=True)
     (nvm_dir / "alias" / "default").write_text(version)
@@ -36,11 +29,11 @@ def _fake_nvm(home: Path, version: str = "v24.16.0") -> Path:
     ("script", "expected_cwd"),
     [
         ("launch-worker", ROOT),
-        ("launch-coordinator", ROOT),
+        ("launch-coordinator", ROOT / "roles" / "coordinator"),
     ],
 )
 @pytest.mark.parametrize("supplied_home", [False, True])
-def test_explicit_role_launch_preserves_arguments_home_and_exit(
+def test_explicit_role_launch_selects_home_and_preserves_arguments_and_exit(
     tmp_path: Path, script: str, expected_cwd: Path, supplied_home: bool
 ) -> None:
     fake_home = tmp_path / "user home"
@@ -84,20 +77,8 @@ def test_explicit_role_launch_preserves_arguments_home_and_exit(
     assert json.loads(result.stdout) == {
         "cwd": str(expected_cwd),
         "argv": ["exec", "two words", "--", "-c", "x=y"],
-        "home": env.get(
-            "CODEX_HOME", str(fake_home / ".local/state/switchstand/codex/role-homes" / script.removeprefix("launch-"))
-        ),
+        "home": str(fake_home / ".local/state/switchstand/roles" / script.removeprefix("launch-")),
     }
-    role_home = Path(json.loads(result.stdout)["home"])
-    assert (role_home / "AGENTS.md").is_symlink()
-    assert (role_home / "AGENTS.md").resolve() == ROOT / "roles" / script.removeprefix("launch-") / "AGENTS.md"
-    assert (role_home / "auth.json").is_symlink()
-    assert (role_home / "auth.json").resolve() == fake_home / ".codex" / "auth.json"
-    assert (role_home / "config.toml").read_text() == 'model = "gpt-6-sol"\n'
-    if script == "launch-coordinator":
-        assert (role_home / "hooks.json").is_file()
-    else:
-        assert not (role_home / "hooks.json").exists()
 
 
 @pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
@@ -114,7 +95,6 @@ def test_missing_official_cli_does_not_fall_back_to_path_wrapper(
     env["HOME"] = str(tmp_path)
     env["PATH"] = f"{wrapper_bin}:{env['PATH']}"
     env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
 
     result = subprocess.run(
         [str(ROOT / "scripts" / script), "resume", "session-id"],
@@ -147,7 +127,6 @@ def test_role_launch_follows_nvm_default_upgrade_and_passes_resume_without_id(
     env = os.environ.copy()
     env["HOME"] = str(tmp_path)
     env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
     expected = {
         "installation": "newer",
         "argv": ["resume"],
@@ -176,108 +155,11 @@ def test_role_launch_follows_nvm_default_upgrade_and_passes_resume_without_id(
     assert json.loads(previous.stdout) == {"installation": "older", "argv": ["resume"]}
 
 
-@pytest.mark.parametrize("entry", ["AGENTS.md", "auth.json", "config.toml", "hooks.json"])
-def test_role_home_rejects_unexpected_existing_entries(tmp_path: Path, entry: str) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text("#!/bin/sh\necho should-not-run\n")
-    cli.chmod(0o755)
-    role_home = tmp_path / "role-home"
-    role_home.mkdir()
-    (role_home / entry).write_text("unexpected")
-    env = os.environ.copy()
-    env.update(HOME=str(tmp_path), CODEX_HOME=str(role_home))
-    env.pop("NVM_DIR", None)
-
+@pytest.mark.parametrize("args", [[], ["unknown"]])
+def test_shared_launcher_rejects_missing_or_unknown_role(args: list[str]) -> None:
     result = subprocess.run(
-        [str(ROOT / "scripts" / "launch-worker"), "--version"],
-        env=env, capture_output=True, text=True, check=False,
+        [str(ROOT / "scripts/launch-codex"), *args],
+        text=True, capture_output=True, check=False,
     )
-    assert result.returncode != 0
-    assert "Unexpected" in result.stderr
-    assert "should-not-run" not in result.stdout
-
-
-def test_preexisting_empty_home_is_not_replaced(tmp_path: Path) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text("#!/bin/sh\necho should-not-run\n")
-    cli.chmod(0o755)
-    role_home = tmp_path / "role-home"
-    role_home.mkdir()
-    original_inode = role_home.stat().st_ino
-    env = os.environ.copy()
-    env.update(HOME=str(tmp_path), CODEX_HOME=str(role_home))
-    env.pop("NVM_DIR", None)
-
-    result = subprocess.run(
-        [str(ROOT / "scripts/launch-worker"), "--version"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert result.returncode != 0
-    assert role_home.stat().st_ino == original_inode
-    assert list(role_home.iterdir()) == []
-    assert "should-not-run" not in result.stdout
-
-
-@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
-def test_simultaneous_first_launch_uses_one_complete_home(tmp_path: Path, script: str) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text("#!/bin/sh\nexit 0\n")
-    cli.chmod(0o755)
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
-    processes = [
-        subprocess.Popen(
-            [str(ROOT / "scripts" / script), "--version"],
-            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
-        for _ in range(12)
-    ]
-    results = [process.communicate(timeout=15) for process in processes]
-    assert all(process.returncode == 0 for process in processes), results
-    role = script.removeprefix("launch-")
-    homes = tmp_path / ".local/state/switchstand/codex/role-homes"
-    role_home = homes / role
-    assert (role_home / ".switchstand-role").read_text().strip() == role
-    assert (role_home / "AGENTS.md").resolve() == ROOT / "roles" / role / "AGENTS.md"
-    assert (role_home / "auth.json").resolve() == tmp_path / ".codex/auth.json"
-    assert (role_home / "config.toml").is_file()
-    assert list(homes.glob(".codex-role-home.*")) == []
-
-
-def test_worker_config_is_one_time_copy_and_legacy_launcher_keeps_old_home(tmp_path: Path) -> None:
-    node_bin = _fake_nvm(tmp_path)
-    cli = node_bin / "codex"
-    cli.write_text(
-        "#!/usr/bin/env python3\n"
-        "import json, os, sys\n"
-        "print(json.dumps({'home': os.environ['CODEX_HOME'], 'args': sys.argv[1:]}))\n"
-    )
-    cli.chmod(0o755)
-    env = os.environ.copy()
-    env["HOME"] = str(tmp_path)
-    env.pop("NVM_DIR", None)
-    env.pop("CODEX_HOME", None)
-    worker = tmp_path / ".local/state/switchstand/codex/role-homes/worker"
-    legacy = tmp_path / ".local/state/switchstand/codex/coordinator"
-
-    first = subprocess.run([str(ROOT / "scripts/launch-worker"), "resume"], env=env,
-                           capture_output=True, text=True, check=False)
-    assert first.returncode == 0
-    (legacy / "config.toml").write_text('model = "changed"\n')
-    second = subprocess.run([str(ROOT / "scripts/launch-worker"), "resume"], env=env,
-                            capture_output=True, text=True, check=False)
-    assert second.returncode == 0
-    assert (worker / "config.toml").read_text() == 'model = "gpt-6-sol"\n'
-    assert not (worker / "hooks.json").exists()
-
-    recovered = subprocess.run(
-        [str(ROOT / "scripts/launch-legacy-codex"), "resume", "exact-id"],
-        env=env, capture_output=True, text=True, check=False,
-    )
-    assert recovered.returncode == 0
-    assert json.loads(recovered.stdout) == {"home": str(legacy), "args": ["resume", "exact-id"]}
+    assert result.returncode == 2
+    assert "Usage:" in result.stderr
