@@ -204,8 +204,14 @@ try {
   assert.equal(await evaluate(actualPopupSession,`chrome.extension.getViews({type:'popup'}).includes(window)`),true,'actual action-popup identity');
   await evaluate(actualPopupSession,`show().then(()=>{window.confirm=()=>{throw Error('native modal forbidden')};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
   assert.match(await evaluate(actualPopupSession,`document.querySelector('#bindings p span').textContent`),/earlier wake may already have been sent/);
-  const geometry = await evaluate(actualPopupSession,`({width:innerWidth,height:innerHeight,controls:[...document.querySelectorAll('#bindings p span button')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===b}})})`);
-  assert.ok(geometry.controls.length===2 && geometry.controls.every(b=>b.left>=0 && b.right<=geometry.width && b.top>=0 && b.bottom<=geometry.height && b.hit),'actual popup confirmation buttons visible and hittable');
+  let geometry, controlsVisible=false;
+  for(let attempt=0;attempt<50;attempt++) {
+    geometry=await evaluate(actualPopupSession,`({width:innerWidth,height:innerHeight,controls:[...document.querySelectorAll('#bindings p span button')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===b}})})`);
+    controlsVisible=geometry.controls.length===2 && geometry.controls.every(b=>b.left>=0 && b.right<=geometry.width && b.top>=0 && b.bottom<=geometry.height && b.hit);
+    if(controlsVisible) break;
+    await pause(50); // The browser resizes its action popup after content changes.
+  }
+  assert.ok(controlsVisible,`actual popup confirmation buttons visible and hittable: ${JSON.stringify(geometry)}`);
   await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Cancel').click()`);
   await pause(100);
   assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,true,'cancelled confirmation preserves the fence');
