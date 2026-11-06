@@ -13,6 +13,7 @@ const production = dirname(fileURLToPath(import.meta.url));
 const extension = await mkdtemp(join(tmpdir(), 'switch-wake-extension-'));
 const reports = [], observations = [];
 const id = '11111111-2222-4333-8444-555555555555';
+let pendingIds = [id];
 const server = createServer(async (request, response) => {
   let input = '';
   for await (const chunk of request) input += chunk;
@@ -24,7 +25,7 @@ const server = createServer(async (request, response) => {
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(path.endsWith('/config') ? {status:'ok',report_token:'isolated-fixture'} :
     path.endsWith('/report') ? {status:'logged',alert:{status:'queued'}} :
-    {status:'ok',name:'mail',endpoint:id,generation:1,delivery_ids:[id]}));
+    {status:'ok',name:'mail',endpoint:id,generation:1,delivery_ids:pendingIds}));
 });
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -168,7 +169,7 @@ try {
     await pause(100);
   }
   assert.ok(replacement && replacement.targetId !== worker.targetId, 'real MV3 worker restarted with a new target');
-  const restartedSession = await attach(replacement.targetId);
+  let restartedSession = await attach(replacement.targetId);
   assert.equal(await evaluate(restartedSession,`Boolean(globalThis.__restartFenceProbe)`),false,'restart created a fresh execution context');
   assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].uncertain)`),true,'uncertain fence survived worker restart');
   assert.equal(await evaluate(session,'submissions.length'),before,'worker restart did not repeat the wake');
@@ -187,6 +188,46 @@ try {
   assert.equal(await compose('wait'),'ready','current ChatGPT Send control becomes ready');
   assert.equal(await compose('send'),'click-attempted','current ChatGPT Send control is clicked');
   assert.equal((await evaluate(session,'submissions')).at(-1),'Process your mailbox');
+  // Re-arm is a confirmed, per-chat storage action; it does not touch the composer.
+  pendingIds = [];
+  await evaluate(restartedSession,`load().then(check)`);
+  const priorRearm = (await evaluate(restartedSession,'load()'))[0];
+  const sendsBeforeRearm = await evaluate(session,'submissions.length');
+  await evaluate(popupSession,`show().then(()=>{window.confirm=()=>false;[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
+  await pause(100);
+  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,true,'cancelled confirmation preserves the fence');
+  await evaluate(popupSession,`window.confirm=text=>{window.rearmWarning=text;return true};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()`);
+  for(let attempt=0;attempt<50;attempt++) {
+    if(!(await evaluate(restartedSession,'load()'))[0].uncertain) break;
+    await pause(50);
+  }
+  const rearmed = (await evaluate(restartedSession,'load()'))[0];
+  assert.equal(rearmed.uncertain,false);
+  for(const key of ['ids','seen','wakeAttempt']) assert.deepEqual(rearmed[key],priorRearm[key],`${key} preserved`);
+  assert.match(await evaluate(popupSession,'rearmWarning'),/earlier wake may already have been sent/);
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'Re-arm sends nothing inline');
+  const rearmVersion = versions.find(v=>v.scriptURL===worker.url && v.runningStatus==='running');
+  assert.ok(rearmVersion);
+  const oldRearmTarget = replacement.targetId;
+  await command('Target.detachFromTarget',{sessionId:restartedSession});
+  await command('ServiceWorker.stopWorker',{versionId:rearmVersion.versionId},session);
+  for(let attempt=0;attempt<50 && !versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped');attempt++) await pause(100);
+  assert.ok(versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped'));
+  const duplicateRearm = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'rearm',id:${JSON.stringify(id)},expectedAttempt:${JSON.stringify(rearmed.wakeAttempt.id)}})`);
+  assert.match(duplicateRearm.error,/Uncertain wake changed/,'duplicate confirmation cannot clear another attempt');
+  for(let attempt=0;attempt<50;attempt++) {
+    replacement=(await command('Target.getTargets')).targetInfos.find(t=>t.type==='service_worker' && t.url===worker.url);
+    if(replacement && replacement.targetId!==oldRearmTarget) break;
+    await pause(100);
+  }
+  assert.ok(replacement && replacement.targetId!==oldRearmTarget);
+  restartedSession=await attach(replacement.targetId);
+  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,false,'real worker restart retains explicit reconciliation');
+  pendingIds=['22222222-2222-4222-8222-222222222222'];
+  await evaluate(restartedSession,'load().then(check)');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'next genuine new batch can wake');
+  await evaluate(restartedSession,'load().then(check)');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new uncertain click remains fenced');
   await command('Target.closeTarget',{targetId:page.targetId});
   await evaluate(restartedSession,`load().then(check)`);
   assert.equal(reports.length,1,'closed exhausted binding sends immediate HTTP alert');
