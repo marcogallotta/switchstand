@@ -229,8 +229,12 @@ async def test_standalone_root_requires_direct_input_capability(subject, monkeyp
     await wake.close()
 
 
-@pytest.mark.parametrize("failure", [None, "uncertain", "rejected", "resume_rejected"])
-async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatch, failure):
+@pytest.mark.parametrize("failure, expected_resumes", [
+    (None, 2), ("uncertain", 2), ("rejected", 4), ("resume_rejected", 3),
+])
+async def test_same_root_serializes_heads_and_attach_is_once(
+    subject, monkeypatch, failure, expected_resumes,
+):
     wake, rpc, binding, identity, delivery = subject
     other = binding.model_copy(update={"endpoint_id": uuid4()})
     owner = binding.model_copy(update={"endpoint_id": uuid4()})
@@ -288,7 +292,8 @@ async def test_same_root_serializes_heads_and_attach_is_once(subject, monkeypatc
         assert resume_calls == 3 and attempts >= 2
     await wake.close()
     assert seen == set(bindings) and peak == 1
-    assert sum(c.args[0] == "thread/resume" for c in rpc.call.call_args_list) == resume_calls
+    # Each recipient task attaches once; definite failures restart on a new signal.
+    assert sum(c.args[0] == "thread/resume" for c in rpc.call.call_args_list) == expected_resumes
 
 
 @pytest.mark.parametrize("owner", ["first", "second", "neither", "both"])
