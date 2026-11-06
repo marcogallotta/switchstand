@@ -96,3 +96,21 @@ async def test_exact_event_is_work_scoped_and_unknown_when_absent() -> None:
     assert result.status == "unknown"
     assert result.item is None
     events.get.assert_awaited_once_with(work_id, event_id)
+
+
+@pytest.mark.asyncio
+async def test_exact_event_does_not_claim_item_when_work_changes_during_read() -> None:
+    work_id = uuid4()
+    event = _event(work_id)
+    works = SimpleNamespace(get=AsyncMock(side_effect=[_work(work_id), _work(work_id, 2)]))
+    events = SimpleNamespace(get=AsyncMock(return_value=event))
+    reader = CanonicalEventReader(works, events)  # type: ignore[arg-type]
+
+    result = await reader.event(WorkEventRequest(
+        api_version="1", work_id=work_id, event_id=event.id,
+        observed_revision=canonical_revision(work_id, 1),
+    ))
+
+    assert result.status == "stale"
+    assert result.revision == canonical_revision(work_id, 2)
+    assert result.item is None
