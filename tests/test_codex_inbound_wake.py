@@ -1,6 +1,8 @@
 """Wake boundaries: exact receipts, current bindings and one owning Root at a time."""
 import asyncio
+import gc
 import json
+import weakref
 from contextlib import asynccontextmanager
 from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
@@ -10,6 +12,7 @@ import pytest
 
 import switchstand.mailbox.codex_inbound_wake as module
 from switchstand.agent_mailboxes import AgentMailbox, chat_session_key
+from switchstand.mailbox.messages import PendingMessage
 from switchstand.mailbox_wake import MARKER
 
 
@@ -27,7 +30,8 @@ def subject(tmp_path):
                   pending_delivery=AsyncMock(return_value=True), pending_delivery_fence=fence)
     wake = module.InboundWake(messages, control, tmp_path / "admit")
     wake.fresh.add(delivery)
-    wake.fresh_messages[delivery] = NS(route_ref="ordinary.request", payload={})
+    wake.fresh_messages[delivery] = NS(recipient_work_id=binding.endpoint_id, delivery_id=delivery,
+        route_ref="ordinary.request", payload={})
     wake._admit = AsyncMock(return_value=True)
     wake._alert = AsyncMock()
     async def call(method, _params):
@@ -38,20 +42,22 @@ def subject(tmp_path):
     return wake, rpc, binding, identity, delivery
 
 
-@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown", "malformed"])
+@pytest.mark.parametrize("boundary", ["idle", "busy", "stop", "stop_after_read", "stale", "old", "oldnew", "review", "review_result", "acquisition_result", "receipt", "routed", "unknown", "malformed", "empty"])
 async def test_dispatch_boundaries(subject, boundary):
     wake, rpc, binding, identity, delivery = subject
+    if boundary == "empty":
+        wake.messages.all_pending_delivery_ids.return_value = ()
     if boundary == "oldnew":
         wake.messages.all_pending_delivery_ids.return_value = (uuid4(), delivery)
     if boundary in {"review", "review_result"}:
         review_id = str(uuid4())
-        wake.fresh_messages[delivery] = NS(route_ref="review.request",
+        wake.fresh_messages[delivery] = NS(recipient_work_id=binding.endpoint_id, route_ref="review.request",
             kind="request" if boundary == "review" else "result", payload={
             "brief": {"basis": {"review_id": review_id}}})
     if boundary == "acquisition_result":
         review_id = str(uuid4())
         wake.fresh_messages[delivery] = NS(
-            route_ref="review.acquisition", kind="result", payload={
+            recipient_work_id=binding.endpoint_id, route_ref="review.acquisition", kind="result", payload={
                 "review_id": review_id, "reviewer_delivery_id": str(uuid4()),
                 "reviewer_name": "Coordinator"})
     original = rpc.call.side_effect
@@ -80,6 +86,11 @@ async def test_dispatch_boundaries(subject, boundary):
             await wake._reconcile(rpc, binding, identity)
     else:
         await wake._reconcile(rpc, binding, identity, path="/root/head" if boundary == "routed" else None)
+    if boundary == "empty":
+        assert wake.outcomes[binding.endpoint_id] == "EMPTY"
+        assert delivery not in wake.fresh and delivery not in wake.fresh_messages
+    elif boundary not in {"idle", "old", "oldnew", "review", "review_result", "acquisition_result"}:
+        assert delivery in wake.fresh and delivery in wake.fresh_messages
     starts = [c.args[1] for c in rpc.call.call_args_list if c.args[0] == "turn/start"]
     assert len(starts) == (1 if boundary in {"idle", "oldnew", "review", "review_result", "acquisition_result", "unknown", "malformed"} else 0)
     if boundary == "oldnew":
@@ -99,6 +110,57 @@ async def test_dispatch_boundaries(subject, boundary):
         assert set(starts[0]) == {"threadId", "input"} and starts[0]["threadId"] == identity
     if boundary == "routed":
         assert wake.outcomes[binding.endpoint_id] == "ROUTED_PENDING"
+
+
+async def test_terminal_body_released_before_receipts_with_pending_mail(subject):
+    wake, rpc, binding, identity, delivery = subject
+    terminal = PendingMessage(delivery_id=delivery, message_id=uuid4(), sender_work_id=uuid4(),
+        recipient_work_id=binding.endpoint_id, route_ref="ordinary.request", kind="request",
+        payload={"tiny": "terminal"}, state="AVAILABLE", recipient_grant_version=1)
+    pending = terminal.model_copy(update={"delivery_id": uuid4(), "message_id": uuid4()})
+    other = terminal.model_copy(update={"delivery_id": uuid4(), "message_id": uuid4(),
+                                       "recipient_work_id": uuid4()})
+    terminal_ref = weakref.ref(terminal)
+    wake.fresh_messages.update({delivery: terminal, pending.delivery_id: pending, other.delivery_id: other})
+    wake.fresh.update((pending.delivery_id, other.delivery_id))
+    wake.observed.add(delivery)
+    del terminal
+    wake.messages.all_pending_delivery_ids.return_value = (pending.delivery_id,)
+    async def call(method, params):
+        assert method == "thread/turns/list" and params["threadId"] == identity
+        gc.collect()
+        assert terminal_ref() is None
+        assert wake.fresh_messages[pending.delivery_id] is pending
+        assert wake.fresh_messages[other.delivery_id] is other
+        assert {pending.delivery_id, other.delivery_id} <= wake.fresh
+        return {"data": [{"items": [{"type": "userMessage", "content": [
+            {"type": "text", "text": MARKER + json.dumps([str(pending.delivery_id)])}]}]}]}
+    rpc.call.side_effect = call
+    await wake._reconcile(rpc, binding, identity)
+    assert wake.outcomes[binding.endpoint_id] == "RECEIPT" and delivery in wake.observed
+    assert delivery not in wake.fresh and delivery not in wake.fresh_messages
+    assert wake.fresh_messages[pending.delivery_id] is pending
+    assert wake.fresh_messages[other.delivery_id] is other
+    assert {pending.delivery_id, other.delivery_id} <= wake.fresh
+
+
+async def test_pending_observation_preserves_new_and_replaced_signals(subject):
+    wake, rpc, binding, identity, delivery = subject
+    previous = wake.fresh_messages[delivery]
+    replacement = NS(**vars(previous))
+    new = NS(**(vars(previous) | {"delivery_id": uuid4()}))
+    wake._run = AsyncMock()
+    async def observe(_binding):
+        wake.signal(replacement, True)
+        wake.signal(new, True)
+        return ()
+    wake.messages.all_pending_delivery_ids.side_effect = observe
+    await wake._reconcile(rpc, binding, identity)
+    await wake.tasks[binding.endpoint_id]
+    assert replacement == previous and replacement is not previous
+    assert wake.fresh_messages[delivery] is replacement
+    assert wake.fresh_messages[new.delivery_id] is new
+    assert {delivery, new.delivery_id} <= wake.fresh
 
 
 @pytest.mark.parametrize("boundary", ["go", "token", "session", "stop", "generation", "wait"])
