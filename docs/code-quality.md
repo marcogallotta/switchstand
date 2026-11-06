@@ -45,14 +45,17 @@ benchmark first, then agree useful budgets with Marco. These experiments inform 
 not every PR. Missing trials mean speed UNMEASURED; do not extrapolate sampled gains to the whole system.
 
 When declaring a subsystem cleanup complete, use the existing independent review, not an additional
-approval stage. The reviewer performs fresh discovery and a representative change, examines hard
+approval stage. The reviewer performs fresh discovery and a representative change, or reuses a
+current independent exercise they actually performed or observed; author assertions, stale trials
+and self-review do not qualify. The reviewer examines hard
 paths, duplicate rules, scope, tests and docs, and compares baseline burden and safety against the
 five outcomes. Return PASS or FAIL with material findings, covered journeys and remaining uncertainty.
 Minor style preferences do not block completion. Known serious defects fail the affected claim;
 missing material evidence leaves completion NOT_ESTABLISHED, not a fabricated defect or blanket PASS.
-A material FAIL holds subsystem completion and moving cleanup to the next subsystem, not ordinary
-small PRs. It authorizes neither broader work nor endless fixes. Stop when the approved useful outcomes are demonstrated, or when no further worthwhile
-cut is supported; report the remaining gap and its owner rather than chasing a score.
+Only a final subsystem PASS permits moving to the next subsystem. FAIL or NOT_ESTABLISHED holds
+progression; unresolved scope decisions return to Marco. Ordinary small PRs retain their normal
+process. Stop unproductive cuts when no further worthwhile change is supported, retain the
+progression hold and report the gap to Marco; do not broaden scope or add cuts to obtain a PASS.
 
 Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, transaction
 atomicity and recovery. State plausible failures, relevant real/hermetic evidence, residual risk and
