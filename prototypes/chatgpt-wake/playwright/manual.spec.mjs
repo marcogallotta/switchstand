@@ -79,15 +79,16 @@ const test = base.extend({
   }
 });
 
-test('actual manual wake inserts before Send exists; duplicate and restarted checks never repeat', async ({wake}) => {
+test('actual manual wake inserts before Send exists; pending originals retry twice across restart', async ({wake}) => {
   await wake.page.evaluate(() => {
     const form = document.querySelector('form'), send = form.querySelector('button'); send.remove();
     document.querySelector('#prompt-textarea').addEventListener('input', () => setTimeout(() => form.append(send), 100), {once: true});
   });
   wake.metadata.delivery_ids = [delivery(10)];
-  await wake.check(); await wake.check();
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
+  await wake.check(); await wake.check(); await wake.check(); await wake.check();
+  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox', 'Process your mailbox', 'Process your mailbox']);
   await wake.page.evaluate(() => { fixture.blocked = true; });
+  wake.metadata.delivery_ids = []; await wake.check();
   wake.metadata.delivery_ids = [delivery(13)];
   await wake.check();
   const reserved = await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'));
@@ -100,8 +101,8 @@ test('actual manual wake inserts before Send exists; duplicate and restarted che
   const newWorker = wake.context.serviceWorkers().find(worker => worker.url() === wake.worker.url());
   expect(newWorker).toBeDefined();
   expect(await newWorker.evaluate(() => globalThis.fixtureBoot || null)).not.toBe(boot);
-  expect(await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).toEqual(reserved);
-  await expect(wake.page.locator('#turns li')).toHaveCount(1);
+  expect((await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).wakeBindings[0].retryBudget.usedRetries).toBe(1);
+  await expect(wake.page.locator('#turns li')).toHaveCount(3);
 });
 
 test('one reserved Stop waits two seconds then inserts and clicks Send once', async ({wake}) => {
@@ -115,7 +116,7 @@ test('one reserved Stop waits two seconds then inserts and clicks Send once', as
   wake.metadata.delivery_ids = [delivery(11)];
   await wake.check(); await wake.check();
   expect(await wake.page.evaluate(() => window.stopClicks)).toBe(1);
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
+  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox', 'Process your mailbox']);
 });
 
 test('unrelated draft, attachments and ambiguous visible Send never dispatch', async ({wake}) => {
@@ -132,7 +133,7 @@ test('unrelated draft, attachments and ambiguous visible Send never dispatch', a
 });
 
 
-test('actual Chrome alarm wakes once and survives worker shutdown without repeating IDs', async ({wake}) => {
+test('actual Chrome alarm preserves the bounded budget across worker shutdown', async ({wake}) => {
   const ring = () => wake.worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
   wake.metadata.delivery_ids = [delivery(31)];
   await ring();
@@ -147,16 +148,17 @@ test('actual Chrome alarm wakes once and survives worker shutdown without repeat
   // The retained real alarm, rather than a popup Check, must restart the worker and poll.
   await expect.poll(() => wake.metadata.polls, {timeout: 10000}).toBeGreaterThan(polls);
   await wake.message({type: 'verify', name: 'Fixture'});
-  await expect(wake.page.locator('#turns li')).toHaveCount(1);
+  await expect(wake.page.locator('#turns li')).toHaveCount(2);
+  wake.metadata.delivery_ids = []; await wake.check();
   const [worker] = wake.context.serviceWorkers();
   wake.metadata.delivery_ids = [delivery(32)];
   await worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
-  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox', 'Process your mailbox']);
+  await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox', 'Process your mailbox', 'Process your mailbox']);
   await wake.message({type: 'disarm'});
   wake.metadata.delivery_ids = [delivery(33)];
   await worker.evaluate(() => chrome.alarms.create('mailbox-wake', {when: Date.now() + 100}));
   await wake.message({type: 'verify', name: 'Fixture'});
-  await expect(wake.page.locator('#turns li')).toHaveCount(2);
+  await expect(wake.page.locator('#turns li')).toHaveCount(3);
 });
 
 test('multiple exact conversations isolate Stop and resume routing after tab closure', async ({wake}) => {
@@ -172,6 +174,7 @@ test('multiple exact conversations isolate Stop and resume routing after tab clo
   await expect(wake.page.locator('#turns li')).toHaveText(['Process your mailbox']);
   await expect(second.locator('#turns li')).toHaveText(['Process your mailbox']);
   await wake.page.close();
+  wake.metadata.delivery_ids = []; metadata.delivery_ids = []; await wake.check();
   wake.metadata.delivery_ids = [delivery(33)]; metadata.delivery_ids = [delivery(34)];
   await wake.check();
   let bindings = (await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).wakeBindings;
@@ -181,12 +184,13 @@ test('multiple exact conversations isolate Stop and resume routing after tab clo
   const reopened = await wake.context.newPage(); await reopened.goto(url);
   await wake.check();
   await expect(reopened.locator('#turns li')).toHaveText(['Process your mailbox']);
-  await expect(second.locator('#turns li')).toHaveCount(2);
+  await expect(second.locator('#turns li')).toHaveCount(3);
   await wake.message({type:'disarm', endpoint:secondIdentity});
+  wake.metadata.delivery_ids = []; await wake.check();
   wake.metadata.delivery_ids = [delivery(35)]; metadata.delivery_ids = [delivery(36)];
   await wake.check();
   await expect(reopened.locator('#turns li')).toHaveCount(2);
-  await expect(second.locator('#turns li')).toHaveCount(2);
+  await expect(second.locator('#turns li')).toHaveCount(3);
   bindings = (await wake.popup.evaluate(() => chrome.storage.local.get('wakeBindings'))).wakeBindings;
   expect(bindings[0].armed).toBe(true); expect(bindings[0].availability).toBe('open');
   expect(bindings[1].armed).toBe(false); expect(bindings[1].seen).toEqual([delivery(32), delivery(34)]);
