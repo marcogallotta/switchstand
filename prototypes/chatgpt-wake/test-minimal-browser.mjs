@@ -193,14 +193,23 @@ try {
   await evaluate(restartedSession,`load().then(check)`);
   const priorRearm = (await evaluate(restartedSession,'load()'))[0];
   const sendsBeforeRearm = await evaluate(session,'submissions.length');
-  await command('Emulation.setDeviceMetricsOverride',{width:200,height:600,deviceScaleFactor:1,mobile:false},popupSession);
-  await evaluate(popupSession,`show().then(()=>{window.confirm=()=>{throw Error('native modal forbidden')};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
-  assert.match(await evaluate(popupSession,`document.querySelector('#bindings p span').textContent`),/earlier wake may already have been sent/);
-  assert.equal(await evaluate(popupSession,`[...document.querySelectorAll('#bindings p span button')].every(b=>{const r=b.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth})`),true,'inline confirmation buttons fit a 200px popup');
-  await evaluate(popupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Cancel').click()`);
+  await evaluate(restartedSession,'chrome.action.openPopup()');
+  const actualPopup=(await command('Target.getTargets')).targetInfos.find(t=>t.url.endsWith('/popup.html') && t.targetId!==popup.targetId);
+  assert.ok(actualPopup);
+  const actualPopupSession=await attach(actualPopup.targetId);
+  for(let attempt=0;attempt<50;attempt++) {
+    if(await evaluate(actualPopupSession,`Boolean(document.getElementById('add')?.onclick)`)) break;
+    await pause(50);
+  }
+  assert.equal(await evaluate(actualPopupSession,`chrome.extension.getViews({type:'popup'}).includes(window)`),true,'actual action-popup identity');
+  await evaluate(actualPopupSession,`show().then(()=>{window.confirm=()=>{throw Error('native modal forbidden')};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
+  assert.match(await evaluate(actualPopupSession,`document.querySelector('#bindings p span').textContent`),/earlier wake may already have been sent/);
+  const geometry = await evaluate(actualPopupSession,`({width:innerWidth,height:innerHeight,controls:[...document.querySelectorAll('#bindings p span button')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===b}})})`);
+  assert.ok(geometry.controls.length===2 && geometry.controls.every(b=>b.left>=0 && b.right<=geometry.width && b.top>=0 && b.bottom<=geometry.height && b.hit),'actual popup confirmation buttons visible and hittable');
+  await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Cancel').click()`);
   await pause(100);
   assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,true,'cancelled confirmation preserves the fence');
-  await evaluate(popupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='Confirm re-arm').click()`);
+  await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='Confirm re-arm').click()`);
   for(let attempt=0;attempt<50;attempt++) {
     if(!(await evaluate(restartedSession,'load()'))[0].uncertain) break;
     await pause(50);
@@ -209,6 +218,7 @@ try {
   assert.equal(rearmed.uncertain,false);
   for(const key of ['ids','seen','wakeAttempt']) assert.deepEqual(rearmed[key],priorRearm[key],`${key} preserved`);
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'Re-arm sends nothing inline');
+  await command('Target.closeTarget',{targetId:actualPopup.targetId});
   const rearmVersion = versions.find(v=>v.scriptURL===worker.url && v.runningStatus==='running');
   assert.ok(rearmVersion);
   const oldRearmTarget = replacement.targetId;
