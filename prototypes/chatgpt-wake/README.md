@@ -19,14 +19,15 @@ resolved alert. It hides the chat but retains its pairing and safety history;
 the same mailbox or conversation cannot be added again automatically. A click
 is not proof that ChatGPT processed mail.
 
-For an uncertain chat, **Re-arm** explicitly permits future wakes after you
-confirm that the earlier wake may already have been sent. It requires a fresh
-empty mailbox with the same identity and no unresolved alert. It preserves the
-pairing, prior batch, seen IDs and latest action evidence, clears uncertainty,
-and arms that chat. It sends nothing immediately; normal polling can wake the
-next new mail. Empty mail and re-arming prove neither delivery nor processing of
-the earlier wake. If an alert remains, let ordinary polling report its recovery
-before trying Re-arm. Resume and Resume all still preserve uncertainty.
+Click the extension toolbar icon to **Re-arm all** saved, nonremoved chats.
+There is no popup or confirmation. This clears wake uncertainty and arms each
+chat even if mail or an alert remains. It preserves pairing, batch/seen IDs,
+latest action evidence and alerts. The click saves state; the next normal poll
+may wake chats. An earlier uncertain Send may already have succeeded, so an
+explicit re-arm can cause a repeated wake. It does not prove mailbox processing.
+The former setup page remains available at `chrome-extension://<id>/popup.html`
+for adding bindings and inspecting their status; it is no longer the icon action.
+
 
 Pending mail blocked by a closed tab is reported immediately to the local wake
 backend. A persistent draft or any continuously pending mailbox is reported
