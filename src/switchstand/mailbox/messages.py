@@ -1003,12 +1003,7 @@ class MessageState:
                     )
                 results: list[MessageAcknowledgeItem] = []
                 for delivery_id in request.delivery_ids:
-                    row = (await connection.execute(select(
-                        message_deliveries, messages.c.route_ref,
-                    ).join(messages, and_(
-                        messages.c.sender_work_id == message_deliveries.c.sender_work_id,
-                        messages.c.message_id == message_deliveries.c.message_id,
-                    )).where(
+                    row = (await connection.execute(select(message_deliveries).where(
                         message_deliveries.c.delivery_id == delivery_id,
                     ).with_for_update())).mappings().one_or_none()
                     if row is None:
