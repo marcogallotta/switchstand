@@ -450,3 +450,38 @@ const onceRearmed=structuredClone(state);
 await toolbarHandlers[0]();
 assert.deepEqual(state,onceRearmed,'second click is idempotent');
 console.log('PASS: registered toolbar Re-arm all, save failure, all active chats, removed/history preserved, zero inline send');
+
+// Independent result expectations; unknown/failed actions remain fenced after restart.
+const realExecution = context.chrome.scripting.executeScript;
+for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['draft-present',true],
+  ['wrong-conversation',true],['composer-unavailable',true],['insert-failed',true],
+  ['click-attempted',false],['future-result',false],[undefined,false],['throw',false]]) {
+  const seeded = {id, name:'mail', generation:1, url, armed:true, ids:[id], seen:[nextId],
+    alert:{incident_id:nextId}, alertDone:true};
+  state = {minimalBindings:[structuredClone(seeded)]};
+  let executions = 0;
+  context.chrome.scripting.executeScript = async () => {
+    executions++;
+    if (outcome === 'throw') throw Error('injected execution failure');
+    return [{result:outcome === undefined ? undefined : {outcome}}];
+  };
+  await run('load().then(check)');
+  assert.equal(Boolean(state.minimalBindings[0].uncertain), !safe, `fence: ${outcome}`);
+  for (const key of ['ids','seen','alert']) assert.deepEqual(state.minimalBindings[0][key],seeded[key]);
+  if (!safe) {
+    const callsBeforeRestart = executions;
+    const fresh = vm.createContext({...context});
+    vm.runInContext(source,fresh);
+    await vm.runInContext('load().then(check)',fresh);
+    assert.equal(executions,callsBeforeRestart, `restart cannot repeat ${outcome}`);
+  }
+}
+state = {minimalBindings:[{id,name:'mail',generation:1,url,armed:true}]};
+let effectsBeforeSave = 0;
+context.chrome.scripting.executeScript = async () => { effectsBeforeSave++; return []; };
+context.chrome.storage.local.set = async () => { throw Error('pre-effect storage failed'); };
+await assert.rejects(run('load().then(check)'), /pre-effect storage failed/);
+assert.equal(effectsBeforeSave,0,'failed pre-effect persistence cannot execute composer');
+context.chrome.storage.local.set = realSave;
+context.chrome.scripting.executeScript = realExecution;
+console.log('PASS: independent safe-result table, unsafe restart fences and failed pre-effect save');
