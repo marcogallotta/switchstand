@@ -1222,6 +1222,17 @@ async def test_feedback_classification_is_atomic_exact_and_replayable(
     assert applied == replay and applied.effect == "applied"
     changed = (await subject.runtime.get(source.work_id)).item
     assert changed is not None and changed.completed is closed
+    assert (
+        changed.routing.lifecycle_state,
+        changed.routing.wait_kind,
+        changed.routing.unblock_condition,
+        changed.routing.next_due,
+        changed.routing.next_action_class,
+        changed.routing.next_action_ref,
+    ) == (
+        ("TERMINAL", "NONE", "NONE", "NONE", "NONE", "NONE") if closed else
+        ("WAITING", "TRIAGE", "TRIAGE_PICKUP", "UNSCHEDULED", "NONE", "NONE")
+    )
     assert f"Classification: {classification}" in changed.notes
     if classification == "AMEND":
         amended = (await subject.runtime.get(target.work_id)).item
