@@ -7,7 +7,7 @@ import os
 from collections.abc import AsyncGenerator, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict, Field, JsonValue, model_validator
@@ -666,14 +666,40 @@ class MessageState:
         except (SQLAlchemyError, ValueError):
             return MessageSubmitResult(status="recovery_required", reason="state_unavailable")
 
+    async def _persist_delivery(
+        self, connection: AsyncConnection, sender_work_id: UUID, route: MessageRoute,
+        request: MessageSubmitRequest, digest: str,
+    ) -> tuple[Mapping[str, Any] | None, bool]:
+        """Persist immutable identity and delivery inside the caller's transaction."""
+        identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
+        delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
+        await connection.execute(insert(messages).values(
+            sender_work_id=sender_work_id, message_id=request.message_id,
+            route_ref=request.route_ref, kind=request.kind, payload=request.payload,
+            digest=digest, in_reply_to_delivery_id=request.in_reply_to_delivery_id,
+        ).on_conflict_do_nothing())
+        current = (await connection.execute(select(messages.c.digest).where(and_(
+            messages.c.sender_work_id == sender_work_id,
+            messages.c.message_id == request.message_id,
+        )))).scalar_one()
+        if current != digest:
+            return None, False
+        inserted = await connection.scalar(insert(message_deliveries).values(
+            delivery_id=delivery_id, sender_work_id=sender_work_id,
+            message_id=request.message_id, recipient_work_id=route.recipient_work_id,
+            recipient_grant_version=route.recipient_grant_version,
+        ).on_conflict_do_nothing().returning(message_deliveries.c.delivery_id))
+        row = (await connection.execute(self._pending_query().where(
+            message_deliveries.c.delivery_id == delivery_id
+        ))).mappings().one()
+        return cast(Mapping[str, Any], row), inserted is not None
+
     async def _store(
         self, sender_work_id: UUID, route: MessageRoute, request: MessageSubmitRequest,
         received_binding: tuple[int, str] | None = None,
         agent_binding: AgentMailbox | None = None,
     ) -> MessageSubmitResult:
         digest = _digest(route, request)
-        identity = f"{sender_work_id}:{request.message_id}:{route.recipient_work_id}"
-        delivery_id = uuid5(DELIVERY_NAMESPACE, identity)
         async with self.engine.begin() as connection:
             if request.route_ref in REVIEW_ROUTE_REFS and await connection.scalar(select(
                 work_migration_receipts.c.name
@@ -718,25 +744,11 @@ class MessageState:
                     return MessageSubmitResult(
                         status="conflict", reason="reply_identity_conflict"
                     )
-            await connection.execute(insert(messages).values(
-                sender_work_id=sender_work_id, message_id=request.message_id,
-                route_ref=request.route_ref, kind=request.kind, payload=request.payload,
-                digest=digest, in_reply_to_delivery_id=request.in_reply_to_delivery_id,
-            ).on_conflict_do_nothing())
-            current = (await connection.execute(select(messages.c.digest).where(and_(
-                messages.c.sender_work_id == sender_work_id,
-                messages.c.message_id == request.message_id,
-            )))).scalar_one()
-            if current != digest:
+            row, fresh = await self._persist_delivery(
+                connection, sender_work_id, route, request, digest,
+            )
+            if row is None:
                 return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
-            inserted = await connection.scalar(insert(message_deliveries).values(
-                delivery_id=delivery_id, sender_work_id=sender_work_id,
-                message_id=request.message_id, recipient_work_id=route.recipient_work_id,
-                recipient_grant_version=route.recipient_grant_version,
-            ).on_conflict_do_nothing().returning(message_deliveries.c.delivery_id))
-            row = (await connection.execute(self._pending_query().where(
-                message_deliveries.c.delivery_id == delivery_id
-            ))).mappings().one()
             if request.in_reply_to_delivery_id is not None and agent_binding is not None:
                 failure = await self._disposition_result(
                     connection, request.in_reply_to_delivery_id, sender_work_id,
@@ -746,7 +758,7 @@ class MessageState:
                     raise _AtomicResultFailure(failure)
         result = MessageSubmitResult(status="ok", message=_view(dict(row)))
         if result.message is not None:
-            self._notify_delivery(result.message, inserted is not None)
+            self._notify_delivery(result.message, fresh)
         return result
 
     def _notify_delivery(self, message: PendingMessage, fresh: bool) -> None:
@@ -827,32 +839,14 @@ class MessageState:
             if prior is not None and prior != (sender.endpoint_id, request.message_id):
                 return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
         digest = _digest(route, request)
-        delivery_id = uuid5(
-            DELIVERY_NAMESPACE,
-            f"{sender.endpoint_id}:{request.message_id}:{route.recipient_work_id}",
+        row, fresh = await self._persist_delivery(
+            connection, sender.endpoint_id, route, request, digest,
         )
-        await connection.execute(insert(messages).values(
-            sender_work_id=sender.endpoint_id, message_id=request.message_id,
-            route_ref=request.route_ref, kind=request.kind, payload=request.payload,
-            digest=digest, in_reply_to_delivery_id=request.in_reply_to_delivery_id,
-        ).on_conflict_do_nothing())
-        current = await connection.scalar(select(messages.c.digest).where(
-            messages.c.sender_work_id == sender.endpoint_id,
-            messages.c.message_id == request.message_id,
-        ))
-        if current != digest:
+        if row is None:
             return MessageSubmitResult(status="conflict", reason="message_identity_conflict")
-        inserted = await connection.scalar(insert(message_deliveries).values(
-            delivery_id=delivery_id, sender_work_id=sender.endpoint_id,
-            message_id=request.message_id, recipient_work_id=route.recipient_work_id,
-            recipient_grant_version=route.recipient_grant_version,
-        ).on_conflict_do_nothing().returning(message_deliveries.c.delivery_id))
-        row = (await connection.execute(self._pending_query().where(
-            message_deliveries.c.delivery_id == delivery_id
-        ))).mappings().one()
         message = _view(dict(row))
         pending = connection.info.get("switchstand_review_wake")
-        if inserted is not None and wake and pending is not None:
+        if fresh and wake and pending is not None:
             pending.append(message)
         return MessageSubmitResult(status="ok", message=message)
 

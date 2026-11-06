@@ -32,7 +32,7 @@ from switchstand.durable_capture import DurableCaptureGuidance
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.mailbox_wake import marker_receipts
-from switchstand.messages import MessageState, message_deliveries, messages
+from switchstand.messages import MessageState, MessageSubmitResult, message_deliveries, messages
 from switchstand.state import PostgresState, metadata
 
 
@@ -1290,7 +1290,10 @@ async def test_acknowledge_batch_is_per_delivery_and_preserves_open_reply(agent_
         )) == "DISPOSITIONED"
 
 
-async def test_result_and_disposition_roll_back_together(agent_messaging, monkeypatch):
+@pytest.mark.parametrize("failure_kind", ["sql", "semantic"])
+async def test_result_and_disposition_roll_back_together(
+    agent_messaging, monkeypatch, failure_kind,
+):
     tools, _actor, session, _owner, _other, service = agent_messaging
     assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
     session[0] = "chat-b"
@@ -1302,7 +1305,12 @@ async def test_result_and_disposition_roll_back_together(agent_messaging, monkey
     assert (await tools["agent_message_receive"]("1", sent.message.delivery_id)).status == "ok"
     assert service.messages is not None
 
+    notices = []
+    service.messages.on_delivery = lambda message, fresh: notices.append((message, fresh))
+
     async def fail_disposition(*_args, **_kwargs):
+        if failure_kind == "semantic":
+            return MessageSubmitResult(status="conflict", reason="reply_identity_conflict")
         raise SQLAlchemyError("injected disposition failure")
 
     monkeypatch.setattr(service.messages, "_disposition_result", fail_disposition)
@@ -1310,10 +1318,17 @@ async def test_result_and_disposition_roll_back_together(agent_messaging, monkey
     failed = await tools["agent_message_result_send"](
         "1", sent.message.delivery_id, result_id, {"result": "no commit"}
     )
-    assert (failed.status, failed.reason) == ("recovery_required", "state_unavailable")
+    assert (failed.status, failed.reason) == (
+        ("recovery_required", "state_unavailable") if failure_kind == "sql"
+        else ("conflict", "reply_identity_conflict")
+    )
+    assert notices == []
     async with service.messages.engine.connect() as connection:
         assert await connection.scalar(select(messages.c.message_id).where(
             messages.c.message_id == result_id
+        )) is None
+        assert await connection.scalar(select(message_deliveries.c.delivery_id).where(
+            message_deliveries.c.message_id == result_id
         )) is None
         assert await connection.scalar(select(message_deliveries.c.state).where(
             message_deliveries.c.delivery_id == sent.message.delivery_id

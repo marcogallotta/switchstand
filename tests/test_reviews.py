@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, event, insert, select, text
+from sqlalchemy import create_engine, event, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import switchstand.state
@@ -28,6 +28,9 @@ from switchstand.messages import (
     MessageSubmitRequest,
     RuntimeCurrentness,
     message_deliveries,
+)
+from switchstand.messages import (
+    messages as message_envelopes,
 )
 from switchstand.reviews import (
     BaselineAssessment,
@@ -346,6 +349,62 @@ async def test_occurrence_store_accepts_only_authenticated_direct_request(occurr
     assert len(deliveries) == 1
     assert deliveries[0][1] == envelope
     assert deliveries[0][0].sender_work_id == requester.endpoint_id
+
+
+async def test_review_internal_replay_conflicts_and_ack_reply_guard(
+    occurrence_runtime, observe_deliveries,
+):
+    _occurrences, messages, mailboxes, _subject_id, engine = occurrence_runtime
+    notices = observe_deliveries(messages)
+    sender = (await mailboxes.register_agent("Requester", "a", "a")).mailbox
+    recipient = (await register_reviewer(mailboxes, "b", "b")).mailbox
+    assert sender is not None and recipient is not None
+    route = MessageRoute(
+        recipient_work_id=recipient.endpoint_id, recipient_grant_version=recipient.generation,
+    )
+    request = MessageSubmitRequest(
+        api_version="1", message_id=uuid4(), grant_version=sender.generation,
+        route_ref="review.request", kind="request", payload={"text": "original"},
+    )
+    async with messages.review_transaction(engine) as connection:
+        first = await messages.submit_review_internal(connection, sender, route, request)
+        assert first.status == "ok" and first.message is not None and notices == []
+    expected_notices = [(recipient.endpoint_id, first.message.delivery_id, True, first.message.delivery_id)]
+    assert notices == expected_notices
+    variants = [
+        (route, request, "ok", None),
+        (route, request.model_copy(update={"payload": {"text": "changed"}}), "conflict", "message_identity_conflict"),
+        (route.model_copy(update={"recipient_work_id": uuid4()}), request, "conflict", "message_identity_conflict"),
+        (route.model_copy(update={"recipient_grant_version": 2}), request, "conflict", "message_identity_conflict"),
+    ]
+    for selected, candidate, status, reason in variants:
+        async with messages.review_transaction(engine) as connection:
+            result = await messages.submit_review_internal(connection, sender, selected, candidate)
+            assert (result.status, result.reason) == (status, reason)
+            if status == "ok":
+                assert result == first
+        assert notices == expected_notices
+    async with engine.begin() as connection:
+        assert (await connection.execute(select(message_envelopes.c.payload))).scalars().all() == [request.payload]
+        assert (await connection.execute(select(message_deliveries.c.delivery_id))).scalars().all() == [first.message.delivery_id]
+        await connection.execute(update(message_deliveries).values(
+            state="ACKNOWLEDGED", receiving_generation=str(recipient.generation),
+        ))
+    reply = request.model_copy(update={
+        "message_id": uuid4(), "kind": "result", "payload": {"text": "verdict"},
+        "in_reply_to_delivery_id": first.message.delivery_id,
+    })
+    async with messages.review_transaction(engine) as connection:
+        rejected = await messages.submit_review_internal(
+            connection, recipient, MessageRoute(
+                recipient_work_id=sender.endpoint_id, recipient_grant_version=sender.generation,
+            ), reply, (recipient.generation, str(recipient.generation)),
+        )
+        assert (rejected.status, rejected.reason) == ("conflict", "reply_delivery_not_found")
+    async with engine.connect() as connection:
+        assert (await connection.execute(select(message_envelopes.c.message_id))).scalars().all() == [request.message_id]
+        assert (await connection.execute(select(message_deliveries.c.state))).scalars().all() == ["ACKNOWLEDGED"]
+    assert notices == expected_notices
 
 
 @pytest.mark.parametrize("publication", ["ok", "rollback", "commit_failure", "callback_failure"])

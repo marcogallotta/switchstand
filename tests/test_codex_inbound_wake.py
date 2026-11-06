@@ -127,12 +127,18 @@ async def test_gate_rechecks_after_admission(subject, boundary):
 
 async def test_receipts_ignore_nonuser_text_and_follow_pages(subject):
     _, rpc, _, identity, delivery = subject
+    forbidden_delivery = uuid4()
+    forbidden_marker = {"type": "text", "text": MARKER + json.dumps([str(forbidden_delivery)])}
     marker = {"type": "text", "text": MARKER + json.dumps([str(delivery)])}
-    rpc.call.side_effect = [{"data": [{"items": [{"type": "agentMessage", "content": [marker]}]}],
+    rpc.call.side_effect = [{"data": [{"items": [{"type": "agentMessage", "content": [forbidden_marker]}]}],
                              "nextCursor": "next"},
                             {"data": [{"items": [{"type": "userMessage", "content": [marker]}]}]}]
     assert await module.receipts(rpc, identity) == {str(delivery)}
-    assert rpc.call.call_args.kwargs == {} and rpc.call.call_args.args[1]["cursor"] == "next"
+    assert [(call.args[0], call.args[1]["threadId"], call.args[1]["cursor"])
+            for call in rpc.call.call_args_list] == [
+                ("thread/turns/list", identity, None),
+                ("thread/turns/list", identity, "next"),
+            ]
 
 
 @pytest.mark.parametrize("direct_input", [False, None])
