@@ -66,6 +66,14 @@ The edge exposes mostly provider-neutral capabilities in semantic groups:
 Canonical work reads expose nullable server admission time. Existing and source-imported rows may
 truthfully remain `null`; landing this schema change does not activate or prove the live client path.
 
+Ordinary `work_history` adds optional `next_action` only on business `status=stale`:
+reread that exact work with full notes, compare current intent, and restart still-authorized
+exceptional history without the old cursor. Discard prior pages. The result remains STALE
+with no usable events or cursor; non-error transport is not business success. Managed history
+is unchanged. Canonical create invariant denials retain denied/not_sent and explain the fixed
+state invariant; corrections must stay within existing authority and use a fresh operation
+identity for changed arguments. Ambiguous effects require exact-identity reconciliation.
+
 Each ordinary HTTP tool result includes a compact mailbox attention footer: full current-mailbox
 sender counts, oldest message age, and an actionable returned-review ID when available. It does
 not consume messages or grant assignments. More than ten deliveries requires paging

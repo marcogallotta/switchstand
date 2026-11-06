@@ -29,7 +29,7 @@ from switchstand.chatgpt_mcp import (
     build_chatgpt_server,
     build_ordinary_tools,
 )
-from switchstand.contracts import WorkResolveReferenceRequest
+from switchstand.contracts import WorkHistoryResult, WorkResolveReferenceRequest
 from switchstand.grants import (
     GrantResult,
     GuardOutcome,
@@ -62,6 +62,20 @@ async def test_ordinary_work_get_previews_long_notes_and_explicitly_recovers_ful
     assert "HOLD: current control fact" not in preview.item.notes
     assert full.item.notes == full_notes
     assert preview.item.model_dump(exclude={"notes"}) == full.item.model_dump(exclude={"notes"})
+
+
+@pytest.mark.parametrize("status", ["ok", "denied", "unknown"])
+async def test_ordinary_history_preserves_nonstale_wire_shape(monkeypatch, status):
+    original = WorkHistoryResult.model_validate({"status": status, **(
+        {"work_id": ACTIVE, "revision": "r1"} if status == "ok" else {}
+    )})
+    subject = service()
+    monkeypatch.setattr(subject, "history", AsyncMock(return_value=original))
+    result = await build_chatgpt_server(subject).call_tool("work_history", {
+        "api_version": "1", "work_id": str(ACTIVE), "observed_revision": "r1",
+        "purpose": "investigation",
+    })
+    assert result.structured_content == original.model_dump(mode="json")
 
 
 def test_agent_trajectory_surface_cannot_supply_authentication_or_extra_authority():
@@ -982,6 +996,8 @@ async def test_real_stdio_surface_has_no_issuer_or_identity_argument():
         required_result = next(tool for tool in tools if tool.name == "required_result_save")
         assert "operation_id" not in required_result.input_schema["properties"]
         history = next(tool for tool in tools if tool.name == "work_history")
+        assert "next_action" in history.output_schema["properties"]
+        assert "next_action" not in history.output_schema.get("required", [])
         event = next(tool for tool in tools if tool.name == "work_event")
         append = next(tool for tool in tools if tool.name == "work_append")
         assert history.input_schema["properties"]["purpose"]["enum"] == [

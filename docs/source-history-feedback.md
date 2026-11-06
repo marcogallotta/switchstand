@@ -22,8 +22,12 @@ History and exact-event reads are exceptional. They require an explicit
 `investigation`, `recovery`, or `legacy_reconciliation` purpose and are not for
 normal grounding, re-entry, current-work discovery, or routine polling. Use the
 revision returned by `work_get` when reading bounded history or exact events. A
-stale result means reread current work and restart the affected
-paginated read; partial, malformed, unavailable, or stale pages never prove
+stale result means reread that exact current work with `include_notes=true`, compare
+its current notes and revision with the assigned purpose, and restart the affected
+paginated read only if still authorized and necessary. Omit the old cursor and discard
+earlier pages rather than combining them with the restarted read. If current work
+cannot be read, stop without assuming a revision. This advice authorizes no write or
+automatic mutation retry; partial, malformed, unavailable, or stale pages never prove
 complete history. Promote any controlling conclusion from exceptional history
 back into notes before relying on it as current state.
 

@@ -173,6 +173,10 @@ class OrdinaryUpdateResult(GuardOutcome):
     )
 
 
+class OrdinaryWorkHistoryResult(WorkHistoryResult):
+    next_action: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class OutcomeStateUpdateResult(ClosedModel):
     status: Literal["APPLIED", "REPLAYED", "STALE", "CONFLICT", "DENIED", "UNKNOWN"]
     state_id: UUID | None = None
@@ -640,14 +644,26 @@ def build_ordinary_tools(
         api_version: Literal["1"], work_id: UUID, observed_revision: str,
         purpose: HistoryPurpose,
         cursor: str | None = None, limit: Annotated[int, Field(ge=1, le=100)] = 50,
-    ) -> WorkHistoryResult:
+    ) -> OrdinaryWorkHistoryResult:
         """Exceptional investigation/recovery/legacy history; never normal grounding or polling."""
         correlate(work_id)
         result = await service.history(
             WorkHistoryRequest(api_version=api_version, work_id=work_id,
                                observed_revision=observed_revision, cursor=cursor, limit=limit))
         audited("work_history", f"{work_id}:purpose={purpose}", result.status)
-        return result
+        guidance = None
+        if result.status == "stale":
+            guidance = (
+                "This history read is stale and returned no usable page. Call work_get with "
+                f"work_id={result.work_id} and include_notes=true; compare its current revision "
+                "and notes with your assigned purpose. If the same exceptional history "
+                "investigation remains authorized and necessary, restart work_history with "
+                "that revision and omit the old cursor. Discard earlier pages; do not combine "
+                "them with the restarted read or infer complete history. If current work "
+                "cannot be read, stop without assuming a revision. This does not authorize "
+                "a write or an automatic mutation retry."
+            )
+        return OrdinaryWorkHistoryResult(**result.model_dump(), next_action=guidance)
 
     async def work_event(
         api_version: Literal["1"], event_id: UUID, observed_revision: str,

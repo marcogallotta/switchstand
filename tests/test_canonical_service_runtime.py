@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -581,6 +582,61 @@ async def test_service_routes_reference_and_event_reads_to_postgres(subject: Sub
     assert event.item.text == "database history"
 
 
+@pytest.mark.parametrize("during_page", [False, True])
+async def test_ordinary_stale_history_discards_cursor_and_restarts(
+    subject: Subject, monkeypatch, during_page: bool,
+) -> None:
+    for version in (1, 2):
+        await subject.events.append(
+            subject.work_id, observed_version=version, operation_id=uuid4(),
+            subtype="comment", text=f"event {version}", created_at=datetime.now(UTC),
+        )
+    server = build_chatgpt_server(subject.service)
+    args = {"api_version": "1", "work_id": str(subject.work_id),
+            "observed_revision": canonical_revision(subject.work_id, 3),
+            "purpose": "investigation", "limit": 1}
+    first = (await server.call_tool("work_history", args)).structured_content
+    assert first["events"][0]["text"] == "event 1" and first["next_cursor"]
+    assert "next_action" not in first
+
+    async def advance():
+        await subject.events.append(
+            subject.work_id, observed_version=3, operation_id=uuid4(),
+            subtype="comment", text="event 3", created_at=datetime.now(UTC),
+        )
+
+    page = subject.events.page
+    if during_page:
+        async def racing_page(*positional, **keywords):
+            fetched = await page(*positional, **keywords)
+            await advance()
+            return fetched
+        monkeypatch.setattr(subject.events, "page", racing_page)
+    else:
+        await advance()
+    stale = await server.call_tool("work_history", {**args, "cursor": first["next_cursor"]})
+    value = stale.structured_content
+    assert not stale.is_error and json.loads(stale.content[0].text) == value
+    assert value["status"] == "stale" and value["events"] == [] and value["next_cursor"] is None
+    assert value["revision"] == canonical_revision(subject.work_id, 4)
+    advice = value["next_action"]
+    assert str(subject.work_id) in advice and "include_notes=true" in advice
+    assert "assigned purpose" in advice and "authorized and necessary" in advice
+    assert "omit the old cursor" in advice and "Discard earlier pages" in advice
+    assert "do not combine" in advice and "does not authorize" in advice
+    monkeypatch.setattr(subject.events, "page", page)
+    current = (await server.call_tool("work_get", {
+        "api_version": "1", "work_id": str(subject.work_id), "include_notes": True,
+    })).structured_content["item"]
+    assert current["notes"] == "notes" and current["routing"]["next_action_ref"] == "implement"
+    restarted = (await server.call_tool("work_history", {
+        **args, "observed_revision": current["revision"], "limit": 100,
+    })).structured_content
+    assert restarted["status"] == "ok" and "next_action" not in restarted
+    assert [item["text"] for item in restarted["events"]] == ["event 1", "event 2", "event 3"]
+    assert restarted["next_cursor"] is None
+
+
 async def test_canonical_reference_does_not_discover_missing_provider_work(
     subject: Subject,
 ) -> None:
@@ -897,17 +953,25 @@ async def test_rootless_non_navigation_parent_and_legacy_minimal_create_fail_clo
     assert minimal.reason == "parent_root_not_exact"
 
 
+@pytest.mark.parametrize("patch,explanation", [
+    ({"next_action_class": "UNKNOWN", "next_action_ref": "UNKNOWN"},
+     "current create requires an exact next action"),
+    ({"wait_kind": "REVIEW"}, "CURRENT requires wait_kind=unblock_condition=next_due=NONE"),
+])
 async def test_create_classifies_invalid_resultant_state_and_accepts_coherent_current(
-    subject: Subject,
+    subject: Subject, patch: dict, explanation: str,
 ) -> None:
-    invalid = await subject.service.create(create(
-        subject,
-        lifecycle_state="CURRENT",
-        wait_kind="NONE",
-        unblock_condition="NONE",
-        next_action_class="UNKNOWN",
-        next_action_ref="UNKNOWN",
-    ))
+    request = create(subject, **patch)
+    invalid = await subject.service.create(request)
+    assert invalid.receipt is None and invalid.retry == "none"
+    assert invalid.operation_id == request.operation_id and invalid.work_id is not None
+    assert "Nothing was created" in invalid.next_action and explanation in invalid.next_action
+    assert "do not invent" in invalid.next_action and "fresh operation_id" in invalid.next_action
+    assert "ambiguous prior effect" in invalid.next_action
+    async with subject.engine.connect() as connection:
+        assert await connection.scalar(select(func.count()).select_from(canonical_work)) == 1
+        assert await connection.scalar(select(func.count()).select_from(work_handles)) == 1
+        assert await connection.scalar(select(func.count()).select_from(effect_intents)) == 0
     coherent = await subject.service.create(create(
         subject,
         lifecycle_state="CURRENT",
