@@ -76,20 +76,19 @@ Fixtures, mocks, helpers, and repair scripts all contribute code and maintenance
 This is a reason to examine a particular model boundary, not to declare a defect from a mock count
 or replace every unit test with an integration test.
 
-### Local example of indistinguishable placement fixtures
+### Historical placement-fixture limitation — addressed
 
-In [test_canonical_work_runtime.py](../tests/test_canonical_work_runtime.py), `_relations()` always
-projects to area `Switchstand` and stage `Doing`. Both
-`test_get_retries_when_placements_cross_a_row_version` and
-`test_search_retries_whole_page_when_placements_cross_a_row_version` create old and new relations
-with that helper, then compare the returned area with the new relation's name.
+At the research snapshot, [test_canonical_work_runtime.py](../tests/test_canonical_work_runtime.py)
+used identical public placement values before and after a revision change. Its get/page-retry
+assertions could not distinguish stale placements paired with a fresh revision. This was an oracle
+limitation, not evidence of a runtime caching defect; targeted mutation was NOT_RUN in that snapshot.
 
-Those placement assertions cannot distinguish fresh placement data from cached old placement
-data when the returned revision is fresh. That limitation follows directly from the identical
-observable values. It does not establish a runtime caching defect: the
-[runtime implementation](../src/switchstand/tracker/runtime.py) reads relations and checks
-work currentness. A targeted mutation run was **NOT_RUN**. A small potential test improvement is
-to give the two placements different public values and show that returning the old value fails.
+[PR1183](https://github.com/marcogallotta/switchstand/pull/1183), merged as
+`efcadbb0bfc9d9fc297d236d76b581b822fcad20`, addressed this with distinct old/new area and stage
+values and explicit public-placement assertions (change `e495dd9b536d099b714c6c69bf0f64738322028c`).
+Verified in current base `32187cb860cdb5b5dc6324b07dd48184f4c6c8b5`, tests at lines 79–131 also
+cover a stale successful page prefix. The historical example explains the failure mechanism;
+it is not an unresolved current defect or a new claim that every race is covered.
 
 ### Local example of an absent hostile input
 
@@ -141,8 +140,7 @@ behavioral adoption are separate questions.
 ## A practical cleanup approach
 
 The [canonical cleanup standard](code-quality.md#cleanup-prove-less-work-to-understand-and-change)
-consolidates inventory, before/after evidence, test simplification, calibrated acceptance and
-fresh-agent timing. This research is supporting evidence, not a second strategy or approval.
+describes five practical outcomes, concrete before/after evidence and subsystem completion review. This research is supporting evidence, not a second strategy or approval.
 Historical approval of the 5 November sequence does not resume work stopped by Marco.
 
 ### What the comparative reviews actually established

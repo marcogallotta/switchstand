@@ -8,72 +8,58 @@ A good change delivers the exact governing behavior with the simplest sound curr
 
 ### Cleanup: prove less work to understand and change
 
-This is the cleanup standard; [research](agent-code-and-test-quality-research.md) supplies supporting
-evidence. It grants no audit, implementation or effect authority.
+The target is maintainable, proportionate software, not a numeric grade. For an authorized cleanup,
+use five practical outcomes; [research](agent-code-and-test-quality-research.md) supplies evidence,
+not another procedure:
 
-Start with one authorized candidate or bounded subsystem, the exact baseline SHA, and Marco's
-approved V1 outcome/non-goals. Read current [owner maps](architecture.md) and
-[observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06).
-Internal callers prove dependency, not product need; observed use is not approved scope. Trace
-the touched service/state/workflow to a requested journey, supported contract or necessary invariant.
-Keep settled approvals. If a material V1 need or operating-scale choice remains unknown, prepare
-the credible smaller route and ask Marco under [Human Input](human-input.md); do not turn engineering
-factfinding into a product interview. Unknown usage does not authorize retirement.
+- **Discoverable:** a fresh agent with the task and repository finds the correct owner, relevant
+  docs and test command. Record time and wrong turns rather than assuming links prove usability.
+- **Cohesive code:** rules have authoritative owners; inspect the hardest flows and identify
+  unnecessary edits across unrelated files. Moving complexity into helpers or wrappers is not enough.
+- **Proportionate scope:** retained mechanisms serve Marco's approved V1 needs or necessary contracts.
+  Internal callers show dependencies, not product need. Remove unnecessary machinery rather than relocate it.
+- **Valuable, economical tests:** realistic faults are rejected at the relevant boundary. Reduce
+  redundant cases, expensive fixtures and coupled mocks while preserving unique regression protection.
+- **Fast, safe changes:** representative fresh-agent work needs less investigation, test overhead
+  and rework, with correctness and authority safeguards preserved.
 
-In the existing Work/plan, briefly identify the touched owners/consumers, plausible unknown callers,
-and affected tests/fixtures. No exhaustive subsystem census or item-by-item form is required.
-Choose KEEP, CUT, MERGE or RETIRE from source/contract evidence. Show the actual mechanism, duplicate
-decision, coordinated edit or obsolete tests/docs that disappear, and the remaining owner. Compare
-the strongest smaller route with keeping the mechanism. Moving files or adding forwarding layers
-alone establishes no simplification; justified KEEP is not a burden reduction.
+Start with one approved candidate or bounded subsystem, its baseline SHA, V1 outcome/non-goals and
+current [owner maps](architecture.md). [Observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06)
+is evidence, not signed scope. Keep settled approvals; unknown usage does not authorize retirement.
+For a material unresolved product/scale choice, prepare the credible smaller route and use existing
+[Human Input](human-input.md). Resolve engineering facts without making Marco investigate the code.
 
-Inspect the difficult function/transaction the claim depends on, not just an easy helper. For
-impacted tests, group evidence by protected behavior/boundary: what plausible fault is rejected,
-what regression survives a cut, and what setup/assertions are redundant? Examine costly shared
-fixtures, duplicated cases, implementation-coupled mocks and test-only machinery where touched.
-Remove unnecessary support with the obsolete mechanism; preserve unique causal regressions. Do not
-require a fault declaration for every retained test or manufacture a defect to justify restructuring.
+Briefly record material touched owners/consumers, expensive change paths, affected tests and important
+unknowns in existing Work/plan. Choose KEEP, CUT, MERGE or RETIRE from actual source/contract evidence.
+For each significant simplification, show one concrete before/after example: which decision,
+mechanism, coordinated edits, fixtures or obsolete docs disappear, what remains authoritative, and
+which realistic regression would fail. Group tests by protected behavior; no per-item inventory or
+fault declaration for every test. Green CI, deleted LOC and test counts alone establish no quality.
+Use counts/runtime only where they explain the observed burden.
 
-Compare exact baseline/candidate evidence proportionately: unnecessary mechanisms and duplicated
-decisions removed, remaining rule owners, files/edit sites for a representative change, production/
-support gross and net LOC, duplicate test cases, fixture/setup cost and focused runtime with command/
-environment. Counts locate burden; green CI and fewer lines alone do not establish quality.
-State affected users/data/effects, plausible failures, first falsification check, recovery and residual
-risk. Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing,
-transaction atomicity and recovery with relevant real/hermetic boundary evidence. Tests cannot prove
-absent consumers, decide product intent or undo external effects.
+Periodically compare matched representative maintenance tasks on exact baseline/candidate revisions
+in disposable writers, with fresh agents and comparable briefs/context/tools. Record owner discovery,
+first meaningful regression, correct change/review time, rework, files touched and human interruptions;
+include failures, sample size and confounders. There is no universal research-backed time limit:
+benchmark first, then agree useful budgets with Marco. These experiments inform major milestones,
+not every PR. Missing trials mean speed UNMEASURED; do not extrapolate sampled gains to the whole system.
 
-At an authorized cleanup baseline and major milestone, trial 2–5 representative maintenance tasks,
-including a difficult path, with separate fresh agents on baseline/candidate. Fix comparable task
-briefs, context, model/tools and environment; record sample size, time to find the owner, first valid
-regression, accepted change/review, files touched, rework and human interruptions, including failures.
-Report differences, ranges and confounders without claiming statistical significance. These are
-milestone trials, not a timing gate on every patch. Missing trials leave speed UNMEASURED; narrower
-safe improvements can still ship through existing review/qualification.
+When declaring a subsystem cleanup complete, use the existing independent review, not an additional
+approval stage. The reviewer performs fresh discovery and a representative change, examines hard
+paths, duplicate rules, scope, tests and docs, and compares baseline burden and safety against the
+five outcomes. Return PASS or FAIL with material findings, covered journeys and remaining uncertainty.
+Minor style preferences do not block completion. Known serious defects fail the affected claim;
+missing material evidence leaves completion NOT_ESTABLISHED, not a fabricated defect or blanket PASS.
+A material FAIL holds subsystem completion and moving cleanup to the next subsystem, not ordinary
+small PRs. It authorizes neither broader work nor endless fixes. Stop when the approved useful outcomes are demonstrated, or when no further worthwhile
+cut is supported; report the remaining gap and its owner rather than chasing a score.
 
-When a score is requested, assess useful scope, ownership/complexity, tests/support, agent work and
-documentation separately against these shared **0–10 judgment anchors**:
-
-- **0–2:** known failures make required work unsafe or unusable; **3–4:** basic work functions but
-  recurring defects, tangled ownership or weak evidence make changes unreliable.
-- **5–6:** useful behavior and local correctness evidence exist, but demonstrated coupling, support
-  burden or rework remains substantial; **7:** the assessed scope serves approved needs, shows
-  meaningful burden removed and discriminating safeguards, with bounded, explicit remaining debt.
-- **8:** representative milestone work corroborates those gains with lower change/review burden and
-  preserved correctness; **9–10:** repeated ordinary work sustains unusually low burden and strong
-  recovery evidence across the declared scope, with material limitations still disclosed.
-
-These are engineering anchors, not calibrated measurements. Give each domain's baseline/candidate
-judgment, source examples, confidence, inspected coverage and remaining weaknesses. Do not average
-away a known serious defect in a critical journey; an unresolved material correctness/authority
-failure precludes 7–8 there. Missing evidence is UNKNOWN, not zero or invented precision. A sampled
-result applies only to that sample; overall quality remains UNKNOWN without declared scope and
-adequate coverage. Keep demonstrated structural gains separate from unmeasured agent-speed claims.
-
-Use existing review/qualification routes; local/native review does not satisfy an explicitly
-required external review. PASS grants no merge, deployment or continuation authority. Governed
-package mechanics apply when that process governs the work. The human-controlled
-[per-PR LOC gate](#exceptional-loc-exemption-gate) remains settled and unchanged.
+Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, transaction
+atomicity and recovery. State plausible failures, relevant real/hermetic evidence, residual risk and
+recovery; tests cannot prove absent consumers or undo external effects. Ordinary small PRs retain
+existing review/qualification; local/native review does not satisfy an explicitly required external
+review. PASS grants no merge, deployment or continuation authority. The human-controlled
+[per-PR LOC gate](#exceptional-loc-exemption-gate) and applicable governed-package controls are unchanged.
 
 ### Root AGENTS admission
 
