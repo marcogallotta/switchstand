@@ -24,7 +24,7 @@ not another procedure:
   and rework, with correctness and authority safeguards preserved.
 
 Start with one approved candidate or bounded subsystem, its baseline SHA, V1 outcome/non-goals and
-current [owner maps](architecture.md). [Observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06)
+current [Mailbox](mailbox.md) and [Tracker](tracker.md) owner maps. [Observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06)
 is evidence, not signed scope. Keep settled approvals; unknown usage does not authorize retirement.
 For a material unresolved product/scale choice, prepare the credible smaller route and use existing
 [Human Input](human-input.md). Resolve engineering facts without making Marco investigate the code.
@@ -45,17 +45,18 @@ benchmark first, then agree useful budgets with Marco. These experiments inform 
 not every PR. Missing trials mean speed UNMEASURED; do not extrapolate sampled gains to the whole system.
 
 When declaring a subsystem cleanup complete, use the existing independent review, not an additional
-approval stage. The reviewer performs fresh discovery and a representative change, or reuses a
-current independent exercise they actually performed or observed; author assertions, stale trials
-and self-review do not qualify. The reviewer examines hard
-paths, duplicate rules, scope, tests and docs, and compares baseline burden and safety against the
-five outcomes. Return PASS or FAIL with material findings, covered journeys and remaining uncertainty.
+approval stage. The reviewer verifies current, trustworthy evidence of a prior fresh agent finding,
+changing and testing the code; repeat the exercise only when something important remains unproven.
+Check its provenance and applicability; author assertions, stale trials and self-review do not qualify.
+The reviewer examines hard paths, duplicate rules, scope, tests and docs, and compares baseline burden
+and safety against the five outcomes. Return PASS, FAIL or NOT_ESTABLISHED with material findings,
+covered journeys and remaining uncertainty.
 Minor style preferences do not block completion. Known serious defects fail the affected claim;
 missing material evidence leaves completion NOT_ESTABLISHED, not a fabricated defect or blanket PASS.
-Only a final subsystem PASS permits moving to the next subsystem. FAIL or NOT_ESTABLISHED holds
-progression; unresolved scope decisions return to Marco. Ordinary small PRs retain their normal
-process. Stop unproductive cuts when no further worthwhile change is supported, retain the
-progression hold and report the gap to Marco; do not broaden scope or add cuts to obtain a PASS.
+The current programme is limited to Mailbox and Tracker until both pass. Marco directs scope and
+progression by command; there is no general progression rule or automatic next subsystem. Reevaluate
+the method with him after these two. Ordinary small PRs retain their normal process. Stop unproductive
+cuts and report remaining gaps or scope questions to Marco; do not broaden scope or add cuts to obtain a PASS.
 
 Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, transaction
 atomicity and recovery. State plausible failures, relevant real/hermetic evidence, residual risk and
