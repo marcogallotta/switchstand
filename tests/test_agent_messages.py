@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from typing import Literal
 from unittest.mock import AsyncMock
@@ -1182,6 +1183,81 @@ async def test_codex_stop_page_uses_current_session_binding_without_receiving(ag
     assert await _codex_stop_mailbox_page(service, "thread-1", None) == {
         "status": "denied", "reason": "agent_not_registered",
     }
+
+
+@pytest.mark.parametrize("route_ref", ["agent.request", "review.request"])
+@pytest.mark.parametrize("held_lock", ["envelope", "fence"])
+async def test_acknowledge_locks_delivery_without_locking_envelope(
+    agent_messaging, route_ref, held_lock,
+):
+    tools, _actor, session, _owner, _other, service = agent_messaging
+    assert (await tools["agent_register"]("1", "Alpha")).status == "ok"
+    session[0] = "chat-b"
+    assert (await tools["agent_register"]("1", "Beta")).status == "ok"
+    session[0] = "chat-a"
+    sent = await tools["agent_message_send"]("1", "Beta", uuid4(), {"request": "act"})
+    assert sent.message is not None and service.messages is not None
+    delivery_id = sent.message.delivery_id
+    engine = service.messages.engine
+    beta = (await AgentMailboxState(engine).by_name("Beta")).mailbox
+    assert beta is not None
+    envelope_query = select(messages).where(messages.c.message_id == sent.message.message_id)
+    delivery_query = select(message_deliveries).where(
+        message_deliveries.c.delivery_id == delivery_id
+    )
+    async with engine.begin() as connection:
+        await connection.execute(update(messages).where(
+            messages.c.message_id == sent.message.message_id
+        ).values(route_ref=route_ref))
+        envelope_before = (await connection.execute(envelope_query)).mappings().one()
+        envelopes_before = (await connection.execute(select(messages))).all()
+    session[0] = "chat-b"
+    ack = None
+    try:
+        async with AsyncExitStack() as locks:
+            if held_lock == "envelope":
+                blocker = await locks.enter_async_context(engine.begin())
+                await blocker.execute(envelope_query.with_for_update())
+            else:
+                assert await locks.enter_async_context(
+                    service.messages.pending_delivery_fence(beta, delivery_id)
+                )
+            async with engine.connect() as observer:
+                # Before ACK starts, only the held fence owns this relation lock.
+                fence_pids = (await observer.exec_driver_sql(
+                    "SELECT pid FROM pg_locks WHERE relation = 'message_deliveries'::regclass "
+                    "AND mode = 'RowShareLock' AND granted"
+                )).scalars().all() if held_lock == "fence" else []
+                ack = asyncio.create_task(tools["agent_message_acknowledge"]("1", [delivery_id]))
+                if held_lock == "fence":
+                    assert len(fence_pids) == 1
+                    async with asyncio.timeout(10):
+                        while not (await observer.exec_driver_sql(
+                            "SELECT EXISTS (SELECT 1 FROM pg_locks "
+                            "WHERE %s = ANY(pg_blocking_pids(pid)))", (fence_pids[0],)
+                        )).scalar_one():
+                            assert not ack.done()
+                            await asyncio.sleep(0.01)
+                    assert not ack.done()
+                    assert (await observer.execute(delivery_query)).mappings().one()["state"] == "AVAILABLE"
+                else:
+                    result = await asyncio.wait_for(asyncio.shield(ack), 10)
+                    assert result.status == "ok" and result.results[0].state == "ACKNOWLEDGED"
+        result = await asyncio.wait_for(ack, 10)
+        assert result.status == "ok" and result.results[0].state == "ACKNOWLEDGED"
+        async with engine.connect() as connection:
+            first = (await connection.execute(delivery_query)).mappings().one()
+            assert first["state"] == "ACKNOWLEDGED"
+            assert (await connection.execute(envelope_query)).mappings().one() == envelope_before
+            assert (await connection.execute(select(messages))).all() == envelopes_before
+        repeated = await tools["agent_message_acknowledge"]("1", [delivery_id])
+        assert repeated.status == "ok" and repeated.results[0].state == "ACKNOWLEDGED"
+        async with engine.connect() as connection:
+            assert (await connection.execute(delivery_query)).mappings().one() == first
+    finally:
+        if ack is not None and not ack.done():
+            ack.cancel()
+            await asyncio.gather(ack, return_exceptions=True)
 
 
 async def test_acknowledge_batch_is_per_delivery_and_preserves_open_reply(agent_messaging):

@@ -608,7 +608,8 @@ only after the canonical agent/work identity model and migration of outstanding 
 implemented and verified.
 
 `agent_message_acknowledge` moves one to ten recipient AVAILABLE/RECEIVED deliveries to
-ACKNOWLEDGED. ACK means only that the notification was processed: it does not reply, complete,
+ACKNOWLEDGED, locking the current mailbox binding and delivery while the envelope stays
+immutable. ACK means only that the notification was processed: it does not reply, complete,
 record a verdict/effect, or close a sender watch. Typed-review deliveries may be dismissed by ACK;
 ordinary result and disposition routes still reject them. An exact ordinary result
 may reply from ACK and atomically stores the result plus exact-evidence disposition; replay
