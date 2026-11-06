@@ -400,10 +400,19 @@ class InboundWake:
                          path: str | None = None):
         root, root_binding = root or identity, root_binding or binding
         recipient = binding.endpoint_id
+        # Only pre-observation bodies can be proven terminal by the complete current result.
+        captured = {delivery: message for delivery, message in self.fresh_messages.items()
+                    if message.recipient_work_id == recipient}
         pending = await self.messages.all_pending_delivery_ids(binding)
         if pending is None:
             self.outcomes[recipient] = "STALE"
             return
+        for delivery in captured:  # noqa: PLC0206 — avoid a lingering body loop variable
+            if delivery not in pending and self.fresh_messages.get(delivery) is captured[delivery]:
+                self.fresh_messages.pop(delivery)
+                self.fresh.discard(delivery)
+        # Drop captured body references before the next external await.
+        del captured
         seen = await receipts(rpc, root)
         remaining = [delivery for delivery in pending if str(delivery) not in seen]
         if not remaining:
