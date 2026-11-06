@@ -69,7 +69,7 @@ run(`globalThis.bindings = [{id: '${id}', name: 'mail', generation: 1, url: '${u
 await run('check(bindings)');
 const before = clicks;
 await run('check(bindings)');
-assert.equal(clicks, before);
+assert.equal(clicks, before, 'automatic poll cannot repeat uncertain wake');
 assert.equal(state.minimalBindings[0].uncertain, true, 'click reserves an uncertain outcome before another poll');
 const restartedAfterClick = vm.createContext({...context});
 vm.runInContext(source, restartedAfterClick);
