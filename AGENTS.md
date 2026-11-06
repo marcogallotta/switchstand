@@ -48,7 +48,7 @@ Before any status or plan update—or any portfolio, attention, completion, or a
 | Trigger | Owner |
 | --- | --- |
 | Bootstrap, identity, task creation, activation/topology, host mechanics | [how Marco uses Switchstand](docs/how-marco-uses-switchstand.md), [architecture](docs/architecture.md) |
-| Research, design, spec, code, testing, independent review or landing | [research-sources](docs/research-sources.md), [code quality](docs/code-quality.md), relevant current Design/Contract/Plan; [development](docs/development.md) for execution |
+| Research, design, spec, code, testing, independent review or landing | [research-sources](docs/research-sources.md), [code quality](docs/code-quality.md) (including the [cleanup standard](docs/code-quality.md#cleanup-prove-less-work-to-understand-and-change)), relevant current Design/Contract/Plan; [development](docs/development.md) for execution |
 | Human decision, Human Review, explanation or on-demand status | [human-input](docs/human-input.md), [human-review](docs/human-review.md), [human-interaction](docs/human-interaction.md) |
 | Work state, messages, history, uncertain effects, feedback | [source-history-feedback](docs/source-history-feedback.md) |
 | Root or delegated coordination, supervision, handoff | [coordinator-tracker-contract](docs/coordinator-tracker-contract.md) |

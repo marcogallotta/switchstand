@@ -6,6 +6,65 @@ This is the repository semantic owner for substantive code/config/test implement
 
 A good change delivers the exact governing behavior with the simplest sound current design, lives in the correct owner, preserves explicit authority/trust/resource/dependency boundaries, avoids duplicate truth and speculative machinery, has discriminating maintainable evidence, and leaves the touched system no harder for a fresh competent agent to understand and safely change. Green tests are evidence, not the definition of correctness or quality.
 
+### Cleanup: prove less work to understand and change
+
+The target is maintainable, proportionate software, not a numeric grade. For an authorized cleanup,
+use five practical outcomes; [research](agent-code-and-test-quality-research.md) supplies evidence,
+not another procedure:
+
+- **Discoverable:** a fresh agent with the task and repository finds the correct owner, relevant
+  docs and test command. Record time and wrong turns rather than assuming links prove usability.
+- **Cohesive code:** rules have authoritative owners; inspect the hardest flows and identify
+  unnecessary edits across unrelated files. Moving complexity into helpers or wrappers is not enough.
+- **Proportionate scope:** retained mechanisms serve Marco's approved V1 needs or necessary contracts.
+  Internal callers show dependencies, not product need. Remove unnecessary machinery rather than relocate it.
+- **Valuable, economical tests:** realistic faults are rejected at the relevant boundary. Reduce
+  redundant cases, expensive fixtures and coupled mocks while preserving unique regression protection.
+- **Fast, safe changes:** representative fresh-agent work needs less investigation, test overhead
+  and rework, with correctness and authority safeguards preserved.
+
+Start with one approved candidate or bounded subsystem, its baseline SHA, V1 outcome/non-goals and
+current [Mailbox](mailbox.md) and [Tracker](tracker.md) owner maps. [Observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06)
+is evidence, not signed scope. Keep settled approvals; unknown usage does not authorize retirement.
+For a material unresolved product/scale choice, prepare the credible smaller route and use existing
+[Human Input](human-input.md). Resolve engineering facts without making Marco investigate the code.
+
+Briefly record material touched owners/consumers, expensive change paths, affected tests and important
+unknowns in existing Work/plan. Choose KEEP, CUT, MERGE or RETIRE from actual source/contract evidence.
+For each significant simplification, show one concrete before/after example: which decision,
+mechanism, coordinated edits, fixtures or obsolete docs disappear, what remains authoritative, and
+which realistic regression would fail. Group tests by protected behavior; no per-item inventory or
+fault declaration for every test. Green CI, deleted LOC and test counts alone establish no quality.
+Use counts/runtime only where they explain the observed burden.
+
+Periodically compare matched representative maintenance tasks on exact baseline/candidate revisions
+in disposable writers, with fresh agents and comparable briefs/context/tools. Record owner discovery,
+first meaningful regression, correct change/review time, rework, files touched and human interruptions;
+include failures, sample size and confounders. There is no universal research-backed time limit:
+benchmark first, then agree useful budgets with Marco. These experiments inform major milestones,
+not every PR. Missing trials mean speed UNMEASURED; do not extrapolate sampled gains to the whole system.
+
+When declaring a subsystem cleanup complete, use the existing independent review, not an additional
+approval stage. The reviewer verifies current, trustworthy evidence of a prior fresh agent finding,
+changing and testing the code; repeat the exercise only when something important remains unproven.
+Check its provenance and applicability; author assertions, stale trials and self-review do not qualify.
+The reviewer examines hard paths, duplicate rules, scope, tests and docs, and compares baseline burden
+and safety against the five outcomes. Return PASS, FAIL or NOT_ESTABLISHED with material findings,
+covered journeys and remaining uncertainty.
+Minor style preferences do not block completion. Known serious defects fail the affected claim;
+missing material evidence leaves completion NOT_ESTABLISHED, not a fabricated defect or blanket PASS.
+The current programme is limited to Mailbox and Tracker until both pass. Marco directs scope and
+progression by command; there is no general progression rule or automatic next subsystem. Reevaluate
+the method with him after these two. Ordinary small PRs retain their normal process. Stop unproductive
+cuts and report remaining gaps or scope questions to Marco; do not broaden scope or add cuts to obtain a PASS.
+
+Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, transaction
+atomicity and recovery. State plausible failures, relevant real/hermetic evidence, residual risk and
+recovery; tests cannot prove absent consumers or undo external effects. Ordinary small PRs retain
+existing review/qualification; local/native review does not satisfy an explicitly required external
+review. PASS grants no merge, deployment or continuation authority. The human-controlled
+[per-PR LOC gate](#exceptional-loc-exemption-gate) and applicable governed-package controls are unchanged.
+
 ### Root AGENTS admission
 
 Root `AGENTS.md` is a bootstrap/router, not a process manual. Any addition to it must satisfy
