@@ -198,6 +198,57 @@ def test_role_home_rejects_unexpected_existing_entries(tmp_path: Path, entry: st
     assert "should-not-run" not in result.stdout
 
 
+def test_preexisting_empty_home_is_not_replaced(tmp_path: Path) -> None:
+    node_bin = _fake_nvm(tmp_path)
+    cli = node_bin / "codex"
+    cli.write_text("#!/bin/sh\necho should-not-run\n")
+    cli.chmod(0o755)
+    role_home = tmp_path / "role-home"
+    role_home.mkdir()
+    original_inode = role_home.stat().st_ino
+    env = os.environ.copy()
+    env.update(HOME=str(tmp_path), CODEX_HOME=str(role_home))
+    env.pop("NVM_DIR", None)
+
+    result = subprocess.run(
+        [str(ROOT / "scripts/launch-worker"), "--version"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert role_home.stat().st_ino == original_inode
+    assert list(role_home.iterdir()) == []
+    assert "should-not-run" not in result.stdout
+
+
+@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
+def test_simultaneous_first_launch_uses_one_complete_home(tmp_path: Path, script: str) -> None:
+    node_bin = _fake_nvm(tmp_path)
+    cli = node_bin / "codex"
+    cli.write_text("#!/bin/sh\nexit 0\n")
+    cli.chmod(0o755)
+    env = os.environ.copy()
+    env["HOME"] = str(tmp_path)
+    env.pop("NVM_DIR", None)
+    env.pop("CODEX_HOME", None)
+    processes = [
+        subprocess.Popen(
+            [str(ROOT / "scripts" / script), "--version"],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        for _ in range(12)
+    ]
+    results = [process.communicate(timeout=15) for process in processes]
+    assert all(process.returncode == 0 for process in processes), results
+    role = script.removeprefix("launch-")
+    homes = tmp_path / ".local/state/switchstand/codex/role-homes"
+    role_home = homes / role
+    assert (role_home / ".switchstand-role").read_text().strip() == role
+    assert (role_home / "AGENTS.md").resolve() == ROOT / "roles" / role / "AGENTS.md"
+    assert (role_home / "auth.json").resolve() == tmp_path / ".codex/auth.json"
+    assert (role_home / "config.toml").is_file()
+    assert list(homes.glob(".codex-role-home.*")) == []
+
+
 def test_worker_config_is_one_time_copy_and_legacy_launcher_keeps_old_home(tmp_path: Path) -> None:
     node_bin = _fake_nvm(tmp_path)
     cli = node_bin / "codex"

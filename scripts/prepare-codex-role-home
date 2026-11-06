@@ -30,7 +30,16 @@ if [[ ! -e "$CODEX_HOME" ]]; then
     ln -s -- "$role_file" "$staging/AGENTS.md"
     ln -s -- "$auth_source" "$staging/auth.json"
     printf '%s\n' "$role" > "$staging/.switchstand-role"
-    mv -T -- "$staging" "$CODEX_HOME"
+    # A concurrent first launch may publish the home while this one prepares.
+    # --no-clobber must leave that destination intact, including an empty dir.
+    if ! mv -Tn -- "$staging" "$CODEX_HOME"; then
+        [[ -e "$CODEX_HOME" || -L "$CODEX_HOME" ]] || {
+            echo "Could not publish role home: $CODEX_HOME" >&2; exit 1;
+        }
+    fi
+    if [[ -e "$staging" ]]; then
+        rm -rf -- "$staging"
+    fi
     trap - EXIT
 fi
 
