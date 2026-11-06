@@ -311,6 +311,77 @@ def relation(
     )
 
 
+@pytest.mark.parametrize("operation", ["work_update", "work_relate"])
+async def test_unresolved_effect_preserves_public_guard_and_admission(
+    subject: Subject, operation: str,
+) -> None:
+    target = await subject.service.state.bind("asana", "456")
+    await subject.runtime.works.create(CurrentWork(target.id, "Dependency", False, ""))
+    attempt = (update(subject, title="Blocked title") if operation == "work_update" else
+               relation(subject, RelationPatch(
+                   kind="dependency", action="add", target_work_id=target.id,
+               )))
+    prior = GuardOutcome(
+        status="unknown", operation="work_append", work_id=subject.work_id,
+        operation_id=uuid4(), reason="provider_unknown", effect="unknown",
+        retry="reconcile", next_action="reconcile",
+    )
+    before = prior.model_dump(mode="json")
+    async with subject.engine.begin() as connection:
+        await connection.execute(insert(effect_intents).values(
+            operation_id=str(prior.operation_id), fingerprint="old",
+            principal_key=subject.principal.key, work_id=str(subject.work_id),
+            grant_id=str(subject.grant.id), grant_version=subject.grant.version,
+            intent={"authority": "provider"}, outcome=before,
+        ))
+        original_work = (await connection.execute(select(canonical_work).where(
+            canonical_work.c.work_id == subject.work_id
+        ))).mappings().one()
+    result = (await subject.service.update(attempt) if isinstance(attempt, ProtectedUpdate)
+              else await subject.service.relate(attempt))
+    assert result.model_dump(mode="json") == {
+        "status": "unknown", "operation": operation,
+        "work_id": str(subject.work_id), "operation_id": str(attempt.operation_id),
+        "reason": "target_has_unresolved_effect", "effect": "not_sent", "retry": "none",
+        "next_action": (
+            "No ordinary exact recovery exists for the blocking work_append effect; do not "
+            "resend or start a new effect. Escalate for trusted operator adjudication."
+        ),
+        "receipt": None,
+        "blocked_by": {
+            "operation": "work_append", "operation_id": str(prior.operation_id),
+            "work_id": str(subject.work_id),
+            "outcome": {"status": "unknown", "reason": "provider_unknown",
+                        "effect": "unknown", "retry": "reconcile"},
+        },
+    }
+    assert prior.model_dump(mode="json") == before
+    # Admission still precedes the barrier, so revocation cannot disclose its identity.
+    await subject.grants.issue(subject.grant.model_copy(update={
+        "version": 2, "state": "revoked",
+    }), 1)
+    denied = (await subject.service.update(attempt) if isinstance(attempt, ProtectedUpdate)
+              else await subject.service.relate(attempt))
+    assert denied.reason == "no_current_grant" and denied.blocked_by is None
+    assert str(prior.operation_id) not in denied.model_dump_json()
+    async with subject.engine.connect() as connection:
+        assert (await connection.execute(select(canonical_work).where(
+            canonical_work.c.work_id == subject.work_id
+        ))).mappings().one() == original_work
+        assert await connection.scalar(select(func.count()).select_from(work_events).where(
+            work_events.c.work_id == subject.work_id
+        )) == 0
+        assert await connection.scalar(select(func.count()).select_from(work_dependencies).where(
+            work_dependencies.c.work_id == subject.work_id
+        )) == 0
+        assert await connection.scalar(select(effect_intents.c.operation_id).where(
+            effect_intents.c.operation_id == str(attempt.operation_id)
+        )) is None
+        assert await connection.scalar(select(effect_intents.c.outcome).where(
+            effect_intents.c.operation_id == str(prior.operation_id)
+        )) == before
+
+
 async def pending_review(
     subject: Subject,
 ) -> tuple[

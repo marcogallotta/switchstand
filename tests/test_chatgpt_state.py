@@ -304,12 +304,23 @@ async def test_ambiguous_send_blocks_new_id_changed_payload_and_other_principal(
     assert replay.status == "unknown" and replay.retry == "reconcile"
     later = request(selected, text="changed payload", observed_revision=provider.revision)
     blocked = await gateway.append(selected.principal, later)
-    assert (blocked.status, blocked.effect, blocked.retry) == ("unknown", "not_sent", "none")
-    assert blocked.operation_id == later.operation_id
-    assert blocked.blocked_by is not None
-    assert blocked.blocked_by.operation_id == req.operation_id
-    assert blocked.blocked_by.outcome.effect == "unknown"
-    assert "No ordinary exact recovery exists" in blocked.next_action
+    assert blocked.model_dump(mode="json") == {
+        "status": "unknown", "operation": "work_append",
+        "work_id": str(later.work_id), "operation_id": str(later.operation_id),
+        "reason": "target_has_unresolved_effect", "effect": "not_sent", "retry": "none",
+        "next_action": (
+            "No ordinary exact recovery exists for the blocking work_append effect; do not "
+            "resend or start a new effect. Escalate for trusted operator adjudication."
+        ),
+        "receipt": None,
+        "blocked_by": {
+            "operation": "work_append", "operation_id": str(replay.operation_id),
+            "work_id": str(replay.work_id),
+            "outcome": {"status": replay.status, "reason": replay.reason,
+                        "effect": replay.effect, "retry": replay.retry},
+        },
+    }
+    assert replay.operation_id == req.operation_id and replay.blocked_by is None
     another = selected.principal.model_copy(update={"subject": str(uuid4())})
     other_grant = selected.model_copy(update={"principal": another, "id": uuid4()})
     await restarted.issue(other_grant, None)

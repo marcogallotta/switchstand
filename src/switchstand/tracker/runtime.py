@@ -28,8 +28,6 @@ from ..contracts import (
 from ..grant_state import GrantState, effect_intents
 from ..grants import (
     CreateReceipt,
-    EffectBlocker,
-    EffectOutcomeView,
     FeedbackClassificationReceipt,
     GuardOutcome,
     PrincipalContext,
@@ -49,7 +47,7 @@ from ..human_reviews import (
 from ..messages import messages
 from ..state import work_handles
 from .creates import CreateGateway
-from .mutation_effect import blocked_effect_next_action
+from .mutation_effect import with_blocked_effect
 from .policy import SEMANTIC_FIELDS, validate_create_state, validate_resultant_state
 from .provider_relations import RelationGateway
 from .relations import (
@@ -481,18 +479,11 @@ class CanonicalWorkRuntime:
                     if blocked is not None:
                         prior = GuardOutcome.model_validate(blocked["outcome"])
                         assert prior.operation_id is not None and prior.work_id is not None
-                        return self._guard(
-                            request, "unknown", "target_has_unresolved_effect"
-                        ).model_copy(update={
-                            "next_action": blocked_effect_next_action(prior.operation),
-                            "blocked_by": EffectBlocker(
-                                operation=prior.operation, operation_id=prior.operation_id,
-                                work_id=prior.work_id, outcome=EffectOutcomeView(
-                                    status=prior.status, reason=prior.reason,
-                                    effect=prior.effect, retry=prior.retry,
-                                ),
-                            ),
-                        })
+                        return with_blocked_effect(
+                            self._guard(
+                                request, "unknown", "target_has_unresolved_effect"
+                            ), prior,
+                        )
                     if current is None:
                         return self._guard(request, "denied", "work_not_bound")
                     if request.observed_revision != canonical_revision(
@@ -882,18 +873,11 @@ class CanonicalWorkRuntime:
                     if blocked is not None:
                         prior = GuardOutcome.model_validate(blocked["outcome"])
                         assert prior.operation_id is not None and prior.work_id is not None
-                        return RelationGateway.guard(
-                            request, "unknown", "target_has_unresolved_effect"
-                        ).model_copy(update={
-                            "next_action": blocked_effect_next_action(prior.operation),
-                            "blocked_by": EffectBlocker(
-                                operation=prior.operation, operation_id=prior.operation_id,
-                                work_id=prior.work_id, outcome=EffectOutcomeView(
-                                    status=prior.status, reason=prior.reason,
-                                    effect=prior.effect, retry=prior.retry,
-                                ),
-                            ),
-                        })
+                        return with_blocked_effect(
+                            RelationGateway.guard(
+                                request, "unknown", "target_has_unresolved_effect"
+                            ), prior,
+                        )
                     if current is None:
                         return RelationGateway.guard(request, "denied", "work_not_bound")
                     if request.observed_revision != canonical_revision(

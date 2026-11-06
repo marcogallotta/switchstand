@@ -104,16 +104,25 @@ async def test_relation_gateway_keeps_ambiguous_send_unknown_and_blocks_new_effe
     assert (await gateway.update(PRINCIPAL, first)).effect == "unknown"
     assert provider.relation_sends == 1
 
-    blocked = await gateway.update(
-        PRINCIPAL,
-        request(selected, RelationPatch(kind="assignee", action="set", assignee_gid="42")),
-    )
-    assert (blocked.reason, blocked.effect, blocked.retry) == (
-        "target_has_unresolved_effect", "not_sent", "none",
-    )
-    assert blocked.blocked_by is not None
-    assert blocked.blocked_by.operation_id == first.operation_id
-    assert "No ordinary exact recovery exists" in blocked.next_action
+    later = request(selected, RelationPatch(kind="assignee", action="set", assignee_gid="42"))
+    blocked = await gateway.update(PRINCIPAL, later)
+    assert blocked.model_dump(mode="json") == {
+        "status": "unknown", "operation": "work_relate",
+        "work_id": str(later.work_id), "operation_id": str(later.operation_id),
+        "reason": "target_has_unresolved_effect", "effect": "not_sent", "retry": "none",
+        "next_action": (
+            "No ordinary exact recovery exists for the blocking work_relate effect; do not "
+            "resend or start a new effect. Escalate for trusted operator adjudication."
+        ),
+        "receipt": None,
+        "blocked_by": {
+            "operation": "work_relate", "operation_id": str(unknown.operation_id),
+            "work_id": str(unknown.work_id),
+            "outcome": {"status": unknown.status, "reason": unknown.reason,
+                        "effect": unknown.effect, "retry": unknown.retry},
+        },
+    }
+    assert unknown.operation_id == first.operation_id and unknown.blocked_by is None
     assert provider.relation_sends == 1
 
     grants.grant = selected.model_copy(update={
