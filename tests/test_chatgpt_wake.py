@@ -181,3 +181,53 @@ async def test_diagnostics_are_typed_bounded_and_never_escalate(caplog):
         ordinary = {"name": "fixture", "delivery_ids": [], "outcome": "draft-present"}
         assert (await client.post(PATH + "/report", json=ordinary, headers=headers)).json() == {
             "status": "logged", "escalation": "configured"}
+
+
+async def test_stall_observations_and_alert_results_are_visible_without_content(caplog):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    reporter = SimpleNamespace(recipient="fixture", manifest=SimpleNamespace(recipient="fixture"),
+                               send=AsyncMock())
+    server = FastMCP("stall-logging-test")
+    install_browser_wake(server, None, reporter)
+    transport = httpx.ASGITransport(app=server.http_app(), client=("127.0.0.1", 1234))
+    identity, now = str(uuid4()), "2026-11-06T17:00:00Z"
+    payload = {"name": "fixture", "delivery_ids": [], "outcome": "attempt-outcome-unknown",
+        "observation": {"observed_at": now, "endpoint": identity, "generation": 1,
+            "pending_count": None, "reason": "execution-failed", "uncertain": True,
+            "attempt": {"id": identity, "action": "send", "started_at": now,
+                        "finished_at": now, "outcome": "execution-failed"}}}
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        token = (await client.get(PATH + "/config")).json()["report_token"]
+        headers = {"Authorization": "Bearer " + token}
+        assert (await client.post(PATH + "/report", json=payload, headers=headers)).json() == {"status": "logged"}
+        assert "execution-failed" in caplog.text and identity in caplog.text and now in caplog.text
+        reporter.send.assert_not_awaited()
+        invalid = {**payload, "observation": {**payload["observation"], "reason": "PRIVATE draft sentinel"}}
+        assert (await client.post(PATH + "/report", json=invalid, headers=headers)).status_code == 400
+        assert "reason=invalid_report" in caplog.text
+        assert (await client.post(PATH + "/report", json={**payload, "delivery_ids": [identity]},
+                                  headers=headers)).status_code == 400
+        assert (await client.post(PATH + "/report", content="PRIVATE" * 600,
+                                  headers={**headers, "Content-Type": "application/json"})).status_code == 413
+        assert "reason=too_large" in caplog.text
+        incident = {"incident_id": identity, "phase": "blocked", "name": "fixture",
+            "endpoint": identity, "generation": 1, "delivery_ids": [identity],
+            "reason": "pending-mail", "started_at": now, "observed_at": now}
+        alert = {"name": "fixture", "delivery_ids": [identity],
+                 "outcome": "attempt-outcome-unknown", "incident": incident}
+        for result in [{"status": "queued", "message_id": identity},
+                       {"status": "stale", "reason": "observation_expired"},
+                       {"status": "denied", "reason": "no_committed_incident"}]:
+            reporter.send.return_value = result
+            caplog.clear()
+            response = await client.post(PATH + "/report", json=alert, headers=headers)
+            assert response.json()["alert"] == result
+            assert '"reason":"pending-mail"' in caplog.text and "phase=blocked" in caplog.text
+            assert all(str(value) in caplog.text for value in result.values())
+        reporter.send.side_effect = RuntimeError("fixture reporter unavailable")
+        response = await client.post(PATH + "/report", json=alert, headers=headers)
+        assert response.status_code == 503
+        assert f"outcome unknown incident_id={identity}" in caplog.text
+        assert "PRIVATE" not in caplog.text and token not in caplog.text

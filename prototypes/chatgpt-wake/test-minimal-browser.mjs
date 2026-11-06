@@ -11,13 +11,16 @@ import {createHash} from 'node:crypto';
 
 const production = dirname(fileURLToPath(import.meta.url));
 const extension = await mkdtemp(join(tmpdir(), 'switch-wake-extension-'));
-const reports = [];
+const reports = [], observations = [];
 const id = '11111111-2222-4333-8444-555555555555';
 const server = createServer(async (request, response) => {
   let input = '';
   for await (const chunk of request) input += chunk;
   const path = new URL(request.url, 'http://fixture').pathname;
-  if (path.endsWith('/report')) reports.push(JSON.parse(input));
+  if (path.endsWith('/report')) {
+    const payload = JSON.parse(input);
+    (payload.observation ? observations : reports).push(payload);
+  }
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(path.endsWith('/config') ? {status:'ok',report_token:'isolated-fixture'} :
     path.endsWith('/report') ? {status:'logged',alert:{status:'queued'}} :
@@ -188,6 +191,9 @@ try {
   await evaluate(restartedSession,`load().then(check)`);
   assert.equal(reports.length,1,'closed exhausted binding sends immediate HTTP alert');
   assert.equal(reports[0].incident.reason,'bound-tab-missing');
+  assert.ok(observations.some(p => p.observation.reason === 'bound-tab-missing'));
+  assert.ok(observations.some(p => p.observation.attempt?.detail === 'click-dispatched'));
+  assert.ok(observations.every(p => !p.incident && p.delivery_ids.length === 0));
   await evaluate(restartedSession,`load().then(check)`);
   assert.equal(reports.length,1,'HTTP alert dedupe persisted');
   const remove = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'remove',id:${JSON.stringify(id)}})`);

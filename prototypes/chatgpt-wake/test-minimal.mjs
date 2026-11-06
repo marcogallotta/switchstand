@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 const source = readFileSync(new URL('worker.js', import.meta.url), 'utf8');
 const handlers = [];
 let state = {}, clicks = 0, inserts = 0, stopClicks = 0;
-let now = Date.now(), reports = [], alertStatus = 'queued', alertReason;
+let now = Date.now(), reports = [], observations = [], alertStatus = 'queued', alertReason;
 class Clock extends Date { static now() { return now; } }
 const url = 'https://chatgpt.com/c/exact';
 const id = '11111111-1111-1111-1111-111111111111';
@@ -27,7 +27,8 @@ const context = vm.createContext({crypto: webcrypto, Date: Clock, console, URL, 
   getComputedStyle: () => ({visibility: 'visible'}), HTMLTextAreaElement: Textarea, InputEvent: class {},
   fetch: async (url, options) => {
     if (url.endsWith('/report')) {
-      reports.push(JSON.parse(options.body));
+      const payload = JSON.parse(options.body);
+      (payload.observation ? observations : reports).push(payload);
       return {ok: true, json: async () => ({status: 'logged', alert: {status: alertStatus, reason: alertReason}})};
     }
     return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id]})};
@@ -362,3 +363,68 @@ assert.match(readd.error, /retains safety history/);
 assert.equal(state.minimalBindings.length, 2, 're-Add cannot erase removed pairing');
 context.fetch = originalFetch;
 console.log('PASS: one-click Add, duplicate/navigation rejection, isolated Resume, Resume all and guarded Remove tombstone');
+
+// Diagnostic uploads are independent of alerts and browser actions.
+context.fetch = originalFetch;
+context.chrome.tabs.query = originalTabs;
+run(`cancelled.clear(); loggedObservations.clear()`);
+const diagnosticClicks = clicks;
+run(`globalThis.diagnosticBinding = {id: '${id}', name: 'mail', generation: 1, url: '${url}', armed: true, uncertain: true}`);
+await run('check([diagnosticBinding])');
+assert.equal(observations.at(-1).observation.reason, 'uncertain-wake');
+assert.equal(observations.at(-1).observation.attempt, null, 'legacy uncertainty has no invented attempt');
+const diagnosticCount = observations.length;
+await run('check([diagnosticBinding])');
+assert.equal(observations.length, diagnosticCount, 'unchanged observation is deduplicated');
+context.chrome.tabs.query = async () => [{id: 1, url, discarded: true}];
+await run('check([diagnosticBinding])');
+assert.equal(observations.at(-1).observation.reason, 'tab-suspended');
+context.chrome.tabs.query = originalTabs;
+const originalScript = context.chrome.scripting.executeScript;
+context.chrome.scripting.executeScript = async () => { throw Error('PRIVATE exception sentinel'); };
+run('delete diagnosticBinding.uncertain');
+await run('check([diagnosticBinding])');
+assert.equal(observations.at(-1).observation.reason, 'execution-failed');
+assert.equal(observations.at(-1).observation.attempt.outcome, 'execution-failed');
+const attemptId = observations.at(-1).observation.attempt.id;
+assert.equal(run('diagnosticBinding.uncertain'), true);
+context.chrome.scripting.executeScript = originalScript;
+await run('check([diagnosticBinding])');
+assert.equal(observations.at(-1).observation.attempt.id, attemptId, 'old attempt remains attributable');
+assert.equal(observations.at(-1).observation.reason, 'uncertain-wake');
+context.fetch = async (request, options) => request.endsWith('/poll?name=mail')
+  ? Promise.reject(Error('PRIVATE network sentinel')) : originalFetch(request, options);
+await run('check([diagnosticBinding])');
+assert.equal(observations.at(-1).observation.reason, 'source-unavailable');
+assert.equal(observations.at(-1).observation.pending_count, null, 'failed poll is not empty mail');
+context.fetch = async (request, options) => request.endsWith('/report') && JSON.parse(options.body).observation
+  ? {ok: false, status: 413} : originalFetch(request, options);
+run('loggedObservations.clear()');
+await run('check([diagnosticBinding])');
+assert.equal(clicks, diagnosticClicks, 'diagnostic failure never clears fence or causes another click');
+context.fetch = originalFetch;
+await run('check([diagnosticBinding])');
+assert.equal(observations.at(-1).observation.reason, 'uncertain-wake', 'failed upload is retried');
+assert.ok(observations.some(p => p.observation.attempt?.outcome === 'click-attempted'));
+assert.ok(observations.some(p => p.observation.reason === 'bound-tab-missing'));
+assert.ok(observations.every(p => p.delivery_ids.length === 0 && !p.incident));
+assert.ok(!JSON.stringify(observations).includes('PRIVATE'));
+const observationModel = spawnSync('/home/marco/switchstand/.venv/bin/python', ['-c',
+  'import json,sys; from switchstand.chatgpt_wake import _Report; [_Report.model_validate(x) for x in json.load(sys.stdin)]'],
+  {input: JSON.stringify(observations), encoding: 'utf8', env: {...process.env, PYTHONPATH: new URL('../../src', import.meta.url).pathname}});
+assert.equal(observationModel.status, 0, observationModel.stderr);
+console.log('PASS: attributable blocker/action diagnostics, dedupe, safe failure/retry, typed producer contract');
+
+context.fetch = originalFetch;
+editor.value = 'Process your mailbox';
+send.disabled = true;
+assert.equal(run(`composer('${url}', 'send', true).detail`), 'send-control-disabled');
+send.disabled = false;
+editor.value = 'Unrelated draft';
+assert.equal(run(`composer('${url}', 'prepare', true).detail`), 'unrelated-draft');
+editor.value = '';
+attached = true;
+assert.equal(run(`composer('${url}', 'prepare', true).detail`), 'attachment-present');
+attached = false;
+assert.ok(observations.some(p => p.observation.attempt?.detail === 'click-dispatched'));
+console.log('PASS: composer logs distinguish disabled Send, unrelated draft, attachment and dispatched click');

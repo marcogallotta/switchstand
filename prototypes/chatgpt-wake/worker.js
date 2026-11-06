@@ -1,6 +1,31 @@
 const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const cancelled = new Set();
+const loggedObservations = new Map();
+const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing',
+  'Chat suspended': 'tab-suspended', 'Wake outcome unknown': 'uncertain-wake',
+  'Needs manual reconciliation': 'manual-reconciliation', 'Already nudged': 'already-nudged',
+  'Mailbox service unavailable': 'source-unavailable', 'Invalid mailbox identity': 'source-unavailable',
+  'Mailbox identity changed': 'mailbox-binding-changed'};
+const actionOutcomes = ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation',
+  'composer-unavailable', 'insert-failed', 'click-attempted'];
+async function diagnose(b, failure) {
+  const reason = failure || observationReasons[b.status] ||
+    (actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome');
+  const observation = {endpoint: b.id, generation: b.generation, pending_count: b.pending?.length ?? null,
+    reason, uncertain: Boolean(b.uncertain), attempt: b.wakeAttempt || null};
+  const signature = JSON.stringify(observation);
+  if (loggedObservations.get(b.id) === signature || cancelled.has(b.id)) return;
+  try {
+    const config = await source('/config');
+    const response = await fetch(SOURCE + '/report', {method: 'POST', signal: AbortSignal.timeout(3000),
+      headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + config.report_token},
+      body: JSON.stringify({name: b.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
+        observation: {...observation, observed_at: new Date().toISOString()}})});
+    if (response.ok && (await response.json()).status === 'logged') loggedObservations.set(b.id, signature);
+    else console.warn('browser_wake diagnostic rejected', {reason, http_status: response.status});
+  } catch { console.warn('browser_wake diagnostic unavailable', {reason}); }
+}
 let queue = Promise.resolve();
 const exclusive = fn => { const result = queue.then(fn); queue = result.catch(() => {}); return result; };
 const save = minimalBindings => chrome.storage.local.set({minimalBindings});
@@ -33,8 +58,9 @@ async function poll(name) {
       !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id))) throw Error('Invalid mailbox identity');
   return p;
 }
-function composer(url, action) {
-  if (location.href !== url) return 'wrong-conversation';
+function composer(url, action, diagnostic = false) {
+  const result = (outcome, detail) => diagnostic ? {outcome, detail} : outcome;
+  if (location.href !== url) return result('wrong-conversation', 'url-mismatch');
   const isVisible = node => node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
   const stopSelector = '[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]';
   const sendSelector = '[data-testid="send-button"],[data-testid="composer-submit-button"],#composer-submit-button,button[aria-label="Send prompt"],button[aria-label="Send" i]';
@@ -55,37 +81,40 @@ function composer(url, action) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      if (action === 'prepare' && !stopsWithoutEditor[0].disabled && stopsWithoutEditor[0].getAttribute('aria-disabled') !== 'true') stopsWithoutEditor[0].click();
-      return 'busy';
+      const stopping = action === 'prepare' && !stopsWithoutEditor[0].disabled && stopsWithoutEditor[0].getAttribute('aria-disabled') !== 'true';
+      if (stopping) stopsWithoutEditor[0].click();
+      return result('busy', stopping ? 'stop-requested' : 'busy');
     }
-    return 'composer-unavailable';
+    return result('composer-unavailable', !editor ? 'editor-missing' : 'form-missing');
   }
   const textarea = editor instanceof HTMLTextAreaElement;
   const text = 'Process your mailbox';
   const draft = textarea ? editor.value : editor.textContent;
-  if ((!textarea && !editor.isContentEditable) || editor.disabled || editor.readOnly) return 'composer-unavailable';
-  if (editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]') ||
-      (draft && draft !== text)) return 'draft-present';
+  if ((!textarea && !editor.isContentEditable) || editor.disabled || editor.readOnly) return result('composer-unavailable', 'editor-disabled');
+  if (editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]')) return result('draft-present', 'attachment-present');
+  if (draft && draft !== text) return result('draft-present', 'unrelated-draft');
   const visible = selector => [...form.querySelectorAll(selector)].filter(b => b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden');
   const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
   if (stops.length) {
-    if (action === 'prepare' && stops.length === 1 && enabled(stops[0])) stops[0].click();
-    return 'busy';
+    const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
+    if (stopping) stops[0].click();
+    return result('busy', stopping ? 'stop-requested' : 'busy');
   }
   if (action !== 'send' && !draft) {
     editor.focus();
     if (textarea) {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
       editor.dispatchEvent(new InputEvent('input', {bubbles: true, data: text, inputType: 'insertText'}));
-    } else if (!document.execCommand('insertText', false, text)) return 'insert-failed';
-    return 'waiting';
+    } else if (!document.execCommand('insertText', false, text)) return result('insert-failed', 'insert-failed');
+    return result('waiting', 'prompt-inserted');
   }
-  if (draft !== text) return 'draft-present';
+  if (draft !== text) return result('draft-present', 'unrelated-draft');
   const sends = visible(sendSelector);
-  if (sends.length !== 1 || !enabled(sends[0])) return 'waiting';
-  if (action === 'send') { sends[0].click(); return 'click-attempted'; }
-  return 'ready';
+  if (sends.length !== 1 || !enabled(sends[0])) return result('waiting',
+    !sends.length ? 'send-control-missing' : sends.length > 1 ? 'send-control-ambiguous' : 'send-control-disabled');
+  if (action === 'send') { sends[0].click(); return result('click-attempted', 'click-dispatched'); }
+  return result('ready', 'send-ready');
 }
 async function report(b, bindings) {
   if (cancelled.has(b.id) || (!b.pending?.length && !b.recovering) || (b.alertDone && !b.recovering)) return;
@@ -125,6 +154,7 @@ async function check(bindings, onlyId) {
   for (const b of bindings) {
     if (!b.armed || b.removed || cancelled.has(b.id) || (onlyId && b.id !== onlyId)) continue;
     b.pending = null;
+    let stage = 'source-unavailable', failure;
     try {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
@@ -135,6 +165,7 @@ async function check(bindings, onlyId) {
         else delete b.alertDone;
         continue;
       }
+      stage = 'execution-failed';
       const tabs = await chrome.tabs.query({url: 'https://chatgpt.com/*'});
       const tab = tabs.find(t => t.url === b.url);
       if (!tab) { b.status = 'Chat not open'; continue; }
@@ -148,20 +179,33 @@ async function check(bindings, onlyId) {
       for (let tick = 0; tick < 50 && !cancelled.has(b.id); tick++) {
         const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
         if (action === 'send') {
+          stage = 'source-unavailable';
           const fresh = await poll(b.name);
+          stage = 'execution-failed';
           if (fresh.endpoint !== b.id || fresh.generation !== b.generation || !fresh.delivery_ids.some(id => b.ids.includes(id)) || cancelled.has(b.id)) break;
         }
         b.uncertain = true;
+        b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
-        const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action]});
-        b.status = receipt?.result || 'Unknown outcome';
+        const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
+        b.status = receipt?.result?.outcome || 'Unknown outcome';
+        if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
+        b.wakeAttempt.finished_at = new Date().toISOString();
+        b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
         if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;
         await save(bindings);
         if (!['busy', 'waiting', 'ready'].includes(b.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-    } catch (e) { b.status = e.message; }
-    finally { await report(b, bindings); await save(bindings); }
+    } catch (e) {
+      b.status = e.message;
+      failure = observationReasons[b.status] || stage;
+      if (b.wakeAttempt && !b.wakeAttempt.finished_at && stage === 'execution-failed') {
+        b.wakeAttempt.finished_at = new Date().toISOString();
+        b.wakeAttempt.outcome = 'execution-failed';
+      }
+    }
+    finally { await report(b, bindings); await save(bindings); await diagnose(b, failure); }
   }
 }
 chrome.runtime.onMessage.addListener((m, sender, reply) => {

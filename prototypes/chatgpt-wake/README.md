@@ -35,3 +35,23 @@ node prototypes/chatgpt-wake/test-minimal-browser.mjs
 
 The browser check uses an isolated temporary profile and intercepted ChatGPT
 fixture. It does not establish live ChatGPT delivery or mailbox pickup.
+
+
+### Diagnosing a stalled wake
+
+The backend journal (`journalctl --user -u chatgpt-wake.service`) records
+`browser_wake observation` when a chat's observed state changes. Each receipt has
+an observation timestamp, mailbox endpoint/generation, pending count (absent if
+unavailable), exact blocker, uncertainty flag, and last browser action with its
+own identity/timestamps/result. An older action is history, not a fresh attempt;
+`click-attempted` does not prove ChatGPT accepted or processed the prompt.
+`uncertain-wake` means automatic action is fenced; `manual-reconciliation`
+means that fence remains even though mail is now empty.
+
+`browser_wake incident` identifies the alert and phase; the matching
+`browser_wake alert` records queued/stale/denied/unavailable results and reasons.
+`browser_wake rejected` identifies the rejected route, reason and HTTP status.
+Diagnostic reports never dispatch mailbox alerts. They contain no chat text,
+draft text, URLs or tokens. Failed uploads are retried on the next check and
+reported in the extension worker console. No backend receipt means there is no
+backend evidence of that observation; it does not establish an empty mailbox.
