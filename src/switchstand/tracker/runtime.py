@@ -742,10 +742,17 @@ class CanonicalWorkRuntime:
                                 next_action_class=created.next_action_class,
                                 next_action_ref=created.next_action_ref,
                             )
-                        except ValueError:
+                        except ValueError as error:
                             return CreateGateway.guard(
                                 request, "denied", "invalid_resultant_state"
-                            )
+                            ).model_copy(update={"next_action": (
+                                # Only the pure policy validator's fixed domain strings.
+                                f"Nothing was created. {error}. Correct only intent already "
+                                "authorized by the assignment; do not invent an owner, action, "
+                                "wait or approval. Changed arguments require a fresh operation_id; "
+                                "an ambiguous prior effect must instead be reconciled with its "
+                                "exact original identity and arguments."
+                            )})
                         root_id = _exact_root(root)
                         if (root_id is not None
                                 and root_id != work_id
