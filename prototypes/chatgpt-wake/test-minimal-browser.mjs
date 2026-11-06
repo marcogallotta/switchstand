@@ -137,7 +137,7 @@ try {
     if((await evaluate(session,'submissions.length'))===1) break;
     await pause(50);
   }
-  assert.deepEqual(await evaluate(session,'submissions'),['Process your mailbox']);
+  assert.deepEqual(await evaluate(session,'submissions'),['Process your mailbox'],'initial alarm dispatches exactly one wake');
   assert.equal(await evaluate(session,'stops'),1,'one Stop before enabled Send');
   await evaluate(session,`document.querySelector('textarea').value='protected draft'`);
   await evaluate(workerSession,`load().then(check)`);
@@ -173,6 +173,36 @@ try {
   assert.equal(await evaluate(restartedSession,`Boolean(globalThis.__restartFenceProbe)`),false,'restart created a fresh execution context');
   assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].uncertain)`),true,'uncertain fence survived worker restart');
   assert.equal(await evaluate(session,'submissions.length'),before,'worker restart did not repeat the wake');
+  // Exercise the actual serialized function against hostile DOM controls.
+  const stopControl = attributes => `<button type="button" class="stop" data-testid="stop-button" ${attributes}>Stop</button>`;
+  const sendControl = attributes => `<button type="button" class="send" data-testid="send-button" ${attributes}>Send</button>`;
+  const controlCases = [
+    ['no Stop','',sendControl(''),'send','click-attempted',0,1],
+    ['one Stop',stopControl(''),sendControl(''),'prepare','busy',1,0],
+    ['hidden Stop',stopControl('style="visibility:hidden"'),sendControl(''),'send','click-attempted',0,1],
+    ['multiple Stops',stopControl('')+stopControl(''),sendControl(''),'prepare','busy',0,0],
+    ...['disabled','aria-disabled="true"'].map(a=>['Stop '+a,stopControl(a),sendControl(''),'prepare','busy',0,0]),
+    ['multiple Sends','',sendControl('')+sendControl(''),'send','waiting',0,0],
+    ...['disabled','aria-disabled="true"','style="visibility:hidden"'].map(a=>['Send '+a,'',sendControl(a),'send','waiting',0,0]),
+    ['unrelated draft',stopControl(''),sendControl(''),'prepare','draft-present',0,0,'KEEP MY DRAFT'],
+    ['attachment',stopControl(''),sendControl(''),'prepare','draft-present',0,0,'Process your mailbox','<button data-testid="remove-file-button">file</button>'],
+    ['wrong URL',stopControl(''),sendControl(''),'send','wrong-conversation',0,0]
+  ];
+  const missingEditorCases = [['enabled','', 'busy',1],['hidden','style="visibility:hidden"','composer-unavailable',0],
+    ['multiple',null,'composer-unavailable',0],['disabled','disabled','busy',0],['aria-disabled','aria-disabled="true"','busy',0]];
+  for (const kind of ['textarea','contenteditable','missing']) {
+    const cases = kind === 'missing' ? missingEditorCases.map(([name,a,result,stops])=>[name, a===null?stopControl('')+stopControl(''):stopControl(a),'','prepare',result,stops,0]) : controlCases;
+    for (const [name,stops,sends,action,result,stopCount,sendCount,draft='Process your mailbox',attachment=''] of cases) {
+      const editor = kind==='missing'?'':kind==='textarea'?`<textarea id="prompt-textarea">${draft}</textarea>`:`<div id="prompt-textarea" contenteditable="true">${draft}</div>`;
+      await evaluate(session,`document.body.innerHTML=${JSON.stringify('<form data-testid="composer">'+editor+stops+sends+attachment+'</form>')};window.effects={stop:0,send:0};document.querySelectorAll('.stop,.send').forEach(b=>b.onclick=()=>effects[b.className]++)`);
+      const observed = await evaluate(restartedSession,`(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:composer,args:[${JSON.stringify(name==='wrong URL'?url+'-other':url)},${JSON.stringify(action)}]}))[0].result})()`);
+      assert.equal(observed,result,`${kind}: ${name} outcome`);
+      assert.deepEqual(await evaluate(session,'effects'),{stop:stopCount,send:sendCount},`${kind}: ${name} effects`);
+      if (kind!=='missing') assert.equal(await evaluate(session,`(()=>{const e=document.getElementById('prompt-textarea');return e.value??e.textContent})()`),draft,`${kind}: ${name} preserves draft`);
+      if (attachment) assert.equal(await evaluate(session,`Boolean(document.querySelector('[data-testid="remove-file-button"]'))`),true);
+    }
+  }
+  await evaluate(session,`document.body.innerHTML='<form><textarea></textarea></form>'`);
   await evaluate(session,`document.querySelector('form').outerHTML='<div id="composer-wrap" data-testid="composer"><textarea></textarea><button data-testid="send-button">Send</button></div>'`);
   const compose = action => evaluate(restartedSession,`(async()=>{const tab=(await chrome.tabs.query({})).find(t=>t.url===${JSON.stringify(url)});return (await chrome.scripting.executeScript({target:{tabId:tab.id},func:composer,args:[${JSON.stringify(url)},${JSON.stringify(action)}]}))[0].result})()`);
   assert.equal(await compose('prepare'),'waiting','id-less textarea without form is found through its unique Send control');
@@ -250,7 +280,7 @@ try {
     return [...document.querySelectorAll('#bindings p')].map(row=>({text:row.textContent,buttons:[...row.querySelectorAll('button')].map(b=>b.textContent)}))})()`);
   assert.deepEqual(rows.map(row=>row.text.split(':')[0]),['Alpha','Zulu'],'saved chats are alphabetical');
   assert.deepEqual(rows[0].buttons,['Resume','Remove'],'Stop is absent from the popup');
-  console.log('PASS isolated real MV3: one-click Add, duplicate rejection, Chrome storage, alarm/poll, Stop→Send, real worker restart/no repeat, protected draft, composer fallback, HTTP alert/dedupe, guarded Remove and Resume all. User browser/live backend: NOT_RUN.');
+  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer control guards, restart fence, alert dedupe and direct recovery handler. Actual toolbar input, installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
 } catch (error) {
   console.error(error);
   throw error;

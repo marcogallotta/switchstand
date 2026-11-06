@@ -44,7 +44,8 @@ node prototypes/chatgpt-wake/test-minimal-browser.mjs
 ```
 
 The browser check uses an isolated temporary profile and intercepted ChatGPT
-fixture. It does not establish live ChatGPT delivery or mailbox pickup.
+fixture. It does not exercise actual toolbar input or installed-extension reload,
+and does not establish live ChatGPT delivery or mailbox pickup.
 
 
 ### Diagnosing a stalled wake
