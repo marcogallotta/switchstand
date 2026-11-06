@@ -2,8 +2,8 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-cd -- "$repo_root/roles/coordinator"
-export CODEX_HOME="${CODEX_HOME:-$HOME/.local/state/switchstand/codex/coordinator}"
+cd -- "$repo_root"
+source "$repo_root/scripts/prepare-codex-role-home" coordinator
 nvm_dir="${NVM_DIR:-$HOME/.nvm}"
 if [[ ! -f "$nvm_dir/nvm.sh" ]]; then
     echo "NVM is missing: $nvm_dir/nvm.sh" >&2

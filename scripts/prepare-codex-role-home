@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+role="${1:?role required}"
+case "$role" in worker|coordinator) ;; *) echo "Unknown Codex role: $role" >&2; exit 2 ;; esac
+repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+role_file="$repo_root/roles/$role/AGENTS.md"
+legacy_home="$HOME/.local/state/switchstand/codex/coordinator"
+auth_source="$HOME/.codex/auth.json"
+export CODEX_HOME="${CODEX_HOME:-$HOME/.local/state/switchstand/codex/role-homes/$role}"
+
+[[ -f "$role_file" && -f "$auth_source" ]] || { echo "Role instructions or auth are missing" >&2; exit 1; }
+[[ "$CODEX_HOME" != "$legacy_home" && "$CODEX_HOME" != "$HOME/.codex" ]] || {
+    echo "Role home must be separate from legacy Codex homes" >&2; exit 1;
+}
+
+if [[ ! -e "$CODEX_HOME" ]]; then
+    [[ -f "$legacy_home/config.toml" ]] || { echo "Legacy Switchstand config is missing" >&2; exit 1; }
+    [[ "$role" != coordinator || -f "$legacy_home/hooks.json" ]] || {
+        echo "Legacy Coordinator hooks are missing" >&2; exit 1;
+    }
+    mkdir -p -- "$(dirname -- "$CODEX_HOME")"
+    staging="$(mktemp -d "$(dirname -- "$CODEX_HOME")/.codex-role-home.XXXXXXXX")"
+    trap 'rm -rf -- "$staging"' EXIT
+    chmod 700 "$staging"
+    cp -- "$legacy_home/config.toml" "$staging/config.toml"
+    if [[ "$role" == coordinator ]]; then
+        cp -- "$legacy_home/hooks.json" "$staging/hooks.json"
+    fi
+    ln -s -- "$role_file" "$staging/AGENTS.md"
+    ln -s -- "$auth_source" "$staging/auth.json"
+    printf '%s\n' "$role" > "$staging/.switchstand-role"
+    # A concurrent first launch may publish the home while this one prepares.
+    # --no-clobber must leave that destination intact, including an empty dir.
+    if ! mv -Tn -- "$staging" "$CODEX_HOME"; then
+        [[ -e "$CODEX_HOME" || -L "$CODEX_HOME" ]] || {
+            echo "Could not publish role home: $CODEX_HOME" >&2; exit 1;
+        }
+    fi
+    if [[ -e "$staging" ]]; then
+        rm -rf -- "$staging"
+    fi
+    trap - EXIT
+fi
+
+[[ -d "$CODEX_HOME" && ! -L "$CODEX_HOME" &&
+   -f "$CODEX_HOME/.switchstand-role" &&
+   "$(cat "$CODEX_HOME/.switchstand-role")" == "$role" &&
+   -L "$CODEX_HOME/AGENTS.md" &&
+   "$(readlink -- "$CODEX_HOME/AGENTS.md")" == "$role_file" &&
+   -L "$CODEX_HOME/auth.json" &&
+   "$(readlink -- "$CODEX_HOME/auth.json")" == "$auth_source" &&
+   -f "$CODEX_HOME/config.toml" && ! -L "$CODEX_HOME/config.toml" ]] || {
+    echo "Unexpected role-home identity, auth or config: $CODEX_HOME" >&2; exit 1;
+}
+if [[ "$role" == coordinator ]]; then
+    [[ -f "$CODEX_HOME/hooks.json" && ! -L "$CODEX_HOME/hooks.json" ]] || {
+        echo "Coordinator hooks are missing or unexpected: $CODEX_HOME" >&2; exit 1;
+    }
+else
+    [[ ! -e "$CODEX_HOME/hooks.json" && ! -L "$CODEX_HOME/hooks.json" ]] || {
+        echo "Unexpected Worker home hooks: $CODEX_HOME" >&2; exit 1;
+    }
+fi
