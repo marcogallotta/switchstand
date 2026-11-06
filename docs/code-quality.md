@@ -55,7 +55,7 @@ Minor style preferences do not block completion. Known serious defects fail the 
 missing material evidence leaves completion NOT_ESTABLISHED, not a fabricated defect or blanket PASS.
 The current programme is limited to Mailbox and Tracker until both pass. Marco directs scope and
 progression by command; there is no general progression rule or automatic next subsystem. Reevaluate
-the method with him after these two. Ordinary small PRs retain their normal process. Stop unproductive
+the method with him after these two. Stop unproductive
 cuts and report remaining gaps or scope questions to Marco; do not broaden scope or add cuts to obtain a PASS.
 
 Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, transaction
@@ -83,31 +83,54 @@ must challenge ownership and necessity rather than compress prose to hit a thres
 
 ## Author / implementer
 
-Prefer the smallest safe vertical end-to-end stage that produces representative useful behavior and evidence. Use a foundation-only or inert first stage only when a vertical stage is unsafe or impractical; state why, keep the foundation independently stable, exclude speculative later-stage machinery, and name the immediate route to the first representative useful end-to-end proof. Default-off or inert readiness is a landing claim, not ordinary-use product completion.
+Prefer the smallest safe vertical end-to-end stage with representative useful behavior and evidence.
+If that is unsafe or impractical, explain why a foundation-only/inert stage is independently stable,
+exclude speculative later-stage machinery, and name the immediate route to the first useful proof.
+Inert readiness is a landing claim, not ordinary-use completion.
 
 Before material coding:
 1. Bind the exact governing outcome, non-goals, current Design/Contract/Plan, candidate/base and writable surfaces. When an approved Human Review baseline governs, record the exact baseline identity and compare the implementation package's scope and ordinary-use consequence as `BASELINE_PRESERVED`, `MATERIAL_DEVIATION`, or `UNKNOWN`; independent design/implementation review validates the comparison before dispatch. `UNKNOWN` blocks only dispatch while minimum evidence, correction, and unaffected authorized work continue.
-2. For nontrivial work, make the existing worker-owned Execution Plan concrete enough for a fresh worker to identify: the canonical owner/reuse/delete route; intended changed surfaces and ownership boundaries; the strongest materially smaller credible alternative when the choice is architecture-sensitive; the earliest real/discriminating test or proof; the expected implementation/test-support envelope; and material unknowns. The Execution Plan must also state the proposed PR/layer decomposition and why the chosen cut beats the obvious smaller alternative. The justification is semantic: independently useful/valid behavior, meaningful acceptance evidence, and independent rework/rollback. Line count is not the justification. This is not a second quality plan or a new approval artifact.
-3. State a tiny behavioral contract where the claim is material: governing preconditions/inputs, required output/postcondition, relevant failure/UNKNOWN/undefined boundary, and the earliest discriminating example or boundary proof. This is not universal formal-spec or TDD ceremony.
-4. Choose the earliest practical evidence capable of falsifying the real claim. Where implementation and tests/mocks can share the same false model — provider, Git, persistence, subprocess, runtime or other external semantics — include proportionate real/hermetic boundary evidence rather than letting the mock world define truth.
-5. Treat the expected implementation envelope as an alarm, never as a budget to spend. Large/unexpected mechanism, owner/trust surface, defensive machinery, fixture/support burden or aggregate stack growth is a stop-and-classify signal. Current routed procedure controls any exact hard size/exemption rule.
+2. For nontrivial work, make the worker-owned Execution Plan identify the canonical owner/reuse/delete
+   route, changed surfaces/boundaries, strongest materially smaller architecture-sensitive alternative,
+   earliest discriminating proof, implementation/test-support envelope and material unknowns.
+   Justify PR/layer decomposition by independently useful/valid behavior, meaningful acceptance evidence
+   and independent rework/rollback, not line count. Use the existing plan, not a second artifact.
+3. For a material claim, state a tiny behavioral contract: preconditions/inputs, required postcondition,
+   failure/UNKNOWN/undefined boundary and earliest discriminating example. This is not universal TDD
+   or formal-spec ceremony. Choose the earliest practical falsification under
+   [Test quality and qualification](#test-quality-and-qualification).
+4. Treat the envelope as an alarm, not a budget: unexpected mechanism, owner/trust surface, defensive
+   machinery, fixture burden or aggregate growth triggers the stop/replan below. Exact hard limits
+   remain in [governed packages](#governed-implementation-packages).
 
 Implementation Specification authors should include runnable required noninteractive checks using the
 [command-block guidance](development.md#noninteractive-commands-from-an-implementation-specification).
-When resuming an older specification, add its missing command block with the agreed executable checks
-while preserving its acceptance criteria.
+When resuming an older specification, add its missing block with agreed executable checks while
+preserving acceptance criteria.
 
 During implementation:
-- Fix the causal owner; do not patch callers/tests around the defect.
-- At each quality refresh, compare the actual trajectory with the current Execution Plan. Unexpected new owner/provider/persistence/trust/interface/external-I/O/recovery surface, materially larger defensive/test-support machinery, or loss of the planned discriminating proof means stop/replan/classify the affected path before adding another patch layer. Routine local/private/reversible mechanics remain worker-owned.
-- When actual work materially outgrows or invalidates the planned PR/layer shape, the implementation parent/integration owner — or the sole implementer when there is no parent — must make an explicit **KEEP ONE PR / SPLIT / REPLAN** decision before the implementation expands further. **KEEP ONE PR** when the current behavior, evidence and recovery form one coherent independently reviewable unit and splitting would create a misleading or invalid partial state. **SPLIT** when a smaller independently useful, valid, reviewable and recoverable slice now exists with meaningful acceptance evidence and independent rollback/rework; identify that first slice and why it is better than continuing as one PR. **REPLAN** when the mechanism, owner/trust boundary, required evidence, or recovery shape has materially changed. Do not merely raise a size alarm, defer the decomposition decision to later Code Review, or split to satisfy a numeric threshold; escalate only when the resulting decision crosses an existing material authority/review/exemption boundary.
-- Keep one source of truth and explicit boundaries. Avoid hidden global side effects, duplicate policy/state/config/currentness, and new local convenience authorities.
-- Preserve legibility: current behavior ownership, failure/UNKNOWN semantics, executable contracts and relevant docs must remain discoverable.
-- Tests target governing behavior/invariants and plausible faults, not private call sequencing. Do not change the oracle to make the implementation pass.
-- Preserve demonstrated causal regression cases when recutting a bad mechanism; do not preserve accidental scaffolding merely because a prior test encoded it.
-- Test-support code is part of the maintenance surface. A large mock/fixture world that reproduces implementation choreography or invents provider/Git/runtime semantics is a quality-defect signal even when production code is small.
-- If a valid sequence of local fixes materially changes the whole mechanism, ownership/trust surfaces, implementation envelope, or test/support burden, stop local ratcheting and reset: should this solution still exist in this form, and is there now a smaller reuse/delete/reframe route?
-- Existing repository debt never authorizes new local debt.
+- Fix the causal owner, not callers/tests around it; preserve one truth, explicit boundaries and
+  discoverable behavior, failure/UNKNOWN semantics, executable contracts and relevant docs. Avoid
+  hidden global effects, duplicate policy/state/config/currentness and convenience authorities.
+- At each [refresh](#refresh-check), compare the trajectory with the Execution Plan. An unexpected
+  owner/provider/persistence/trust/interface/external-I/O/recovery surface, materially larger
+  defensive/test-support machinery or loss of planned proof means stop/replan/classify the affected
+  path before another patch layer. Routine local/private/reversible mechanics remain worker-owned.
+- If work materially outgrows or invalidates the planned PR/layer shape, the parent/integration owner
+  (sole implementer without a parent) chooses **KEEP ONE PR / SPLIT / REPLAN** before further expansion.
+  KEEP ONE PR when behavior/evidence/recovery form one coherent reviewable unit and splitting gives a
+  misleading/invalid partial state. SPLIT for a smaller independently useful, valid, reviewable,
+  recoverable slice with meaningful acceptance evidence and independent rollback/rework; identify
+  why it is better. REPLAN for changed mechanism, owner/trust boundary, evidence or recovery.
+  Do not defer this decision to Code Review or split for a threshold; escalate only across an
+  existing authority/review/exemption boundary.
+- Preserve demonstrated causal regression cases when recutting a mechanism, not accidental scaffolding.
+  Do not change the oracle to make code pass. Test-support choreography or invented external semantics
+  can be a maintenance defect even with little production code; use the test-quality rules below.
+- If accumulated local fixes materially change mechanism, ownership/trust, implementation envelope
+  or test/support burden, reset the whole-solution judgment: should it still exist, or can it be
+  deleted/reused/reframed? Author/reviewer agreement does not waive this reset.
+- Existing debt never authorizes new local debt.
 
 ## Governed implementation packages
 
@@ -122,20 +145,16 @@ package database, or parallel review ceremony. At approval freeze:
 
 ### Independent material judgment
 
-Use a fresh context-free independent native fork for a material judgment about an exception,
-overrun, alternative, partial-test/no-change acceptance, or readiness/handoff. Reuse the applicable
-existing design, implementation or review stage; routine realization does not need another review.
-Actual participation determines independence: an author, designer, implementer or participant in
-the disputed disposition cannot independently review it.
+Use a fresh context-free independent native fork for a material exception, overrun, alternative,
+partial-test/no-change acceptance or readiness/handoff judgment in the existing applicable stage.
+Routine realization needs no extra review. Actual participation determines independence: authors,
+designers, implementers and participants in the disputed disposition cannot independently review it.
 
-The reviewer starts with repository `AGENTS.md`, the exact current WorkId/candidate and raw primary
-evidence, follows applicable routes independently, and challenges the question and logic as well
-as the proposed answer. A head may supply a proposal and arguments clearly labeled as claims to
-check. A brief must not dictate a verdict, replace primary evidence with its summary, narrow away
-relevant challenge, or suppress a counterargument. Within the assigned judgment, inspect the
-evidence and applicable guidance needed to assess incomplete framing; bounded-worker scope is
-not authority for the head to forbid that challenge. Missing admitted evidence becomes a concrete
-evidence request to the parent, never guessed truth or unrelated discovery.
+The reviewer starts with `AGENTS.md`, exact current WorkId/candidate and raw primary evidence,
+follows applicable routes, and challenges framing and logic as well as the answer. Supplied
+proposals/arguments are claims to check, never a dictated verdict or substitute for evidence.
+Bounded scope cannot forbid relevant challenge, suppress counterarguments or narrow away incomplete
+framing. Request missing admitted evidence from the parent; do not guess or expand into unrelated discovery.
 
 Return causal evidence, credible alternatives, uncertainty and recommendation. The responsible
 Coordinator owns disposition within current authority; review grants no extension or effect
@@ -146,25 +165,19 @@ Preserve material dissent and follow the existing finding/dispute route.
 
 ### Material design review before Human Review
 
-Start the first existing material-design review when there is a concrete provisional route,
-before substantial detailed-design investment. Material work receives one fresh context-free
-reviewer before Human Review. Use the same review occurrence through specification; this is not
-an additional clearance or a reason to
-delay useful early Human Input. Routine realization inside settled direction is unaffected.
+Start the first existing material-design review on a concrete provisional route before substantial
+detailed-design investment. Material work receives one fresh context-free reviewer before Human Review;
+use the same occurrence through specification, without delaying useful early
+[Human Input](human-input.md). Routine realization inside settled direction is unaffected.
 
-First give the reviewer current work identity, original/current human direction, binding
-constraints and authority, and the relevant current owner/source references. Before seeing the
-author's preferred design, rationale or prior overall verdict, the reviewer independently
-checks current capability, ownership/overlap, the useful remaining gap and the smallest credible
-benefit-preserving route. Keep this investigation bounded to the proposed material work.
-
-Then compare the exact author proposal/design against that independent assessment. Challenge
-necessity and V1 scope before technical completeness, including owner placement, the strongest
-smaller route, evidence shape and any material human choice. The author fixes or answers material
-findings before final Human Review. Later material deltas receive focused checking in that same
-review, not an automatic full restart or another reviewer. Cheap research and unaffected work
-continue; hold only a commitment that consumes an unresolved material choice or lacks authority.
-Review supplies evidence, never implementation, landing, activation or provider-effect authority.
+First supply work identity, original/current human direction, binding constraints/authority and
+current owner/source references. Before the preferred design, rationale or prior overall verdict,
+the reviewer independently checks current capability, overlap/ownership, useful gap and smallest
+credible benefit-preserving route within the proposed material work. Then compare the exact proposal
+for necessity/V1 scope, owner placement, strongest smaller route, evidence and material human choice.
+Resolve material findings before final [Human Review](human-review.md). Later material deltas receive
+focused checking in that review, not an automatic restart/reviewer. Continue cheap research and
+unaffected work; hold only commitments consuming an unresolved choice or lacking authority.
 
 ### Mandatory scope blocks
 
@@ -326,85 +339,107 @@ rereview, not another ceremony.
 
 ## Test quality and qualification
 
-Prefer the smallest maintainable test set that falsifies the governing behavior and plausible faults. Each material test should have a causal reason to exist; where practical, identify a plausible wrong implementation/fault that the material oracle would reject. Test quantity, assertion count, coverage, or mock realism is not a quality strategy by itself.
+Use the smallest maintainable set falsifying governing behavior and plausible faults. Each material
+test needs a causal reason; where practical name a wrong implementation it rejects. Quantity,
+assertion count, coverage and mock realism alone are not quality. Test invariants, not private call
+sequencing; removing redundant implementation-detail tests loses no assurance when causal oracles
+and required boundary evidence remain.
 
-Use the highest practical fidelity needed by the claim. Unit/fake/mock evidence is appropriate for local semantics it can truthfully model. Material provider/Git/persistence/subprocess/runtime/external claims require proportionate real or hermetic-boundary evidence when the lower-fidelity test can share a false model. Removing redundant implementation-detail tests is not assurance loss when the causal oracle and required boundary evidence remain.
-
-Qualification is claim-specific and proportionate to consequence, blast radius and practical rollback. Use the cheapest safe evidence that actually exercises the claimed boundary. Do not default every change to a live/external run, and do not let an isolated/mock run establish a claim that depends on live provider/runtime behavior.
+Match fidelity to the claim: unit/fake/mock evidence may establish local semantics it truthfully
+models. Provider/Git/persistence/subprocess/runtime/external claims need proportionate real or
+hermetic evidence when mocks can share the same false model. Use the cheapest safe evidence that
+exercises the boundary, proportionate to consequence, blast radius and rollback; neither default
+every change to live tests nor use mock-only proof for live-dependent behavior.
 
 Fast causal automated checks remain the baseline. Add behavioral qualification when the claim depends on behavior, at the representative boundary as early as practical. Independent review, automated checks, behavioral qualification and eligible integration work run in parallel unless a genuine dependency makes them serial. Require composition qualification only for an actual integration/composition claim; do not automatically duplicate exact-head proof when no such claim exists.
 
-Keep two claims separate when applicable:
-- **LANDING / INERT PROOF:** whether the exact candidate/composition can safely land in its reviewed default-off/inert configuration under the current contract.
-- **ACTIVATION / RELIANCE PROOF:** whether enabling or relying on the live external/runtime/user path works safely under the activation contract.
+Keep **LANDING / INERT PROOF** (safe landing of the reviewed default-off/inert candidate/composition)
+separate from **ACTIVATION / RELIANCE PROOF** (safe live external/runtime/user use). Neither establishes
+the other. Artifact identity is distinct from enablement; prefer a small explicit default-off
+selector when needed, not a feature-management platform. Review/Human Review may bound activation,
+not authorize it. Current direct assignment or explicit `CURRENT` grant for the exact surface/effect
+permits bounded reversible activation, rollback/disable and authoritative readback. High-consequence,
+destructive, security-, authority-, external-provider-, hard-to-reverse or broad-rollout effects
+retain existing Human Review and exact effect-authority requirements.
 
-A default-off/inert change may be landing-qualified without live activation when activation is not part of the landing claim. Conversely, landing green never proves activation/reliance. Never substitute activation-only evidence for an unresolved landing consequence, or landing-only evidence for a live activation claim.
+A required gate with missing capability, NOT_RUN, SKIP, ambiguous readback or wrong subject identity
+is unestablished, not candidate failure unless it actually failed, and never PASS. Keep exact-head
+and synthetic/base-composition evidence distinct; [development](development.md#match-evidence-to-the-claim)
+owns operational examples.
 
-Keep deployment artifact identity separate from behavior enablement. Where a seam is needed, prefer a small explicit selector that is default-off; do not build a feature-management platform. Review or Human Review may bound activation but does not authorize it. Within a current direct assignment or explicit `CURRENT` grant for the exact effect and surface, agents own reversible bounded activation, rollback/disable and authoritative readback. High-consequence, destructive, security-, authority-, external-provider-, hard-to-reverse or broad-rollout effects retain their existing Human Review and exact effect-authority requirements.
+Target-branch movement alone does not require rebasing or invalidate immutable-candidate review.
+Coordinator/integration owner assesses safety and delivery benefit: retain candidate/evidence when
+current-target composition can be established without rewriting. Rebase only for needed/materially
+helpful conflict or semantic-interaction resolution, unavailable required CI/composition proof, or
+delivery practicality. A rewritten head is a new exact review/evidence subject.
 
-Named required gate + missing capability, NOT_RUN, SKIP, ambiguous readback or wrong subject identity means that exact claim is not established; it is not candidate failure unless the candidate actually failed, and it is not PASS. Preserve exact-head evidence separately from synthetic/base-composition evidence.
-
-When the target branch advances after an immutable candidate exists, that movement alone does not require rebasing or invalidate exact-candidate review. The Coordinator or integration owner assesses whether leaving the candidate unchanged is safe enough and whether rebasing would materially help delivery. Preserve the exact candidate and its review evidence when current-target composition can be established without rewriting it. Rebase only when needed or materially helpful to resolve conflicts, address semantic interaction with target changes, obtain required CI/composition evidence that cannot otherwise be established, or make delivery materially more practical. A rewritten head is a new exact candidate subject to the current review and evidence rules; keep exact-head and composition identities and evidence distinct either way.
-
-For GitHub-native stacks, authoring and focused layer review may proceed while lower-layer review and CI run. A focused PASS may survive a restack only when the deterministic layer diff and its reviewed dependency/interface contract are both unchanged and no conflict resolution occurred. Otherwise that layer receives focused rereview. Defects are fixed in the lowest semantic owner and cascaded upward. The ordinary path requires fresh cumulative review and qualification of the exact current top/full stack before any included layer lands; explicit-human fasttrack above defers that review while retaining qualification. V1 does not permit early partial landing. Missing or ambiguous inertness, review identity, or dependency-contract evidence fails closed to the broader current evidence set.
+GitHub-native layer authoring/focused review may overlap lower-layer review/CI. A focused PASS survives
+restacking only when the deterministic layer diff AND reviewed dependency/interface contract are
+unchanged with no conflict resolution; otherwise focused rereview. Fix the lowest semantic owner and
+cascade upward. Before any included layer lands, ordinary V1 requires fresh cumulative review and
+qualification of the exact current top/full stack, no early partial landing. Explicit-human fasttrack
+below defers review, not qualification. Ambiguous/missing inertness, review identity or dependency
+contract fails closed to the broader current evidence set.
 
 ## Explicit human fasttrack
 
-When Marco explicitly says to fasttrack the scoped change, that direction authorizes deferring
-independent Code Review until after deployment. Record it on the existing exact WorkId; do not
-ask him to repeat the deferral or approve the same scope again. Urgency alone is not fasttrack.
-The deferral covers the pre-landing review wait too, so landing does not recreate the removed
-pre-deploy gate. It supersedes a hold caused solely by waiting for that review. Ordinary changes
-keep their existing review gates.
+Marco's explicit fasttrack of a scoped change defers independent Code Review until after deployment,
+including the pre-landing wait. Record his direction on the exact existing WorkId and continue;
+do not ask him to repeat it. Urgency is not fasttrack. It supersedes holds caused solely by that
+review wait; ordinary changes keep review gates.
 
-The responsible Coordinator carries the scoped candidate through this path:
+The responsible Coordinator:
+1. Binds direction, immutable candidate, current target/composition, deployment surface and effect
+   authority. "Fasttrack this to prod" can supply deferral and scoped deployment authority;
+   deferral alone invents no activation, credential, deployment or provider-effect grant.
+2. Requires successful current CI and every required E2E check to pass for the exact claimed boundary under
+   [qualification](#test-quality-and-qualification). Retain exact-head/composition truth and all
+   FAIL/NOT_RUN/SKIP/MISSING_CAPABILITY/UNKNOWN/stale distinctions; no blanket bypass, universal
+   live tests or second CI path.
+3. Records known-good rollback/disable target and recovery action, lands/deploys the tested revision
+   within authority, then verifies installed revision and required live behavior via the existing
+   activation/readback procedure. Changed candidate/composition needs corresponding qualification;
+   deferral transfers no evidence.
+4. Before deployment records the deferred exact-deployed-revision review owner, checkpoint and
+   obligations on the same Work. The reviewer need not have started or approved before deployment.
+   Dispatch promptly afterward; retain findings/dispositions and carry corrections/justified
+   challenges through focused rereview. Keep it open until terminal evidence or attributable handoff
+   with pickup. Record deployment/readback separately from review outcome.
 
-1. Bind Marco's direction, the exact immutable candidate and current target/composition, the
-   deployment surface and current effect authority on the existing work. A direction such as
-   “fasttrack this to prod” can supply both deferral and that scoped deployment authority;
-   deferral alone does not invent a deployment, activation, credential or provider-effect grant.
-2. Require successful current CI and every required E2E check for that candidate and the claimed
-   boundary. Preserve exact-head versus composition evidence. FAIL, NOT_RUN, SKIP,
-   MISSING_CAPABILITY, UNKNOWN or stale/wrong-candidate evidence does not satisfy a required
-   check. Use the existing claim-specific qualification contract; do not invent universal live
-   tests, a second CI path, or a blanket test bypass.
-3. Record the known-good rollback/disable target and practical recovery action, then land and
-   deploy the tested revision within current authority. Verify the installed revision and the
-   required live behavior through the existing activation/readback procedure. A changed candidate
-   or composition needs corresponding qualification; a review deferral is not evidence transfer.
-4. Own the deferred independent review of the exact deployed revision. Record the review owner,
-   next checkpoint and any remaining obligation on the same work before deployment; the reviewer
-   need not have completed, approved, or even started review before deployment. Dispatch promptly
-   after deployment, retain findings and dispositions, and carry corrections or justified
-   challenges through focused rereview. Keep review visibly open until terminal evidence or an
-   explicit attributable handoff with pickup; deployment success is not review completion.
-
-A missed review checkpoint triggers inquiry and recovery of the obligation, not automatic
-rollback. An actual defect calls for proportionate correction, disablement or rollback according
-to consequence and current authority; live failures use the incident procedure. Neither reviewer
-availability nor a newly invented risk category may restore the waived pre-deploy review gate.
+A missed checkpoint triggers inquiry/recovery, not automatic rollback. A real defect calls for
+proportionate correction, disablement or rollback within authority; live failures use the incident
+procedure. Reviewer availability or an invented risk category cannot restore the waived gate.
 Current distinct human holds, platform denials and technical impossibility still apply.
 
-Migrations remain separately authorized and governed; fasttrack does not waive their requirements.
-Rollback restores code/configuration only where the actual recovery path supports it: it cannot
-undo disclosed data, already-sent external actions or irreversible writes. Identify such concrete
-effects before acting and reconcile their exact authority and any genuinely unresolved human
-choice. Do not turn that check into a blanket prohibition on fasttracking ordinary reversible
-changes. Record the actual deployment/readback and deferred-review outcome separately.
+Migrations retain separate authorization/requirements. Rollback cannot undo disclosed data, sent
+external actions or irreversible writes; identify concrete effects and reconcile authority and
+unresolved human choices before acting. This is not a blanket prohibition on ordinary reversible
+fasttrack changes.
 
 ## Code Review
 
-For a substantive candidate, review the exact governing behavior and exact immutable candidate/head. Review depth follows semantic risk, blast radius and practical rollback, not cosmetic size.
+Review the exact governing behavior and immutable candidate/head. Depth follows semantic risk,
+blast radius and practical rollback, not cosmetic size. Ask in order:
 
-Ask in order:
-A. **Should this solution exist?** Correct problem and owner? Root fix? Smaller reuse/delete/reframe route?
-A1. **Right scale first.** Is this the right thing and scale to build before internal completeness is polished? Does the candidate take the smallest safe useful vertical stage, or justify an independently stable non-speculative foundation plus its immediate route to representative end-to-end proof?
-B. **Whole-system effect.** Does local success create duplicate truth, dependency/authority drift, hidden behavior, residue/coupling, disproportionate operational/support burden, or worse agent navigation?
-C. **Implementation quality.** Correctness, failure/UNKNOWN semantics, applicable concurrency/idempotency/external semantics, cohesion/readability, unnecessary cleverness; does the implementation still match the concrete owner/reuse/evidence shape of its Execution Plan?
-D. **Tests as adversarial artifacts.** What concrete fault does each material test catch? Would plausible broken code fail? Are mocks/fixtures fabricating the real boundary? Is important causal regression or high-fidelity boundary evidence missing? Is the test-support architecture itself becoming a maintenance liability?
-E. **Outcome / qualification.** Does the candidate deliver the governing behavior independently of its own tests? Is each landing/activation claim supported by the right evidence subject? Preserve NOT_RUN/SKIP/MISSING_CAPABILITY and exact-head-vs-composition truth.
-F. **Scope / decomposition.** Does each PR/layer represent the smallest independently useful, valid, reviewable and recoverable intermediate state? Could an obvious smaller slice safely land with meaningful acceptance evidence and independent rollback/rework? If yes, prefer it. If no, name the reason the behavior/evidence/recovery must remain together. Dependency order alone does not justify bundling; sub-500 splitting does not prove good decomposition; split laundering is a defect.
-G. **Documentation currency.** For Implementation Specification-scoped work: verify the candidate's UPDATE/HISTORICALIZE/DELETE documentation-impact dispositions (under 1218218678917862) are reconciled to the actual retained candidate, not the spec's original projection. For work outside that process: does the candidate's diff touch something [architecture](architecture.md) describes? If so, does the same PR update `docs/architecture.md`? Either way, a qualifying diff that leaves its documentation stale is a material finding under Findings, remedies and challenge, not optional polish.
+A. **Should this solution exist?** Correct problem, causal owner, smaller reuse/delete/reframe route?
+A1. **Right scale first.** Does it follow the Author's smallest useful stage rule, including the
+    non-speculative foundation exception and immediate end-to-end proof?
+B. **Whole-system effect.** Duplicate truth, dependency/authority drift, hidden behavior, coupling,
+   residue, disproportionate support burden or worse fresh-agent navigation?
+C. **Implementation quality.** Correctness, failure/UNKNOWN, concurrency/idempotency/external semantics,
+   cohesion/readability and unnecessary cleverness; does it still match its Execution Plan?
+D. **Tests as adversarial artifacts.** Apply [test quality](#test-quality-and-qualification): concrete
+   faults rejected, causal/high-fidelity gaps, fabricated mock boundaries or costly support architecture?
+E. **Outcome / qualification.** Behavior established independently of its own tests? Are each
+   landing/activation claim and its exact-head/composition subject supported by the right evidence?
+F. **Scope / decomposition.** Apply the Author's KEEP ONE PR / SPLIT / REPLAN rule: prefer an obvious
+   smaller useful/valid/reviewable/recoverable slice with acceptance evidence and independent rework;
+   otherwise name why behavior/evidence/recovery must stay together. Dependency order or sub-500
+   slicing alone is no justification; split laundering is a defect.
+G. **Documentation currency.** For Implementation Specification work, reconcile UPDATE/HISTORICALIZE/DELETE
+   dispositions (under 1218218678917862) to the actual retained candidate. Otherwise, if the diff touches
+   something architecture describes, update `docs/architecture.md` in the same PR. Stale qualifying
+   documentation is a material finding, not optional polish.
 H. **Approved-baseline conformance.** When a Human Review baseline governs, bind the exact candidate and baseline and return `CONFORMS_TO_APPROVED_BASELINE` only when protected requirements/non-goals remain intact, no deviation remains, and no new human-owned outcome, experience, architecture, trust/data boundary, burden, material risk, or protected effect was introduced. A conforming candidate needs no second Human Review solely because it is complete. `MATERIAL_DEVIATION`, `NEW_HUMAN_CHOICE`, or `UNKNOWN` holds only the affected readiness claim; landing and activation authority remain separate.
 
 Every approving or clearing review also checks this danger hotlist:
@@ -424,46 +459,50 @@ PASS means materially good enough for the exact reviewed claim, not perfect and 
 
 ## Findings, remedies and challenge
 
-A material review finding states:
-- exact defect/invariant;
-- evidence;
-- consequence/materiality;
-- affected claim/path;
-- minimum clearing condition.
+A material finding names the exact defect/invariant, evidence, consequence/materiality, affected
+claim/path and minimum clearing condition. The remedy is advisory unless the governing Design/Contract
+requires it. The author dispositions it:
+- **ACCEPT**: valid defect; choose the smallest authorized clearing fix.
+- **ACCEPT_DEFECT_REJECT_REMEDY**: valid defect, over-scoped remedy; supply a smaller clearing route.
+- **CHALLENGE**: dispute applicability/materiality/causality/evidence with exact counterevidence.
+- **NEEDS_EVIDENCE**: the claim cannot yet be established safely.
 
-A valid finding does not make the reviewer's proposed implementation shape authoritative. A proposed remedy is advisory unless the controlling Design/Contract already requires it. The author must disposition a material finding as one of:
-- **ACCEPT** — defect is valid; author chooses the smallest authorized clearing fix;
-- **ACCEPT_DEFECT_REJECT_REMEDY** — defect is valid, proposed remedy is over-scoped; author supplies a smaller clearing route;
-- **CHALLENGE** — applicability/materiality/causality/evidence is disputed with exact counterevidence;
-- **NEEDS_EVIDENCE** — the claim cannot yet be established safely.
+A valid blocker holds only the affected consequential claim/path; unaffected authorized work continues.
+ACCEPT_DEFECT_REJECT_REMEDY does not clear it: propose/implement the smaller authorized route and return
+the exact corrected candidate/evidence to the original reviewer against the original defect/minimum
+clearing condition. That reviewer answers **WITHDRAW**, **NARROW**, **UPHOLD**, or **NEEDS_EVIDENCE**.
 
-A real blocker continues to block only its affected consequential claim/path until cleared or adjudicated. Unaffected authorized work continues.
+If a material applicability/materiality/clearing dispute survives that bounded response, Coordinator
+may acquire one fresh independent reviewer for exact-dispute adjudication only. The request to Marco
+states the exact disputed blocker, why current reviewer/owner evidence cannot resolve it, the required
+independence/conflict-of-interest property and exact narrow question. There is no automatic third
+reviewer, Coordinator tie-break or indefinite chain. Missing fresh-review capability preserves the
+affected blocker without inventing another stage until cleared/adjudicated.
 
-ACCEPT_DEFECT_REJECT_REMEDY accepts the defect but does not clear it. The author implements/proposes the smaller authorized clearing route and returns the exact corrected candidate/evidence to the original reviewer for focused rereview against the original defect and minimum clearing condition. The original reviewer answers **WITHDRAW**, **NARROW**, **UPHOLD**, or **NEEDS_EVIDENCE** on that exact claim.
-
-If one material applicability, materiality or clearing dispute genuinely survives that bounded response, Coordinator may acquire one fresh independent reviewer for exact-dispute adjudication only. The request to Marco must plainly state: the exact disputed blocker; why the current reviewer/owner evidence cannot resolve it; the independence or conflict-of-interest property required; and the exact narrow question to decide. There is no automatic third reviewer, Coordinator tie-break review or indefinite review chain. If fresh-review capability is unavailable, preserve the exact affected blocker without inventing another stage. Until cleared or adjudicated, the finding holds only the affected consequential claim/path.
-
-Author/reviewer agreement does not defeat the correction-ratchet reset. If cumulative accepted corrections materially change mechanism, ownership/trust surfaces, implementation envelope, or test/support burden, re-run the whole-current-candidate `should this solution exist? / smaller reuse-delete-reframe?` judgment before another local patch layer.
+Apply the Author's whole-solution reset to cumulative accepted corrections before another local patch layer.
 
 ## Refresh check
 
-For substantive code/config/test implementation, refresh on entry/re-entry/context replacement, before the first material commitment, between distinct material slices, after failed hypotheses/material failures/findings/accepted corrections, before material shape changes, and before readiness/handoff/completion claims.
+For substantive implementation, refresh on entry/re-entry/context replacement, before first material
+commitment, between material slices, after failed hypotheses/material failures/findings/accepted
+corrections, before material shape changes and before readiness/handoff/completion claims.
+For substantive Code Review, refresh on entry/re-entry/context replacement, before review, after
+candidate/evidence/currentness/focused-correction changes and before verdict/handoff.
 
-For substantive Code Review, refresh on entry/re-entry/context replacement, before substantive review, after candidate/evidence/currentness or focused-correction changes, and before verdict/handoff.
+Reopen this exact candidate/control-SHA version and re-ground:
+1. Exact outcome/non-goals, canonical owner/reuse seam and Execution Plan governing next work?
+2. Materially changed shape; now a smaller delete/reuse/reframe route?
+3. Missing claim-specific oracle/evidence, NOT_RUN, SKIPPED, MISSING_CAPABILITY or UNKNOWN?
+4. Next commitment still within approved scope/authority/boundary and current plan/evidence?
 
-At each refresh, reopen this exact candidate/control-SHA version and re-ground only these questions:
-1. What exact outcome/non-goals and current canonical owner/reuse seam/Execution Plan shape govern the next work?
-2. Has the solution shape materially changed, and is there now a smaller delete/reuse/reframe route?
-3. What claim-specific oracle/evidence is still missing, NOT_RUN, SKIPPED, MISSING_CAPABILITY, or UNKNOWN?
-4. Is the next material commitment still inside the approved scope/authority/boundary and supported by the current plan/evidence?
-
-This refresh is a reasoning re-ground, not a new approval gate, checklist, timer, or authority source.
+This is reasoning re-grounding, not a new gate, checklist, timer or authority source.
 
 ## Deterministic and execution truth
 
-The repository's current deterministic quality gates remain whatever the current executable contract/CI actually requires. Never convert NOT_RUN, SKIP, missing capability, wrong-candidate execution, or synthetic-merge/composition evidence into an exact-head PASS claim. Structural/complexity evidence is diagnostic unless an exact current mechanically enforced invariant says otherwise.
-
-This guidance can require plan shape, refresh/replan behavior, test evidence and later review checks; it does not prove the agent actually complied during the coding trajectory. This package contains no deterministic trajectory monitor/evidence gate. Treat conformance during implementation as guidance + readiness/review-backed detection until natural adoption evidence demonstrates behavior. Future mechanical enforcement remains a separately reviewed design problem.
-
-Broader cumulative code-health/audit scheduling belongs to the existing audit owner/process, not this document.
-When a Code Audit encounters regression into an oversized staged package, it flags the concrete scale/staging defect and minimum clearing condition; it does not silently redesign the package.
+Current executable contract/CI owns deterministic gates; structural/complexity evidence is diagnostic
+unless an exact mechanically enforced invariant says otherwise. Preserve the qualification states above.
+This guidance has no deterministic trajectory monitor: plan/refresh/test/review requirements do not
+prove implementation followed them. Treat trajectory conformance as guidance plus readiness/review
+detection until natural adoption evidence exists; future mechanical enforcement is a separate design.
+Cumulative code-health/audit scheduling retains its existing owner. Code Audit flags oversized staging
+with the concrete defect/minimum clearing condition, not a silent package redesign.
