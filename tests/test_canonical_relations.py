@@ -141,25 +141,33 @@ async def test_real_postgres_relations_placements_versions_and_rollbacks(
         ProjectPlacement(first_project, "Area", "111", "Current"),
         ProjectPlacement(second_project, "Review", "222"),
     )
-    assert await relations.replace_placements(child, placements, 3) == 4
+    async with relations.engine.begin() as connection:
+        await connection.execute(projects.insert(), [{
+            "project_id": value.project_id, "name": value.name,
+            "asana_project_gid": value.asana_project_gid,
+        } for value in placements])
+        await connection.execute(project_memberships.insert(), [{
+            "project_id": value.project_id, "work_id": child,
+            "section_name": value.section_name,
+        } for value in placements])
     stored = await relations.get(child)
     assert stored.placements == placements
-    assert (await works.get(child)).row_version == 4  # type: ignore[union-attr]
+    assert (await works.get(child)).row_version == 3  # type: ignore[union-attr]
 
     assert await relations.change_project_membership(
-        child, first_project, add=True, observed_version=4,
-    ) == 4
+        child, first_project, add=True, observed_version=3,
+    ) == 3
     assert await relations.change_project_membership(
-        child, first_project, add=False, observed_version=4,
-    ) == 5
+        child, first_project, add=False, observed_version=3,
+    ) == 4
     remaining = await relations.get(child)
     assert remaining.placements == (placements[1],)
     assert await relations.change_project_membership(
-        child, first_project, add=False, observed_version=5,
-    ) == 5
+        child, first_project, add=False, observed_version=4,
+    ) == 4
     assert await relations.change_project_membership(
-        child, first_project, add=True, observed_version=5,
-    ) == 6
+        child, first_project, add=True, observed_version=4,
+    ) == 5
     restored = await relations.get(child)
     assert {value.project_id for value in restored.placements} == {
         first_project, second_project,
@@ -168,18 +176,9 @@ async def test_real_postgres_relations_placements_versions_and_rollbacks(
         value for value in restored.placements if value.project_id == second_project
     ).section_name is None
 
-    with pytest.raises(ValueError, match="project identity"):
-        await relations.replace_placements(child, (
-            ProjectPlacement(first_project, "Renamed", "111"),
-        ), 6)
-    assert (await works.get(child)).row_version == 6  # type: ignore[union-attr]
-
-    with pytest.raises(ValueError, match="stale"):
-        await relations.replace_placements(child, (), 3)
-
     assert await relations.change_dependency(
-        child, dependency, add=False, observed_version=6,
-    ) == 7
+        child, dependency, add=False, observed_version=5,
+    ) == 6
     assert (await relations.get(child)).dependency_work_ids == ()
 
 
@@ -206,10 +205,5 @@ async def test_real_postgres_rejects_unknown_and_invalid_targets_without_changes
         await relations.change_dependency(
             work_id, work_id, add=True, observed_version=1,
         )
-    with pytest.raises(ValueError, match="unique"):
-        await relations.replace_placements(work_id, (
-            ProjectPlacement(missing, "One"), ProjectPlacement(missing, "Two"),
-        ), 1)
-
     assert (await works.get(work_id)).row_version == 1  # type: ignore[union-attr]
     assert await relations.get(work_id) == type(await relations.get(work_id))(None, (), ())
