@@ -424,7 +424,7 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     )
     assert war_machines in " ".join(triggers.split())
     assert "Effects need Marco's active assignment" in agents
-    assert "via exact mailbox sender `claude-coordinator` in recipient Work" in agents
+    assert "Any agent may hand work to another agent" in agents
     assert "or a `CURRENT` grant for exact WorkId/surface/effect" in agents
     assert "challenge and confirm seriously destructive or irreversible action" in agents
     assert "CURRENT` / `HISTORICAL` / `UNKNOWN" in incident

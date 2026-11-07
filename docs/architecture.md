@@ -582,11 +582,11 @@ messaging, and required continuation:
   its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
   arguments and requires an actor-binding readback before returning success. Explicit denial or
   conflict is not retried. There is no public approval tool. `mailbox/agent_messages.py` supplies
-  public name-based views over `MessageState`; its server-returned exact sender name
-  `claude-coordinator` can relay Marco's approval/orders within the recipient's assigned Work
-  under the [messaging relay rule](source-history-feedback.md#durable-messaging-and-feedback).
-  Delivered notices, pending-tool guidance and managed context preserve that exception;
-  other senders confer no authority. Migration `0016_agent_mailbox_transfers` owns audit.
+  public name-based views over `MessageState`. Any agent may hand work to another agent
+  under the [handoff rule](source-history-feedback.md#durable-messaging-and-feedback);
+  a handoff does not invent human approval or cancel Marco's STOP. Delivered notices carry
+  delivery and API hints, not a sender-specific authority policy.
+  Migration `0016_agent_mailbox_transfers` owns audit.
   Ordinary agent payloads are at most 800 characters in canonical compact JSON and pending pages
   are at most ten, newest first. Legacy oversized payloads remain server-side for identity checks
   but public pending/replay views expose only omission and character-count metadata.
