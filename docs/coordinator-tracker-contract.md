@@ -18,6 +18,60 @@ direction without silently abandoning already-owned obligations.
 
 Until the canonical Tracker/priority projection is sufficient, Root may maintain a generation-local ledger as a **temporary derived coordination cache**. It may summarize current work and help reconstruct the working picture, but it is not independent authority. Current Marco direction, exact WorkIds, current attributable priority claims, and hard constraints outrank it. When the canonical Tracker becomes sufficient, retire the ledger's ranking/execution-planning role rather than maintaining two planners.
 
+## Interface Coordinator and background Coordinator
+
+V1 has two coordination roles, independent of client or model: **Interface Coordinator**
+(Interface), Marco's interface, and **background Coordinator** (Coordinator), which runs and
+tracks jobs. Bounded Workers retain execution. Existing role homes and colours stay as they
+are; this contract creates no home, launcher, mailbox identity, topology or ownership grant.
+A client name, including Claude or Codex, never appoints either coordination role.
+
+Interface owns the three shared pages: Situation `40581c1e-04c5-5ab4-94d9-3c5ce21fcd35`,
+Priorities focus-now `332857d1-6c4d-51e8-af19-ed77b4f19e69`, and Coordinator notes
+`a8ec90d7-8f20-5e44-9551-03fbfea22474`. Keep Marco's orders and unanswered questions there.
+Coordinator owns the agent inventory `083a5732-c8f1-53e6-a74b-dc7f6fc58c4e` after an
+acknowledged handoff from its actual current owner. Do not overwrite another owner's inventory
+or invent pickup. These four pages support recovery; exact Work records still govern authority.
+
+- Interface relays an order with its exact WorkId, owner, pickup, checkpoint and STOP/recovery
+  path. Coordinator acknowledges within one wake: started, or refused with why. If no
+  acknowledgement arrives in 15 minutes, Interface tells Marco.
+- Coordinator launches and tracks jobs; heads supervise their forks. Interface launches none
+  while Coordinator is available. Before launch and at each material checkpoint, Coordinator
+  records agent/job, owner, exact work, how to reach it, last real output and next check in the
+  inventory. Chase a missed checkpoint, then report its actual disposition.
+- Missing or UNKNOWN Human Review for a new material solution goes through Interface as a
+  prepared human question; continue unaffected approved work. Direct orders on existing work
+  proceed within exact current authority, without repeat approval of an unchanged baseline.
+- Route reviews to eligible independent reviewers; never supply their verdict. Codex uses
+  fresh context-free native forks under the current review rules. Resource admission follows
+  [agent-resource-admission](agent-resource-admission.md), not historical fixed job/memory caps.
+- STOP preempts new work. Interface routes it to Coordinator, which halts affected jobs and
+  reports observed outcomes back. A sent stop or silent agent is not proof of a halt.
+- Triage blocked reviews and received, deduplicated message/extension alerts (failed send or
+  blocked over 60 seconds). Send decisions/incidents through Interface as one plain line to
+  Marco. An unobserved alert path remains UNKNOWN; this contract installs no extension code.
+- Suspected Coordinator failure means independently checking missed acknowledgement, failed
+  mail, or no inventory update for 30 minutes while jobs run. Interface reports the evidence
+  and asks Marco about restart; meanwhile it launches and lists only his direct orders under
+  current execution/resource rules. Absence of a checkpoint alone does not prove failure.
+- Cross-check at launch, finish, failure, deploy and replacement; avoid “still fine” mail.
+  Report production failure to Marco immediately and follow current live-incident authority.
+  Merge, deployment, restart and activation retain their separate effect boundaries.
+
+On start, compaction or replacement, recover all four pages through the client's current
+execution boundary. Reconcile processes/native evidence with inventory: an unlisted agent has
+UNKNOWN ownership, not an inferred assignment. Before planned replacement, each page owner
+makes its pages current, including open orders/questions, reviews, messages, watches and the
+exact next checkpoint; replacement requires attributable pickup without duplicate launches.
+
+Before calling V1 working, exercise Interface replacement mid-job and Coordinator replacement
+mid-job: each replacement must reconstruct every real agent/job from those pages, checked
+against actual parent/native evidence. Exercise a blocked review/message alert through to
+Marco's concise report, and prepare a useful 30-second question from a real unresolved decision.
+Old/new fresh-agent scenarios test instruction behaviour only; they do not prove live delivery,
+replacement, complete census or activation. Keep NOT_RUN and UNKNOWN outcomes explicit.
+
 ## Keep the work picture truthful
 
 For every known active lane keep:
