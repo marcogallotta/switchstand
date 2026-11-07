@@ -429,7 +429,6 @@ attached = false;
 assert.ok(observations.some(p => p.observation.attempt?.detail === 'click-dispatched'));
 console.log('PASS: composer logs distinguish disabled Send, unrelated draft, attachment and dispatched click');
 
-// Exercise queued re-arm, including persistence failure and pending removal.
 const rearmBinding = {id, name:'mail', generation:1, url, armed:false, uncertain:true,
   ids:[id], seen:[nextId], wakeAttempt:{id, action:'send'}, alert:{incident_id:nextId}};
 state={minimalBindings:[structuredClone(rearmBinding),{...rearmBinding,id:nextId},

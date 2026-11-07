@@ -19,7 +19,7 @@ resolved alert. It hides the chat but retains its pairing and safety history;
 the same mailbox or conversation cannot be added again automatically. A click
 is not proof that ChatGPT processed mail.
 
-Click the extension toolbar icon to **Re-arm all** saved, nonremoved chats.
+Click the toolbar icon to open the Options tab, then **Re-arm all** saved chats except removed chats or chats with a pending Remove.
 There is no popup or confirmation. This clears wake uncertainty and arms each
 chat even if mail or an alert remains. It preserves pairing, batch/seen IDs,
 latest action evidence and alerts. The click saves state; the next normal poll
