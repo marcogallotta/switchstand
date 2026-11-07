@@ -2,8 +2,8 @@
 
 ## Client entry and assigned coordination role
 
-Read AGENTS.md and the [V1 role contract](docs/coordinator-tracker-contract.md#interface-coordinator-and-background-coordinator).
-Claude is a client, not Marco's interface role. Interface Coordinator and background Coordinator
+Read AGENTS.md and the [V1 role contract](docs/coordinator-tracker-contract.md#interface-and-coordinator).
+Claude is a client, not Marco's interface role. Interface and Coordinator
 are separate assignments, independent of client/model; bounded Workers retain execution.
 The V1 contract governs launch/tracking, page ownership, review routing and replacement over
 historical recovery rules below. Existing homes and colours stay; this file appoints nobody.

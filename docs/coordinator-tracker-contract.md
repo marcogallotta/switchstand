@@ -18,13 +18,15 @@ direction without silently abandoning already-owned obligations.
 
 Until the canonical Tracker/priority projection is sufficient, Root may maintain a generation-local ledger as a **temporary derived coordination cache**. It may summarize current work and help reconstruct the working picture, but it is not independent authority. Current Marco direction, exact WorkIds, current attributable priority claims, and hard constraints outrank it. When the canonical Tracker becomes sufficient, retire the ledger's ranking/execution-planning role rather than maintaining two planners.
 
-## Interface Coordinator and background Coordinator
+## Interface and Coordinator
 
-V1 has two coordination roles, independent of client or model: **Interface Coordinator**
-(Interface), Marco's interface, and **background Coordinator** (Coordinator), which runs and
+V1 has two coordination roles, independent of client or model: **Interface**,
+Marco's interface, and **Coordinator**, which runs and
 tracks jobs. Bounded Workers retain execution. Existing role homes and colours stay as they
 are; this contract creates no home, launcher, mailbox identity, topology or ownership grant.
-A client name, including Claude or Codex, never appoints either coordination role.
+A client name, including Claude or Codex, never appoints either coordination role. Both roles
+currently use Codex; future ChatGPT support is outside this V1. Historical mailbox records
+do not prove active assignments.
 
 Interface owns the three shared pages: Situation `40581c1e-04c5-5ab4-94d9-3c5ce21fcd35`,
 Priorities focus-now `332857d1-6c4d-51e8-af19-ed77b4f19e69`, and Coordinator notes
