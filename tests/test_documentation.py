@@ -171,8 +171,17 @@ def test_role_contract_preserves_boundaries_without_execution_detail():
 
     assert "**Codex roles today:** Coordinator and Worker." in roles
     assert "A Worker owns its bounded assignment and does not self-expand" in roles
-    assert "**Codex Coordinator only:** within its assigned coordination scope" in roles
-    assert "A Worker executes its own bounded assignment directly" in roles
+    assert "**Codex only:** ordinary Worker and Coordinator parent sessions" in roles
+    assert "substantive execution runs in context-free native forks" in roles
+    assert "Delegated native Workers execute their bounded assignments directly" in roles
+    usage = normalized("docs/how-marco-uses-switchstand.md")
+    worker = normalized("roles/worker/AGENTS.md")
+    architecture = normalized("docs/architecture.md")
+    assert "ordinary Worker and Coordinator parent sessions" in usage
+    assert "Delegated native Workers execute their bounded assignments directly" in usage
+    assert "An ordinary Worker parent uses context-free native forks" in worker
+    assert "A delegated native Worker executes its bounded assignment directly" in worker
+    assert "Worker and Coordinator parent sessions use context-free native forks" in architecture
     assert "Root owns overall integration" in roles
     assert "delegated Coordinators own only their assigned lane" in roles
     assert "Role, tool, login, canary, review, document or mailbox registration grants nothing" in agents

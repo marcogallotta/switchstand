@@ -60,7 +60,9 @@ def test_only_compaction_prepends_recovery_to_the_unchanged_turn_gate() -> None:
     assert "work_id=<exact assigned WorkId>" in recovery
     assert "If you have an assigned WorkId" in recovery
     assert "a question does not create work or a Coordinator role" in recovery
-    assert "Ordinary sessions work directly" in recovery
+    assert "Worker and Coordinator parents use context-free native forks" in recovery
+    assert "delegated native Workers execute bounded assignments directly" in recovery
+    assert "Ordinary sessions work directly" not in recovery
     assert "docs/coordinator-tracker-contract.md" not in recovery
     assert "docs/recovery-plan.md" not in recovery
     assert "STOP" in recovery

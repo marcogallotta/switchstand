@@ -52,7 +52,7 @@ The scripts bypass any `codex` command earlier on `PATH`.
 Resume the exact session through the same role entry; `resume --all` includes other working
 directories within that role's home.
 
-Neither creates a writer, manifest, Wakeful supervisor, or launch-bound WorkId. A Worker does Marco's assigned work directly; opening the repository or registering a mailbox does not appoint a Coordinator or require delegation. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Coordinator mailbox identity and any takeover require Marco's separate current direction; launching a role does not take over a mailbox. A first cross-principal attempt without his full confirmation stops with `takeover_confirmation_required`. `/root` remains a temporary inbound alias for old senders. An explicitly appointed Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes a lost name without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
+Neither creates a writer, manifest, Wakeful supervisor, or launch-bound WorkId. Worker and Coordinator parent sessions follow the native fork operating boundary below; opening the repository or registering a mailbox does not appoint a Coordinator. A repository hook re-injects the existing Feedback V1 obligation for each user prompt and after compaction; it does not file feedback or create another reporting path. A session needing messaging registers one unique durable name; resume reuses the same binding. Coordinator mailbox identity and any takeover require Marco's separate current direction; launching a role does not take over a mailbox. A first cross-principal attempt without his full confirmation stops with `takeover_confirmation_required`. `/root` remains a temporary inbound alias for old senders. An explicitly appointed Coordinator checks pending mail at the start and end of each Marco turn and whenever Marco says `check mail`, and never retakes a lost name without a new direct instruction. Repository policy still requires source changes in an owned linked writer. Raw `claude` retains its separate `scripts/install-claude-shim` and `scripts/claude-dispatch` path.
 
 After compaction, the same hook first directs recovery of the ORIGINAL APPROVED objective,
 current constraints/STOP and bounded agent notes when an exact task is assigned; a question
@@ -77,19 +77,18 @@ an ID, it follows the single-create-and-readback route above. If that route cann
 exact WorkId, the truthful result is `COVERAGE_GAP / UNKNOWN`, not an inferred assignment. Bare
 `work_get` remains the launch-bound managed-worker behavior described below.
 
-Workers work directly. A Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions do not appoint additional Coordinators. It keeps its assigned lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its orchestration model applies only within that explicit assignment and must not be copied to Workers or ChatGPT merely for parity.
+Codex has Worker and Coordinator roles. Both ordinary parent sessions fork bounded execution; a Worker stays within its assigned work. A Coordinator can fork/assign Workers for bounded research, design, implementation, or independent review functions; those functions do not appoint additional Coordinators. It keeps its assigned lanes moving, challenges unsupported or disproportionate worker/reviewer output, reconciles qualification/current-target composition, and carries authorized work through integration/landing. Its portfolio orchestration applies only within that explicit assignment and must not be copied to Workers or ChatGPT merely for parity.
 
 #### Native fork operating boundary
 
-This boundary applies only to explicitly appointed Codex Coordinators and their assigned
-coordination scope. Workers execute their own work directly and use fresh independent
-reviewers when required; no mandatory all-work delegation is inferred.
-Within the explicit Coordinator scope, execution except parent-session mail operations belongs in context-free native forks, including
+This boundary applies to ordinary Worker and Coordinator parent sessions within their assigned
+scope. Execution except parent-session mail operations belongs in context-free native forks, including
 record/document reads and Tracker and feedback operations. Mailbox registration, takeover, and
 all mail calls stay in the parent session; forks are not registered to the parent's mailbox.
 The parent talks with Marco and actively supervises
 concise checkpoints/results under the [Root tracking contract](coordinator-tracker-contract.md#supervise-live-children-from-attributable-evidence).
-Workers execute their bounded assignments directly. Required resource admission belongs to
+Delegated native Workers execute their bounded assignments directly; no recursive fork
+requirement applies. Required resource admission belongs to
 dispatch mechanics (only GO/WAIT reaches the parent); it must precede the exact action and
 does not require launching another fork to admit its own launch. Missing evidence means WAIT.
 Do not claim a repository instruction overrides a higher-priority mandatory main-agent
