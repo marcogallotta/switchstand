@@ -450,8 +450,8 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     assert "Challenge the package before setting a size envelope" in triggers
     assert "Never make Marco accept or reject a large all-or-nothing bundle" in triggers
     assert "Marco's current direct assignment" in agents
-    assert "verified relay from exact mailbox sender `claude-coordinator` within recipient Work" in agents
-    assert "or a `CURRENT` grant controls scope and effects" in agents
+    assert "Any agent may hand work to another agent" in agents
+    assert "required human approvals remain binding" in agents
     assert "challenges seriously destructive or irreversible action" in usage
     assert all(label in incident for label in ("`CURRENT`", "`HISTORICAL`", "`UNKNOWN`"))
     assert "prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident
