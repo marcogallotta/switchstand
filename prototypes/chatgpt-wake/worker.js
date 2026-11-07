@@ -92,7 +92,7 @@ async function source(path) {
 }
 async function poll(name) {
   const p = await source('/poll?name=' + encodeURIComponent(name));
-  if (p.name !== name || !UUID.test(p.endpoint) || !Number.isInteger(p.generation) || p.generation < 1 ||
+  if (typeof p.name !== 'string' || !p.name.trim() || !UUID.test(p.endpoint) || !Number.isInteger(p.generation) || p.generation < 1 ||
       !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id))) throw Error('Invalid mailbox identity');
   return p;
 }

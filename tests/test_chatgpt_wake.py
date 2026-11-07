@@ -19,6 +19,8 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
     receiver = (await state.register_agent(f"Browser {uuid4()}", "owner", str(uuid4()))).mailbox
     other = (await state.register_agent(f"Other {uuid4()}", "owner", str(uuid4()))).mailbox
     assert receiver and other
+    unicode_receiver = (await state.register_agent(f"Résumé Agent {uuid4()}", "owner", str(uuid4()))).mailbox
+    assert unicode_receiver
     deliveries = [uuid4() for _ in range(51)]
     async with engine.begin() as connection:
         for identity in deliveries:
@@ -48,8 +50,21 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
             assert value["generation"] == receiver.generation
             assert "private body" not in observed.text
             assert "access-control-allow-origin" not in observed.headers
+            case_alias = await client.get(PATH + "/poll", params={"name": receiver.name.upper()})
+            assert case_alias.status_code == 200
+            assert case_alias.json()["name"] == receiver.name
+            assert case_alias.json()["endpoint"] == str(receiver.endpoint_id)
+            assert case_alias.json()["generation"] == receiver.generation
+            spaced = await client.get(PATH + "/poll", params={"name": "  " + receiver.name.replace(" ", "   ") + "  "})
+            assert spaced.status_code == 200 and spaced.json()["endpoint"] == str(receiver.endpoint_id)
             empty = await client.get(PATH + "/poll", params={"name": other.name})
             assert empty.json()["delivery_ids"] == []
+            unicode_alias = "RÉSUMÉ   AGENT " + unicode_receiver.name.split()[-1].upper()
+            unicode_poll = await client.get(PATH + "/poll", params={"name": unicode_alias})
+            assert unicode_poll.status_code == 200
+            assert unicode_poll.json()["name"] == unicode_receiver.name
+            assert unicode_poll.json()["endpoint"] == str(unicode_receiver.endpoint_id)
+            assert unicode_poll.json()["endpoint"] != str(receiver.endpoint_id)
             assert (await client.get(PATH + "/poll", params={"name": "missing"})).status_code == 403
             assert (await client.get(PATH + "/poll", params={"name": receiver.name, "ack": "1"})).status_code == 400
             token = (await client.get(PATH + "/config")).json()["report_token"]
