@@ -17,7 +17,8 @@ popup shows **Needs manual reconciliation** in that case. **Resume** rechecks
 one chat; **Resume all** rechecks every saved chat. Neither clears an uncertain
 send or alert. **Remove** stops local wakes and hides the chat after saving,
 even offline or with pending mail/alerts. It retains backend mail and local safety history;
-the same mailbox or conversation cannot be added again automatically. A click
+Add can replace a removed mailbox or conversation with fresh local bookkeeping.
+Old popup buttons cannot affect the replacement. Backend mail/history stay intact. A click
 is not proof that ChatGPT processed mail. Already-dispatched wakes cannot be recalled.
 A failed Remove save is visible and fences this worker; restart may resume the saved chat.
 
