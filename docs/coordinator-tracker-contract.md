@@ -18,6 +18,77 @@ direction without silently abandoning already-owned obligations.
 
 Until the canonical Tracker/priority projection is sufficient, Root may maintain a generation-local ledger as a **temporary derived coordination cache**. It may summarize current work and help reconstruct the working picture, but it is not independent authority. Current Marco direction, exact WorkIds, current attributable priority claims, and hard constraints outrank it. When the canonical Tracker becomes sufficient, retire the ledger's ranking/execution-planning role rather than maintaining two planners.
 
+## Interface and Coordinator
+
+V1 has two logical roles, **Interface** and **Coordinator**, both Codex for now. Interface is
+Marco's front door/human relay: understand enough and go deeper when needed, relay orders,
+answers and results; do not move jobs, own priorities/heavy preparation or monitor workers.
+Coordinator owns priorities, decision preparation, heavy coordination, job launch/tracking and
+inventory. Workers retain bounded execution. Each role has its own home, including
+`roles/interface`; preserve existing histories/colours. Launching a home appoints no live role.
+
+Interface monitors Coordinator; Coordinator monitors Interface and ALL other heads; heads
+monitor native forks. Observe actual responsiveness, progress, declared checkpoints and next
+checks; inquire and act or escalate within authority. Keep active bounded watches while
+obligations remain, including silent missed checkpoints without incoming mail. Registration,
+sent messages or elapsed silence are not pickup, progress or halt proof. This is active-session
+supervision, not automatic monitoring/restart when both sessions or the host close.
+Follow the [common message rule](source-history-feedback.md#durable-messaging-and-feedback)
+for every role; do not duplicate role-specific trust logic. The exact logical mailboxes are `Interface` and `Coordinator` (capital C). Use the existing
+ordinary takeover mechanism, without a V1 password. Password protection is deferred for later
+V2/V3 reconsideration; no future design is selected here.
+
+Use the four existing recovery pages: Situation `40581c1e-04c5-5ab4-94d9-3c5ce21fcd35`,
+Priorities `332857d1-6c4d-51e8-af19-ed77b4f19e69`, Coordinator notes
+`a8ec90d7-8f20-5e44-9551-03fbfea22474` and inventory `083a5732-c8f1-53e6-a74b-dc7f6fc58c4e`.
+Coordinator owns priority/coordination/inventory content; Interface records attributed human
+orders/answers without moving jobs. Actual writers change only with explicit appointment and
+acknowledged pickup, preserving unrelated content. Exact Work records still govern scope.
+
+- Interface relays an order with its exact WorkId, owner, pickup, checkpoint and STOP/recovery
+  path. Coordinator acknowledges within one wake: started, or refused with why. If no
+  acknowledgement arrives in 15 minutes, Interface tells Marco.
+- Coordinator launches and tracks jobs; heads supervise their forks. Interface launches none
+  while Coordinator is available. Before launch and at each material checkpoint, Coordinator
+  records agent/job, owner, exact work, how to reach it, last real output and next check in the
+  inventory. Chase a missed checkpoint, then report its actual disposition.
+- Missing or UNKNOWN Human Review for a new material solution goes through Interface as a
+  prepared human question; continue unaffected approved work. Direct orders on existing work
+  proceed within exact current authority, without repeat approval of an unchanged baseline.
+- Route reviews to eligible independent reviewers; never supply their verdict. Codex uses
+  fresh context-free native forks under the current review rules. Resource admission follows
+  [agent-resource-admission](agent-resource-admission.md), not historical fixed job/memory caps.
+- STOP preempts new work. Interface routes it to Coordinator, which halts affected jobs and
+  reports observed outcomes back. A sent stop or silent agent is not proof of a halt.
+- Triage blocked reviews and received, deduplicated message/extension alerts (failed send or
+  blocked over 60 seconds). Send decisions/incidents through Interface as one plain line to
+  Marco. An unobserved alert path remains UNKNOWN; this contract installs no extension code.
+- Suspected Coordinator failure means independently checking missed acknowledgement, failed
+  mail, or no inventory update for 30 minutes while jobs run. Interface reports the evidence
+  and asks Marco about restart; meanwhile it launches and lists only his direct orders under
+  current execution/resource rules. Absence of a checkpoint alone does not prove failure.
+- Cross-check at launch, finish, failure, deploy and replacement; avoid “still fine” mail.
+  Report production failure to Marco immediately and follow current live-incident authority.
+  Merge, deployment, restart and activation retain their separate effect boundaries.
+
+On start, compaction or replacement, recover all four pages through the client's current
+execution boundary. Reconcile processes/native evidence with inventory: an unlisted agent has
+UNKNOWN ownership, not an inferred assignment. Before planned replacement, each page owner
+makes its pages current, including open orders/questions, reviews, messages, watches and the
+exact next checkpoint; replacement requires attributable pickup without duplicate launches.
+
+Before calling V1 working, exercise Interface replacement mid-job and Coordinator replacement
+mid-job: each replacement must reconstruct every real agent/job from those pages, checked
+against actual parent/native evidence. Exercise a blocked review/message alert through to
+Marco's concise report, and exercise a real decision roundtrip: Coordinator prepares options/recommendation, Interface
+asks Marco a useful 30-second question, his actual answer returns through correlated durable
+mail, Coordinator acknowledges and performs or holds the resulting action. Test every monitoring
+edge, including a predeclared missed checkpoint without injected mail, STOP and durable recovery.
+Use shorter declared task checkpoints for failure tests; preserve the original 15/30-minute
+outer thresholds and do not label accelerated tests as proof those production timeouts elapsed.
+Old/new fresh-agent scenarios test instruction behaviour only; they do not prove live delivery,
+replacement, complete census or activation. Keep NOT_RUN and UNKNOWN outcomes explicit.
+
 ## Keep the work picture truthful
 
 For every known active lane keep:

@@ -5,8 +5,8 @@ repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 role="${1:-}"
 case "$role" in
     worker) cd -- "$repo_root" ;;
-    coordinator) cd -- "$repo_root/roles/coordinator" ;;
-    *) echo "Usage: $0 {worker|coordinator} [codex arguments...]" >&2; exit 2 ;;
+    interface|coordinator) cd -- "$repo_root/roles/$role" ;;
+    *) echo "Usage: $0 {worker|interface|coordinator} [codex arguments...]" >&2; exit 2 ;;
 esac
 shift
 export CODEX_HOME="$HOME/.local/state/switchstand/roles/$role"

@@ -29,6 +29,7 @@ def _fake_nvm(home: Path, version: str = "v24.16.0") -> Path:
     ("script", "expected_cwd"),
     [
         ("launch-worker", ROOT),
+        ("launch-interface", ROOT / "roles" / "interface"),
         ("launch-coordinator", ROOT / "roles" / "coordinator"),
     ],
 )
@@ -81,7 +82,7 @@ def test_explicit_role_launch_selects_home_and_preserves_arguments_and_exit(
     }
 
 
-@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
+@pytest.mark.parametrize("script", ["launch-worker", "launch-interface", "launch-coordinator"])
 def test_missing_official_cli_does_not_fall_back_to_path_wrapper(
     tmp_path: Path, script: str
 ) -> None:
@@ -109,7 +110,7 @@ def test_missing_official_cli_does_not_fall_back_to_path_wrapper(
     assert "Official Codex CLI is missing" in result.stderr
 
 
-@pytest.mark.parametrize("script", ["launch-worker", "launch-coordinator"])
+@pytest.mark.parametrize("script", ["launch-worker", "launch-interface", "launch-coordinator"])
 def test_role_launch_follows_nvm_default_upgrade_and_passes_resume_without_id(
     tmp_path: Path, script: str
 ) -> None:

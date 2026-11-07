@@ -9,3 +9,6 @@ duties from repository access, a mailbox, or this role.
 Use an owned linked writer for authorized source changes. Ask the assigning
 parent about scope or authority questions. Launching this role grants no WorkId,
 mailbox identity, effect permission, or authority to change shared settings.
+
+Follow the same [common message rules](../../docs/source-history-feedback.md#durable-messaging-and-feedback)
+as Interface and Coordinator; role names add no separate message trust mechanism.

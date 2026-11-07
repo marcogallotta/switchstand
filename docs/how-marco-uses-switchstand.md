@@ -41,12 +41,12 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 ### Codex Worker and Coordinator sessions
 
 Raw `codex` is the official npm-installed CLI; it must not be intercepted.
-`scripts/launch-worker` and `scripts/launch-coordinator` delegate to the shared
+`scripts/launch-worker`, `scripts/launch-interface` and `scripts/launch-coordinator` delegate to the shared
 `scripts/launch-codex` with their role argument. The shared launcher selects the existing
-`~/.local/state/switchstand/roles/worker` or `roles/coordinator` home, overriding any inherited
+`~/.local/state/switchstand/roles/worker`, `roles/interface` or `roles/coordinator` home, overriding any inherited
 `CODEX_HOME`. These homes must already contain their configuration and authentication;
 the launcher does not create or migrate them. Worker starts at the checkout root;
-Coordinator starts in `roles/coordinator` for scoped instructions and resume filtering.
+Interface and Coordinator start in their own `roles/interface` and `roles/coordinator` entries for scoped instructions and resume filtering.
 Both use the official CLI from NVM's current default Node installation and forward arguments unchanged.
 The scripts bypass any `codex` command earlier on `PATH`.
 Resume the exact session through the same role entry; `resume --all` includes other working
