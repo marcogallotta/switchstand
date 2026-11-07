@@ -38,6 +38,43 @@ const context = vm.createContext({crypto: webcrypto, Date: Clock, console, URL, 
     tabs: {query: async () => [{id: 1, url}], get: async tabId => ({id: tabId, url})}, scripting: {executeScript: async ({func, args}) => [{result: func(...args)}]}}});
 vm.runInContext(source, context);
 const run = expression => vm.runInContext(expression, context);
+// Identity aliases are resolved by the backend; the worker must retain its canonical result.
+const originalIdentityFetch = context.fetch;
+const canonicalIdentity = {status: 'ok', name: 'ChatGPT extension', endpoint: id, generation: 1, delivery_ids: []};
+const identityFetch = result => {
+  context.fetch = async (request, options) => request.includes('/poll?')
+    ? {ok: true, json: async () => result} : originalIdentityFetch(request, options);
+};
+identityFetch(canonicalIdentity);
+assert.equal((await run("poll('ChatGPT Extension')")).name, 'ChatGPT extension',
+  'case alias resolves to backend canonical name');
+identityFetch({...canonicalIdentity, name: 'Résumé Agent'});
+assert.equal((await run("poll('RÉSUMÉ   Agent')")).name, 'Résumé Agent',
+  'worker does not reimplement the backend Unicode/spacing key');
+identityFetch(canonicalIdentity);
+const addAlias = await new Promise(resolve => handlers[0]({type: 'add', name: 'ChatGPT Extension', url, tabId: 1},
+  {id: 'test'}, resolve));
+assert.equal(addAlias.error, undefined);
+assert.equal(state.minimalBindings[0].name, 'ChatGPT extension', 'Add persists canonical mailbox');
+const identityRestart = vm.createContext({...context});
+vm.runInContext(source, identityRestart);
+assert.equal((await vm.runInContext('load()', identityRestart))[0].name, 'ChatGPT extension');
+const wrongEndpoint = '22222222-2222-4222-8222-222222222222';
+identityFetch({...canonicalIdentity, endpoint: wrongEndpoint});
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].status, 'Mailbox identity changed', 'wrong endpoint remains fenced');
+identityFetch({...canonicalIdentity, generation: 2});
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].status, 'Mailbox identity changed', 'wrong generation remains fenced');
+for (const invalid of [{...canonicalIdentity, name: '  '}, {...canonicalIdentity, name: null},
+  {...canonicalIdentity, endpoint: 'invalid'}, {...canonicalIdentity, generation: 0},
+  {...canonicalIdentity, delivery_ids: ['invalid']}]) {
+  identityFetch(invalid);
+  await assert.rejects(run("poll('ChatGPT Extension')"), /Invalid mailbox identity/);
+}
+context.fetch = originalIdentityFetch;
+state = {};
+console.log('PASS: canonical name alias, Unicode, Add/restart, binding fences, invalid response rejection');
 assert.equal(run(`validUrl('${url}')`), true);
 assert.equal(run(`validUrl('https://evil.com/c/exact')`), false);
 assert.equal(run(`composer('${url}', 'prepare')`), 'waiting');
