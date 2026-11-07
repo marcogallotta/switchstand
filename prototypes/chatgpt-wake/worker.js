@@ -1,6 +1,7 @@
 const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const cancelled = new Set();
+const bindingKey = (id, incarnation = null) => JSON.stringify([id, incarnation]);
 const loggedObservations = new Map();
 const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing',
   'Chat suspended': 'tab-suspended', 'Wake outcome unknown': 'uncertain-wake',
@@ -15,15 +16,15 @@ async function diagnose(b, failure) {
   const observation = {endpoint: b.id, generation: b.generation, pending_count: b.pending?.length ?? null,
     reason, uncertain: Boolean(b.uncertain), attempt: b.wakeAttempt || null};
   const signature = JSON.stringify(observation);
-  if (loggedObservations.get(b.id) === signature || cancelled.has(b.id)) return;
+  if (loggedObservations.get(bindingKey(b.id, b.incarnation)) === signature || cancelled.has(bindingKey(b.id, b.incarnation))) return;
   try {
     const config = await source('/config');
-    if (cancelled.has(b.id)) return;
+    if (cancelled.has(bindingKey(b.id, b.incarnation))) return;
     const response = await fetch(SOURCE + '/report', {method: 'POST', signal: AbortSignal.timeout(3000),
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + config.report_token},
       body: JSON.stringify({name: b.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
         observation: {...observation, observed_at: new Date().toISOString()}})});
-    if (response.ok && (await response.json()).status === 'logged') loggedObservations.set(b.id, signature);
+    if (response.ok && (await response.json()).status === 'logged') loggedObservations.set(bindingKey(b.id, b.incarnation), signature);
     else console.warn('browser_wake diagnostic rejected', {reason, http_status: response.status});
   } catch { console.warn('browser_wake diagnostic unavailable', {reason}); }
 }
@@ -118,7 +119,7 @@ function composer(url, action, diagnostic = false) {
   return result('ready', 'send-ready');
 }
 async function report(b, bindings) {
-  if (cancelled.has(b.id) || (!b.pending?.length && !b.recovering) || (b.alertDone && !b.recovering)) return;
+  if (cancelled.has(bindingKey(b.id, b.incarnation)) || (!b.pending?.length && !b.recovering) || (b.alertDone && !b.recovering)) return;
   const now = Date.now(), missing = b.status === 'Chat not open', draft = b.status === 'draft-present';
   if (!b.recovering) {
     if (!b.checked || now - b.checked > 60000) b.since = now;
@@ -133,7 +134,7 @@ async function report(b, bindings) {
   await save(bindings);
   try {
     const config = await source('/config');
-    if (cancelled.has(b.id)) return;
+    if (cancelled.has(bindingKey(b.id, b.incarnation))) return;
     const recovery = b.recovering && b.alertDone;
     const incident = recovery ? {...b.alert, phase: 'recovered'} : b.alert;
     const response = await fetch(SOURCE + '/report', {method: 'POST', signal: AbortSignal.timeout(3000),
@@ -153,7 +154,7 @@ async function report(b, bindings) {
 }
 async function check(bindings, onlyId) {
   for (const b of bindings) {
-    if (!b.armed || b.removed || cancelled.has(b.id) || (onlyId && b.id !== onlyId)) continue;
+    if (!b.armed || b.removed || cancelled.has(bindingKey(b.id, b.incarnation)) || (onlyId && b.id !== onlyId)) continue;
     b.pending = null;
     let stage = 'source-unavailable', failure;
     try {
@@ -177,18 +178,18 @@ async function check(bindings, onlyId) {
       if (b.ids?.length && !freshIds.some(id => b.ids.includes(id))) b.ids = freshIds.slice();
       b.ids ||= freshIds.slice();
       await save(bindings);
-      for (let tick = 0; tick < 50 && !cancelled.has(b.id); tick++) {
+      for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
         const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
         if (action === 'send') {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);
           stage = 'execution-failed';
-          if (fresh.endpoint !== b.id || fresh.generation !== b.generation || !fresh.delivery_ids.some(id => b.ids.includes(id)) || cancelled.has(b.id)) break;
+          if (fresh.endpoint !== b.id || fresh.generation !== b.generation || !fresh.delivery_ids.some(id => b.ids.includes(id)) || cancelled.has(bindingKey(b.id, b.incarnation))) break;
         }
         b.uncertain = true;
         b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
-        if (cancelled.has(b.id)) break;
+        if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
@@ -212,9 +213,15 @@ async function check(bindings, onlyId) {
 }
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
-  if (m.type === 'remove') cancelled.add(m.id);
+  const matches = b => b.id === m.id && (b.incarnation ?? null) === (m.expectedIncarnation ?? null);
+  const fence = m.type === 'remove' ? chrome.storage.local.get(['minimalBindings', 'wakeBindings']).then(state => {
+    const bs = Array.isArray(state.minimalBindings) ? state.minimalBindings : (state.wakeBindings || []).map(b => ({id: b.endpoint}));
+    if (bs.some(matches)) cancelled.add(bindingKey(m.id, m.expectedIncarnation));
+  }) : Promise.resolve();
   exclusive(async () => {
+    await fence;
     const bindings = await load();
+    if (['resume', 'rearm', 'remove'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
     if (m.type === 'add') {
       if (!validUrl(m.url) || !m.name) throw Error('Open an exact ChatGPT conversation and enter its mailbox');
       if (!Number.isInteger(m.tabId)) throw Error('Current chat tab is unavailable');
@@ -223,29 +230,29 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       const p = await poll(m.name);
       const current = await chrome.tabs.get(m.tabId);
       if (current.url !== m.url || current.discarded || current.frozen) throw Error('Current chat changed; try Add chat again');
-      const duplicate = bindings.find(b => b.id === p.endpoint || b.url === m.url);
-      if (duplicate) throw Error(duplicate.removed ? 'Removed chat retains safety history; cannot Add again' : 'Chat already added; use Resume');
-      cancelled.delete(p.endpoint);
-      bindings.push({id: p.endpoint, name: p.name, generation: p.generation, url: m.url, armed: true, status: 'Armed'});
+      const collides = b => b.id === p.endpoint || b.url === m.url;
+      if (bindings.some(b => collides(b) && !b.removed)) throw Error('Chat already added; use Resume');
+      for (let i = bindings.length - 1; i >= 0; i--) if (collides(bindings[i])) bindings.splice(i, 1);
+      bindings.push({id: p.endpoint, name: p.name, generation: p.generation, url: m.url, armed: true, status: 'Armed', incarnation: crypto.randomUUID()});
     } else if (m.type === 'rearm') {
       const b = bindings.find(b => b.id === m.id && !b.removed);
       if (!b?.uncertain || m.expectedAttempt !== (b.wakeAttempt?.id || null)) throw Error('Uncertain wake changed; reopen the popup');
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
-      if (p.delivery_ids.length || b.alert || cancelled.has(b.id)) throw Error('Pending mail or alert must clear before Re-arm');
+      if (p.delivery_ids.length || b.alert || cancelled.has(bindingKey(b.id, b.incarnation))) throw Error('Pending mail or alert must clear before Re-arm');
       b.uncertain = false;
       b.armed = true;
       b.status = 'Armed';
     } else if (m.type === 'rearm-all') {
       for (const b of bindings) {
-        if (b.removed || cancelled.has(b.id)) continue;
+        if (b.removed || cancelled.has(bindingKey(b.id, b.incarnation))) continue;
         b.uncertain = false;
         b.armed = true;
         b.status = 'Armed';
       }
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
-      for (const b of bindings) if (!b.removed && !cancelled.has(b.id) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;
+      for (const b of bindings) if (!b.removed && !cancelled.has(bindingKey(b.id, b.incarnation)) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;
       await check(bindings, m.type === 'resume' ? m.id : undefined);
     } else if (m.type === 'remove') {
       const b = bindings.find(b => b.id === m.id);
@@ -256,7 +263,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
     } else throw Error('Unknown request');
     await save(bindings);
     return {};
-  }).then(reply, e => reply({error: m.type === 'remove' ? `Remove not saved: ${e.message}. Local wakes fenced until restart; saved chat may resume after restart.` : e.message}));
+  }).then(reply, e => reply({error: m.type === 'remove' && e.message !== 'Chat changed; reopen the popup' && cancelled.has(bindingKey(m.id, m.expectedIncarnation)) ? `Remove not saved: ${e.message}. Local wakes fenced until restart; saved chat may resume after restart.` : e.message}));
   return true;
 });
 chrome.alarms.create('poll', {periodInMinutes: 0.5});

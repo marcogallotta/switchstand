@@ -75,7 +75,7 @@ const restartedAfterClick = vm.createContext({...context});
 vm.runInContext(source, restartedAfterClick);
 await vm.runInContext('load().then(check)', restartedAfterClick);
 assert.equal(clicks, before, 'a worker restart cannot send the same pending mail twice');
-run(`cancelled.add('${id}')`);
+run(`cancelled.add(bindingKey('${id}'))`);
 await run('check(bindings)');
 assert.equal(clicks, before);
 console.log('PASS: exact URL, draft/attachment protection, Stop, one uncertain click, restart fence, cancellation');
@@ -128,7 +128,7 @@ assert.equal(reports.at(-1).incident.reason, 'pending-mail');
 console.log('PASS: immediate closed-tab alert,60-second draft and pending-mail alerts, exact replay, stale-evidence recovery');
 
 const reportsBeforeStop = reports.length;
-run(`cancelled.add('${id}'); alertBinding.alertDone = false`);
+run(`cancelled.add(bindingKey('${id}')); alertBinding.alertDone = false`);
 await run('report(alertBinding, [alertBinding])');
 assert.equal(reports.length, reportsBeforeStop, 'Stop suppresses alert');
 run(`cancelled.clear(); bindings[0].alertDone = true`);
@@ -360,9 +360,30 @@ assert.equal(state.minimalBindings[0].uncertain, true, 'Remove retains uncertain
 assert.deepEqual(state.minimalBindings[0].ids, [id]);
 assert.deepEqual(state.minimalBindings[0].seen, [id]);
 context.fetch = emptyMailboxFetch;
-const readd = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url}, {id: 'test'}, resolve));
-assert.match(readd.error, /retains safety history/);
-assert.equal(state.minimalBindings.length, 2, 're-Add cannot erase removed pairing');
+const untouched = structuredClone(state.minimalBindings[1]), backendReports = reports.length;
+state.minimalBindings[0].alert = {retained: true};
+context.chrome.tabs.get = async tabId => ({id: tabId, url: url + '-new'});
+const savedTombstones = structuredClone(state), addSave = context.chrome.storage.local.set;
+context.chrome.storage.local.set = async () => { throw Error('injected Add save failure'); };
+assert.match((await message({type: 'add', name: 'mail', tabId: 1, url: url + '-new'})).error, /injected Add save failure/);
+assert.deepEqual(state, savedTombstones, 'failed Add preserves durable tombstone history and unrelated row');
+context.chrome.storage.local.set = addSave;
+const readd = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url: url + '-new'}, {id: 'test'}, resolve));
+assert.equal(readd.error, undefined);
+const fresh = state.minimalBindings.find(b => b.id === id);
+assert.deepEqual(fresh, {id, name: 'mail', generation: 1, url: url + '-new', armed: true, status: 'Armed', incarnation: fresh.incarnation});
+assert.match(fresh.incarnation, /^[0-9a-f-]{36}$/);
+assert.deepEqual(state.minimalBindings.find(b => b.id === nextId), untouched);
+assert.equal(reports.length, backendReports, 'Add makes no backend writes');
+for (const type of ['resume', 'rearm', 'remove']) assert.match((await message({type, id})).error, /Chat changed; reopen the popup/);
+assert.deepEqual(state.minimalBindings.find(b => b.id === id), fresh, 'old row cannot mutate replacement');
+assert.equal((await message({type: 'remove', id, expectedIncarnation: fresh.incarnation})).error, undefined);
+assert.equal((await message({type: 'add', name: 'mail', tabId: 1, url: url + '-new'})).error, undefined);
+assert.notEqual(state.minimalBindings.find(b => b.id === id).incarnation, fresh.incarnation, 'same URL gets fresh identity');
+for (const type of ['resume', 'rearm', 'remove']) assert.match((await message({type, id, expectedIncarnation: fresh.incarnation})).error, /Chat changed; reopen the popup/);
+await run('load().then(check)');
+assert.equal(state.minimalBindings.find(b => b.id === id).status, 'Armed', 'stale token cannot fence same-URL replacement');
+context.chrome.tabs.get = actualTabGet;
 context.fetch = originalFetch;
 console.log('PASS: one-click Add, duplicate/navigation rejection, isolated Resume, Resume all and guarded Remove tombstone');
 
@@ -455,7 +476,7 @@ for (const variant of ['pending', 'endpoint', 'generation', 'unavailable', 'atte
   if (variant === 'attempt') state.minimalBindings[0].wakeAttempt.id = nextId;
   if (variant === 'alert') state.minimalBindings[0].alert = {incident_id: nextId};
   if (variant === 'removed') state.minimalBindings[0].removed = true;
-  if (variant === 'cancelled') run(`cancelled.add('${id}')`);
+  if (variant === 'cancelled') run(`cancelled.add(bindingKey('${id}'))`);
   const unchanged = structuredClone(state);
   assert.ok((await rearmRequest(rearmMessage)).error, variant);
   assert.deepEqual(state, unchanged, `${variant} cannot clear or overwrite evidence`);
@@ -507,7 +528,7 @@ const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncert
   ids: [id], seen: [nextId], wakeAttempt: {id, action: 'send'}, alert: {incident_id: nextId}};
 state = {minimalBindings: [structuredClone(rearmBinding), {...rearmBinding, id: nextId},
   {...rearmBinding, id: 'cancelled'}, {...rearmBinding, id: 'removed', removed: true}]};
-run("cancelled.clear(); cancelled.add('cancelled')");
+run("cancelled.clear(); cancelled.add(bindingKey('cancelled'))");
 const beforeRearm = structuredClone(state);
 const realSave = context.chrome.storage.local.set;
 const savedFetch = context.fetch, savedScript = context.chrome.scripting.executeScript;
@@ -525,7 +546,7 @@ context.chrome.storage.local.set = realSave;
 assert.equal((await rearmAllRequest()).error, undefined);
 assert.deepEqual(state.minimalBindings, beforeRearm.minimalBindings.map(b =>
   b.removed || b.id === 'cancelled' ? b : {...b, uncertain: false, armed: true, status: 'Armed'}));
-assert.equal(run("cancelled.has('cancelled')"), true, 'pending Remove remains cancelled');
+assert.equal(run("cancelled.has(bindingKey('cancelled'))"), true, 'pending Remove remains cancelled');
 const onceRearmed = structuredClone(state);
 assert.equal((await rearmAllRequest()).error, undefined);
 assert.deepEqual(state, onceRearmed, 'repeated request is idempotent');
@@ -572,10 +593,10 @@ console.log('PASS: independent safe-result table, unsafe restart fences and fail
 
 // Local Remove must survive offline/save failures and fence every pre-effect await.
 const removeRequest = m => new Promise(resolve => handlers[0](m, {id:'test'}, resolve));
-for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'failed-save']) {
+for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-config', 'failed-save']) {
   run('cancelled.clear(); loggedObservations.clear()');
   const retained = {id, name:'mail', generation:1, url, armed:true, ids:[id], seen:boundary === 'reservation' ? [] : [id], alert:{delivery_ids:[id]}, pending:[id]};
-  state = {minimalBindings:[structuredClone(retained)]};
+  state = boundary === 'migration' ? {wakeBindings:[{...retained, endpoint:id, seen:[]}]} : {minimalBindings:[structuredClone(retained)]};
   let removal, effects = 0;
   const cancel = () => { removeRequest({type:'resume-all'}); removeRequest({type:'resume',id}); removal = removeRequest({type:'remove', id}); };
   context.chrome.scripting.executeScript = async () => { effects++; return []; };
@@ -585,6 +606,11 @@ for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'fai
     return originalFetch(request, options);
   };
   context.chrome.storage.local.set = async next => {
+    if (boundary === 'migration' && !removal) {
+      cancel();
+      await Promise.resolve();
+      assert.equal(run(`cancelled.has(bindingKey('${id}'))`), true, 'legacy read fences before first migration save settles');
+    }
     if (boundary === 'failed-save') throw Error('injected save failure');
     if (boundary === 'reservation' && next.minimalBindings[0].wakeAttempt && !removal) cancel();
     await realSave(next);
@@ -595,10 +621,10 @@ for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'fai
     for (const type of ['resume', 'resume-all', 'rearm-all']) await removeRequest({type,id});
     assert.deepEqual(state.minimalBindings[0], retained, 'failed Remove keeps durable history and fence through Resume/bulk');
     const restarted = vm.createContext({...context}); vm.runInContext(source, restarted);
-    assert.equal(vm.runInContext(`cancelled.has('${id}')`, restarted), false, 'restart loses volatile failed-Remove fence');
+    assert.equal(vm.runInContext(`cancelled.has(bindingKey('${id}'))`, restarted), false, 'restart loses volatile failed-Remove fence');
     handlers.pop();
   } else {
-    await run(boundary === 'reservation' ? 'exclusive(async()=>check(await load()))' : `exclusive(async()=>{const bs=await load();await ${boundary === 'alert-config' ? 'report(bs[0],bs)' : 'diagnose(bs[0])'}})`);
+    await run(['migration', 'reservation'].includes(boundary) ? 'exclusive(async()=>check(await load()))' : `exclusive(async()=>{const bs=await load();await ${boundary === 'alert-config' ? 'report(bs[0],bs)' : 'diagnose(bs[0])'}})`);
     assert.equal((await removal).error, undefined);
     assert.equal(state.minimalBindings[0].removed, true, boundary);
   }

@@ -264,7 +264,7 @@ try {
   for(const key of ['ids','seen','wakeAttempt']) assert.deepEqual(rearmed[key],priorRearm[key],`${key} preserved`);
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'Re-arm sends nothing inline');
   assert.equal(JSON.parse(await readFile(join(production, 'manifest.json'), 'utf8')).action.default_popup, 'popup.html');
-  await evaluate(restartedSession, `(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'cancelled',armed:false,uncertain:true});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add('cancelled')})()`);
+  await evaluate(restartedSession, `(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'cancelled',armed:false,uncertain:true});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add(bindingKey('cancelled',bs[0].incarnation))})()`);
   const beforeAll = await evaluate(restartedSession, 'load()');
   await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
   const afterAll = await evaluate(restartedSession, 'load()');
@@ -288,7 +288,7 @@ try {
   await command('ServiceWorker.stopWorker',{versionId:rearmVersion.versionId},session);
   for(let attempt=0;attempt<50 && !versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped');attempt++) await pause(100);
   assert.ok(versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped'));
-  const duplicateRearm = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'rearm',id:${JSON.stringify(id)},expectedAttempt:${JSON.stringify(rearmed.wakeAttempt.id)}})`);
+  const duplicateRearm = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'rearm',id:${JSON.stringify(id)},expectedIncarnation:${JSON.stringify(rearmed.incarnation)},expectedAttempt:${JSON.stringify(rearmed.wakeAttempt.id)}})`);
   assert.match(duplicateRearm.error,/Uncertain wake changed/,'duplicate confirmation cannot clear another attempt');
   for(let attempt=0;attempt<50;attempt++) {
     replacement=(await command('Target.getTargets')).targetInfos.find(t=>t.type==='service_worker' && t.url===worker.url);
@@ -312,17 +312,26 @@ try {
   assert.ok(observations.every(p => !p.incident && p.delivery_ids.length === 0));
   await evaluate(restartedSession,`load().then(check)`);
   assert.equal(reports.length,1,'HTTP alert dedupe persisted');
+  const replacementPage = await command('Target.createTarget', {url: 'about:blank'});
+  const replacementSession = await attach(replacementPage.targetId);
+  await command('Fetch.enable',{patterns:[{urlPattern:'*'}]},replacementSession);
+  await command('Page.navigate',{url},replacementSession);
+  for(let attempt=0;attempt<50 && !await evaluate(replacementSession,'typeof submissions!=="undefined"');attempt++) await pause(50);
   await evaluate(restartedSession, 'chrome.action.openPopup()');
   const removePopup=(await command('Target.getTargets')).targetInfos.find(t=>t.url.endsWith('/popup.html') && t.targetId!==popup.targetId);
   const removeSession=await attach(removePopup.targetId);
   await evaluate(removeSession, `show().then(()=>[...document.querySelectorAll('#bindings button')].find(b=>b.textContent==='Remove').onclick())`);
   assert.equal(await evaluate(removeSession, `document.getElementById('status').textContent`), 'Remove: mail saved');
   assert.equal(await evaluate(removeSession, `document.querySelectorAll('#bindings p').length`), 0, 'saved Remove hides row');
-  await command('Target.closeTarget', {targetId:removePopup.targetId});
   assert.equal((await evaluate(restartedSession,'load()'))[0].removed,true,'tombstone persists');
   const resumed = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'resume-all'})`);
   assert.deepEqual(resumed,{});
   assert.equal((await evaluate(restartedSession,'load()'))[0].alertDone,true,'Resume all preserves active alert');
+  await evaluate(removeSession, "document.getElementById('name').value='mail';document.getElementById('add').onclick()");
+  assert.equal(await evaluate(removeSession, "document.getElementById('status').textContent"), 'Add chat: mail saved');
+  await evaluate(restartedSession,'load().then(check)');
+  assert.deepEqual(await evaluate(replacementSession,'submissions'), ['Process your mailbox'], 'real popup replacement dispatches next pending mail');
+  await command('Target.closeTarget', {targetId:removePopup.targetId});
   const rows = await evaluate(popupSession,`(async()=>{await chrome.storage.local.set({minimalBindings:[
     {id:'z',name:'Zulu',url:'https://chatgpt.com/c/z',armed:true},
     {id:'a',name:'Alpha',url:'https://chatgpt.com/c/a',armed:true}]});await show();
