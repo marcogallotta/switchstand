@@ -121,17 +121,24 @@ try {
   }
   // Popup's actual active-tab lookup must select the exact intercepted conversation.
   await command('Target.activateTarget',{targetId:page.targetId});
-  await evaluate(popupSession,`document.getElementById('name').value='mail';document.getElementById('add').click()`);
+  await evaluate(workerSession, 'chrome.action.openPopup()');
+  const addPopup = (await command('Target.getTargets')).targetInfos.find(t => t.url.endsWith('/popup.html') && t.targetId !== popup.targetId);
+  assert.ok(addPopup, 'real toolbar popup opened for Add chat');
+  const addPopupSession = await attach(addPopup.targetId);
+  for (let attempt=0;attempt<50 && !await evaluate(addPopupSession, "Boolean(document.getElementById('add')?.onclick)");attempt++) await pause(50);
+  assert.equal(await evaluate(addPopupSession, "chrome.extension.getViews({type:'popup'}).includes(window)"), true, 'Add chat runs in the real toolbar popup');
+  await evaluate(addPopupSession,`document.getElementById('name').value='mail';document.getElementById('add').click()`);
   for(let attempt=0;attempt<50;attempt++) {
     if(await evaluate(workerSession,`load().then(bs=>bs.length)`)) break;
     await pause(50);
   }
   const bindings = await evaluate(workerSession,`load()`);
   assert.equal(bindings.length,1,'one Add chat click verifies and stores pairing');
-  await evaluate(popupSession,`document.getElementById('add').click()`);
+  await evaluate(addPopupSession,`document.getElementById('add').click()`);
   await pause(100);
-  assert.match(await evaluate(popupSession,`document.getElementById('status').textContent`),/already added/);
+  assert.match(await evaluate(addPopupSession,`document.getElementById('status').textContent`),/already added/);
   assert.equal(await evaluate(workerSession,`load().then(bs=>bs.length)`),1,'duplicate Add cannot overwrite pairing');
+  await command('Target.closeTarget', {targetId:addPopup.targetId});
   await evaluate(workerSession,`chrome.alarms.create('poll',{when:Date.now()+100})`);
   for(let attempt=0;attempt<100;attempt++) {
     if((await evaluate(session,'submissions.length'))===1) break;
@@ -218,27 +225,54 @@ try {
   assert.equal(await compose('wait'),'ready','current ChatGPT Send control becomes ready');
   assert.equal(await compose('send'),'click-attempted','current ChatGPT Send control is clicked');
   assert.equal((await evaluate(session,'submissions')).at(-1),'Process your mailbox');
-  // Execute the registered toolbar handler in the real MV3 worker. No UI modal.
-  assert.equal(await evaluate(restartedSession,'chrome.action.onClicked.hasListener(rearmAll)'),true);
-  assert.equal(JSON.parse(await readFile(join(production,'manifest.json'),'utf8')).action.default_popup,undefined);
+  // Re-arm is a confirmed, per-chat storage action; it does not touch the composer.
+  pendingIds = [];
+  await evaluate(restartedSession,`load().then(check)`);
   const priorRearm = (await evaluate(restartedSession,'load()'))[0];
   const sendsBeforeRearm = await evaluate(session,'submissions.length');
-  await evaluate(restartedSession,`(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add('other')})()`);
-  const beforeAll=await evaluate(restartedSession,'load()');
-  await evaluate(restartedSession,'rearmAll()');
-  const afterAll=await evaluate(restartedSession,'load()');
-  assert.deepEqual(afterAll,beforeAll.map(b=>b.removed?b:{...b,uncertain:false,armed:true,status:'Armed'}),'every active binding reset, all other history preserved');
-  assert.equal(await evaluate(restartedSession,"cancelled.has('other')"),false);
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'toolbar action does not send inline');
-  await evaluate(restartedSession,'rearmAll()');
-  assert.deepEqual(await evaluate(restartedSession,'load()'),afterAll,'repeated click is idempotent');
-  await evaluate(restartedSession,`load().then(bs=>save(bs.filter(b=>b.id===${JSON.stringify(id)})))`);
-  // Same still-pending batch can now wake; automatic repeat is fenced again.
-  await evaluate(restartedSession,'load().then(check)');
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'explicit re-arm recovers pending mail');
-  await evaluate(restartedSession,'load().then(check)');
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'automatic repeats remain fenced');
-  await evaluate(restartedSession,'rearmAll()');
+  await evaluate(restartedSession,'chrome.action.openPopup()');
+  const actualPopup=(await command('Target.getTargets')).targetInfos.find(t=>t.url.endsWith('/popup.html') && t.targetId!==popup.targetId);
+  assert.ok(actualPopup);
+  const actualPopupSession=await attach(actualPopup.targetId);
+  for(let attempt=0;attempt<50;attempt++) {
+    if(await evaluate(actualPopupSession,`Boolean(document.getElementById('add')?.onclick)`)) break;
+    await pause(50);
+  }
+  assert.equal(await evaluate(actualPopupSession,`chrome.extension.getViews({type:'popup'}).includes(window)`),true,'actual action-popup identity');
+  await evaluate(actualPopupSession,`show().then(()=>{window.confirm=()=>{throw Error('native modal forbidden')};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
+  assert.match(await evaluate(actualPopupSession,`document.querySelector('#bindings p span').textContent`),/earlier wake may already have been sent/);
+  let geometry, controlsVisible=false;
+  for(let attempt=0;attempt<50;attempt++) {
+    geometry=await evaluate(actualPopupSession,`({width:innerWidth,height:innerHeight,controls:[...document.querySelectorAll('#bindings p span button')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===b}})})`);
+    controlsVisible=geometry.controls.length===2 && geometry.controls.every(b=>b.left>=0 && b.right<=geometry.width && b.top>=0 && b.bottom<=geometry.height && b.hit);
+    if(controlsVisible) break;
+    await pause(50); // The browser resizes its action popup after content changes.
+  }
+  assert.ok(controlsVisible,`actual popup confirmation buttons visible and hittable: ${JSON.stringify(geometry)}`);
+  await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Cancel').click()`);
+  await pause(100);
+  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,true,'cancelled confirmation preserves the fence');
+  await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='Confirm re-arm').click()`);
+  for(let attempt=0;attempt<50;attempt++) {
+    if(!(await evaluate(restartedSession,'load()'))[0].uncertain) break;
+    await pause(50);
+  }
+  const rearmed = (await evaluate(restartedSession,'load()'))[0];
+  assert.equal(rearmed.uncertain,false);
+  for(const key of ['ids','seen','wakeAttempt']) assert.deepEqual(rearmed[key],priorRearm[key],`${key} preserved`);
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'Re-arm sends nothing inline');
+  assert.equal(JSON.parse(await readFile(join(production, 'manifest.json'), 'utf8')).action.default_popup, 'popup.html');
+  await evaluate(restartedSession, `(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'cancelled',armed:false,uncertain:true});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add('cancelled')})()`);
+  const beforeAll = await evaluate(restartedSession, 'load()');
+  await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
+  const afterAll = await evaluate(restartedSession, 'load()');
+  assert.deepEqual(afterAll, beforeAll.map(b => b.removed || b.id === 'cancelled' ? b : {...b,uncertain:false,armed:true,status:'Armed'}), 'popup Re-arm all preserves history and skips removed/cancelled');
+  assert.equal(await evaluate(actualPopupSession, "document.getElementById('status').textContent"), '');
+  assert.equal(await evaluate(session, 'submissions.length'), sendsBeforeRearm, 'Re-arm all sends nothing inline');
+  await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
+  assert.deepEqual(await evaluate(restartedSession, 'load()'), afterAll, 'repeated popup click is idempotent');
+  await evaluate(restartedSession, `load().then(bs=>save(bs.filter(b=>b.id===${JSON.stringify(id)})))`);
+  await command('Target.closeTarget',{targetId:actualPopup.targetId});
   const rearmVersion = versions.find(v=>v.scriptURL===worker.url && v.runningStatus==='running');
   assert.ok(rearmVersion);
   const oldRearmTarget = replacement.targetId;
@@ -246,7 +280,8 @@ try {
   await command('ServiceWorker.stopWorker',{versionId:rearmVersion.versionId},session);
   for(let attempt=0;attempt<50 && !versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped');attempt++) await pause(100);
   assert.ok(versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped'));
-  await evaluate(popupSession,`chrome.runtime.sendMessage({type:'not-a-request'})`);
+  const duplicateRearm = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'rearm',id:${JSON.stringify(id)},expectedAttempt:${JSON.stringify(rearmed.wakeAttempt.id)}})`);
+  assert.match(duplicateRearm.error,/Uncertain wake changed/,'duplicate confirmation cannot clear another attempt');
   for(let attempt=0;attempt<50;attempt++) {
     replacement=(await command('Target.getTargets')).targetInfos.find(t=>t.type==='service_worker' && t.url===worker.url);
     if(replacement && replacement.targetId!==oldRearmTarget) break;
@@ -257,9 +292,9 @@ try {
   assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,false,'real worker restart retains re-arm');
   pendingIds=['22222222-2222-4222-8222-222222222222'];
   await evaluate(restartedSession,'load().then(check)');
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+2,'new batch wakes after restart');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new batch wakes after restart');
   await evaluate(restartedSession,'load().then(check)');
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+2,'new uncertain send is fenced');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new uncertain send is fenced');
   await command('Target.closeTarget',{targetId:page.targetId});
   await evaluate(restartedSession,`load().then(check)`);
   assert.equal(reports.length,1,'closed exhausted binding sends immediate HTTP alert');
@@ -280,7 +315,7 @@ try {
     return [...document.querySelectorAll('#bindings p')].map(row=>({text:row.textContent,buttons:[...row.querySelectorAll('button')].map(b=>b.textContent)}))})()`);
   assert.deepEqual(rows.map(row=>row.text.split(':')[0]),['Alpha','Zulu'],'saved chats are alphabetical');
   assert.deepEqual(rows[0].buttons,['Resume','Remove'],'Stop is absent from the popup');
-  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer control guards, restart fence, alert dedupe and direct recovery handler. Actual toolbar input, installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
+  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer control guards, restart fence, alert dedupe and actual popup Add/Re-arm controls. Native toolbar input, installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
 } catch (error) {
   console.error(error);
   throw error;

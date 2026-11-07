@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import {webcrypto} from 'node:crypto';
 import assert from 'node:assert/strict';
 const source = readFileSync(new URL('worker.js', import.meta.url), 'utf8');
-const handlers = [], toolbarHandlers = [];
+const handlers = [];
 let state = {}, clicks = 0, inserts = 0, stopClicks = 0;
 let now = Date.now(), reports = [], observations = [], alertStatus = 'queued', alertReason;
 class Clock extends Date { static now() { return now; } }
@@ -33,7 +33,7 @@ const context = vm.createContext({crypto: webcrypto, Date: Clock, console, URL, 
     }
     return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id]})};
   },
-  chrome: {action: {onClicked: {addListener(handler) { toolbarHandlers.push(handler); }}}, runtime: {id: 'test', onMessage: {addListener(handler) { handlers.push(handler); }}}, alarms: {create() {}, onAlarm: {addListener() {}}},
+  chrome: {runtime: {id: 'test', onMessage: {addListener(handler) { handlers.push(handler); }}}, alarms: {create() {}, onAlarm: {addListener() {}}},
     storage: {local: {get: async () => structuredClone(state), set: async next => { state = {...state, ...structuredClone(next)}; }}},
     tabs: {query: async () => [{id: 1, url}], get: async tabId => ({id: tabId, url})}, scripting: {executeScript: async ({func, args}) => [{result: func(...args)}]}}});
 vm.runInContext(source, context);
@@ -429,27 +429,109 @@ attached = false;
 assert.ok(observations.some(p => p.observation.attempt?.detail === 'click-dispatched'));
 console.log('PASS: composer logs distinguish disabled Send, unrelated draft, attachment and dispatched click');
 
-// Exercise the actual registered toolbar listener, including persistence failure.
-const rearmBinding = {id, name:'mail', generation:1, url, armed:false, uncertain:true,
-  ids:[id], seen:[nextId], wakeAttempt:{id, action:'send'}, alert:{incident_id:nextId}};
-state={minimalBindings:[structuredClone(rearmBinding),{...rearmBinding,id:nextId},
-  {...rearmBinding,id:'removed',removed:true}]};
-run(`cancelled.add('${id}')`);
-const beforeRearm=structuredClone(state);
-const realSave=context.chrome.storage.local.set;
-const beforeRearmClicks=clicks;
-context.chrome.storage.local.set=async()=>{throw Error('storage failed')};
-await assert.rejects(toolbarHandlers[0](),/storage failed/);
-assert.deepEqual(state,beforeRearm,'failed storage cannot pretend success');
-context.chrome.storage.local.set=realSave;
-await toolbarHandlers[0]();
-assert.deepEqual(state.minimalBindings,beforeRearm.minimalBindings.map(b=>b.removed?b:{...b,uncertain:false,armed:true,status:'Armed'}));
-assert.equal(run(`cancelled.has('${id}')`),false);
-assert.equal(clicks,beforeRearmClicks,'no inline composer action');
-const onceRearmed=structuredClone(state);
-await toolbarHandlers[0]();
-assert.deepEqual(state,onceRearmed,'second click is idempotent');
-console.log('PASS: registered toolbar Re-arm all, save failure, all active chats, removed/history preserved, zero inline send');
+{
+// Explicit reconciliation never composes/sends and cannot discard current evidence.
+const rearmRequest = m => new Promise(resolve => handlers[0](m, {id: 'test'}, resolve));
+const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncertain: true,
+  ids: [id], seen: [nextId], wakeAttempt: {id, action: 'send', started_at: new Date().toISOString()}, status: 'Wake outcome unknown'};
+const rearmMessage = {type: 'rearm', id, expectedAttempt: id};
+const emptyPoll = {status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []};
+let rearmPoll = emptyPoll;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => structuredClone(rearmPoll)} : originalFetch(request, options);
+let rearmScripts = 0;
+const beforeRearmScript = context.chrome.scripting.executeScript;
+context.chrome.scripting.executeScript = async (...args) => { rearmScripts++; return beforeRearmScript(...args); };
+for (const variant of ['pending', 'endpoint', 'generation', 'unavailable', 'attempt', 'alert', 'removed', 'cancelled']) {
+  state = {minimalBindings: [structuredClone(rearmBinding)]};
+  rearmPoll = {...emptyPoll};
+  run('cancelled.clear()');
+  if (variant === 'pending') rearmPoll.delivery_ids = [id];
+  if (variant === 'endpoint') rearmPoll.endpoint = nextId;
+  if (variant === 'generation') rearmPoll.generation = 2;
+  if (variant === 'unavailable') rearmPoll.status = 'unavailable';
+  if (variant === 'attempt') state.minimalBindings[0].wakeAttempt.id = nextId;
+  if (variant === 'alert') state.minimalBindings[0].alert = {incident_id: nextId};
+  if (variant === 'removed') state.minimalBindings[0].removed = true;
+  if (variant === 'cancelled') run(`cancelled.add('${id}')`);
+  const unchanged = structuredClone(state);
+  assert.ok((await rearmRequest(rearmMessage)).error, variant);
+  assert.deepEqual(state, unchanged, `${variant} cannot clear or overwrite evidence`);
+}
+run('cancelled.clear()'); rearmPoll = emptyPoll;
+state = {minimalBindings: [structuredClone(rearmBinding), {id: nextId, name: 'other', armed: false}]};
+const beforeRearm = structuredClone(state);
+const realSave = context.chrome.storage.local.set;
+context.chrome.storage.local.set = async () => { throw Error('storage failed'); };
+assert.match((await rearmRequest(rearmMessage)).error, /storage failed/);
+assert.deepEqual(state, beforeRearm, 'failed persistence cannot pretend reconciliation succeeded');
+context.chrome.storage.local.set = realSave;
+assert.equal((await rearmRequest(rearmMessage)).error, undefined);
+assert.deepEqual(state.minimalBindings[0], {...rearmBinding, uncertain: false, armed: true, status: 'Armed'});
+assert.deepEqual(state.minimalBindings[1], beforeRearm.minimalBindings[1], 'per-chat reconciliation leaves other bindings untouched');
+assert.equal(rearmScripts, 0, 'every accepted/rejected reconciliation made zero browser execution calls');
+const freshRearmContext = vm.createContext({...context});
+vm.runInContext(source, freshRearmContext);
+assert.equal((await vm.runInContext('load()', freshRearmContext))[0].uncertain, false, 'new worker context restores persisted reconciliation');
+handlers.pop(); // Subsequent fault injection belongs to the original fixture context.
+state = {minimalBindings: [{...rearmBinding, wakeAttempt: undefined}]};
+assert.equal((await rearmRequest({...rearmMessage, expectedAttempt: null})).error, undefined, 'legacy uncertainty has explicit null attempt identity');
+
+state = {minimalBindings: [structuredClone(rearmBinding)]};
+let enterPoll, releasePoll;
+const pollEntered = new Promise(resolve => { enterPoll = resolve; });
+let holdPoll = new Promise(resolve => { releasePoll = resolve; });
+context.fetch = async () => {
+  if (holdPoll) { const hold = holdPoll; holdPoll = null; enterPoll(); await hold; }
+  return {ok: true, json: async () => emptyPoll};
+};
+const racingRearm = rearmRequest(rearmMessage);
+await pollEntered;
+const racingRemove = rearmRequest({type: 'remove', id});
+releasePoll();
+assert.ok((await racingRearm).error, 'Remove arriving during fresh poll cancels reconciliation');
+assert.equal((await racingRemove).error, undefined);
+assert.equal(state.minimalBindings[0].uncertain, true, 'racing Remove retains uncertain history');
+assert.equal(state.minimalBindings[0].removed, true);
+assert.equal(rearmScripts, 0);
+context.fetch = originalFetch;
+context.chrome.scripting.executeScript = beforeRearmScript;
+console.log('PASS: explicit per-chat Re-arm guards, unchanged evidence, save failure, restart and Remove race; zero inline DOM actions');
+}
+
+// Exercise the registered popup message: save-only re-arm preserves all history.
+const rearmAllRequest = () => new Promise(resolve => handlers[0]({type: 'rearm-all'}, {id: 'test'}, resolve));
+const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncertain: true,
+  ids: [id], seen: [nextId], wakeAttempt: {id, action: 'send'}, alert: {incident_id: nextId}};
+state = {minimalBindings: [structuredClone(rearmBinding), {...rearmBinding, id: nextId},
+  {...rearmBinding, id: 'cancelled'}, {...rearmBinding, id: 'removed', removed: true}]};
+run("cancelled.clear(); cancelled.add('cancelled')");
+const beforeRearm = structuredClone(state);
+const realSave = context.chrome.storage.local.set;
+const savedFetch = context.fetch, savedScript = context.chrome.scripting.executeScript;
+let rearmEffects = 0;
+context.fetch = context.chrome.scripting.executeScript = async () => { rearmEffects++; throw Error('inline effect'); };
+let foreignReply = false;
+assert.equal(handlers[0]({type: 'rearm-all'}, {id: 'foreign'}, () => { foreignReply = true; }), undefined);
+await run('exclusive(async () => {})');
+assert.equal(foreignReply, false);
+assert.deepEqual(state, beforeRearm, 'wrong sender cannot change storage');
+context.chrome.storage.local.set = async () => { throw Error('storage failed'); };
+assert.match((await rearmAllRequest()).error, /storage failed/);
+assert.deepEqual(state, beforeRearm, 'failed save reports error without changing storage');
+context.chrome.storage.local.set = realSave;
+assert.equal((await rearmAllRequest()).error, undefined);
+assert.deepEqual(state.minimalBindings, beforeRearm.minimalBindings.map(b =>
+  b.removed || b.id === 'cancelled' ? b : {...b, uncertain: false, armed: true, status: 'Armed'}));
+assert.equal(run("cancelled.has('cancelled')"), true, 'pending Remove remains cancelled');
+const onceRearmed = structuredClone(state);
+assert.equal((await rearmAllRequest()).error, undefined);
+assert.deepEqual(state, onceRearmed, 'repeated request is idempotent');
+assert.equal(rearmEffects, 0, 'no inline fetch, poll, script or Send');
+context.fetch = savedFetch;
+context.chrome.scripting.executeScript = savedScript;
+run('cancelled.clear()');
+console.log('PASS: registered popup Re-arm all; save failure, wrong sender, history, removed/cancelled, idempotence, zero inline I/O');
 
 // Independent result expectations; unknown/failed actions remain fenced after restart.
 const realExecution = context.chrome.scripting.executeScript;

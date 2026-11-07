@@ -2,7 +2,8 @@
 
 Load this directory as an unpacked Chrome/Brave extension after starting the
 existing Switchstand wake backend on `127.0.0.1:18766`. In an open ChatGPT
-conversation, open `chrome-extension://<id>/popup.html`, enter its registered mailbox name and click **Add chat**. The
+conversation, click the extension icon, enter its registered mailbox name and
+click **Add chat**. The
 extension verifies the mailbox and current tab in one action and rejects an
 already paired mailbox or conversation. Saved chats appear alphabetically.
 
@@ -12,27 +13,26 @@ and click Send. It preserves an unrelated draft or attachment, and never opens
 a closed tab. Definite no-send conditions can be retried on later polls.
 An uncertain click remains fenced even after the mailbox becomes empty: an
 empty poll cannot prove whether ChatGPT received or processed the wake. The
-setup page shows **Needs manual reconciliation** in that case. **Resume** rechecks
+popup shows **Needs manual reconciliation** in that case. **Resume** rechecks
 one chat; **Resume all** rechecks every saved chat. Neither clears an uncertain
 send or alert. **Remove** requires a fresh empty mailbox observation and a
 resolved alert. It hides the chat but retains its pairing and safety history;
 the same mailbox or conversation cannot be added again automatically. A click
 is not proof that ChatGPT processed mail.
 
-Click the extension toolbar icon to **Re-arm all** saved, nonremoved chats.
-There is no popup or confirmation. This clears wake uncertainty and arms each
-chat even if mail or an alert remains. It preserves pairing, batch/seen IDs,
-latest action evidence and alerts. The click saves state; the next normal poll
-may wake chats. An earlier uncertain Send may already have succeeded, so an
-explicit re-arm can cause a repeated wake. It does not prove mailbox processing.
-The former setup page remains available at `chrome-extension://<id>/popup.html`
-for adding bindings and inspecting their status; it is no longer the icon action.
+In the popup, **Re-arm** asks for confirmation for one uncertain chat and
+requires a fresh empty mailbox and resolved alert. **Re-arm all** immediately
+clears uncertainty and arms all saved chats except removed chats or a pending
+Remove. It preserves pairing, batch/seen IDs, action evidence and alerts, even
+if mail or an alert remains. It only saves state; the next normal poll may wake
+chats. An earlier uncertain Send may already have succeeded, so an explicit
+re-arm can repeat a wake. It does not prove mailbox processing.
 
 
 Pending mail blocked by a closed tab is reported immediately to the local wake
 backend. A persistent draft or any continuously pending mailbox is reported
 after a minute of observation.
-The setup page shows whether an alert was confirmed. An uncertain report retains its
+The popup shows whether an alert was confirmed. An uncertain report retains its
 incident identity for replay. A confirmed blocked incident remains active while
 any mail is pending; a fresh empty observation sends its recovery.
 
