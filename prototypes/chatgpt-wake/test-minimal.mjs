@@ -51,26 +51,29 @@ editor.value = ''; attached = true;
 assert.equal(run(`composer('${url}', 'prepare')`), 'draft-present');
 attached = false; busy = true;
 assert.equal(run(`composer('${url}', 'prepare')`), 'busy');
-assert.equal(stopClicks, 1);
+assert.equal(stopClicks, 0);
 assert.equal(run(`composer('https://chatgpt.com/c/other', 'send')`), 'wrong-conversation');
 context.document.getElementById = () => null;
+busy = false;
 assert.equal(run(`composer('${url}', 'prepare')`), 'waiting', 'unique visible fallback editor works without the old ID');
 fallbackEditorAvailable = false;
 busy = true;
 const beforeMissingEditorStop = stopClicks;
 assert.equal(run(`composer('${url}', 'prepare')`), 'busy', 'a unique Stop is usable when the editor is absent');
-assert.equal(stopClicks, beforeMissingEditorStop + 1);
+assert.equal(stopClicks, beforeMissingEditorStop);
 containerAvailable = false;
 assert.equal(run(`composer('${url}', 'prepare')`), 'composer-unavailable', 'unidentified page-wide editor is refused');
 containerAvailable = true;
 fallbackEditorAvailable = true;
+busy = false;
 context.document.getElementById = () => editor;
 run(`globalThis.bindings = [{id: '${id}', name: 'mail', generation: 1, url: '${url}', armed: true}]`);
 await run('check(bindings)');
 const before = clicks;
 await run('check(bindings)');
 assert.equal(clicks, before, 'automatic poll cannot repeat uncertain wake');
-assert.equal(state.minimalBindings[0].uncertain, true, 'click reserves an uncertain outcome before another poll');
+assert.equal(state.minimalBindings[0].sendBudget.auto, 1, 'click reserves a persisted automatic attempt');
+assert.equal(state.minimalBindings[0].uncertain, undefined);
 const restartedAfterClick = vm.createContext({...context});
 vm.runInContext(source, restartedAfterClick);
 await vm.runInContext('load().then(check)', restartedAfterClick);
@@ -78,7 +81,7 @@ assert.equal(clicks, before, 'a worker restart cannot send the same pending mail
 run(`cancelled.add(bindingKey('${id}'))`);
 await run('check(bindings)');
 assert.equal(clicks, before);
-console.log('PASS: exact URL, draft/attachment protection, Stop, one uncertain click, restart fence, cancellation');
+console.log('PASS: exact URL, draft/attachment protection, no Stop, cooldown, restart reservation, cancellation');
 
 const nextId = '22222222-2222-4222-8222-222222222222';
 const originalBatchFetch = context.fetch;
@@ -135,11 +138,11 @@ run(`cancelled.clear(); bindings[0].alertDone = true`);
 const originalFetch = context.fetch;
 context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})});
 await run('check(bindings)');
-assert.equal(run('bindings[0].uncertain'), true, 'fresh empty cannot clear uncertain wake evidence');
-assert.equal(run('bindings[0].status'), 'Needs manual reconciliation');
+assert.equal(run('bindings[0].uncertain'), undefined, 'fresh same-binding empty poll retires a validated batch');
+assert.equal(run('bindings[0].status'), 'Armed');
 assert.equal(run('bindings[0].alertDone'), undefined, 'fresh empty resets episode');
 context.fetch = originalFetch;
-console.log('PASS: Stop suppresses alerts; fresh empty resolves alert episode but retains uncertain send');
+console.log('PASS: cancellation suppresses alerts; fresh empty resolves alert and retires validated batch');
 
 const originalTabs = context.chrome.tabs.query;
 context.chrome.tabs.query = async () => [];
@@ -490,15 +493,16 @@ assert.match((await rearmRequest(rearmMessage)).error, /storage failed/);
 assert.deepEqual(state, beforeRearm, 'failed persistence cannot pretend reconciliation succeeded');
 context.chrome.storage.local.set = realSave;
 assert.equal((await rearmRequest(rearmMessage)).error, undefined);
-assert.deepEqual(state.minimalBindings[0], {...rearmBinding, uncertain: false, armed: true, status: 'Armed'});
+assert.deepEqual(state.minimalBindings[0], (({ids, ...rest}) => ({...rest, uncertain: false, armed: true,
+  status: 'Armed', seen: [nextId, id]}))(rearmBinding));
 assert.deepEqual(state.minimalBindings[1], beforeRearm.minimalBindings[1], 'per-chat reconciliation leaves other bindings untouched');
 assert.equal(rearmScripts, 0, 'every accepted/rejected reconciliation made zero browser execution calls');
 const freshRearmContext = vm.createContext({...context});
 vm.runInContext(source, freshRearmContext);
 assert.equal((await vm.runInContext('load()', freshRearmContext))[0].uncertain, false, 'new worker context restores persisted reconciliation');
 handlers.pop(); // Subsequent fault injection belongs to the original fixture context.
-state = {minimalBindings: [{...rearmBinding, wakeAttempt: undefined}]};
-assert.equal((await rearmRequest({...rearmMessage, expectedAttempt: null})).error, undefined, 'legacy uncertainty has explicit null attempt identity');
+state = {minimalBindings: [{...rearmBinding, wakeAttempt: undefined, ids: undefined}]};
+assert.match((await rearmRequest({...rearmMessage, expectedAttempt: null})).error, /Saved batch IDs are missing or invalid/);
 
 state = {minimalBindings: [structuredClone(rearmBinding)]};
 let enterPoll, releasePoll;
@@ -545,7 +549,7 @@ assert.deepEqual(state, beforeRearm, 'failed save reports error without changing
 context.chrome.storage.local.set = realSave;
 assert.equal((await rearmAllRequest()).error, undefined);
 assert.deepEqual(state.minimalBindings, beforeRearm.minimalBindings.map(b =>
-  b.removed || b.id === 'cancelled' ? b : {...b, uncertain: false, armed: true, status: 'Armed'}));
+  b.removed || b.id === 'cancelled' ? b : {...b, armed: true}));
 assert.equal(run("cancelled.has(bindingKey('cancelled'))"), true, 'pending Remove remains cancelled');
 const onceRearmed = structuredClone(state);
 assert.equal((await rearmAllRequest()).error, undefined);
@@ -633,3 +637,91 @@ for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-
 }
 context.fetch = originalFetch; context.chrome.scripting.executeScript = realExecution;
 console.log('PASS: local Remove failure/restart, Resume/bulk fence and reservation/config races');
+
+// A persisted reservation is the authority for every automatic and manual entry point.
+run('cancelled.clear()');
+editor.value = '';
+state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true}]};
+const retryMessage = m => new Promise(resolve => handlers[0](m, {id: 'test'}, resolve));
+const clickBase = clicks;
+await run('load().then(check)');
+assert.equal(clicks, clickBase + 1);
+assert.equal(state.minimalBindings[0].sendBudget.auto, 1);
+const firstBudget = structuredClone(state.minimalBindings[0].sendBudget);
+await retryMessage({type: 'resume-all'});
+await retryMessage({type: 'resume', id});
+await retryMessage({type: 'rearm-all'});
+assert.equal(clicks, clickBase + 1, 'all entry points share persisted cooldown');
+assert.deepEqual(state.minimalBindings[0].sendBudget, firstBudget);
+now += 120000;
+await run('load().then(check)');
+assert.equal(clicks, clickBase + 2);
+const restartedRetry = vm.createContext({...context});
+vm.runInContext(source, restartedRetry);
+now += 120000;
+await vm.runInContext('load().then(check)', restartedRetry);
+assert.equal(clicks, clickBase + 3, 'worker restart retains the third reservation');
+now += 120000;
+await retryMessage({type: 'resume-all'});
+assert.equal(clicks, clickBase + 3, 'fourth automatic Send is blocked');
+assert.equal(state.minimalBindings[0].sendBudget.auto, 3);
+const batchId = state.minimalBindings[0].sendBudget.batchId;
+assert.match((await retryMessage({type: 'manual-send', id, expectedBatch: 'stale'})).error, /unavailable/i);
+const extra = await retryMessage({type: 'manual-send', id, expectedBatch: batchId});
+assert.equal(extra.result, 'click-attempted');
+assert.equal(clicks, clickBase + 4);
+assert.equal(state.minimalBindings[0].sendBudget.manualUsed, true);
+assert.match((await retryMessage({type: 'manual-send', id, expectedBatch: batchId})).error, /unavailable/i);
+await retryMessage({type: 'rearm-all'});
+await retryMessage({type: 'resume-all'});
+assert.equal(clicks, clickBase + 4, 'manual extra and global buttons cannot bypass cap');
+handlers.pop();
+console.log('PASS: three persisted automatic reservations, shared cooldown, capped fourth, one idempotent manual extra');
+
+// The browser may execute after the persisted reservation and before returning a receipt.
+state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true}]};
+editor.value = '';
+const crashBase = clicks;
+const normalScript = context.chrome.scripting.executeScript;
+context.chrome.scripting.executeScript = async args => {
+  if (args.args[1] === 'send') throw Error('lost browser receipt');
+  return normalScript(args);
+};
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].sendBudget.auto, 1, 'ambiguous browser execution consumes a reservation');
+assert.equal(clicks, crashBase);
+const crashRestart = vm.createContext({...context});
+vm.runInContext(source, crashRestart);
+context.chrome.scripting.executeScript = normalScript;
+await vm.runInContext('load().then(check)', crashRestart);
+assert.equal(clicks, crashBase, 'restart cannot bypass the persisted cooldown');
+now += 120000;
+await run('load().then(check)');
+assert.equal(clicks, crashBase + 1, 'retry becomes available after cooldown');
+console.log('PASS: lost browser receipt consumes budget and survives worker restart');
+
+// Joined IDs retain the old budget; only a valid same-binding absence retires it.
+const joinedId = '33333333-3333-4333-8333-333333333333';
+const oldBudgetId = state.minimalBindings[0].sendBudget.batchId;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, joinedId]})}
+  : originalFetch(request, options);
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].sendBudget.batchId, oldBudgetId);
+assert.deepEqual(state.minimalBindings[0].ids, [id, joinedId]);
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: []})}
+  : originalFetch(request, options);
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].sendBudget.batchId, oldBudgetId, 'changed generation cannot retire a batch');
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})}
+  : originalFetch(request, options);
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].sendBudget, undefined, 'same-binding absence retires validated saved IDs');
+assert.deepEqual(state.minimalBindings[0].seen, [id, joinedId]);
+state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true, uncertain: true}]};
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].uncertain, true, 'missing legacy IDs stay fenced even on empty poll');
+context.fetch = originalFetch;
+console.log('PASS: joined IDs, changed-binding poll, same-binding retirement, legacy missing-ID fence');

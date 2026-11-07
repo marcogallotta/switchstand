@@ -92,11 +92,10 @@ try {
   const page = await command('Target.createTarget', {url: 'about:blank'});
   const session = await attach(page.targetId);
   const fixture = `<!doctype html><form><textarea id="prompt-textarea"></textarea>
-    <button type="button" data-testid="stop-button" aria-label="Stop">Stop</button></form><script>
+    <button type="button" data-testid="send-button" disabled>Send</button></form><script>
     window.submissions=[];window.stops=0;
     const editor=document.querySelector('textarea'), button=document.querySelector('button');
-    button.onclick=()=>{if(button.dataset.testid==='stop-button'){stops++;setTimeout(()=>{button.dataset.testid='send-button';button.disabled=true;button.removeAttribute('aria-label')},30)}
-      else {submissions.push(editor.value);editor.value='';button.disabled=true}};
+    button.onclick=()=>{submissions.push(editor.value);editor.value='';button.disabled=true};
     editor.oninput=()=>setTimeout(()=>{button.disabled=!editor.value.trim()},30);
     </script>`;
   const url = 'https://chatgpt.com/c/11111111-2222-4333-8444-555555555555';
@@ -147,7 +146,7 @@ try {
     await pause(50);
   }
   assert.deepEqual(await evaluate(session,'submissions'),['Process your mailbox'],'initial alarm dispatches exactly one wake');
-  assert.equal(await evaluate(session,'stops'),1,'one Stop before enabled Send');
+  assert.equal(await evaluate(session,'stops'),0,'wake never clicks Stop');
   await evaluate(session,`document.querySelector('textarea').value='protected draft'`);
   await evaluate(workerSession,`load().then(check)`);
   assert.equal(await evaluate(session,`document.querySelector('textarea').value`),'protected draft');
@@ -180,14 +179,14 @@ try {
   assert.ok(replacement && replacement.targetId !== worker.targetId, 'real MV3 worker restarted with a new target');
   let restartedSession = await attach(replacement.targetId);
   assert.equal(await evaluate(restartedSession,`Boolean(globalThis.__restartFenceProbe)`),false,'restart created a fresh execution context');
-  assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].uncertain)`),true,'uncertain fence survived worker restart');
+  assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].sendBudget.auto)`),1,'reservation survived worker restart');
   assert.equal(await evaluate(session,'submissions.length'),before,'worker restart did not repeat the wake');
   // Exercise the actual serialized function against hostile DOM controls.
   const stopControl = attributes => `<button type="button" class="stop" data-testid="stop-button" ${attributes}>Stop</button>`;
   const sendControl = attributes => `<button type="button" class="send" data-testid="send-button" ${attributes}>Send</button>`;
   const controlCases = [
     ['no Stop','',sendControl(''),'send','click-attempted',0,1],
-    ['one Stop',stopControl(''),sendControl(''),'prepare','busy',1,0],
+    ['one Stop',stopControl(''),sendControl(''),'prepare','busy',0,0],
     ['hidden Stop',stopControl('style="visibility:hidden"'),sendControl(''),'send','click-attempted',0,1],
     ['multiple Stops',stopControl('')+stopControl(''),sendControl(''),'prepare','busy',0,0],
     ...['disabled','aria-disabled="true"'].map(a=>['Stop '+a,stopControl(a),sendControl(''),'prepare','busy',0,0]),
@@ -197,7 +196,7 @@ try {
     ['attachment',stopControl(''),sendControl(''),'prepare','draft-present',0,0,'Process your mailbox','<button data-testid="remove-file-button">file</button>'],
     ['wrong URL',stopControl(''),sendControl(''),'send','wrong-conversation',0,0]
   ];
-  const missingEditorCases = [['enabled','', 'busy',1],['hidden','style="visibility:hidden"','composer-unavailable',0],
+  const missingEditorCases = [['enabled','', 'busy',0],['hidden','style="visibility:hidden"','composer-unavailable',0],
     ['multiple',null,'composer-unavailable',0],['disabled','disabled','busy',0],['aria-disabled','aria-disabled="true"','busy',0]];
   for (const kind of ['textarea','contenteditable','missing']) {
     const cases = kind === 'missing' ? missingEditorCases.map(([name,a,result,stops])=>[name, a===null?stopControl('')+stopControl(''):stopControl(a),'','prepare',result,stops,0]) : controlCases;
@@ -220,17 +219,20 @@ try {
   await evaluate(session,`document.getElementById('composer-wrap').setAttribute('data-testid','composer')`);
   await evaluate(session,`document.getElementById('composer-wrap').innerHTML='<button data-testid="stop-button">Stop</button>';window.stops=0;document.querySelector('button').onclick=()=>stops++`);
   assert.equal(await compose('prepare'),'busy','missing editor with one visible Stop is treated as busy');
-  assert.equal(await evaluate(session,'stops'),1);
+  assert.equal(await evaluate(session,'stops'),0);
   await evaluate(session,`document.getElementById('composer-wrap').outerHTML=${JSON.stringify('<div id="thread-bottom-container"></div><div data-composer-body style="display:none"><div role="textbox" contenteditable="true"></div></div><div data-composer-body><div role="textbox" contenteditable="true"></div><button type="button" aria-label="Send">Send</button></div>')}`);
   await evaluate(session,`document.querySelector('button[aria-label="Send"]').onclick=()=>{const editor=document.querySelectorAll('[role="textbox"]')[1];submissions.push(editor.textContent);editor.textContent=''}`);
   assert.equal(await compose('prepare'),'waiting','current ChatGPT contenteditable composer accepts wake text');
   assert.equal(await compose('wait'),'ready','current ChatGPT Send control becomes ready');
   assert.equal(await compose('send'),'click-attempted','current ChatGPT Send control is clicked');
   assert.equal((await evaluate(session,'submissions')).at(-1),'Process your mailbox');
-  // Re-arm is a confirmed, per-chat storage action; it does not touch the composer.
+  // A same-binding empty poll retires a validated saved batch without claiming pickup.
   pendingIds = [];
   await evaluate(restartedSession,`load().then(check)`);
-  const priorRearm = (await evaluate(restartedSession,'load()'))[0];
+  const rearmed = (await evaluate(restartedSession,'load()'))[0];
+  assert.equal(rearmed.ids,undefined);
+  assert.equal(rearmed.sendBudget,undefined);
+  assert.equal(rearmed.seen.includes(id),true);
   const sendsBeforeRearm = await evaluate(session,'submissions.length');
   await evaluate(restartedSession,'chrome.action.openPopup()');
   const actualPopup=(await command('Target.getTargets')).targetInfos.find(t=>t.url.endsWith('/popup.html') && t.targetId!==popup.targetId);
@@ -241,34 +243,14 @@ try {
     await pause(50);
   }
   assert.equal(await evaluate(actualPopupSession,`chrome.extension.getViews({type:'popup'}).includes(window)`),true,'actual action-popup identity');
-  await evaluate(actualPopupSession,`show().then(()=>{window.confirm=()=>{throw Error('native modal forbidden')};[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click()})`);
-  assert.match(await evaluate(actualPopupSession,`document.querySelector('#bindings p span').textContent`),/earlier wake may already have been sent/);
-  let geometry, controlsVisible=false;
-  for(let attempt=0;attempt<50;attempt++) {
-    geometry=await evaluate(actualPopupSession,`({width:innerWidth,height:innerHeight,controls:[...document.querySelectorAll('#bindings p span button')].map(b=>{const r=b.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===b}})})`);
-    controlsVisible=geometry.controls.length===2 && geometry.controls.every(b=>b.left>=0 && b.right<=geometry.width && b.top>=0 && b.bottom<=geometry.height && b.hit);
-    if(controlsVisible) break;
-    await pause(50); // The browser resizes its action popup after content changes.
-  }
-  assert.ok(controlsVisible,`actual popup confirmation buttons visible and hittable: ${JSON.stringify(geometry)}`);
-  await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Cancel').click()`);
-  await pause(100);
-  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,true,'cancelled confirmation preserves the fence');
-  await evaluate(actualPopupSession,`[...document.querySelectorAll('button')].find(b=>b.textContent==='Re-arm').click();[...document.querySelectorAll('button')].find(b=>b.textContent==='Confirm re-arm').click()`);
-  for(let attempt=0;attempt<50;attempt++) {
-    if(!(await evaluate(restartedSession,'load()'))[0].uncertain) break;
-    await pause(50);
-  }
-  const rearmed = (await evaluate(restartedSession,'load()'))[0];
-  assert.equal(rearmed.uncertain,false);
-  for(const key of ['ids','seen','wakeAttempt']) assert.deepEqual(rearmed[key],priorRearm[key],`${key} preserved`);
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'Re-arm sends nothing inline');
+  assert.equal(await evaluate(actualPopupSession,`[...document.querySelectorAll('#bindings button')].some(b=>b.textContent==='Re-arm')`),false,'retired batch needs no confirmation');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm);
   assert.equal(JSON.parse(await readFile(join(production, 'manifest.json'), 'utf8')).action.default_popup, 'popup.html');
   await evaluate(restartedSession, `(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'cancelled',armed:false,uncertain:true});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add(bindingKey('cancelled',bs[0].incarnation))})()`);
   const beforeAll = await evaluate(restartedSession, 'load()');
   await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
   const afterAll = await evaluate(restartedSession, 'load()');
-  assert.deepEqual(afterAll, beforeAll.map(b => b.removed || b.id === 'cancelled' ? b : {...b,uncertain:false,armed:true,status:'Armed'}), 'popup Re-arm all preserves history and skips removed/cancelled');
+  assert.deepEqual(afterAll, beforeAll.map(b => b.removed || b.id === 'cancelled' ? b : {...b,armed:true}), 'popup Re-arm all preserves budget and uncertainty');
   assert.equal(await evaluate(actualPopupSession, "document.getElementById('status').textContent"), 'Re-arm all saved');
   assert.equal(await evaluate(session, 'submissions.length'), sendsBeforeRearm, 'Re-arm all sends nothing inline');
   await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
@@ -297,7 +279,7 @@ try {
   }
   assert.ok(replacement && replacement.targetId!==oldRearmTarget);
   restartedSession=await attach(replacement.targetId);
-  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,false,'real worker restart retains re-arm');
+  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,undefined,'real worker restart retains retired batch');
   pendingIds=['22222222-2222-4222-8222-222222222222'];
   await evaluate(restartedSession,'load().then(check)');
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new batch wakes after restart');
@@ -338,7 +320,14 @@ try {
     return [...document.querySelectorAll('#bindings p')].map(row=>({text:row.textContent,buttons:[...row.querySelectorAll('button')].map(b=>b.textContent)}))})()`);
   assert.deepEqual(rows.map(row=>row.text.split(':')[0]),['Alpha','Zulu'],'saved chats are alphabetical');
   assert.deepEqual(rows[0].buttons,['Resume','Remove'],'Stop is absent from the popup');
-  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer control guards, restart fence, alert dedupe and actual popup Add/Re-arm controls. Native toolbar input, installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
+  await evaluate(popupSession, `(async()=>{await chrome.storage.local.set({minimalBindings:[{id:${JSON.stringify(id)},name:'mail',generation:1,url:${JSON.stringify(url)},armed:true,ids:[${JSON.stringify(id)}],sendBudget:{batchId:${JSON.stringify(id)},ids:[${JSON.stringify(id)}],auto:3,manualUsed:false,lastAt:Date.now()}}]});await show()})()`);
+  await evaluate(popupSession, `[...document.querySelectorAll('#bindings button')].find(b=>b.textContent==='Send one extra wake').click()`);
+  for(let attempt=0;attempt<50;attempt++) {
+    if((await evaluate(popupSession,`document.getElementById('status').textContent`)).includes('cooling down')) break;
+    await pause(50);
+  }
+  assert.match(await evaluate(popupSession,`document.getElementById('status').textContent`),/cooling down/,'manual rejection is visible in real popup');
+  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer guards, restart reservation, alert dedupe, popup rejection. Installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
 } catch (error) {
   console.error(error);
   throw error;

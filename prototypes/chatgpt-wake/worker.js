@@ -2,6 +2,42 @@ const SOURCE = 'http://127.0.0.1:18766/internal/chatgpt-wake';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const cancelled = new Set();
 const bindingKey = (id, incarnation = null) => JSON.stringify([id, incarnation]);
+const COOLDOWN_MS = 2 * 60 * 1000;
+const validIds = ids => Array.isArray(ids) && ids.length > 0 && ids.every(id => typeof id === 'string' && UUID.test(id));
+function retireBatch(b) {
+  if (!validIds(b.ids)) return false;
+  b.seen = [...new Set([...(b.seen || []), ...b.ids])];
+  delete b.ids; delete b.sendBudget; delete b.uncertain;
+  return true;
+}
+function budgetBlock(b, manual = false) {
+  if (b.uncertain || !validIds(b.ids)) return 'Needs manual reconciliation';
+  const budget = b.sendBudget;
+  if (!budget) return manual ? 'Manual extra unavailable for this batch' : null;
+  if (!validIds(budget.ids) || !budget.ids.every(id => b.ids.includes(id)) ||
+      !UUID.test(budget.batchId || '') ||
+      !Number.isInteger(budget.auto) || budget.auto < 0 || budget.auto > 3 ||
+      !Number.isFinite(budget.lastAt)) return 'Needs manual reconciliation';
+  if (manual ? budget.auto < 3 || budget.manualUsed : budget.auto >= 3)
+    return manual ? 'Manual extra unavailable for this batch' : 'Automatic wake limit reached';
+  if (Date.now() - budget.lastAt < COOLDOWN_MS) return 'Wake cooling down';
+  return null;
+}
+async function reserveSend(b, bindings, manual) {
+  const block = budgetBlock(b, manual);
+  if (block) return block;
+  b.sendBudget ||= {batchId: crypto.randomUUID(), ids: b.ids.slice(), auto: 0, manualUsed: false, lastAt: 0};
+  if (manual) b.sendBudget.manualUsed = true;
+  else b.sendBudget.auto++;
+  b.sendBudget.lastAt = Date.now();
+  await save(bindings);
+  return null;
+}
+async function refundSend(b, bindings, manual) {
+  if (manual) b.sendBudget.manualUsed = false;
+  else b.sendBudget.auto--;
+  await save(bindings);
+}
 const loggedObservations = new Map();
 const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing',
   'Chat suspended': 'tab-suspended', 'Wake outcome unknown': 'uncertain-wake',
@@ -83,9 +119,7 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      const stopping = action === 'prepare' && !stopsWithoutEditor[0].disabled && stopsWithoutEditor[0].getAttribute('aria-disabled') !== 'true';
-      if (stopping) stopsWithoutEditor[0].click();
-      return result('busy', stopping ? 'stop-requested' : 'busy');
+      return result('busy', 'busy');
     }
     return result('composer-unavailable', !editor ? 'editor-missing' : 'form-missing');
   }
@@ -99,9 +133,7 @@ function composer(url, action, diagnostic = false) {
   const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
   if (stops.length) {
-    const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
-    if (stopping) stops[0].click();
-    return result('busy', stopping ? 'stop-requested' : 'busy');
+    return result('busy', 'busy');
   }
   if (action !== 'send' && !draft) {
     editor.focus();
@@ -152,7 +184,7 @@ async function report(b, bindings) {
     }
   } catch { b.report = 'Alert outcome unknown; same incident retained'; }
 }
-async function check(bindings, onlyId) {
+async function check(bindings, onlyId, manual = false) {
   for (const b of bindings) {
     if (!b.armed || b.removed || cancelled.has(bindingKey(b.id, b.incarnation)) || (onlyId && b.id !== onlyId)) continue;
     b.pending = null;
@@ -161,6 +193,8 @@ async function check(bindings, onlyId) {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
       b.pending = p.delivery_ids;
+      if (b.ids && !validIds(b.ids)) { b.uncertain = true; b.status = 'Needs manual reconciliation'; continue; }
+      if (validIds(b.ids) && b.ids.every(id => !p.delivery_ids.includes(id))) retireBatch(b);
       if (!p.delivery_ids.length) {
         delete b.checked; delete b.since; b.status = b.uncertain ? 'Needs manual reconciliation' : 'Armed';
         if (b.alert) b.recovering = true;
@@ -175,8 +209,9 @@ async function check(bindings, onlyId) {
       if (b.uncertain) { b.status = 'Wake outcome unknown'; continue; }
       const freshIds = p.delivery_ids.filter(id => !b.seen?.includes(id));
       if (!freshIds.length) { b.status = 'Already nudged'; continue; }
-      if (b.ids?.length && !freshIds.some(id => b.ids.includes(id))) b.ids = freshIds.slice();
-      b.ids ||= freshIds.slice();
+      b.ids = [...new Set([...(b.ids || []), ...freshIds])];
+      const initialBlock = budgetBlock(b, manual);
+      if (initialBlock) { b.status = initialBlock; continue; }
       await save(bindings);
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
         const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
@@ -184,9 +219,13 @@ async function check(bindings, onlyId) {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);
           stage = 'execution-failed';
-          if (fresh.endpoint !== b.id || fresh.generation !== b.generation || !fresh.delivery_ids.some(id => b.ids.includes(id)) || cancelled.has(bindingKey(b.id, b.incarnation))) break;
+          if (fresh.endpoint !== b.id || fresh.generation !== b.generation) { b.status = 'Mailbox identity changed'; break; }
+          if (!fresh.delivery_ids.some(id => b.ids.includes(id))) { b.status = 'Pending batch changed'; break; }
+          if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
+          const block = await reserveSend(b, bindings, manual);
+          if (block) { b.status = block; break; }
         }
-        b.uncertain = true;
+        if (action !== 'send') b.uncertain = true;
         b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
         if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
@@ -196,6 +235,7 @@ async function check(bindings, onlyId) {
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
         if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;
+        if (action === 'send' && ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) await refundSend(b, bindings, manual);
         await save(bindings);
         if (!['busy', 'waiting', 'ready'].includes(b.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -221,7 +261,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   exclusive(async () => {
     await fence;
     const bindings = await load();
-    if (['resume', 'rearm', 'remove'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
+    if (['resume', 'rearm', 'remove', 'manual-send'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
     if (m.type === 'add') {
       if (!validUrl(m.url) || !m.name) throw Error('Open an exact ChatGPT conversation and enter its mailbox');
       if (!Number.isInteger(m.tabId)) throw Error('Current chat tab is unavailable');
@@ -240,16 +280,23 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
       if (p.delivery_ids.length || b.alert || cancelled.has(bindingKey(b.id, b.incarnation))) throw Error('Pending mail or alert must clear before Re-arm');
+      if (!retireBatch(b)) throw Error('Saved batch IDs are missing or invalid; manual reconciliation required');
       b.uncertain = false;
       b.armed = true;
       b.status = 'Armed';
     } else if (m.type === 'rearm-all') {
       for (const b of bindings) {
         if (b.removed || cancelled.has(bindingKey(b.id, b.incarnation))) continue;
-        b.uncertain = false;
         b.armed = true;
-        b.status = 'Armed';
       }
+    } else if (m.type === 'manual-send') {
+      const b = bindings.find(matches);
+      if (!b || b.removed || !b.armed || m.expectedBatch !== b.sendBudget?.batchId ||
+          b.sendBudget?.auto !== 3 || b.sendBudget.manualUsed) throw Error('Manual extra unavailable; reopen the popup');
+      const block = budgetBlock(b, true);
+      if (block) throw Error(block);
+      await check(bindings, b.id, true);
+      return {result: b.status};
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
       for (const b of bindings) if (!b.removed && !cancelled.has(bindingKey(b.id, b.incarnation)) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;

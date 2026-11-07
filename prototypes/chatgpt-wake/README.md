@@ -8,12 +8,16 @@ extension verifies the mailbox and current tab in one action and rejects an
 already paired mailbox or conversation. Saved chats appear alphabetically.
 
 The extension polls pending delivery IDs about every 30 seconds. For an armed
-matching conversation it may stop a response, insert `Process your mailbox`,
-and click Send. It preserves an unrelated draft or attachment, and never opens
-a closed tab. Definite no-send conditions can be retried on later polls.
-An uncertain click remains fenced even after the mailbox becomes empty: an
-empty poll cannot prove whether ChatGPT received or processed the wake. The
-popup shows **Needs manual reconciliation** in that case. **Resume** rechecks
+matching conversation it inserts `Process your mailbox` and clicks Send only
+when the composer is idle. It never clicks Stop, preserves an unrelated draft
+or attachment, and never opens a closed tab. Each saved nonempty batch permits
+three automatic Send reservations at least two minutes apart across restarts and
+all wake paths. An interrupted or ambiguous Send consumes its reservation;
+a proven no-click outcome refunds it. Joined delivery IDs retain the old budget.
+A successful poll for the same mailbox binding retires a validated saved batch
+when all its IDs are absent. This resets the budget for later mail but does not
+prove that ChatGPT accepted the wake or processed the mail. Older uncertain rows
+with missing or invalid saved IDs stay fenced. **Resume** rechecks
 one chat; **Resume all** rechecks every saved chat. Neither clears an uncertain
 send or alert. **Remove** stops local wakes and hides the chat after saving,
 even offline or with pending mail/alerts. It retains backend mail and local safety history;
@@ -22,13 +26,13 @@ Old popup buttons cannot affect the replacement. Backend mail/history stay intac
 is not proof that ChatGPT processed mail. Already-dispatched wakes cannot be recalled.
 A failed Remove save is visible and fences this worker; restart may resume the saved chat.
 
-In the popup, **Re-arm** asks for confirmation for one uncertain chat and
-requires a fresh empty mailbox and resolved alert. **Re-arm all** immediately
-clears uncertainty and arms all saved chats except removed chats or a pending
-Remove. It preserves pairing, batch/seen IDs, action evidence and alerts, even
-if mail or an alert remains. It only saves state; the next normal poll may wake
-chats. An earlier uncertain Send may already have succeeded, so an explicit
-re-arm can repeat a wake. It does not prove mailbox processing.
+After three automatic reservations, the popup offers **Send one extra wake**
+for that chat and batch. It can be used once, follows the same cooldown and
+composer guards, and shows the result or refusal. **Re-arm** is one click for
+an older uncertain chat; it requires a fresh empty same-binding mailbox poll,
+validated saved IDs, and a resolved alert. **Re-arm all** arms saved chats but
+does not clear uncertainty or a batch budget. Neither action proves mailbox
+processing.
 
 
 Pending mail blocked by a closed tab is reported immediately to the local wake
