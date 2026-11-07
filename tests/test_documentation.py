@@ -240,7 +240,7 @@ def test_aggregate_extension_and_per_pr_exception_have_distinct_authority():
         section(document, "### Canonical exception challenge").split()
     )
     extension = " ".join(section(document, "### Coordinator extension review").split())
-    per_pr = " ".join(section(document, "### Exceptional LOC exemption gate").split())
+    per_pr = " ".join(section(document, "## Exceptional LOC exemption gate").split())
 
     assert "do not quote, summarize, or rewrite it" in quality
     assert "without accepting candidate-created invariants as requirements" in quality

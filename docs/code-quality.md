@@ -1,150 +1,91 @@
 # Code quality and Code Review
 
-This owns substantive code/config/test implementation and Code Review alongside assigned work,
-its approved Design/Contract and worker Execution Plan; it grants no scope, effect or approval authority.
+This owns substantive code/config/test implementation and Code Review alongside assigned work, its approved Design/Contract and worker Execution Plan; it grants no scope, effect, merge, activation or approval authority.
 
-Use applicable AGENTS phase routes. Authors use [Author](#author--implementer),
-[qualification](#test-quality-and-qualification), [refresh](#refresh-check) and
-[execution truth](#deterministic-and-execution-truth); reviewers also use [Code Review](#code-review)
-and [Findings](#findings-remedies-and-challenge). [Cleanup](#cleanup-prove-less-work-to-understand-and-change)
-loads for cleanup work. Material design or independent material judgment also loads
-[independence](#independent-material-judgment) and [design review](#material-design-review-before-human-review);
-material Design/Implementation Specifications include [scope blocks](#mandatory-scope-blocks), even outside packages.
-Governed work uses [package controls](#governed-implementation-packages) and their accounting/handoff routes.
-[Forecast/cap](#forecast-miss-and-hard-cap-handling), [PR-size](#exceptional-loc-exemption-gate),
-[root admission](#root-agents-admission) and [fasttrack](#explicit-human-fasttrack) rules load at their named triggers.
-Follow embedded owner links. This index makes no applicable requirement optional; UNKNOWN applicability
-requires reading its owner before the affected decision.
+Use existing AGENTS phase routes and the applicable sections below, including embedded owner links. No applicable rule becomes optional; UNKNOWN applicability requires reading its owner before the affected decision. Material-design and independent-judgment rules apply whether or not a governed package is present.
 
 ## Governing standard
 
-A good change delivers the exact governing behavior with the simplest sound current design, lives in the correct owner, preserves explicit authority/trust/resource/dependency boundaries, avoids duplicate truth and speculative machinery, has discriminating maintainable evidence, and leaves the touched system no harder for a fresh competent agent to understand and safely change. Green tests are evidence, not the definition of correctness or quality.
+Deliver the exact governing behavior with the simplest sound design and correct owner. Preserve authority, trust, resource and dependency boundaries; avoid duplicate truth and speculative machinery. Require discriminating, maintainable evidence and leave the system no harder for a fresh competent agent to understand and safely change. Green tests alone establish neither correctness nor quality.
 
 ### Cleanup: prove less work to understand and change
 
-The target is maintainable, proportionate software, not a numeric grade. For an authorized cleanup,
-use five practical outcomes; [research](agent-code-and-test-quality-research.md) supplies evidence,
-not another procedure:
+Authorized cleanup targets maintainable, proportionate software, not a numeric grade. Use five outcomes; [research](agent-code-and-test-quality-research.md) supports them without adding procedure:
 
-- **Discoverable:** a fresh agent with the task and repository finds the correct owner, relevant
-  docs and test command. Record time and wrong turns rather than assuming links prove usability.
-- **Cohesive code:** rules have authoritative owners; inspect the hardest flows and identify
-  unnecessary edits across unrelated files. Moving complexity into helpers or wrappers is not enough.
-- **Proportionate scope:** retained mechanisms serve Marco's approved V1 needs or necessary contracts.
-  Internal callers show dependencies, not product need. Remove unnecessary machinery rather than relocate it.
-- **Valuable, economical tests:** realistic faults are rejected at the relevant boundary. Reduce
-  redundant cases, expensive fixtures and coupled mocks while preserving unique regression protection.
-- **Fast, safe changes:** representative fresh-agent work needs less investigation, test overhead
-  and rework, with correctness and authority safeguards preserved.
+- **Discoverable:** a fresh agent finds owners, relevant docs and test commands; record discovery time and wrong turns, not merely links.
+- **Cohesive code:** rules have authoritative owners; inspect hard flows for unnecessary coordinated edits. Helpers/wrappers alone do not remove complexity.
+- **Proportionate scope:** retain approved V1 needs and necessary contracts. Internal callers establish dependencies, not product need; remove unnecessary machinery rather than relocate it.
+- **Valuable, economical tests:** reject realistic faults at the relevant boundary while reducing redundant cases, costly fixtures and coupled mocks; preserve unique regression protection.
+- **Fast, safe changes:** reduce investigation, test overhead and rework in representative fresh-agent maintenance while preserving correctness and authority safeguards.
 
-Start with one approved candidate or bounded subsystem, its baseline SHA, V1 outcome/non-goals and
-current [Mailbox](mailbox.md) and [Tracker](tracker.md) owner maps. [Observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06)
-is evidence, not signed scope. Keep settled approvals; unknown usage does not authorize retirement.
-For a material unresolved product/scale choice, prepare the credible smaller route and use existing
-[Human Input](human-input.md). Resolve engineering facts without making Marco investigate the code.
+Start with one approved candidate/bounded subsystem, exact baseline SHA, V1 outcome/non-goals and current [Mailbox](mailbox.md)/[Tracker](tracker.md) owner maps. [Observed use](how-marco-uses-switchstand.md#current-observed-use-and-continuity-limit-marco-2026-10-06) is evidence, not signed scope or retirement authority. Preserve settled approvals; unknown use does not authorize deletion. Resolve engineering facts locally; take a material unresolved product/scale choice and credible smaller route through [Human Input](human-input.md).
 
-Briefly record material touched owners/consumers, expensive change paths, affected tests and important
-unknowns in existing Work/plan. Choose KEEP, CUT, MERGE or RETIRE from actual source/contract evidence.
-For each significant simplification, show one concrete before/after example: which decision,
-mechanism, coordinated edits, fixtures or obsolete docs disappear, what remains authoritative, and
-which realistic regression would fail. Group tests by protected behavior; no per-item inventory or
-fault declaration for every test. Green CI, deleted LOC and test counts alone establish no quality.
-Use counts/runtime only where they explain the observed burden.
+In existing Work/plan, record material owners/consumers, expensive change paths, affected tests and unknowns. Choose KEEP/CUT/MERGE/RETIRE from source/contracts. For each significant simplification, show what decision, mechanism, coordinated edits, fixtures or obsolete docs disappear, the remaining authoritative owner, and a realistic regression that would fail. Group tests by behavior, without per-test inventories/fault declarations. CI, deleted LOC and test counts prove no quality by themselves; counts/runtime explain observed burden only.
 
-Periodically compare matched representative maintenance tasks on exact baseline/candidate revisions
-in disposable writers, with fresh agents and comparable briefs/context/tools. Record owner discovery,
-first meaningful regression, correct change/review time, rework, files touched and human interruptions;
-include failures, sample size and confounders. There is no universal research-backed time limit:
-benchmark first, then agree useful budgets with Marco. These experiments inform major milestones,
-not every PR. Missing trials mean speed UNMEASURED; do not extrapolate sampled gains to the whole system.
+Periodically compare matched maintenance tasks on exact baseline/candidate revisions in disposable writers, using fresh agents and comparable briefs/context/tools. Record discovery, first meaningful regression, correct change/review time, rework, files touched and human interruptions, including failures, sample size and confounders. These experiments inform major milestones, not every PR. Benchmark before agreeing useful budgets with Marco; there is no universal research-backed time limit. Missing trials mean speed UNMEASURED; sampled gains do not generalize to the whole system.
 
-When declaring a subsystem cleanup complete, use the existing independent review, not an additional
-approval stage. The reviewer verifies current, trustworthy evidence of a prior fresh agent finding,
-changing and testing the code; repeat the exercise only when something important remains unproven.
-Check its provenance and applicability; author assertions, stale trials and self-review do not qualify.
-The reviewer examines hard paths, duplicate rules, scope, tests and docs, and compares baseline burden
-and safety against the five outcomes. Return PASS, FAIL or NOT_ESTABLISHED with material findings,
-covered journeys and remaining uncertainty.
-Minor style preferences do not block completion. Known serious defects fail the affected claim;
-missing material evidence leaves completion NOT_ESTABLISHED, not a fabricated defect or blanket PASS.
-The current programme is limited to Mailbox and Tracker until both pass. Marco directs scope and
-progression by command; there is no general progression rule or automatic next subsystem. Reevaluate
-the method with him after these two. Stop unproductive
-cuts and report remaining gaps or scope questions to Marco; do not broaden scope or add cuts to obtain a PASS.
+For subsystem completion, use the existing independent review. Verify current, trustworthy provenance/applicability of prior fresh-agent finding/changing/testing evidence; repeat only important unproved portions. Author assertions, stale trials and self-review do not qualify. Inspect hard paths, duplicate rules, scope, tests/docs and baseline burden/safety against all five outcomes. Return PASS/FAIL/NOT_ESTABLISHED with covered journeys, material findings and uncertainty: a known serious defect fails the affected claim; missing material evidence is NOT_ESTABLISHED; minor style preferences do not block.
 
-Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, transaction
-atomicity and recovery. State plausible failures, relevant real/hermetic evidence, residual risk and
-recovery; tests cannot prove absent consumers or undo external effects. Ordinary small PRs retain
-existing review/qualification; local/native review does not satisfy an explicitly required external
-review. PASS grants no merge, deployment or continuation authority. The human-controlled
-[per-PR LOC gate](#exceptional-loc-exemption-gate) and applicable governed-package controls are unchanged.
+The programme remains Mailbox and Tracker until both pass. Marco commands progression; no automatic next subsystem. Reevaluate the method with Marco after these two; stop unproductive cuts and report gaps/scope questions rather than broaden scope or cut merely to earn PASS.
+
+Preserve authority, identity/currentness, replay/idempotency, truthful UNKNOWN, fencing, atomicity and recovery. State plausible failures, real/hermetic evidence, residual risk and recovery; tests prove neither absent consumers nor reversal of external effects. Ordinary small PRs retain existing review/qualification; native/local review cannot substitute for an explicitly required external review. PASS grants no continuation/merge/deploy authority; package controls and the [per-PR gate](#exceptional-loc-exemption-gate) remain.
 
 ### Root AGENTS admission
 
-Root `AGENTS.md` is a bootstrap/router, not a process manual. Any addition to it must satisfy
-all of these in the existing review; this is not a separate ceremony:
+Root `AGENTS.md` is a bootstrap/router, not a process manual. In the existing review, every addition must satisfy all five conditions:
 
 1. essentially every fresh agent needs it before role/function selection;
-2. omission can cause immediate unsafe or materially misrouted behavior before owner guidance loads;
+2. omission risks immediate unsafe/materially misrouted behavior before owner guidance loads;
 3. no narrower current semantic owner can carry it;
-4. the text is an invariant, first-minute trigger, or routing pointer rather than procedure; and
+4. it is an invariant, first-minute trigger, or routing pointer rather than procedure;
 5. it does not duplicate owner-document semantics.
 
-Any `NO` routes the detail to its current owner and leaves at most the needed trigger/pointer in
-root `AGENTS.md`. A serious incident does not automatically qualify a new bootstrap rule. Do not
-use a total byte/line cap as the semantic gate: size may be reported diagnostically, but review
-must challenge ownership and necessity rather than compress prose to hit a threshold.
+Any NO leaves detail in its owner and at most the necessary root trigger/pointer. An incident alone is no admission reason. Do not use a total byte/line cap as the semantic gate; size is diagnostic, while ownership and necessity govern.
 
 ## Author / implementer
 
-Prefer the smallest safe vertical end-to-end stage with representative useful behavior and evidence.
-If that is unsafe or impractical, explain why a foundation-only/inert stage is independently stable,
-exclude speculative later-stage machinery, and name the immediate route to the first useful proof.
-Inert readiness is a landing claim, not ordinary-use completion.
+Prefer the smallest safe vertical end-to-end stage with representative useful behavior/evidence. If unsafe/impractical, justify an independently stable, foundation-only/inert stage, exclude speculative later-stage machinery and name the immediate route to the first useful end-to-end proof. Inert readiness is a landing claim, not ordinary-use completion.
 
 Before material coding:
-1. Bind the governing outcome/non-goals, current Design/Contract/Plan, candidate/base and writable surfaces. When Human Review governs, complete the exact pre-dispatch baseline comparison under [baseline preservation and deviation](human-review.md#baseline-preservation-and-deviation); UNKNOWN holds only dispatch while evidence/correction and unaffected work continue.
-2. For nontrivial work, make the worker-owned Execution Plan identify the canonical owner/reuse/delete
-   route, changed surfaces/boundaries, strongest materially smaller architecture-sensitive alternative,
-   earliest discriminating proof, implementation/test-support envelope and material unknowns.
-   Justify PR/layer decomposition by independently useful/valid behavior, meaningful acceptance evidence
-   and independent rework/rollback, not line count. Use the existing plan, not a second artifact.
-3. For a material claim, state a tiny behavioral contract: preconditions/inputs, required postcondition,
-   failure/UNKNOWN/undefined boundary and earliest discriminating example. This is not universal TDD
-   or formal-spec ceremony. Choose the earliest practical falsification under
-   [Test quality and qualification](#test-quality-and-qualification).
-4. Treat the envelope as an alarm, not a budget: unexpected mechanism, owner/trust surface, defensive
-   machinery, fixture burden or aggregate growth triggers the stop/replan below. Exact hard limits
-   remain in [governed packages](#governed-implementation-packages).
 
-Implementation Specification authors should include runnable required noninteractive checks using the
-[command-block guidance](development.md#noninteractive-commands-from-an-implementation-specification).
-When resuming an older specification, add its missing block with agreed executable checks while
-preserving acceptance criteria.
+1. Bind outcome/non-goals, current Design/Contract/Plan, candidate/base and writable surfaces. For a governing Human Review baseline, record exact identity and BASELINE_PRESERVED/MATERIAL_DEVIATION/UNKNOWN; independent design/implementation review validates it before dispatch. UNKNOWN holds dispatch only while minimum evidence, correction and unaffected authorized work continue. Follow [baseline preservation and deviation](human-review.md#baseline-preservation-and-deviation).
+2. For nontrivial work, the worker's existing Execution Plan identifies canonical owner/reuse/delete route, changed surfaces/boundaries, strongest materially smaller architecture-sensitive alternative, earliest discriminating proof, implementation/test-support envelope and material unknowns. Justify layers/PRs by independently useful valid behavior, meaningful acceptance evidence and independent rework/rollback, not line count or another artifact.
+3. For material claims, state preconditions/inputs, required postcondition, failure/UNKNOWN/undefined boundary and earliest discriminating example. This tiny behavioral contract is not universal TDD/formal specification; use the earliest practical [falsification](#test-quality-and-qualification).
+4. Treat forecasts as alarms, not budgets; unexpected mechanism, owner/trust surface, defensive machinery, fixture burden or aggregate growth triggers replan. [Package controls](#governed-implementation-packages) retain hard limits.
+
+Implementation Specification authors should include runnable required noninteractive checks through [command-block guidance](development.md#noninteractive-commands-from-an-implementation-specification). Add an older specification's missing block using agreed checks without weakening acceptance.
 
 During implementation:
-- Fix the causal owner, not callers/tests around it; preserve one truth, explicit boundaries and
-  discoverable behavior, failure/UNKNOWN semantics, executable contracts and relevant docs. Avoid
-  hidden global effects, duplicate policy/state/config/currentness and convenience authorities.
-- At each [refresh](#refresh-check), compare the trajectory with the Execution Plan. An unexpected
-  owner/provider/persistence/trust/interface/external-I/O/recovery surface, materially larger
-  defensive/test-support machinery or loss of planned proof means stop/replan/classify the affected
-  path before another patch layer. Routine local/private/reversible mechanics remain worker-owned.
-- If work materially outgrows or invalidates the planned PR/layer shape, the parent/integration owner
-  (sole implementer without a parent) chooses **KEEP ONE PR / SPLIT / REPLAN** before further expansion.
-  KEEP ONE PR when behavior/evidence/recovery form one coherent reviewable unit and splitting gives a
-  misleading/invalid partial state. SPLIT for a smaller independently useful, valid, reviewable,
-  recoverable slice with meaningful acceptance evidence and independent rollback/rework; identify
-  why it is better. REPLAN for changed mechanism, owner/trust boundary, evidence or recovery.
-  Do not defer this decision to Code Review or split for a threshold; escalate only across an
-  existing authority/review/exemption boundary.
-- Preserve demonstrated causal regression cases when recutting a mechanism, not accidental scaffolding.
-  Do not change the oracle to make code pass. Test-support choreography or invented external semantics
-  can be a maintenance defect even with little production code; use the test-quality rules below.
-- If accumulated local fixes materially change mechanism, ownership/trust, implementation envelope
-  or test/support burden, reset the whole-solution judgment: should it still exist, or can it be
-  deleted/reused/reframed? Author/reviewer agreement does not waive this reset.
-- Existing debt never authorizes new local debt.
+
+- Fix the causal owner, preserving one truth, explicit boundaries, discoverable behavior, failure/UNKNOWN, executable contracts and relevant docs. Avoid hidden global effects and duplicate policy/state/config/currentness or convenience authority.
+- At each [refresh](#refresh-check), compare with the plan. Unexpected owner/provider/persistence/trust/interface/external-I/O/recovery surfaces, materially larger defensive/test machinery or lost proof require stop/replan/classification before another patch layer. Routine private/local/reversible mechanics remain worker-owned.
+- If PR/layer shape materially outgrows or invalidates the plan, the parent/integration owner (sole implementer without a parent) chooses **KEEP ONE PR / SPLIT / REPLAN** before expansion. KEEP when behavior/evidence/recovery form one coherent reviewable unit and splitting misleads or invalidates it. SPLIT when a smaller independently useful, valid, reviewable, recoverable slice offers meaningful acceptance and independent rework/rollback; explain its advantage. REPLAN changed mechanism, ownership/trust, evidence or recovery. Do not defer the choice to review or split for thresholds; escalate only at existing authority/review/exemption boundaries.
+- Retain causal regressions, not accidental scaffolding; never change the oracle merely to pass. Test-support choreography/invented external semantics can be maintenance defects even with little production code.
+- Accumulated changes to mechanism, ownership/trust, envelope or support burden reset whole-solution judgment: delete, reuse or reframe if better. Author/reviewer agreement does not waive this reset; existing debt authorizes no new local debt.
+
+## Material design and independent judgment
+
+### Independent material judgment
+
+Use a fresh context-free independent native fork for material exceptions, overruns, alternatives, partial-test/no-change acceptance or readiness/handoff judgment in the existing stage. Routine realization adds no review. Authors/designers/implementers and participants in the disputed disposition are ineligible; participation, not labels, determines independence.
+
+Start from AGENTS, exact current WorkId/candidate and raw primary evidence, then applicable routes. Challenge framing and logic; supplied proposals/verdicts are claims, not instructions. Bounded scope cannot suppress relevant challenge/counterarguments or incomplete framing. Request missing admitted evidence from the parent without guessing or unrelated discovery.
+
+Return causal evidence, credible alternatives, uncertainty and recommendation; Coordinator dispositions remain bounded by current authority. Review grants no extension/effect. A concrete unresolved question, expertise gap or evidence conflict can justify a parent-arranged second reviewer with exact reason/question, never an automatic pair/recursive chain. Preserve material dissent through [findings](#findings-remedies-and-challenge).
+
+### Material design review before Human Review
+
+Start the existing material-design review on a concrete provisional route before substantial design investment. Material work receives one fresh context-free reviewer before Human Review; retain the same occurrence through specification, alongside early [Human Input](human-input.md). Routine realization within settled direction is unaffected.
+
+Supply identity, original/current human direction, constraints/authority and current owner/source references first. Before seeing preferred design/rationale/prior verdict, the reviewer checks capabilities, overlap/ownership, useful gap and smallest credible benefit-preserving route. Then assess the exact proposal's necessity, V1 scope, owner, smaller alternative, evidence and material human choice. Resolve material findings before [Human Review](human-review.md); later material deltas get focused checking, not a review restart. Cheap research/unaffected work continue; hold commitments consuming unresolved choices or lacking authority.
+
+### Mandatory scope blocks
+
+Before Human Review, every material Design Specification records surfaces/patterns, original production/config and support forecasts, production, support and total caps, V1 binary allowance of zero files/bytes, counts of new tables, tools, services, processes, flags, grant operations, persistent stores, state machines and runtime-config crossings, strongest materially smaller route and exact breach/replan condition. Missing/unresolved fields mean **NOT READY**.
+
+Before dispatch, the material Implementation Specification reconciles these fields, freezes immutable base, declares patterns covering every base-to-final changed path (support patterns classify covered paths only), copies original forecasts/caps, records the exact `package-size.py` command and names one cumulative package/integration owner. Missing fields/unresolved UNKNOWN mean **NOT READY**; apply accounting without resetting the projection.
+
+Repository LOC and external effects remain separate. Notes/receipts are outside the Git report, not a second counter/cap reset. Included effects bind exact WorkIds/fields, preserve unrelated text, use exact CAS/operation receipts and reread resulting text/revisions. Broader durable surfaces/policy effects require replan; landing proves no activation.
 
 ## Governed implementation packages
 
@@ -156,61 +97,6 @@ package database, or parallel review ceremony. At approval freeze:
 - the ORIGINAL APPROVED upper forecasts for production and support;
 - the explicit approved margins and resulting production, support and total hard caps;
 - the strongest credible simpler alternative, economy proof and material replan triggers.
-
-### Independent material judgment
-
-Use a fresh context-free independent native fork for a material exception, overrun, alternative,
-partial-test/no-change acceptance or readiness/handoff judgment in the existing applicable stage.
-Routine realization needs no extra review. Actual participation determines independence: authors,
-designers, implementers and participants in the disputed disposition cannot independently review it.
-
-The reviewer starts with `AGENTS.md`, exact current WorkId/candidate and raw primary evidence,
-follows applicable routes, and challenges framing and logic as well as the answer. Supplied
-proposals/arguments are claims to check, never a dictated verdict or substitute for evidence.
-Bounded scope cannot forbid relevant challenge, suppress counterarguments or narrow away incomplete
-framing. Request missing admitted evidence from the parent; do not guess or expand into unrelated discovery.
-
-Return causal evidence, credible alternatives, uncertainty and recommendation. The responsible
-Coordinator owns disposition within current authority; review grants no extension or effect
-authority. For a concrete unresolved question, expertise gap or evidence conflict, the reviewer
-may recommend a second independent reviewer with the exact reason and question. The parent
-arranges that bounded review; no automatic recursive chain or mandatory pair for every exception.
-Preserve material dissent and follow the existing finding/dispute route.
-
-### Material design review before Human Review
-
-Start the first existing material-design review on a concrete provisional route before substantial
-detailed-design investment. Material work receives one fresh context-free reviewer before Human Review;
-use the same occurrence through specification, without delaying useful early
-[Human Input](human-input.md). Routine realization inside settled direction is unaffected.
-
-First supply work identity, original/current human direction, binding constraints/authority and
-current owner/source references. Before the preferred design, rationale or prior overall verdict,
-the reviewer independently checks current capability, overlap/ownership, useful gap and smallest
-credible benefit-preserving route within the proposed material work. Then compare the exact proposal
-for necessity/V1 scope, owner placement, strongest smaller route, evidence and material human choice.
-Resolve material findings before final [Human Review](human-review.md). Later material deltas receive
-focused checking in that review, not an automatic restart/reviewer. Continue cheap research and
-unaffected work; hold only commitments consuming an unresolved choice or lacking authority.
-
-### Mandatory scope blocks
-
-Before Human Review, every material Design Specification records repository surfaces/patterns;
-original production/config and support forecasts; production, support and total hard caps; V1 binary
-allowance of zero changed files/bytes; counts of new tables, tools, services, processes, flags, grant
-operations, persistent stores/state machines and runtime-config crossings; strongest materially
-smaller route; and exact breach/replan condition. Missing/unresolved fields mean **NOT READY**.
-
-Before dispatch, the material Implementation Specification reconciles those fields, freezes the
-immutable package base, declares patterns covering every base-to-final-head changed path (support
-patterns only classify covered paths), copies original forecasts/caps, records the exact
-`package-size.py` command and names one cumulative package/integration owner. Missing fields or
-unresolved `UNKNOWN` mean **NOT READY**. Apply the accounting below without resetting the projection.
-
-Repository LOC and external effects are separate. Notes/receipt updates are outside the Git report,
-not a second counter or cap reset. For included effects bind exact existing WorkIds/fields, preserve
-unrelated text, use exact CAS/operation receipts, reread resulting text/revisions, and replan broader
-durable surface/policy effects. Landing never proves process activation.
 
 ### Fixed-base accounting
 
@@ -268,13 +154,29 @@ any multiplier. Evidence can justify necessary test growth/same-task underestima
 sunk cost, schedule pressure or "almost done" cannot. Preserve useful approved behavior, necessary
 causal tests and readability rather than cutting them to fit.
 
-Record the current [package projection](#governed-implementation-packages) and [fixed-base count report](#fixed-base-accounting), growth cause, complete remaining forecast, prior extensions, KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE alternatives with benefit/loss, independent judgment and Coordinator disposition. Include current approved and requested absolute ceilings with explicit contingency. Approval binds scope/ceilings; crossing an extended ceiling requires review again. New Marco-directed scope requires explicit re-scope.
+Record on the existing task/Execution Plan: exact WorkId and approved baseline/package revision,
+base/head, reproducible production/support/total counts, growth cause, remaining forecast, credible
+KEEP ONE PR / SPLIT / SIMPLIFY / REPLACE routes and engineering benefit/functional loss, independent
+judgment and Coordinator approval/challenge/escalation with absolute ceilings. Include approved
+margin, current approved ceiling and requested final ceiling with explicit contingency. Approval
+binds that scope/ceilings; crossing an extended ceiling triggers review again. This replaces the
+mandatory two-reviewer aggregate-extension permission stage. Genuinely new Marco-directed scope
+requires explicit re-scope, not an underestimated-continuation label.
 
 Human choices about outcome, scope, architecture, trust/authority, risk or burden return while cheap
 at any count. Preserve current HOLD/DENIED, independent Code Review, CI, exact-head/composition, landing
 and separate deployment/activation authority. Coordinator extension never waives the per-PR gate below.
 
-### Exceptional LOC exemption gate
+### Existing exact-head review handoff
+
+Supply the governing projection and exact `package-size.py` report with the exact head. Review the
+[accounting](#fixed-base-accounting), patterns/counts, original forecasts/caps, UNKNOWN, forecast-miss
+disposition and actual PR size. For each material defensive mechanism require a concrete contract
+failure, reproducible fault or discriminating boundary case a simpler solution mishandles.
+Unresolved limits/composition or undispositioned triggers hold only affected readiness; use focused
+rereview, not another ceremony.
+
+## Exceptional LOC exemption gate
 
 Aim for coherent PRs around 300 gross changed lines as a norm, not a hard gate. Agents split
 independently useful, reviewable PRs without asking Marco, keeping related required tests with the
@@ -295,7 +197,16 @@ below rejects convenience, sunk cost and ordinary test growth. Never cut approve
 force invalid partial states, compress/omit necessary work or choose 499 lines to avoid a boundary.
 Estimate the smallest sound implementation honestly and apply every crossed control.
 
-Use the existing [package projection](#governed-implementation-packages) and [fixed-base count report](#fixed-base-accounting), plus the exact actual-PR merge-base/head and reproducible count/classification/exclusions. State current ceiling, complete remaining forecast, requested absolute final ceiling and contingency, why the original plan failed, why growth is essential, and the best KEEP ONE PR / SPLIT / REPLAN and smaller-design alternatives with rejecting evidence. The exception binds that measured diff; material candidate/base change invalidates it. Check coupled follow-ups against aggregate history without summing independent PRs into an invented exception. Any split must be useful, valid, reviewable, testable, landable and recoverable independently, without placeholder/dead sibling code.
+Use existing task/Execution Plan evidence: exact WorkId and approved package/specification revision,
+base/head where applicable, reproducible counts and disclosed classifications/exclusions, original
+forecast/margin/cap, approved ceiling, exact count, complete remaining forecast and requested absolute
+final ceiling with explicit contingency. Explain why the original plan failed, why the added lines
+are essential and concrete KEEP ONE PR / SPLIT / REPLAN alternatives, strongest smaller design/cut
+and evidence rejecting it. The exception binds the exact stable merge-base/head and measured actual
+diff; a material candidate/base change invalidates it. Check coupled stack/follow-up work against the
+aggregate baseline; do not sum legitimate independent PRs to invent a per-PR exception. A split must
+be independently useful, valid, reviewable, testable, landable and recoverable/revertible, without
+placeholder/dead sibling code.
 
 ### Canonical exception challenge
 
@@ -325,10 +236,6 @@ Before approving defensive machinery, exercise the smallest credible implementat
 boundary, or use a precise skeleton where execution is not yet practical. Name the contract,
 boundary case, expected result and remaining unproved claims. Hypothetical completeness alone
 cannot justify additional machinery.
-
-### Existing exact-head review handoff
-
-Supply the current [package projection](#governed-implementation-packages) and exact-head [count report](#fixed-base-accounting). Review their fields, forecast-miss disposition and actual PR size. Each material defensive mechanism needs a concrete failure or discriminating boundary case the smaller solution mishandles. Unresolved limits/composition/triggers hold affected readiness only; use focused rereview.
 
 ## Test quality and qualification
 
@@ -433,11 +340,7 @@ G. **Documentation currency.** For Implementation Specification work, reconcile 
    dispositions (under 1218218678917862) to the actual retained candidate. Otherwise, if the diff touches
    something architecture describes, update `docs/architecture.md` in the same PR. Stale qualifying
    documentation is a material finding, not optional polish.
-H. **Approved-baseline conformance.** When a Human Review baseline governs, bind it to the exact
-   candidate and apply [Human Review: baseline preservation and deviation](human-review.md#baseline-preservation-and-deviation).
-   Return `CONFORMS_TO_APPROVED_BASELINE`, `MATERIAL_DEVIATION`, `NEW_HUMAN_CHOICE` or `UNKNOWN`
-   against that contract. A conforming build needs no repeat Human Review solely for completion;
-   landing and activation authority remain separate.
+H. **Approved-baseline conformance.** When a Human Review baseline governs, bind the exact candidate and baseline and return `CONFORMS_TO_APPROVED_BASELINE` only when protected requirements/non-goals remain intact, no deviation remains, and no new human-owned outcome, experience, architecture, trust/data boundary, burden, material risk, or protected effect was introduced. A conforming candidate needs no second Human Review solely because it is complete. `MATERIAL_DEVIATION`, `NEW_HUMAN_CHOICE`, or `UNKNOWN` holds only the affected readiness claim; landing and activation authority remain separate.
 
 Every approving or clearing review also checks this danger hotlist:
 - **D1 WRONG OUTCOME** — technically successful work solves a different problem from Marco's current outcome.
@@ -480,26 +383,10 @@ Apply the Author's whole-solution reset to cumulative accepted corrections befor
 
 ## Refresh check
 
-For substantive implementation, refresh on entry/re-entry/context replacement, before first material
-commitment, between material slices, after failed hypotheses/material failures/findings/accepted
-corrections, before material shape changes and before readiness/handoff/completion claims.
-For substantive Code Review, refresh on entry/re-entry/context replacement, before review, after
-candidate/evidence/currentness/focused-correction changes and before verdict/handoff.
+For substantive implementation, refresh on entry/re-entry/context replacement, before first material commitment, between slices, after failed hypotheses/material failures/findings/accepted corrections, before material shape changes and readiness/handoff/completion claims. For review, refresh on entry/re-entry/context replacement, before review, after candidate/evidence/currentness/focused corrections and before verdict/handoff.
 
-Reopen this exact candidate/control-SHA version and re-ground:
-1. Exact outcome/non-goals, canonical owner/reuse seam and Execution Plan governing next work?
-2. Materially changed shape; now a smaller delete/reuse/reframe route?
-3. Missing claim-specific oracle/evidence, NOT_RUN, SKIPPED, MISSING_CAPABILITY or UNKNOWN?
-4. Next commitment still within approved scope/authority/boundary and current plan/evidence?
-
-This is reasoning re-grounding, not a new gate, checklist, timer or authority source.
+Reopen exact candidate/control SHA and re-ground outcome/non-goals, owner/reuse seam and governing plan; changed shape and smaller delete, reuse or reframe route; missing oracle/evidence and NOT_RUN/SKIPPED/MISSING_CAPABILITY/UNKNOWN; and scope/authority/boundaries for next commitment. This is reasoning, not a new gate, checklist, timer or authority.
 
 ## Deterministic and execution truth
 
-Current executable contract/CI owns deterministic gates; structural/complexity evidence is diagnostic
-unless an exact mechanically enforced invariant says otherwise. Preserve the qualification states above.
-This guidance has no deterministic trajectory monitor: plan/refresh/test/review requirements do not
-prove implementation followed them. Treat trajectory conformance as guidance plus readiness/review
-detection until natural adoption evidence exists; future mechanical enforcement is a separate design.
-Cumulative code-health/audit scheduling retains its existing owner. Code Audit flags oversized staging
-with the concrete defect/minimum clearing condition, not a silent package redesign.
+Executable contracts/CI own deterministic gates. Structural/complexity evidence is diagnostic absent an exact enforced invariant; retain qualification distinctions. No deterministic trajectory monitor exists: plan/refresh/review requirements do not prove conformance. Until natural adoption evidence, guidance plus readiness/review detects deviations; enforcement is separate design. Existing owner retains cumulative audit scheduling; Code Audit names concrete oversized-staging defect/minimum clearing condition without silently redesigning the package.
