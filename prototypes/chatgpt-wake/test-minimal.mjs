@@ -429,7 +429,7 @@ attached = false;
 assert.ok(observations.some(p => p.observation.attempt?.detail === 'click-dispatched'));
 console.log('PASS: composer logs distinguish disabled Send, unrelated draft, attachment and dispatched click');
 
-// Exercise the actual registered toolbar listener, including persistence failure.
+// Exercise queued re-arm, including persistence failure and pending removal.
 const rearmBinding = {id, name:'mail', generation:1, url, armed:false, uncertain:true,
   ids:[id], seen:[nextId], wakeAttempt:{id, action:'send'}, alert:{incident_id:nextId}};
 state={minimalBindings:[structuredClone(rearmBinding),{...rearmBinding,id:nextId},
@@ -439,19 +439,20 @@ const beforeRearm=structuredClone(state);
 const realSave=context.chrome.storage.local.set;
 const beforeRearmClicks=clicks;
 context.chrome.storage.local.set=async()=>{throw Error('storage failed')};
-await assert.rejects(toolbarHandlers[0](),/storage failed/);
+await assert.rejects(run('rearmAll()'),/storage failed/);
 assert.deepEqual(state,beforeRearm,'failed storage cannot pretend success');
 context.chrome.storage.local.set=realSave;
-await toolbarHandlers[0]();
-assert.deepEqual(state.minimalBindings,beforeRearm.minimalBindings.map(b=>b.removed?b:{...b,uncertain:false,armed:true,status:'Armed'}));
-assert.equal(run(`cancelled.has('${id}')`),false);
+await run('rearmAll()');
+assert.deepEqual(state.minimalBindings,beforeRearm.minimalBindings.map(b=>b.removed || b.id===id?b:{...b,uncertain:false,armed:true,status:'Armed'}));
+assert.equal(run(`cancelled.has('${id}')`),true);
 assert.equal(clicks,beforeRearmClicks,'no inline composer action');
 const onceRearmed=structuredClone(state);
-await toolbarHandlers[0]();
+await run('rearmAll()');
 assert.deepEqual(state,onceRearmed,'second click is idempotent');
-console.log('PASS: registered toolbar Re-arm all, save failure, all active chats, removed/history preserved, zero inline send');
+console.log('PASS: queued Re-arm all, save failure, pending removal and history preserved, zero inline send');
 
 // Independent result expectations; unknown/failed actions remain fenced after restart.
+run(`cancelled.delete('${id}')`);
 const realExecution = context.chrome.scripting.executeScript;
 for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['draft-present',true],
   ['wrong-conversation',true],['composer-unavailable',true],['insert-failed',true],

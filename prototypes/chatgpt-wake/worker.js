@@ -211,6 +211,10 @@ async function check(bindings, onlyId) {
 }
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (sender.id !== chrome.runtime.id) return;
+  if (m.type === 'rearm-all') {
+    rearmAll().then(reply, e => reply({error: e.message}));
+    return true;
+  }
   if (m.type === 'remove') cancelled.add(m.id);
   exclusive(async () => {
     const bindings = await load();
@@ -249,7 +253,13 @@ chrome.alarms.onAlarm.addListener(a => { if (a.name === 'poll') exclusive(async 
 
 function rearmAll() { return exclusive(async () => {
   const bindings = await load();
-  for (const b of bindings) if (!b.removed) { b.uncertain = false; b.armed = true; b.status = 'Armed'; cancelled.delete(b.id); }
+  const active = bindings.filter(b => !b.removed && !cancelled.has(b.id));
+  for (const b of active) {
+    b.uncertain = false;
+    b.armed = true;
+    b.status = 'Armed';
+  }
   await save(bindings);
+  return {count: active.length};
 }); }
-chrome.action.onClicked.addListener(rearmAll);
+chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());

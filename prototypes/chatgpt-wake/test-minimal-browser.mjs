@@ -30,7 +30,7 @@ const server = createServer(async (request, response) => {
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
 const port = server.address().port;
-for (const file of ['manifest.json', 'popup.html', 'popup.js', 'worker.js']) {
+for (const file of ['manifest.json', 'popup.html', 'popup.js', 'worker.js', 'rearm.html', 'rearm.js']) {
   const original = await readFile(join(production, file), 'utf8');
   const fixture = file === 'worker.js' ? original.replace('127.0.0.1:18766', `127.0.0.1:${port}`) : original;
   assert.equal(fixture.replace(`127.0.0.1:${port}`, '127.0.0.1:18766'), original);
@@ -218,17 +218,28 @@ try {
   assert.equal(await compose('wait'),'ready','current ChatGPT Send control becomes ready');
   assert.equal(await compose('send'),'click-attempted','current ChatGPT Send control is clicked');
   assert.equal((await evaluate(session,'submissions')).at(-1),'Process your mailbox');
-  // Execute the registered toolbar handler in the real MV3 worker. No UI modal.
-  assert.equal(await evaluate(restartedSession,'chrome.action.onClicked.hasListener(rearmAll)'),true);
+  // Re-arm retains pending Remove markers and never sends inline.
+  assert.equal(await evaluate(restartedSession,'chrome.action.onClicked.hasListeners()'),true);
   assert.equal(JSON.parse(await readFile(join(production,'manifest.json'),'utf8')).action.default_popup,undefined);
   const priorRearm = (await evaluate(restartedSession,'load()'))[0];
   const sendsBeforeRearm = await evaluate(session,'submissions.length');
   await evaluate(restartedSession,`(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add('other')})()`);
   const beforeAll=await evaluate(restartedSession,'load()');
-  await evaluate(restartedSession,'rearmAll()');
+  const rearmPage = await command('Target.createTarget', {url: `chrome-extension://${extensionId}/rearm.html`});
+  const rearmSession = await attach(rearmPage.targetId);
+  for (let attempt = 0; attempt < 50 && !await evaluate(rearmSession, `Boolean(document.getElementById('rearm')?.onclick)`); attempt++) await pause(100);
+  await evaluate(restartedSession, `globalThis.originalSave = chrome.storage.local.set; chrome.storage.local.set = async () => {throw Error('storage failed')}`);
+  await evaluate(rearmSession, `document.getElementById('rearm').click()`);
+  for (let attempt = 0; attempt < 50 && !await evaluate(rearmSession, `document.getElementById('status').textContent.startsWith('Re-arm not confirmed:')`); attempt++) await pause(100);
+  assert.equal(await evaluate(rearmSession, `document.getElementById('status').textContent`), 'Re-arm not confirmed: storage failed');
+  assert.deepEqual(await evaluate(restartedSession, 'load()'), beforeAll, 'failed page action cannot change stored bindings');
+  await evaluate(restartedSession, `chrome.storage.local.set = globalThis.originalSave`);
+  await evaluate(rearmSession, `document.getElementById('rearm').click()`);
+  for (let attempt = 0; attempt < 50 && !await evaluate(rearmSession, `document.getElementById('status').textContent.startsWith('Re-armed')`); attempt++) await pause(100);
+  assert.equal(await evaluate(rearmSession, `document.getElementById('status').textContent`), 'Re-armed 1 chats for the next check.');
   const afterAll=await evaluate(restartedSession,'load()');
-  assert.deepEqual(afterAll,beforeAll.map(b=>b.removed?b:{...b,uncertain:false,armed:true,status:'Armed'}),'every active binding reset, all other history preserved');
-  assert.equal(await evaluate(restartedSession,"cancelled.has('other')"),false);
+  assert.deepEqual(afterAll,beforeAll.map(b=>b.removed || b.id==='other'?b:{...b,uncertain:false,armed:true,status:'Armed'}),'active bindings rearmed, pending removal and history preserved');
+  assert.equal(await evaluate(restartedSession,"cancelled.has('other')"),true);
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,'toolbar action does not send inline');
   await evaluate(restartedSession,'rearmAll()');
   assert.deepEqual(await evaluate(restartedSession,'load()'),afterAll,'repeated click is idempotent');

@@ -6,5 +6,6 @@
   "permissions": ["storage", "alarms", "scripting", "activeTab"],
   "host_permissions": ["https://chatgpt.com/*", "http://127.0.0.1/*"],
   "background": {"service_worker": "worker.js"},
-  "action": {"default_title": "Re-arm all"}
+  "action": {"default_title": "Mailbox wake"},
+  "options_ui": {"page": "rearm.html", "open_in_tab": true}
 }
