@@ -1,7 +1,6 @@
 import os
 from collections.abc import Generator
 
-import bcrypt
 import pytest
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.exc import ArgumentError
@@ -115,12 +114,3 @@ def canonical_database_schema(state_database_schema: str) -> Generator[str]:
             canonical_metadata.drop_all(engine)
         finally:
             engine.dispose()
-
-
-@pytest.fixture
-def role_takeover_password(monkeypatch):
-    password = "synthetic-takeover-password"
-    encoded = bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=4)).decode()
-    for role in ("INTERFACE", "COORDINATOR"):
-        monkeypatch.setenv(f"SWITCHSTAND_{role}_TAKEOVER_PASSWORD_HASH", encoded)
-    return password

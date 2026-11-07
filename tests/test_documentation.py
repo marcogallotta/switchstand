@@ -170,9 +170,6 @@ def test_role_contract_preserves_boundaries_without_execution_detail():
     tracker = normalized("docs/coordinator-tracker-contract.md")
 
     assert "**Codex execution roles today:** Coordinator and Worker." in roles
-    assert "**Coordination roles:** Interface (Marco-facing) and Coordinator" in roles
-    assert "Interface Coordinator" not in roles
-    assert "independent of client/model" in roles
     assert "A Worker owns its bounded assignment and does not self-expand" in roles
     assert "**Codex only:** ordinary Worker and Coordinator parent sessions" in roles
     assert "substantive execution runs in context-free native forks" in roles
@@ -453,9 +450,8 @@ def test_always_loaded_bootstrap_anchors_remain_explicit():
     assert "Challenge the package before setting a size envelope" in triggers
     assert "Never make Marco accept or reject a large all-or-nothing bundle" in triggers
     assert "Marco's current direct assignment" in agents
-    assert "attributed agent relay under the [common message rule]" in agents
-    assert "claude-coordinator` within recipient Work" not in agents
-    assert "or a `CURRENT` grant controls scope and effects" in agents
+    assert "Any agent may hand work to another agent" in agents
+    assert "required human approvals remain binding" in agents
     assert "challenges seriously destructive or irreversible action" in usage
     assert all(label in incident for label in ("`CURRENT`", "`HISTORICAL`", "`UNKNOWN`"))
     assert "prefer the smallest safe" in incident and "reversible mitigation before RCA" in incident

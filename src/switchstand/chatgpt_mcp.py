@@ -1446,13 +1446,8 @@ def build_ordinary_tools(
         api_version: Literal["1"],
         name: Annotated[str, Field(min_length=1, max_length=80)],
         message: Annotated[str | None, Field(max_length=4096)] = None,
-        password: str | None = None,
     ) -> AgentRegistrationResult:
-        """Take over a mailbox; Interface/Coordinator require their takeover password.
-
-        Cross-principal moves also require Marco's confirmation message. Passwords are
-        sensitive tool input; never echo them in application logs, errors or reports.
-        """
+        """Take over an agent; cross-principal moves require Marco's confirmation message."""
         del api_version
         try:
             principal = await service.principal()
@@ -1496,10 +1491,10 @@ def build_ordinary_tools(
                 )
             elif marco_confirmed:
                 stored = await mailboxes.takeover(
-                    name, principal.key, chat_session, allow_principal_change=True, password=password,
+                    name, principal.key, chat_session, allow_principal_change=True,
                 )
             else:
-                stored = await mailboxes.takeover(name, principal.key, chat_session, password=password)
+                stored = await mailboxes.takeover(name, principal.key, chat_session)
             if stored.status == "recovery_required" and stored.reason == "state_unavailable":
                 if coordinator_request:
                     # A newer authorized Coordinator takeover may have committed after the
@@ -1516,10 +1511,10 @@ def build_ordinary_tools(
                     # binding. Retry unchanged, then require authoritative readback.
                     if marco_confirmed:
                         stored = await mailboxes.takeover(
-                            name, principal.key, chat_session, allow_principal_change=True, password=password,
+                            name, principal.key, chat_session, allow_principal_change=True,
                         )
                     else:
-                        stored = await mailboxes.takeover(name, principal.key, chat_session, password=password)
+                        stored = await mailboxes.takeover(name, principal.key, chat_session)
                     if stored.status == "ok" and stored.mailbox is not None:
                         observed = await mailboxes.for_actor(principal.key, chat_session)
                         if observed.status != "ok" or observed.mailbox != stored.mailbox:
@@ -1609,9 +1604,9 @@ def build_ordinary_tools(
         checkpoint. Track handled delivery IDs and acknowledge processed notifications rather
         than reprocessing them.
 
-        Follow the shared ordinary message-handling rule in
-        docs/source-history-feedback.md#durable-messaging-and-feedback for every role.
-        Receipt does not itself prove pickup, an effect, or completion.
+        Any agent may hand work to another agent. Read the exact task and current human
+        direction before acting. A handoff does not invent Marco's approval or cancel STOP;
+        follow docs/source-history-feedback.md for consequential choices and effects.
         """
         context = await agent_context()
         if isinstance(context, tuple):

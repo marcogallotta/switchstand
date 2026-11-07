@@ -7,9 +7,8 @@ const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing
   'Needs manual reconciliation': 'manual-reconciliation', 'Already nudged': 'already-nudged',
   'Mailbox service unavailable': 'source-unavailable', 'Invalid mailbox identity': 'source-unavailable',
   'Mailbox identity changed': 'mailbox-binding-changed'};
-const definiteNoSendOutcomes = ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation',
-  'composer-unavailable', 'insert-failed'];
-const actionOutcomes = [...definiteNoSendOutcomes, 'click-attempted'];
+const actionOutcomes = ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation',
+  'composer-unavailable', 'insert-failed', 'click-attempted'];
 async function diagnose(b, failure) {
   const reason = failure || observationReasons[b.status] ||
     (actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome');
@@ -19,6 +18,7 @@ async function diagnose(b, failure) {
   if (loggedObservations.get(b.id) === signature || cancelled.has(b.id)) return;
   try {
     const config = await source('/config');
+    if (cancelled.has(b.id)) return;
     const response = await fetch(SOURCE + '/report', {method: 'POST', signal: AbortSignal.timeout(3000),
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + config.report_token},
       body: JSON.stringify({name: b.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
@@ -63,7 +63,6 @@ function composer(url, action, diagnostic = false) {
   const result = (outcome, detail) => diagnostic ? {outcome, detail} : outcome;
   if (location.href !== url) return result('wrong-conversation', 'url-mismatch');
   const isVisible = node => node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
-  const enabled = node => node && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
   const stopSelector = '[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]';
   const sendSelector = '[data-testid="send-button"],[data-testid="composer-submit-button"],#composer-submit-button,button[aria-label="Send prompt"],button[aria-label="Send" i]';
   const container = ['[data-testid="composer"]', '#composer-background', '#thread-bottom-container', '[data-composer-body]']
@@ -83,7 +82,7 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      const stopping = action === 'prepare' && enabled(stopsWithoutEditor[0]);
+      const stopping = action === 'prepare' && !stopsWithoutEditor[0].disabled && stopsWithoutEditor[0].getAttribute('aria-disabled') !== 'true';
       if (stopping) stopsWithoutEditor[0].click();
       return result('busy', stopping ? 'stop-requested' : 'busy');
     }
@@ -95,8 +94,9 @@ function composer(url, action, diagnostic = false) {
   if ((!textarea && !editor.isContentEditable) || editor.disabled || editor.readOnly) return result('composer-unavailable', 'editor-disabled');
   if (editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]')) return result('draft-present', 'attachment-present');
   if (draft && draft !== text) return result('draft-present', 'unrelated-draft');
-  const visible = selector => [...form.querySelectorAll(selector)].filter(isVisible);
-  const stops = visible(stopSelector);
+  const visible = selector => [...form.querySelectorAll(selector)].filter(b => b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden');
+  const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
+  const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
   if (stops.length) {
     const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
     if (stopping) stops[0].click();
@@ -188,12 +188,13 @@ async function check(bindings, onlyId) {
         b.uncertain = true;
         b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
+        if (cancelled.has(b.id)) break;
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
-        if (definiteNoSendOutcomes.includes(b.status)) delete b.uncertain;
+        if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;
         await save(bindings);
         if (!['busy', 'waiting', 'ready'].includes(b.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -226,30 +227,37 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       if (duplicate) throw Error(duplicate.removed ? 'Removed chat retains safety history; cannot Add again' : 'Chat already added; use Resume');
       cancelled.delete(p.endpoint);
       bindings.push({id: p.endpoint, name: p.name, generation: p.generation, url: m.url, armed: true, status: 'Armed'});
+    } else if (m.type === 'rearm') {
+      const b = bindings.find(b => b.id === m.id && !b.removed);
+      if (!b?.uncertain || m.expectedAttempt !== (b.wakeAttempt?.id || null)) throw Error('Uncertain wake changed; reopen the popup');
+      const p = await poll(b.name);
+      if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
+      if (p.delivery_ids.length || b.alert || cancelled.has(b.id)) throw Error('Pending mail or alert must clear before Re-arm');
+      b.uncertain = false;
+      b.armed = true;
+      b.status = 'Armed';
+    } else if (m.type === 'rearm-all') {
+      for (const b of bindings) {
+        if (b.removed || cancelled.has(b.id)) continue;
+        b.uncertain = false;
+        b.armed = true;
+        b.status = 'Armed';
+      }
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
-      for (const b of bindings) if (!b.removed && (m.type === 'resume-all' || b.id === m.id)) { b.armed = true; cancelled.delete(b.id); }
+      for (const b of bindings) if (!b.removed && !cancelled.has(b.id) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;
       await check(bindings, m.type === 'resume' ? m.id : undefined);
     } else if (m.type === 'remove') {
       const b = bindings.find(b => b.id === m.id);
       if (!b) throw Error('Chat not found');
-      const p = await poll(b.name);
-      if (p.endpoint !== b.id || p.generation !== b.generation || p.delivery_ids.length || b.alert) throw Error('Pending mail or alert must clear before Remove');
       b.removed = true;
       b.armed = false;
       b.status = 'Removed';
     } else throw Error('Unknown request');
     await save(bindings);
     return {};
-  }).then(reply, e => { if (m.type === 'remove') cancelled.delete(m.id); reply({error: e.message}); });
+  }).then(reply, e => reply({error: m.type === 'remove' ? `Remove not saved: ${e.message}. Local wakes fenced until restart; saved chat may resume after restart.` : e.message}));
   return true;
 });
 chrome.alarms.create('poll', {periodInMinutes: 0.5});
 chrome.alarms.onAlarm.addListener(a => { if (a.name === 'poll') exclusive(async () => check(await load())); });
-
-function rearmAll() { return exclusive(async () => {
-  const bindings = await load();
-  for (const b of bindings) if (!b.removed) { b.uncertain = false; b.armed = true; b.status = 'Armed'; cancelled.delete(b.id); }
-  await save(bindings);
-}); }
-chrome.action.onClicked.addListener(rearmAll);

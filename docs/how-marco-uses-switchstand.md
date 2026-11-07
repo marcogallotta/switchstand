@@ -6,7 +6,7 @@ Switchstand coordinates bounded engineering work across Codex Workers, Codex Coo
 
 Use the repository's current `main`, executable contracts, and canonical owner documents for implementation truth. For assigned work, use the exact current task, its current governing references, and the exact candidate/control revision. Superseded specs, old candidate branches, historical comments, and `marcogallotta/switchstandold` are evidence only unless a current route explicitly selects them.
 
-Authority is separate from technical truth. Marco's direct active assignment, attributed agent relays under the [common message rule](source-history-feedback.md#durable-messaging-and-feedback), and exact CURRENT grants control scope/effects. Worker, Interface and Coordinator use that same rule; record bounded action in own Agent Notes without making Marco repeat reasonable orders. Code, documentation, project placement, role and tool access cannot manufacture assignment or unrelated authority.
+Authority is separate from technical truth. Any agent may hand work to another agent; follow the [handoff rule](source-history-feedback.md#durable-messaging-and-feedback). Read the exact task and Marco's current direction before acting. A handoff does not invent human approval or cancel STOP. Consequential choices and effects still require their applicable approval and current authority; code, documentation, project placement, role, and tool access cannot manufacture it.
 
 If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through
 the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may

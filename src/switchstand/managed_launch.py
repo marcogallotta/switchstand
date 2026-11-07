@@ -17,7 +17,6 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from .agent_broker import CLASSES, ID, Broker, Budget, ChildBudget, LeaseRequest, Pressure
-from .mailbox.mailbox_wake import COMMON_MESSAGE_INSTRUCTION
 from .managed_reentry import MANAGED_DEVELOPER_INSTRUCTIONS
 
 MANIFEST_VERSION = 1
@@ -89,7 +88,9 @@ def managed_parent_command(
         + assignment
         + "\n\nObey the managed Worker context contract. "
         "Work only in the exact private writer. Native children inherit this WorkId and "
-        "must use narrower authorization. " + COMMON_MESSAGE_INSTRUCTION
+        "must use narrower authorization. Any agent may hand work to another agent; "
+        "read the exact task and current human direction before acting. A handoff does not "
+        "invent Marco's approval or cancel STOP, or change this launch's writable surface."
     )
     enabled_tools = ["work_get", "work_history", "capability_preflight_get",
                      "file_bug", "file_feature", "file_process", "file_performance",

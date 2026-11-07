@@ -16,7 +16,7 @@ from switchstand.state import metadata
 
 
 @pytest.fixture
-async def endpoints(database_prerequisite, role_takeover_password):
+async def endpoints(database_prerequisite):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL is required")
@@ -132,8 +132,8 @@ async def test_cross_principal_transfer_requires_exact_host_approval(endpoints):
     requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")
     assert requested.status == "pending" and requested.request_id is not None
     first, replay = await asyncio.gather(
-        endpoints.approve_transfer(requested.request_id, password="synthetic-takeover-password"),
-        endpoints.approve_transfer(requested.request_id, password="synthetic-takeover-password"),
+        endpoints.approve_transfer(requested.request_id),
+        endpoints.approve_transfer(requested.request_id),
     )
     assert first.status == replay.status == "approved" and first.generation == replay.generation == 2
     assert (await endpoints.for_actor("old-owner", "old-chat")).reason == "agent_not_registered"
@@ -145,9 +145,9 @@ async def test_cross_principal_transfer_rejects_stale_preimage(endpoints):
     await endpoints.register_agent("Coordinator", "old-owner", "old-chat")
     requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")
     assert requested.request_id is not None
-    assert (await endpoints.takeover("Coordinator", "old-owner", "replacement", password="synthetic-takeover-password")).status == "ok"
-    stale = await endpoints.approve_transfer(requested.request_id, password="synthetic-takeover-password")
-    replay = await endpoints.approve_transfer(requested.request_id, password="synthetic-takeover-password")
+    assert (await endpoints.takeover("Coordinator", "old-owner", "replacement")).status == "ok"
+    stale = await endpoints.approve_transfer(requested.request_id)
+    replay = await endpoints.approve_transfer(requested.request_id)
     assert (stale.status, stale.reason, replay) == ("stale", "mailbox_changed", stale)
     assert (await endpoints.for_actor("new-owner", "new-chat")).reason == "agent_not_registered"
 
@@ -157,8 +157,8 @@ async def test_cross_principal_transfer_rejects_destination_session_collision(en
     requested = await endpoints.request_transfer("Coordinator", "new-owner", "new-chat")
     assert requested.request_id is not None
     assert (await endpoints.register_agent("Other", "new-owner", "new-chat")).status == "ok"
-    conflict = await endpoints.approve_transfer(requested.request_id, password="synthetic-takeover-password")
-    replay = await endpoints.approve_transfer(requested.request_id, password="synthetic-takeover-password")
+    conflict = await endpoints.approve_transfer(requested.request_id)
+    replay = await endpoints.approve_transfer(requested.request_id)
     assert (conflict.status, conflict.reason, replay) == (
         "conflict", "session_already_registered", conflict,
     )
@@ -205,57 +205,3 @@ async def test_old_registration_cannot_overwrite_uncommitted_takeover_type(endpo
     assert (await old_registration).status == "conflict"
     current = (await endpoints.by_name("Racing")).mailbox
     assert current.agent_type == "claude" and current.generation == 2
-
-
-@pytest.mark.parametrize("name", [" / INTERFACE ", " Coordinator "])
-async def test_protected_takeover_fails_closed_and_preserves_binding(
-    endpoints, role_takeover_password, monkeypatch, name,
-):
-    created = await endpoints.register_agent(name, "owner", "old-session")
-    original = created.mailbox
-    assert original is not None
-    for principal in ("owner", "other"):
-        for password in (None, "wrong-synthetic-password"):
-            denied = await endpoints.takeover(
-                name, principal, "replacement", allow_principal_change=True, password=password,
-            )
-            assert (denied.status, denied.reason) == ("denied", "takeover_password_required")
-            assert (await endpoints.by_name(name)).mailbox == original
-    setting = f"SWITCHSTAND_{original.name_key.upper()}_TAKEOVER_PASSWORD_HASH"
-    encoded = os.environ[setting]
-    for invalid in ("", "invalid-hash"):
-        monkeypatch.setenv(setting, invalid)
-        assert (await endpoints.takeover(
-            name, "owner", "replacement", password=role_takeover_password,
-        )).status == "denied"
-        assert (await endpoints.by_name(name)).mailbox == original
-    monkeypatch.setenv(setting, encoded)
-    moved = await endpoints.takeover(
-        name, "other", "replacement", allow_principal_change=True,
-        password=role_takeover_password,
-    )
-    assert moved.status == "ok" and moved.mailbox is not None
-    assert moved.mailbox.endpoint_id == original.endpoint_id
-    assert moved.mailbox.generation == original.generation + 1
-    assert (await endpoints.for_actor("owner", "old-session")).reason == "agent_not_registered"
-    replay = await endpoints.takeover(name, "other", "replacement", password=role_takeover_password)
-    assert replay.mailbox == moved.mailbox
-    # Registration resumes; it cannot rename the protected endpoint or steal it.
-    assert (await endpoints.register_agent("Alias", "other", "replacement")).mailbox == moved.mailbox
-    assert (await endpoints.register_agent(name, "owner", "another-session")).status == "conflict"
-    assert (await endpoints.takeover("Alias", "other", "replacement")).status == "conflict"
-    assert (await endpoints.by_name(name)).mailbox == moved.mailbox
-
-
-@pytest.mark.parametrize("name", ["Interface", "Coordinator"])
-async def test_host_transfer_cannot_bypass_protected_takeover(endpoints, role_takeover_password, name):
-    original = (await endpoints.register_agent(name, "owner", "old-session")).mailbox
-    request = await endpoints.request_transfer(name, "other", "replacement")
-    assert request.request_id is not None
-    for password in (None, "wrong"):
-        denied = await endpoints.approve_transfer(request.request_id, password=password)
-        assert (denied.status, denied.reason) == ("denied", "takeover_password_required")
-        assert (await endpoints.by_name(name)).mailbox == original
-    approved = await endpoints.approve_transfer(request.request_id, password=role_takeover_password)
-    assert approved.status == "approved" and approved.generation == 2
-    assert (await endpoints.for_actor("owner", "old-session")).reason == "agent_not_registered"

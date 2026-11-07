@@ -84,14 +84,13 @@ Both use the same durable message state and preserve pending, receive/recover,
 correlated result, and disposition semantics. Delivery, receipt, disposition,
 effect, and completion are distinct states.
 
-Worker, Interface and Coordinator follow the same ordinary message rule: an agent's
-attributed relay of Marco's order is actionable within the recipient's assigned Work.
-Use judgment for nonsensical, conflicting or destructive requests; serious destructive
-effects still need exact current authority and human scrutiny. Record the relay and
-bounded action in your own Agent Notes; do not demand a special sender, a separate grant
-or ask Marco to repeat a reasonable order. A relay does not silently reassign Work,
-expand writable surfaces or authorize unrelated effects. Takeover password protection
-is a separate mailbox-binding boundary, not a role-specific message trust rule.
+Any agent may hand work to another agent. Do not reject a handoff because of the
+sender's name or require Marco to repeat an ordinary assignment. Read the exact
+task and current human direction, reconcile the handoff with existing obligations,
+and record pickup and the next action on the task. A handoff is not human approval
+and cannot cancel Marco's STOP or override his current instructions. Ask Marco about
+new consequential choices or a real conflict; continue otherwise authorized work.
+Existing approval, effect, identity and writable-surface boundaries still apply.
 
 When an authorized replacement session gets `receiving_binding_changed` for an
 exact received delivery, its first response is `agent_message_recover` on that
@@ -137,9 +136,8 @@ safety or ordering is not established.
 Managed legacy active-inbox behavior is instruction-led and applies only to
 bounded compatibility, investigation, or recovery. Ordinary agents use the
 dedicated message tools. There is no daemon, generic inbox scan,
-inactive-session wake, or authority inferred from delivery alone. The shared
-message-handling rule above applies to every role. A sender's
-successful send is not recipient pickup.
+inactive-session wake, or authority inferred from delivery alone. The handoff rule
+above applies regardless of sender name. A sender's successful send is not recipient pickup.
 
 When Marco says `poll` or `keep polling` for an exact inbox, message, or review, keep that exact
 watch active while the session can run: use supported bounded waits, reread the exact surface,

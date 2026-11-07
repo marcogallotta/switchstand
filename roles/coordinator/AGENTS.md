@@ -15,5 +15,5 @@ Interface is Marco's human relay. Coordinator owns priorities, prepares decision
 tracks jobs and owns the agent inventory after acknowledged handoff. Monitor Interface and ALL
 other heads for actual responsiveness/progress/checkpoints; heads monitor native forks. Use the
 same [common message rules](../../docs/source-history-feedback.md#durable-messaging-and-feedback)
-as every Worker and Interface. Password protection belongs only to mailbox takeover. Neither role is tied to a client or model.
+as every Worker and Interface. Use the existing ordinary mailbox takeover mechanism; no password is required in V1. Neither role is tied to a client or model.
 This existing entry does not create or rename a home, colour, mailbox or role assignment.

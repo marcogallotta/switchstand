@@ -34,8 +34,9 @@ obligations remain, including silent missed checkpoints without incoming mail. R
 sent messages or elapsed silence are not pickup, progress or halt proof. This is active-session
 supervision, not automatic monitoring/restart when both sessions or the host close.
 Follow the [common message rule](source-history-feedback.md#durable-messaging-and-feedback)
-for every role; do not duplicate role-specific trust logic. Both logical role mailboxes require
-password-protected takeover under the canonical mailbox owner, separate from message handling.
+for every role; do not duplicate role-specific trust logic. The exact logical mailboxes are `Interface` and `Coordinator` (capital C). Use the existing
+ordinary takeover mechanism, without a V1 password. Password protection is deferred for later
+V2/V3 reconsideration; no future design is selected here.
 
 Use the four existing recovery pages: Situation `40581c1e-04c5-5ab4-94d9-3c5ce21fcd35`,
 Priorities `332857d1-6c4d-51e8-af19-ed77b4f19e69`, Coordinator notes

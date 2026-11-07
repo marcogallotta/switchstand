@@ -1,7 +1,5 @@
 """Canonical always-on context contract for managed Codex Workers."""
 
-from .mailbox.mailbox_wake import COMMON_MESSAGE_INSTRUCTION
-
 MANAGED_DEVELOPER_INSTRUCTIONS = (
     "MANAGED WORKER CONTEXT CONTRACT. On startup, re-entry, and after compaction, call "
     'work_get(api_version="1") without a WorkId. Recover the launch-bound assignment and each '
@@ -10,6 +8,9 @@ MANAGED_DEVELOPER_INSTRUCTIONS = (
     "Plan and docs/code-quality.md; review uses its current review procedure, immutable candidate, "
     "and review obligation; other functions use only their exact current routed package. A missing "
     "or stale role/phase binding makes only the affected path UNKNOWN. Preserve the bound WorkId, "
-    "Worker role, and private writer. " + COMMON_MESSAGE_INSTRUCTION + "Never load the "
+    "Worker role, and private writer. Any agent may hand work to another agent. Read the "
+    "exact task and current human direction before acting; a handoff does not invent "
+    "Marco's approval or cancel STOP. Managed effects remain bound to this Work and "
+    "private writer. Never load the "
     "Root Coordinator tracking contract or traverse a Markdown dependency graph."
 )

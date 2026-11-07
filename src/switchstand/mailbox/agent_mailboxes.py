@@ -1,13 +1,11 @@
 """Durable named endpoints for ordinary agent messaging."""
 
 import hashlib
-import os
 import re
 from datetime import UTC, datetime
 from typing import Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-import bcrypt
 from pydantic import Field, model_validator
 from sqlalchemy import (
     CheckConstraint,
@@ -32,10 +30,6 @@ from ..state import metadata
 CODEX_COORDINATOR_NAME = "Codex Coordinator"
 CODEX_COORDINATOR_KEY = "codex-coordinator"
 LEGACY_ROOT_KEY = "root"
-PROTECTED_TAKEOVER_HASHES = {
-    "interface": "SWITCHSTAND_INTERFACE_TAKEOVER_PASSWORD_HASH",
-    "coordinator": "SWITCHSTAND_COORDINATOR_TAKEOVER_PASSWORD_HASH",
-}
 
 agent_mailboxes = Table(
     "agent_mailboxes", metadata,
@@ -91,7 +85,6 @@ class AgentMailboxResult(ClosedModel):
     reason: Literal[
         "name_collision", "session_already_registered", "mailbox_not_found",
         "agent_not_registered", "principal_mismatch", "reserved_name_requires_takeover",
-        "takeover_password_required",
         "state_unavailable",
     ] | None = None
 
@@ -112,7 +105,6 @@ class AgentMailboxTransferResult(ClosedModel):
     generation: int | None = Field(default=None, ge=1)
     reason: Literal[
         "mailbox_not_found", "same_principal_use_takeover", "session_already_registered",
-        "takeover_password_required",
         "mailbox_changed", "state_unavailable",
     ] | None = None
 
@@ -151,19 +143,6 @@ def coordinator_name_keys(value: str) -> tuple[str, ...]:
 class AgentMailboxState:
     def __init__(self, engine: AsyncEngine):
         self.engine = engine
-
-    @staticmethod
-    def _takeover_password_allowed(key: str, password: str | None) -> bool:
-        setting = PROTECTED_TAKEOVER_HASHES.get(key)
-        if setting is None:
-            return True
-        try:
-            return (
-                password is not None and len(password.encode()) <= 72
-                and bcrypt.checkpw(password.encode(), os.environ.get(setting, "").encode())
-            )
-        except (TypeError, ValueError):
-            return False
 
     @staticmethod
     def _view(row: RowMapping) -> AgentMailbox:
@@ -290,12 +269,10 @@ class AgentMailboxState:
 
     async def takeover(
         self, name: str, principal_key: str, replacement_session: str, *,
-        allow_principal_change: bool = False, password: str | None = None,
+        allow_principal_change: bool = False,
     ) -> AgentMailboxResult:
         try:
             key, session_key = agent_name_key(name), chat_session_key(replacement_session)
-            if not self._takeover_password_allowed(key, password):
-                return AgentMailboxResult(status="denied", reason="takeover_password_required")
             async with self.engine.begin() as connection:
                 row = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.name_key == key
@@ -305,9 +282,7 @@ class AgentMailboxState:
                         agent_mailboxes.c.principal_key == principal_key,
                         agent_mailboxes.c.session_key == session_key,
                     ).with_for_update())).mappings().one_or_none()
-                    if prior is not None and prior["name_key"] in {
-                        CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY, *PROTECTED_TAKEOVER_HASHES,
-                    }:
+                    if prior is not None and prior["name_key"] in {CODEX_COORDINATOR_KEY, LEGACY_ROOT_KEY}:
                         return AgentMailboxResult(status="conflict", reason="session_already_registered")
                     if prior is None:
                         await connection.execute(insert(agent_mailboxes).values(
@@ -476,9 +451,7 @@ class AgentMailboxState:
         except (IntegrityError, SQLAlchemyError, TypeError, ValueError):
             return AgentMailboxTransferResult(status="recovery_required", reason="state_unavailable")
 
-    async def approve_transfer(
-        self, request_id: UUID, *, password: str | None = None,
-    ) -> AgentMailboxTransferResult:
+    async def approve_transfer(self, request_id: UUID) -> AgentMailboxTransferResult:
         """Atomically approve one exact host-selected request and fence the old owner."""
         try:
             async with self.engine.begin() as connection:
@@ -490,10 +463,6 @@ class AgentMailboxState:
                 if request is None:
                     return AgentMailboxTransferResult(status="denied", request_id=request_id,
                                                       reason="mailbox_not_found")
-                if not self._takeover_password_allowed(request["name_key"], password):
-                    return AgentMailboxTransferResult(
-                        status="denied", request_id=request_id, reason="takeover_password_required",
-                    )
                 row = (await connection.execute(select(agent_mailboxes).where(
                     agent_mailboxes.c.name_key == request["name_key"]
                 ).with_for_update())).mappings().one_or_none()

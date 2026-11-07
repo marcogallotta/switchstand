@@ -619,9 +619,9 @@ messaging, and required continuation:
   Opt-in `chatgpt_wake.py` owns loopback-only metadata polling/configuration and token-fenced typed reports; `chatgpt_edge.py` installs those routes only under `SWITCHSTAND_CHATGPT_BROWSER_WAKE=1`, with an optional explicitly injected reporter.
   Typed browser observations carry current blockers and the latest action timestamps/results without chat content, URLs or tokens; successful uploads are deduplicated in worker memory. This report-only path never dispatches alerts. Backend logs retain incident correlation/reason/phase, allowlisted reporter results and ingress rejection reasons.
   Composer visibility, enabled-control and selector rules remain local to the serialized function injected into ChatGPT. One explicit definite-no-send outcome list controls uncertainty clearing; diagnostic action outcomes add click-attempted without treating unknown outcomes as safe.
-  The toolbar icon re-arms all nonremoved chats without a popup or confirmation. Its existing exclusive queue clears uncertainty, arms chats and clears transient cancellation, preserving pairing, batch/seen/action evidence and alerts. Pending mail does not block explicit recovery; an earlier uncertain Send may already have succeeded, so this can permit a repeated wake. It saves state without sending inline; normal polling resumes. The retained setup page is accessible by its extension URL, not the toolbar icon.
-  The extension in `prototypes/chatgpt-wake/` keeps exact mailbox/conversation pairings and pending-batch reservations in Chrome storage. Its setup page lists chats alphabetically, adds one verified current chat in one action, and offers per-chat Resume, Resume all and guarded Remove. Chrome's `poll` alarm requests a serialized check about every 30 seconds.
-  The worker routes only to an existing exact-URL tab and reserves an uncertain DOM outcome before each browser execution. A click is not provider acceptance; uncertain outcomes block automatic resends across checks and worker restarts until a fresh empty-mailbox observation. A disjoint new pending batch can replace a definitely unsent batch. Drafts, attachments and busy chats are preserved; closed tabs remain paired and can qualify a blocked-mail alert. Resume rechecks without clearing uncertain history; Remove requires fresh empty mail and no active alert.
+  The toolbar opens the popup, which shows named saved/error results and supports Add, Resume, per-chat confirmed Re-arm and immediate Re-arm all. Bulk Re-arm preserves pending/failed Remove cancellation, pairing, batch/seen/action evidence and alerts. It saves without sending inline; normal polling resumes. Re-arming may repeat an earlier uncertain Send and does not prove mailbox processing.
+  The extension in `prototypes/chatgpt-wake/` keeps exact mailbox/conversation pairings and pending-batch reservations in Chrome storage. Its popup lists chats alphabetically, adds one verified current chat in one action, and offers per-chat Resume, Resume all and local Remove. Chrome's `poll` alarm requests a serialized check about every 30 seconds.
+  The worker routes only to an existing exact-URL tab and reserves an uncertain DOM outcome before each browser execution. A click is not provider acceptance; uncertain outcomes block automatic resends across checks and worker restarts until explicit Re-arm. A disjoint new pending batch can replace a definitely unsent batch. Drafts, attachments and busy chats are preserved; closed tabs remain paired and can qualify a blocked-mail alert. Resume rechecks without clearing uncertain history; Remove saves a tombstone without backend checks, retains mail/history and fences later local dispatch/report; a failed save stays visible/current-worker fenced but restart may resume the old durable binding.
 - `mailbox/messages.py` owns `messages`, `message_deliveries`, and the historical `message_projection`, including the
   AVAILABLE/RECEIVED/ACKNOWLEDGED/DISPOSITIONED lifecycle, result/effect evidence, and runtime-currentness
   checks. Mailbox observations stay in `MessageState`; standard-library-only `mailbox/mailbox_wake.py` owns shared notice/summary projections for Codex and the Claude watcher. After ordinary or review-service mailbox deliveries commit, optional default-off `mailbox/codex_inbound_wake.py` resolves the unique recipient across explicitly configured daemons, observes the owning daemon and serializes notices by actual Root thread. Root handles its own mailbox or natively follows up with its same direct Head; Head retains its own receive/reply/disposition, while nested actors remain UNKNOWN. Claude's watcher only reports unacknowledged mail; it never starts a turn or acknowledges a delivery. Configuration and disposable checks are in [ChatGPT MCP edge](chatgpt-mcp-edge.md);
@@ -647,9 +647,7 @@ messaging, and required continuation:
   including `Codex Coordinator`, stops with `takeover_confirmation_required` unless the request
   carries Marco's full current message naming the target and directing the takeover. The denial
   says that no takeover occurred and tells the agent to ask Marco and retry with his confirmation;
-  logical Interface and Coordinator takeovers additionally require their configured password
-  through the canonical mailbox guard. Missing/wrong password or missing/invalid bcrypt hash
-  denies before mutation, including same-principal replacement and host transfer approval. A confirmed Coordinator takeover renames a legacy `root`
+  no passcode is configured or accepted. A confirmed Coordinator takeover renames a legacy `root`
   row in place, preserves the endpoint and deliveries, replaces the principal/session binding, and
   increments its generation.
   `/root` resolves only as an inbound alias and successful readback uses `Codex Coordinator`.
@@ -663,9 +661,11 @@ messaging, and required continuation:
   its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
   arguments and requires an actor-binding readback before returning success. Explicit denial or
   conflict is not retried. There is no public approval tool. `mailbox/agent_messages.py` supplies
-  public name-based views over `MessageState`; every role follows the common agent message rule
-  in [source/history/feedback](source-history-feedback.md#durable-messaging-and-feedback).
-  Ordinary receive/relay adds no separate role-specific trust mechanism. Migration `0016_agent_mailbox_transfers` owns audit.
+  public name-based views over `MessageState`. Any agent may hand work to another agent
+  under the [handoff rule](source-history-feedback.md#durable-messaging-and-feedback);
+  a handoff does not invent human approval or cancel Marco's STOP. Delivered notices carry
+  delivery and API hints, not a sender-specific authority policy.
+  Migration `0016_agent_mailbox_transfers` owns audit.
   Ordinary agent payloads are at most 800 characters in canonical compact JSON and pending pages
   are at most ten, newest first. Legacy oversized payloads remain server-side for identity checks
   but public pending/replay views expose only omission and character-count metadata.
@@ -1043,9 +1043,3 @@ launch path. It performs only a constant-time filesystem capacity probe, records
 SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
 It does not start Codex or deliver into Codex sessions. Without the optional inbound adapter, stock Codex consumes durable mailbox
 messages only while the user is actively running and prompting that session.
-
-Logical role takeover hashes are supplied to the existing MCP/host process as
-`SWITCHSTAND_INTERFACE_TAKEOVER_PASSWORD_HASH` and
-`SWITCHSTAND_COORDINATOR_TAKEOVER_PASSWORD_HASH`. Plaintext passwords are sensitive inputs to
-existing `agent_takeover`; do not echo them into application logs/errors/audits/argv/Tracker.
-Provisioning these host secrets and activating a runtime are separate authorized effects.
