@@ -58,6 +58,19 @@ an observation timestamp, mailbox endpoint/generation, pending count (absent if
 unavailable), exact blocker, uncertainty flag, and last browser action with its
 own identity/timestamps/result. An older action is history, not a fresh attempt;
 `click-attempted` does not prove ChatGPT accepted or processed the prompt.
+To make quiet periods diagnosable, the worker also emits a `heartbeat` observation
+for each continuously armed chat at most once every five minutes while its state
+is unchanged. `transition` identifies a changed state. The `trace` records the
+last check phase (`poll`, `tabs`, `fenced`, `seen`, `send-preflight`, `execute`, etc.),
+how many ChatGPT tabs were visible, whether the exact bound tab was matched,
+frozen or discarded, and elapsed mailbox-poll time. No tab URLs are reported.
+The backend independently logs a `browser_wake poll receipt` on the first successful
+poll, every five minutes thereafter, or whenever the pending-ID fingerprint
+changes. That fingerprint correlates changes in a backlog without logging IDs.
+Compare the two receipt streams: successful polls without observations suggest a
+worker report path problem; neither stream advancing warrants checking browser
+alarms, extension activation and host connectivity. Missing receipts alone do not
+prove which component stopped, and neither receipt proves ChatGPT accepted a send.
 `uncertain-wake` means automatic action is fenced; `manual-reconciliation`
 means that fence remains even though mail is now empty.
 

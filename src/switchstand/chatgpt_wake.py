@@ -1,9 +1,11 @@
 """Opt-in local browser metadata observation and report-only logging."""
 
+import hashlib
 import ipaddress
 import json
 import logging
 import secrets
+from time import monotonic
 from typing import Annotated, Literal
 from uuid import UUID
 
@@ -102,6 +104,14 @@ class _WakeAttempt(_DiagnosticModel):
                      "unknown-outcome", "execution-failed"] | None = None
 
 
+class _CheckTrace(_DiagnosticModel):
+    phase: Literal["poll", "idle", "tabs", "fenced", "seen", "send-preflight",
+                   "execute", "complete"]
+    tab: Literal["unchecked", "missing", "discarded", "frozen", "active"]
+    tab_count: Annotated[int, Field(strict=True, ge=0, le=10000)] | None = None
+    poll_ms: Annotated[int, Field(strict=True, ge=0, le=60000)] | None = None
+
+
 class _Observation(_DiagnosticModel):
     observed_at: AwareDatetime
     endpoint: UUID
@@ -114,6 +124,8 @@ class _Observation(_DiagnosticModel):
                     "execution-failed", "unknown-outcome"]
     uncertain: StrictBool
     attempt: _WakeAttempt | None
+    kind: Literal["transition", "heartbeat"] | None = None
+    trace: _CheckTrace | None = None
 
 
 class _Report(BaseModel):
@@ -140,6 +152,7 @@ def install_browser_wake(
 ) -> None:
     """Default report-only; an explicitly injected host reporter owns admitted alert dispatch."""
     report_token = secrets.token_urlsafe(32)
+    poll_receipts: dict[tuple[UUID, int], tuple[str, float]] = {}
 
     def reject(route: str, reason: str, status: int) -> JSONResponse:
         LOG.warning("browser_wake rejected route=%s reason=%s http_status=%s", route, reason, status)
@@ -174,6 +187,19 @@ def install_browser_wake(
             ids = await messages.all_pending_delivery_ids(binding, observation_only=True)
             if ids is None or (await state.by_name(name)).mailbox != binding:
                 return reject("poll", "stale_or_unavailable", 503)
+            # This log is independent of the extension's diagnostic POST. It distinguishes
+            # successful polling from a silent worker/report channel without logging mail IDs.
+            fingerprint = hashlib.sha256(",".join(sorted(map(str, ids))).encode()).hexdigest()[:16]
+            key = (binding.endpoint_id, binding.generation)
+            now = monotonic()
+            previous = poll_receipts.get(key)
+            if previous is None or previous[0] != fingerprint or now - previous[1] >= 300:
+                LOG.warning("browser_wake poll receipt=%s", json.dumps({
+                    "name": binding.name, "endpoint": str(binding.endpoint_id),
+                    "generation": binding.generation, "pending_count": len(ids),
+                    "pending_fingerprint": fingerprint,
+                }, separators=(",", ":")))
+                poll_receipts[key] = (fingerprint, now)
             return JSONResponse({"status": "ok", "name": binding.name,
                                  "endpoint": str(binding.endpoint_id),
                                  "generation": binding.generation,

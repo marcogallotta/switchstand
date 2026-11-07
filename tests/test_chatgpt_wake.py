@@ -13,7 +13,7 @@ from switchstand.grant_state import GrantState
 from switchstand.messages import MessageState, message_deliveries, messages
 
 
-async def test_local_observation_and_reports(state_database_schema, caplog):
+async def test_local_observation_and_reports(state_database_schema, caplog, monkeypatch):
     engine = create_async_engine(state_database_schema)
     state = AgentMailboxState(engine)
     receiver = (await state.register_agent(f"Browser {uuid4()}", "owner", str(uuid4()))).mailbox
@@ -48,6 +48,16 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
             assert value["generation"] == receiver.generation
             assert "private body" not in observed.text
             assert "access-control-allow-origin" not in observed.headers
+            assert '"pending_count":51' in caplog.text
+            assert '"pending_fingerprint":' in caplog.text
+            assert str(deliveries[0]) not in caplog.text, "success logs must not expose mail IDs"
+            first = caplog.text.count("browser_wake poll receipt=")
+            assert (await client.get(PATH + "/poll", params={"name": receiver.name})).status_code == 200
+            assert caplog.text.count("browser_wake poll receipt=") == first
+            from time import monotonic
+            monkeypatch.setattr("switchstand.chatgpt_wake.monotonic", lambda: monotonic() + 301)
+            assert (await client.get(PATH + "/poll", params={"name": receiver.name})).status_code == 200
+            assert caplog.text.count("browser_wake poll receipt=") == first + 1
             empty = await client.get(PATH + "/poll", params={"name": other.name})
             assert empty.json()["delivery_ids"] == []
             assert (await client.get(PATH + "/poll", params={"name": "missing"})).status_code == 403
@@ -196,6 +206,7 @@ async def test_stall_observations_and_alert_results_are_visible_without_content(
     payload = {"name": "fixture", "delivery_ids": [], "outcome": "attempt-outcome-unknown",
         "observation": {"observed_at": now, "endpoint": identity, "generation": 1,
             "pending_count": None, "reason": "execution-failed", "uncertain": True,
+            "kind": "heartbeat", "trace": {"phase": "execute", "tab": "active", "tab_count": 3, "poll_ms": 125},
             "attempt": {"id": identity, "action": "send", "started_at": now,
                         "finished_at": now, "outcome": "execution-failed"}}}
     async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
@@ -203,7 +214,13 @@ async def test_stall_observations_and_alert_results_are_visible_without_content(
         headers = {"Authorization": "Bearer " + token}
         assert (await client.post(PATH + "/report", json=payload, headers=headers)).json() == {"status": "logged"}
         assert "execution-failed" in caplog.text and identity in caplog.text and now in caplog.text
+        assert '"kind":"heartbeat"' in caplog.text and '"tab_count":3' in caplog.text
         reporter.send.assert_not_awaited()
+        for field, value in [("tab", "PRIVATE draft sentinel"), ("phase", "PRIVATE draft sentinel"),
+                             ("tab_count", -1), ("poll_ms", 60001)]:
+            invalid_trace = {**payload, "observation": {**payload["observation"],
+                "trace": {**payload["observation"]["trace"], field: value}}}
+            assert (await client.post(PATH + "/report", json=invalid_trace, headers=headers)).status_code == 400
         invalid = {**payload, "observation": {**payload["observation"], "reason": "PRIVATE draft sentinel"}}
         assert (await client.post(PATH + "/report", json=invalid, headers=headers)).status_code == 400
         assert "reason=invalid_report" in caplog.text

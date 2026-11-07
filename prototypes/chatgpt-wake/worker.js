@@ -3,6 +3,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const cancelled = new Set();
 const bindingKey = (id, incarnation = null) => JSON.stringify([id, incarnation]);
 const loggedObservations = new Map();
+const HEARTBEAT_MS = 5 * 60 * 1000;
 const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing',
   'Chat suspended': 'tab-suspended', 'Wake outcome unknown': 'uncertain-wake',
   'Needs manual reconciliation': 'manual-reconciliation', 'Already nudged': 'already-nudged',
@@ -10,21 +11,26 @@ const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing
   'Mailbox identity changed': 'mailbox-binding-changed'};
 const actionOutcomes = ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation',
   'composer-unavailable', 'insert-failed', 'click-attempted'];
-async function diagnose(b, failure) {
+async function diagnose(b, failure, trace) {
   const reason = failure || observationReasons[b.status] ||
     (actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome');
   const observation = {endpoint: b.id, generation: b.generation, pending_count: b.pending?.length ?? null,
     reason, uncertain: Boolean(b.uncertain), attempt: b.wakeAttempt || null};
-  const signature = JSON.stringify(observation);
-  if (loggedObservations.get(bindingKey(b.id, b.incarnation)) === signature || cancelled.has(bindingKey(b.id, b.incarnation))) return;
+  // Timing is useful in a receipt, but cannot be part of a state-change signature.
+  if (trace) observation.trace = trace;
+  const signature = JSON.stringify({...observation, trace: trace && {
+    phase: trace.phase, tab: trace.tab, tab_count: trace.tab_count}});
+  const key = bindingKey(b.id, b.incarnation), previous = loggedObservations.get(key);
+  const heartbeat = previous?.signature === signature;
+  if ((heartbeat && Date.now() - previous.at < HEARTBEAT_MS) || cancelled.has(key)) return;
   try {
     const config = await source('/config');
     if (cancelled.has(bindingKey(b.id, b.incarnation))) return;
     const response = await fetch(SOURCE + '/report', {method: 'POST', signal: AbortSignal.timeout(3000),
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + config.report_token},
       body: JSON.stringify({name: b.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
-        observation: {...observation, observed_at: new Date().toISOString()}})});
-    if (response.ok && (await response.json()).status === 'logged') loggedObservations.set(bindingKey(b.id, b.incarnation), signature);
+        observation: {...observation, kind: heartbeat ? 'heartbeat' : 'transition', observed_at: new Date().toISOString()}})});
+    if (response.ok && (await response.json()).status === 'logged') loggedObservations.set(key, {signature, at: Date.now()});
     else console.warn('browser_wake diagnostic rejected', {reason, http_status: response.status});
   } catch { console.warn('browser_wake diagnostic unavailable', {reason}); }
 }
@@ -157,30 +163,39 @@ async function check(bindings, onlyId) {
     if (!b.armed || b.removed || cancelled.has(bindingKey(b.id, b.incarnation)) || (onlyId && b.id !== onlyId)) continue;
     b.pending = null;
     let stage = 'source-unavailable', failure;
+    const trace = {phase: 'poll', tab: 'unchecked'};
     try {
+      const pollStarted = Date.now();
       const p = await poll(b.name);
+      trace.poll_ms = Math.max(0, Math.min(60000, Date.now() - pollStarted));
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
       b.pending = p.delivery_ids;
       if (!p.delivery_ids.length) {
+        trace.phase = 'idle';
         delete b.checked; delete b.since; b.status = b.uncertain ? 'Needs manual reconciliation' : 'Armed';
         if (b.alert) b.recovering = true;
         else delete b.alertDone;
         continue;
       }
       stage = 'execution-failed';
+      trace.phase = 'tabs';
       const tabs = await chrome.tabs.query({url: 'https://chatgpt.com/*'});
+      trace.tab_count = tabs.length;
       const tab = tabs.find(t => t.url === b.url);
-      if (!tab) { b.status = 'Chat not open'; continue; }
+      if (!tab) { trace.tab = 'missing'; b.status = 'Chat not open'; continue; }
+      trace.tab = tab.discarded ? 'discarded' : tab.frozen ? 'frozen' : 'active';
       if (tab.discarded || tab.frozen) { b.status = 'Chat suspended'; continue; }
-      if (b.uncertain) { b.status = 'Wake outcome unknown'; continue; }
+      if (b.uncertain) { trace.phase = 'fenced'; b.status = 'Wake outcome unknown'; continue; }
       const freshIds = p.delivery_ids.filter(id => !b.seen?.includes(id));
-      if (!freshIds.length) { b.status = 'Already nudged'; continue; }
+      if (!freshIds.length) { trace.phase = 'seen'; b.status = 'Already nudged'; continue; }
       if (b.ids?.length && !freshIds.some(id => b.ids.includes(id))) b.ids = freshIds.slice();
       b.ids ||= freshIds.slice();
       await save(bindings);
+      let executed = false;
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
         const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
         if (action === 'send') {
+          trace.phase = 'send-preflight';
           stage = 'source-unavailable';
           const fresh = await poll(b.name);
           stage = 'execution-failed';
@@ -190,7 +205,9 @@ async function check(bindings, onlyId) {
         b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
         if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
+        trace.phase = 'execute';
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
+        executed = true;
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
         b.wakeAttempt.finished_at = new Date().toISOString();
@@ -200,6 +217,7 @@ async function check(bindings, onlyId) {
         if (!['busy', 'waiting', 'ready'].includes(b.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
       }
+      if (executed && !cancelled.has(bindingKey(b.id, b.incarnation))) trace.phase = 'complete';
     } catch (e) {
       b.status = e.message;
       failure = observationReasons[b.status] || stage;
@@ -208,7 +226,7 @@ async function check(bindings, onlyId) {
         b.wakeAttempt.outcome = 'execution-failed';
       }
     }
-    finally { await report(b, bindings); await save(bindings); await diagnose(b, failure); }
+    finally { await report(b, bindings); await save(bindings); await diagnose(b, failure, trace); }
   }
 }
 chrome.runtime.onMessage.addListener((m, sender, reply) => {

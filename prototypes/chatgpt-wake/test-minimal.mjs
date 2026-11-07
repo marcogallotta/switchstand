@@ -81,6 +81,21 @@ assert.equal(clicks, before);
 console.log('PASS: exact URL, draft/attachment protection, Stop, one uncertain click, restart fence, cancellation');
 
 const nextId = '22222222-2222-4222-8222-222222222222';
+run(`globalThis.probeBinding = {id: '${nextId}', name: 'mail', generation: 1,
+  pending: ['${id}'], status: 'Chat not open', armed: true}`);
+const priorObservations = observations.length;
+await run(`diagnose(probeBinding, undefined, {phase: 'tabs', tab: 'missing', tab_count: 0, poll_ms: 1})`);
+assert.equal(observations.length, priorObservations + 1);
+assert.equal(observations.at(-1).observation.kind, 'transition');
+assert.equal(observations.at(-1).observation.trace.tab_count, 0);
+await run(`diagnose(probeBinding, undefined, {phase: 'tabs', tab: 'missing', tab_count: 0, poll_ms: 17})`);
+assert.equal(observations.length, priorObservations + 1, 'normal polling does not flood the journal');
+now += 300000;
+await run(`diagnose(probeBinding, undefined, {phase: 'tabs', tab: 'missing', tab_count: 0, poll_ms: 20})`);
+assert.equal(observations.length, priorObservations + 2, 'a quiet blocked chat emits a bounded heartbeat');
+assert.equal(observations.at(-1).observation.kind, 'heartbeat');
+assert.equal(observations.at(-1).observation.trace.poll_ms, 20);
+console.log('PASS: bounded state-transition and periodic liveness receipts without repeated wake');
 const originalBatchFetch = context.fetch;
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config')
   ? originalBatchFetch(request, options)
