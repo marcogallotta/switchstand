@@ -7,8 +7,9 @@ const observationReasons = {'Armed': 'idle', 'Chat not open': 'bound-tab-missing
   'Needs manual reconciliation': 'manual-reconciliation', 'Already nudged': 'already-nudged',
   'Mailbox service unavailable': 'source-unavailable', 'Invalid mailbox identity': 'source-unavailable',
   'Mailbox identity changed': 'mailbox-binding-changed'};
-const actionOutcomes = ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation',
-  'composer-unavailable', 'insert-failed', 'click-attempted'];
+const definiteNoSendOutcomes = ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation',
+  'composer-unavailable', 'insert-failed'];
+const actionOutcomes = [...definiteNoSendOutcomes, 'click-attempted'];
 async function diagnose(b, failure) {
   const reason = failure || observationReasons[b.status] ||
     (actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome');
@@ -62,6 +63,7 @@ function composer(url, action, diagnostic = false) {
   const result = (outcome, detail) => diagnostic ? {outcome, detail} : outcome;
   if (location.href !== url) return result('wrong-conversation', 'url-mismatch');
   const isVisible = node => node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden';
+  const enabled = node => node && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
   const stopSelector = '[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]';
   const sendSelector = '[data-testid="send-button"],[data-testid="composer-submit-button"],#composer-submit-button,button[aria-label="Send prompt"],button[aria-label="Send" i]';
   const container = ['[data-testid="composer"]', '#composer-background', '#thread-bottom-container', '[data-composer-body]']
@@ -81,7 +83,7 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      const stopping = action === 'prepare' && !stopsWithoutEditor[0].disabled && stopsWithoutEditor[0].getAttribute('aria-disabled') !== 'true';
+      const stopping = action === 'prepare' && enabled(stopsWithoutEditor[0]);
       if (stopping) stopsWithoutEditor[0].click();
       return result('busy', stopping ? 'stop-requested' : 'busy');
     }
@@ -93,9 +95,8 @@ function composer(url, action, diagnostic = false) {
   if ((!textarea && !editor.isContentEditable) || editor.disabled || editor.readOnly) return result('composer-unavailable', 'editor-disabled');
   if (editor.querySelector('img') || document.querySelector('[data-testid="remove-file-button"]')) return result('draft-present', 'attachment-present');
   if (draft && draft !== text) return result('draft-present', 'unrelated-draft');
-  const visible = selector => [...form.querySelectorAll(selector)].filter(b => b.getClientRects().length && getComputedStyle(b).visibility !== 'hidden');
-  const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
-  const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
+  const visible = selector => [...form.querySelectorAll(selector)].filter(isVisible);
+  const stops = visible(stopSelector);
   if (stops.length) {
     const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
     if (stopping) stops[0].click();
@@ -192,7 +193,7 @@ async function check(bindings, onlyId) {
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
-        if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;
+        if (definiteNoSendOutcomes.includes(b.status)) delete b.uncertain;
         await save(bindings);
         if (!['busy', 'waiting', 'ready'].includes(b.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
