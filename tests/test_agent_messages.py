@@ -85,7 +85,7 @@ def test_api_v1_mailbox_outputs_remain_compatible_with_strict_predeploy_clients(
 
 
 @pytest.fixture
-async def agent_messaging(state_database_schema: str):
+async def agent_messaging(state_database_schema: str, role_takeover_password):
     engine = create_async_engine(state_database_schema)
     async with engine.begin() as connection:
         tables = ", ".join(
@@ -790,9 +790,9 @@ async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(
     calls: list[tuple[str, str, str]] = []
     readbacks = 0
 
-    async def ambiguous_once(self, name, principal_key, replacement_session):
+    async def ambiguous_once(self, name, principal_key, replacement_session, *, password=None):
         calls.append((name, principal_key, replacement_session))
-        stored = await original_takeover(self, name, principal_key, replacement_session)
+        stored = await original_takeover(self, name, principal_key, replacement_session, password=password)
         if len(calls) == 1:
             assert stored.status == "ok"  # The commit happened; its response was lost.
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
@@ -806,7 +806,7 @@ async def test_takeover_retries_ambiguous_state_once_and_reads_back_binding(
     monkeypatch.setattr(AgentMailboxState, "takeover", ambiguous_once)
     monkeypatch.setattr(AgentMailboxState, "for_actor", observed)
 
-    result = await tools["agent_takeover"]("1", "Coordinator")
+    result = await tools["agent_takeover"]("1", "Coordinator", password="synthetic-takeover-password")
 
     assert (result.status, result.name) == ("ok", "Coordinator")
     assert len(calls) == 2 and calls[0] == calls[1]
@@ -820,14 +820,14 @@ async def test_takeover_does_not_retry_explicit_denial(agent_messaging, monkeypa
     original = AgentMailboxState.takeover
     calls = 0
 
-    async def counted(self, name, principal_key, replacement_session):
+    async def counted(self, name, principal_key, replacement_session, *, password=None):
         nonlocal calls
         calls += 1
-        return await original(self, name, principal_key, replacement_session)
+        return await original(self, name, principal_key, replacement_session, password=password)
 
     monkeypatch.setattr(AgentMailboxState, "takeover", counted)
 
-    result = await tools["agent_takeover"]("1", "Coordinator")
+    result = await tools["agent_takeover"]("1", "Coordinator", password="synthetic-takeover-password")
 
     assert (result.status, result.reason) == (
         "denied", "takeover_confirmation_required",
@@ -845,10 +845,10 @@ async def test_takeover_retry_does_not_claim_success_without_binding_readback(
     original = AgentMailboxState.takeover
     calls = 0
 
-    async def ambiguous_once(self, name, principal_key, replacement_session):
+    async def ambiguous_once(self, name, principal_key, replacement_session, *, password=None):
         nonlocal calls
         calls += 1
-        stored = await original(self, name, principal_key, replacement_session)
+        stored = await original(self, name, principal_key, replacement_session, password=password)
         if calls == 1:
             assert stored.status == "ok"
             return AgentMailboxResult(status="recovery_required", reason="state_unavailable")
@@ -860,7 +860,7 @@ async def test_takeover_retry_does_not_claim_success_without_binding_readback(
     monkeypatch.setattr(AgentMailboxState, "takeover", ambiguous_once)
     monkeypatch.setattr(AgentMailboxState, "for_actor", unavailable_readback)
 
-    result = await tools["agent_takeover"]("1", "Coordinator")
+    result = await tools["agent_takeover"]("1", "Coordinator", password="synthetic-takeover-password")
 
     assert (result.status, result.reason) == ("recovery_required", "state_unavailable")
     assert calls == 2
@@ -882,7 +882,7 @@ async def test_host_approved_transfer_preserves_delivery_and_fences_old_owner(ag
     request = await tools["agent_transfer_request"]("1", "Coordinator")
     assert request.status == "ok" and request.request_id is not None
     assert service.messages is not None
-    approval = await AgentMailboxState(service.messages.engine).approve_transfer(request.request_id)
+    approval = await AgentMailboxState(service.messages.engine).approve_transfer(request.request_id, password="synthetic-takeover-password")
     assert approval.status == "approved"
 
     recovered = await tools["agent_message_receive"]("1", delivery)
@@ -1482,3 +1482,49 @@ async def test_shared_named_send_replay_limit_and_sender_fence(state_database_sc
         target.name, uuid4(), {})).reason == "sender_binding_changed"
     assert (await send_agent_request(boxes, state, sender, "missing", uuid4(), {})).reason == "recipient_not_registered"
     await engine.dispose()
+
+
+@pytest.mark.parametrize("name", ["Interface", "Coordinator"])
+@pytest.mark.parametrize("cross_principal", [False, True])
+async def test_password_takeover_preserves_pending_received_and_stop_mail(
+    agent_messaging, role_takeover_password, name, cross_principal,
+):
+    tools, actor, session, _owner, other, service = agent_messaging
+    await tools["agent_register"]("1", "Sender")
+    session[0] = "role-old"
+    await tools["agent_register"]("1", name)
+    assert service.messages is not None
+    state = AgentMailboxState(service.messages.engine)
+    before = (await state.by_name(name)).mailbox
+    assert before is not None
+    session[0] = "chat-a"
+    pending = await tools["agent_message_send"]("1", name, uuid4(), {"request": "STOP"})
+    received = await tools["agent_message_send"]("1", name, uuid4(), {"request": "held review"})
+    assert pending.message is not None and received.message is not None
+    session[0] = "role-old"
+    assert (await tools["agent_message_receive"]("1", received.message.delivery_id)).status == "ok"
+    session[0] = "role-new"
+    if cross_principal:
+        actor[0] = other
+    audit = []
+    tools = dict(build_ordinary_tools(
+        service, agent_identity=lambda: session[0], audit=lambda *entry: audit.append(entry),
+    ))
+    for password in (None, "wrong-synthetic-password"):
+        denied = await tools["agent_takeover"]("1", name, f"Take over {name}", password)
+        assert (denied.status, denied.reason) == ("denied", "takeover_password_required")
+        assert (await state.by_name(name)).mailbox == before
+        assert "wrong-synthetic-password" not in denied.model_dump_json() + repr(audit)
+    moved = await tools["agent_takeover"]("1", name, f"Take over {name}", role_takeover_password)
+    assert moved.status == "ok"
+    after = (await state.by_name(name)).mailbox
+    assert after is not None and after.endpoint_id == before.endpoint_id
+    assert after.generation == before.generation + 1
+    page = await tools["agent_message_pending"]("1")
+    assert {m.delivery_id for m in page.messages} == {
+        pending.message.delivery_id, received.message.delivery_id,
+    }
+    assert (await tools["agent_message_receive"]("1", pending.message.delivery_id)).status == "ok"
+    assert (await tools["agent_message_recover"]("1", received.message.delivery_id)).status == "ok"
+    assert (await state.for_actor(before.principal_key, "role-old")).reason == "agent_not_registered"
+    assert role_takeover_password not in moved.model_dump_json() + repr(audit)

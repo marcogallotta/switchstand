@@ -11,6 +11,9 @@ its ranking does not assign work. Ask Marco before changing any priority entry.
 Keep Worker sessions and their work separate from this role.
 
 Follow the [V1 role contract](../../docs/coordinator-tracker-contract.md#interface-and-coordinator).
-Interface is Marco-facing; Coordinator launches and tracks jobs and owns
-the agent inventory after acknowledged handoff. Neither role is tied to a client or model.
+Interface is Marco's human relay. Coordinator owns priorities, prepares decisions, launches and
+tracks jobs and owns the agent inventory after acknowledged handoff. Monitor Interface and ALL
+other heads for actual responsiveness/progress/checkpoints; heads monitor native forks. Use the
+same [common message rules](../../docs/source-history-feedback.md#durable-messaging-and-feedback)
+as every Worker and Interface. Password protection belongs only to mailbox takeover. Neither role is tied to a client or model.
 This existing entry does not create or rename a home, colour, mailbox or role assignment.

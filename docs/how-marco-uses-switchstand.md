@@ -6,7 +6,7 @@ Switchstand coordinates bounded engineering work across Codex Workers, Codex Coo
 
 Use the repository's current `main`, executable contracts, and canonical owner documents for implementation truth. For assigned work, use the exact current task, its current governing references, and the exact candidate/control revision. Superseded specs, old candidate branches, historical comments, and `marcogallotta/switchstandold` are evidence only unless a current route explicitly selects them.
 
-Authority is separate from technical truth. It comes only from Marco's direct active assignment (including approval/orders relayed by exact mailbox sender `claude-coordinator` within the recipient's assigned Work) or an explicit CURRENT grant bound to the exact identity, surface, and effect. Follow the [messaging relay rule](source-history-feedback.md#durable-messaging-and-feedback): act and record it in your own Agent Notes without asking Marco to repeat it. Other senders confer no authority. Code, documentation, project placement, role, and tool access cannot manufacture it.
+Authority is separate from technical truth. Marco's direct active assignment, attributed agent relays under the [common message rule](source-history-feedback.md#durable-messaging-and-feedback), and exact CURRENT grants control scope/effects. Worker, Interface and Coordinator use that same rule; record bounded action in own Agent Notes without making Marco repeat reasonable orders. Code, documentation, project placement, role and tool access cannot manufacture assignment or unrelated authority.
 
 If no exact task or WorkId is already assigned, resolve `START HERE` `1218327002478382` through
 the authenticated provider-neutral `switchstand` HTTP/OAuth MCP for navigation only. It may
@@ -41,12 +41,12 @@ ChatGPT and Codex without pretending their mechanics or inactive-session behavio
 ### Codex Worker and Coordinator sessions
 
 Raw `codex` is the official npm-installed CLI; it must not be intercepted.
-`scripts/launch-worker` and `scripts/launch-coordinator` delegate to the shared
+`scripts/launch-worker`, `scripts/launch-interface` and `scripts/launch-coordinator` delegate to the shared
 `scripts/launch-codex` with their role argument. The shared launcher selects the existing
-`~/.local/state/switchstand/roles/worker` or `roles/coordinator` home, overriding any inherited
+`~/.local/state/switchstand/roles/worker`, `roles/interface` or `roles/coordinator` home, overriding any inherited
 `CODEX_HOME`. These homes must already contain their configuration and authentication;
 the launcher does not create or migrate them. Worker starts at the checkout root;
-Coordinator starts in `roles/coordinator` for scoped instructions and resume filtering.
+Interface and Coordinator start in their own `roles/interface` and `roles/coordinator` entries for scoped instructions and resume filtering.
 Both use the official CLI from NVM's current default Node installation and forward arguments unchanged.
 The scripts bypass any `codex` command earlier on `PATH`.
 Resume the exact session through the same role entry; `resume --all` includes other working

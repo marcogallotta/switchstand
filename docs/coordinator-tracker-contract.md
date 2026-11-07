@@ -20,20 +20,29 @@ Until the canonical Tracker/priority projection is sufficient, Root may maintain
 
 ## Interface and Coordinator
 
-V1 has two coordination roles, independent of client or model: **Interface**,
-Marco's interface, and **Coordinator**, which runs and
-tracks jobs. Bounded Workers retain execution. Existing role homes and colours stay as they
-are; this contract creates no home, launcher, mailbox identity, topology or ownership grant.
-A client name, including Claude or Codex, never appoints either coordination role. Both roles
-currently use Codex; future ChatGPT support is outside this V1. Historical mailbox records
-do not prove active assignments.
+V1 has two logical roles, **Interface** and **Coordinator**, both Codex for now. Interface is
+Marco's front door/human relay: understand enough and go deeper when needed, relay orders,
+answers and results; do not move jobs, own priorities/heavy preparation or monitor workers.
+Coordinator owns priorities, decision preparation, heavy coordination, job launch/tracking and
+inventory. Workers retain bounded execution. Each role has its own home, including
+`roles/interface`; preserve existing histories/colours. Launching a home appoints no live role.
 
-Interface owns the three shared pages: Situation `40581c1e-04c5-5ab4-94d9-3c5ce21fcd35`,
-Priorities focus-now `332857d1-6c4d-51e8-af19-ed77b4f19e69`, and Coordinator notes
-`a8ec90d7-8f20-5e44-9551-03fbfea22474`. Keep Marco's orders and unanswered questions there.
-Coordinator owns the agent inventory `083a5732-c8f1-53e6-a74b-dc7f6fc58c4e` after an
-acknowledged handoff from its actual current owner. Do not overwrite another owner's inventory
-or invent pickup. These four pages support recovery; exact Work records still govern authority.
+Interface monitors Coordinator; Coordinator monitors Interface and ALL other heads; heads
+monitor native forks. Observe actual responsiveness, progress, declared checkpoints and next
+checks; inquire and act or escalate within authority. Keep active bounded watches while
+obligations remain, including silent missed checkpoints without incoming mail. Registration,
+sent messages or elapsed silence are not pickup, progress or halt proof. This is active-session
+supervision, not automatic monitoring/restart when both sessions or the host close.
+Follow the [common message rule](source-history-feedback.md#durable-messaging-and-feedback)
+for every role; do not duplicate role-specific trust logic. Both logical role mailboxes require
+password-protected takeover under the canonical mailbox owner, separate from message handling.
+
+Use the four existing recovery pages: Situation `40581c1e-04c5-5ab4-94d9-3c5ce21fcd35`,
+Priorities `332857d1-6c4d-51e8-af19-ed77b4f19e69`, Coordinator notes
+`a8ec90d7-8f20-5e44-9551-03fbfea22474` and inventory `083a5732-c8f1-53e6-a74b-dc7f6fc58c4e`.
+Coordinator owns priority/coordination/inventory content; Interface records attributed human
+orders/answers without moving jobs. Actual writers change only with explicit appointment and
+acknowledged pickup, preserving unrelated content. Exact Work records still govern scope.
 
 - Interface relays an order with its exact WorkId, owner, pickup, checkpoint and STOP/recovery
   path. Coordinator acknowledges within one wake: started, or refused with why. If no
@@ -70,7 +79,12 @@ exact next checkpoint; replacement requires attributable pickup without duplicat
 Before calling V1 working, exercise Interface replacement mid-job and Coordinator replacement
 mid-job: each replacement must reconstruct every real agent/job from those pages, checked
 against actual parent/native evidence. Exercise a blocked review/message alert through to
-Marco's concise report, and prepare a useful 30-second question from a real unresolved decision.
+Marco's concise report, and exercise a real decision roundtrip: Coordinator prepares options/recommendation, Interface
+asks Marco a useful 30-second question, his actual answer returns through correlated durable
+mail, Coordinator acknowledges and performs or holds the resulting action. Test every monitoring
+edge, including a predeclared missed checkpoint without injected mail, STOP and durable recovery.
+Use shorter declared task checkpoints for failure tests; preserve the original 15/30-minute
+outer thresholds and do not label accelerated tests as proof those production timeouts elapsed.
 Old/new fresh-agent scenarios test instruction behaviour only; they do not prove live delivery,
 replacement, complete census or activation. Keep NOT_RUN and UNKNOWN outcomes explicit.
 

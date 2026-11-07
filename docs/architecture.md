@@ -647,7 +647,9 @@ messaging, and required continuation:
   including `Codex Coordinator`, stops with `takeover_confirmation_required` unless the request
   carries Marco's full current message naming the target and directing the takeover. The denial
   says that no takeover occurred and tells the agent to ask Marco and retry with his confirmation;
-  no passcode is configured or accepted. A confirmed Coordinator takeover renames a legacy `root`
+  logical Interface and Coordinator takeovers additionally require their configured password
+  through the canonical mailbox guard. Missing/wrong password or missing/invalid bcrypt hash
+  denies before mutation, including same-principal replacement and host transfer approval. A confirmed Coordinator takeover renames a legacy `root`
   row in place, preserves the endpoint and deliveries, replaces the principal/session binding, and
   increments its generation.
   `/root` resolves only as an inbound alias and successful readback uses `Codex Coordinator`.
@@ -661,11 +663,9 @@ messaging, and required continuation:
   its public MCP path retries one `state_unavailable` result with the captured unchanged identity and
   arguments and requires an actor-binding readback before returning success. Explicit denial or
   conflict is not retried. There is no public approval tool. `mailbox/agent_messages.py` supplies
-  public name-based views over `MessageState`; its server-returned exact sender name
-  `claude-coordinator` can relay Marco's approval/orders within the recipient's assigned Work
-  under the [messaging relay rule](source-history-feedback.md#durable-messaging-and-feedback).
-  Delivered notices, pending-tool guidance and managed context preserve that exception;
-  other senders confer no authority. Migration `0016_agent_mailbox_transfers` owns audit.
+  public name-based views over `MessageState`; every role follows the common agent message rule
+  in [source/history/feedback](source-history-feedback.md#durable-messaging-and-feedback).
+  Ordinary receive/relay adds no separate role-specific trust mechanism. Migration `0016_agent_mailbox_transfers` owns audit.
   Ordinary agent payloads are at most 800 characters in canonical compact JSON and pending pages
   are at most ten, newest first. Legacy oversized payloads remain server-side for identity checks
   but public pending/replay views expose only omission and character-count metadata.
@@ -1043,3 +1043,9 @@ launch path. It performs only a constant-time filesystem capacity probe, records
 SQLite transition, and emits only deduplicated pressure events. A separate user timer may schedule it.
 It does not start Codex or deliver into Codex sessions. Without the optional inbound adapter, stock Codex consumes durable mailbox
 messages only while the user is actively running and prompting that session.
+
+Logical role takeover hashes are supplied to the existing MCP/host process as
+`SWITCHSTAND_INTERFACE_TAKEOVER_PASSWORD_HASH` and
+`SWITCHSTAND_COORDINATOR_TAKEOVER_PASSWORD_HASH`. Plaintext passwords are sensitive inputs to
+existing `agent_takeover`; do not echo them into application logs/errors/audits/argv/Tracker.
+Provisioning these host secrets and activating a runtime are separate authorized effects.
