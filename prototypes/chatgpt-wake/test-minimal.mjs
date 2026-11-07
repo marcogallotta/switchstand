@@ -363,6 +363,11 @@ context.fetch = emptyMailboxFetch;
 const untouched = structuredClone(state.minimalBindings[1]), backendReports = reports.length;
 state.minimalBindings[0].alert = {retained: true};
 context.chrome.tabs.get = async tabId => ({id: tabId, url: url + '-new'});
+const savedTombstones = structuredClone(state), addSave = context.chrome.storage.local.set;
+context.chrome.storage.local.set = async () => { throw Error('injected Add save failure'); };
+assert.match((await message({type: 'add', name: 'mail', tabId: 1, url: url + '-new'})).error, /injected Add save failure/);
+assert.deepEqual(state, savedTombstones, 'failed Add preserves durable tombstone history and unrelated row');
+context.chrome.storage.local.set = addSave;
 const readd = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url: url + '-new'}, {id: 'test'}, resolve));
 assert.equal(readd.error, undefined);
 const fresh = state.minimalBindings.find(b => b.id === id);
@@ -588,10 +593,10 @@ console.log('PASS: independent safe-result table, unsafe restart fences and fail
 
 // Local Remove must survive offline/save failures and fence every pre-effect await.
 const removeRequest = m => new Promise(resolve => handlers[0](m, {id:'test'}, resolve));
-for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'failed-save']) {
+for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-config', 'failed-save']) {
   run('cancelled.clear(); loggedObservations.clear()');
   const retained = {id, name:'mail', generation:1, url, armed:true, ids:[id], seen:boundary === 'reservation' ? [] : [id], alert:{delivery_ids:[id]}, pending:[id]};
-  state = {minimalBindings:[structuredClone(retained)]};
+  state = boundary === 'migration' ? {wakeBindings:[{...retained, endpoint:id, seen:[]}]} : {minimalBindings:[structuredClone(retained)]};
   let removal, effects = 0;
   const cancel = () => { removeRequest({type:'resume-all'}); removeRequest({type:'resume',id}); removal = removeRequest({type:'remove', id}); };
   context.chrome.scripting.executeScript = async () => { effects++; return []; };
@@ -601,6 +606,11 @@ for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'fai
     return originalFetch(request, options);
   };
   context.chrome.storage.local.set = async next => {
+    if (boundary === 'migration' && !removal) {
+      cancel();
+      await Promise.resolve();
+      assert.equal(run(`cancelled.has(bindingKey('${id}'))`), true, 'legacy read fences before first migration save settles');
+    }
     if (boundary === 'failed-save') throw Error('injected save failure');
     if (boundary === 'reservation' && next.minimalBindings[0].wakeAttempt && !removal) cancel();
     await realSave(next);
@@ -614,7 +624,7 @@ for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'fai
     assert.equal(vm.runInContext(`cancelled.has(bindingKey('${id}'))`, restarted), false, 'restart loses volatile failed-Remove fence');
     handlers.pop();
   } else {
-    await run(boundary === 'reservation' ? 'exclusive(async()=>check(await load()))' : `exclusive(async()=>{const bs=await load();await ${boundary === 'alert-config' ? 'report(bs[0],bs)' : 'diagnose(bs[0])'}})`);
+    await run(['migration', 'reservation'].includes(boundary) ? 'exclusive(async()=>check(await load()))' : `exclusive(async()=>{const bs=await load();await ${boundary === 'alert-config' ? 'report(bs[0],bs)' : 'diagnose(bs[0])'}})`);
     assert.equal((await removal).error, undefined);
     assert.equal(state.minimalBindings[0].removed, true, boundary);
   }
