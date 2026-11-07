@@ -134,6 +134,8 @@ try {
   }
   const bindings = await evaluate(workerSession,`load()`);
   assert.equal(bindings.length,1,'one Add chat click verifies and stores pairing');
+  assert.equal(await evaluate(addPopupSession, `document.getElementById('status').textContent`),'Add chat: mail saved');
+  assert.ok(await evaluate(addPopupSession, 'innerWidth >= 600'), 'actual action popup is wider');
   await evaluate(addPopupSession,`document.getElementById('add').click()`);
   await pause(100);
   assert.match(await evaluate(addPopupSession,`document.getElementById('status').textContent`),/already added/);
@@ -267,11 +269,17 @@ try {
   await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
   const afterAll = await evaluate(restartedSession, 'load()');
   assert.deepEqual(afterAll, beforeAll.map(b => b.removed || b.id === 'cancelled' ? b : {...b,uncertain:false,armed:true,status:'Armed'}), 'popup Re-arm all preserves history and skips removed/cancelled');
-  assert.equal(await evaluate(actualPopupSession, "document.getElementById('status').textContent"), '');
+  assert.equal(await evaluate(actualPopupSession, "document.getElementById('status').textContent"), 'Re-arm all saved');
   assert.equal(await evaluate(session, 'submissions.length'), sendsBeforeRearm, 'Re-arm all sends nothing inline');
   await evaluate(actualPopupSession, "document.getElementById('rearm-all').onclick()");
   assert.deepEqual(await evaluate(restartedSession, 'load()'), afterAll, 'repeated popup click is idempotent');
   await evaluate(restartedSession, `load().then(bs=>save(bs.filter(b=>b.id===${JSON.stringify(id)})))`);
+  await evaluate(restartedSession, `globalThis.originalSet=chrome.storage.local.set;chrome.storage.local.set=async()=>{throw Error('injected save failure')}`);
+  await evaluate(actualPopupSession, `[...document.querySelectorAll('#bindings button')].find(b=>b.textContent==='Remove').click()`);
+  await pause(100);
+  assert.match(await evaluate(actualPopupSession, `document.getElementById('status').textContent`), /Remove not saved:.*may resume after restart/);
+  assert.ok(await evaluate(actualPopupSession, `document.querySelector('#bindings p').textContent.includes('mail')`), 'failed Remove leaves row visible');
+  await evaluate(restartedSession, 'chrome.storage.local.set=originalSet');
   await command('Target.closeTarget',{targetId:actualPopup.targetId});
   const rearmVersion = versions.find(v=>v.scriptURL===worker.url && v.runningStatus==='running');
   assert.ok(rearmVersion);
@@ -304,8 +312,14 @@ try {
   assert.ok(observations.every(p => !p.incident && p.delivery_ids.length === 0));
   await evaluate(restartedSession,`load().then(check)`);
   assert.equal(reports.length,1,'HTTP alert dedupe persisted');
-  const remove = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'remove',id:${JSON.stringify(id)}})`);
-  assert.match(remove.error,/Pending mail or alert/,'Remove cannot discard unresolved evidence');
+  await evaluate(restartedSession, 'chrome.action.openPopup()');
+  const removePopup=(await command('Target.getTargets')).targetInfos.find(t=>t.url.endsWith('/popup.html') && t.targetId!==popup.targetId);
+  const removeSession=await attach(removePopup.targetId);
+  await evaluate(removeSession, `show().then(()=>[...document.querySelectorAll('#bindings button')].find(b=>b.textContent==='Remove').onclick())`);
+  assert.equal(await evaluate(removeSession, `document.getElementById('status').textContent`), 'Remove: mail saved');
+  assert.equal(await evaluate(removeSession, `document.querySelectorAll('#bindings p').length`), 0, 'saved Remove hides row');
+  await command('Target.closeTarget', {targetId:removePopup.targetId});
+  assert.equal((await evaluate(restartedSession,'load()'))[0].removed,true,'tombstone persists');
   const resumed = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'resume-all'})`);
   assert.deepEqual(resumed,{});
   assert.equal((await evaluate(restartedSession,'load()'))[0].alertDone,true,'Resume all preserves active alert');

@@ -18,6 +18,7 @@ async function diagnose(b, failure) {
   if (loggedObservations.get(b.id) === signature || cancelled.has(b.id)) return;
   try {
     const config = await source('/config');
+    if (cancelled.has(b.id)) return;
     const response = await fetch(SOURCE + '/report', {method: 'POST', signal: AbortSignal.timeout(3000),
       headers: {'Content-Type': 'application/json', Authorization: 'Bearer ' + config.report_token},
       body: JSON.stringify({name: b.name, delivery_ids: [], outcome: 'attempt-outcome-unknown',
@@ -187,6 +188,7 @@ async function check(bindings, onlyId) {
         b.uncertain = true;
         b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
+        if (cancelled.has(b.id)) break;
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
@@ -243,20 +245,18 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       }
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
-      for (const b of bindings) if (!b.removed && (m.type === 'resume-all' || b.id === m.id)) { b.armed = true; cancelled.delete(b.id); }
+      for (const b of bindings) if (!b.removed && !cancelled.has(b.id) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;
       await check(bindings, m.type === 'resume' ? m.id : undefined);
     } else if (m.type === 'remove') {
       const b = bindings.find(b => b.id === m.id);
       if (!b) throw Error('Chat not found');
-      const p = await poll(b.name);
-      if (p.endpoint !== b.id || p.generation !== b.generation || p.delivery_ids.length || b.alert) throw Error('Pending mail or alert must clear before Remove');
       b.removed = true;
       b.armed = false;
       b.status = 'Removed';
     } else throw Error('Unknown request');
     await save(bindings);
     return {};
-  }).then(reply, e => { if (m.type === 'remove') cancelled.delete(m.id); reply({error: e.message}); });
+  }).then(reply, e => reply({error: m.type === 'remove' ? `Remove not saved: ${e.message}. Local wakes fenced until restart; saved chat may resume after restart.` : e.message}));
   return true;
 });
 chrome.alarms.create('poll', {periodInMinutes: 0.5});

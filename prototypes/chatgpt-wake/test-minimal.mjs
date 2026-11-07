@@ -347,17 +347,19 @@ assert.equal(state.minimalBindings[1].armed, false, 'per-chat Resume isolates ot
 await message({type: 'resume-all'});
 assert.equal(state.minimalBindings[1].armed, true);
 const unsafeRemove = await message({type: 'remove', id});
-assert.match(unsafeRemove.error, /Pending mail or alert/);
-assert.equal(state.minimalBindings.length, 2, 'Remove cannot erase unresolved history');
+assert.equal(unsafeRemove.error, undefined, 'pending mail does not block local Remove');
+assert.equal(state.minimalBindings.length, 2, 'Remove retains unresolved history');
 state.minimalBindings[0] = {id, name: 'mail', generation: 1, url, armed: true, uncertain: true, ids: [id], seen: [id]};
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config') ? originalFetch(request, options)
   : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})};
+const emptyMailboxFetch = context.fetch; context.fetch = async () => { throw Error('offline'); };
 const removed = await new Promise(resolve => handlers[0]({type: 'remove', id}, {id: 'test'}, resolve));
 assert.equal(removed.error, undefined);
 assert.equal(state.minimalBindings[0].removed, true, 'Remove retains a tombstone');
 assert.equal(state.minimalBindings[0].uncertain, true, 'Remove retains uncertain history');
 assert.deepEqual(state.minimalBindings[0].ids, [id]);
 assert.deepEqual(state.minimalBindings[0].seen, [id]);
+context.fetch = emptyMailboxFetch;
 const readd = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url}, {id: 'test'}, resolve));
 assert.match(readd.error, /retains safety history/);
 assert.equal(state.minimalBindings.length, 2, 're-Add cannot erase removed pairing');
@@ -567,3 +569,41 @@ assert.equal(effectsBeforeSave,0,'failed pre-effect persistence cannot execute c
 context.chrome.storage.local.set = realSave;
 context.chrome.scripting.executeScript = realExecution;
 console.log('PASS: independent safe-result table, unsafe restart fences and failed pre-effect save');
+
+// Local Remove must survive offline/save failures and fence every pre-effect await.
+const removeRequest = m => new Promise(resolve => handlers[0](m, {id:'test'}, resolve));
+for (const boundary of ['reservation', 'diagnostic-config', 'alert-config', 'failed-save']) {
+  run('cancelled.clear(); loggedObservations.clear()');
+  const retained = {id, name:'mail', generation:1, url, armed:true, ids:[id], seen:boundary === 'reservation' ? [] : [id], alert:{delivery_ids:[id]}, pending:[id]};
+  state = {minimalBindings:[structuredClone(retained)]};
+  let removal, effects = 0;
+  const cancel = () => { removeRequest({type:'resume-all'}); removeRequest({type:'resume',id}); removal = removeRequest({type:'remove', id}); };
+  context.chrome.scripting.executeScript = async () => { effects++; return []; };
+  context.fetch = async (request, options) => {
+    if (request.endsWith('/config') && boundary.endsWith('config')) cancel();
+    if (request.endsWith('/report')) effects++;
+    return originalFetch(request, options);
+  };
+  context.chrome.storage.local.set = async next => {
+    if (boundary === 'failed-save') throw Error('injected save failure');
+    if (boundary === 'reservation' && next.minimalBindings[0].wakeAttempt && !removal) cancel();
+    await realSave(next);
+  };
+  if (boundary === 'failed-save') {
+    assert.match((await removeRequest({type:'remove',id})).error, /Remove not saved:.*may resume after restart/);
+    context.chrome.storage.local.set = realSave;
+    for (const type of ['resume', 'resume-all', 'rearm-all']) await removeRequest({type,id});
+    assert.deepEqual(state.minimalBindings[0], retained, 'failed Remove keeps durable history and fence through Resume/bulk');
+    const restarted = vm.createContext({...context}); vm.runInContext(source, restarted);
+    assert.equal(vm.runInContext(`cancelled.has('${id}')`, restarted), false, 'restart loses volatile failed-Remove fence');
+    handlers.pop();
+  } else {
+    await run(boundary === 'reservation' ? 'exclusive(async()=>check(await load()))' : `exclusive(async()=>{const bs=await load();await ${boundary === 'alert-config' ? 'report(bs[0],bs)' : 'diagnose(bs[0])'}})`);
+    assert.equal((await removal).error, undefined);
+    assert.equal(state.minimalBindings[0].removed, true, boundary);
+  }
+  assert.equal(effects, 0, `${boundary}: no dispatch/report after cancellation`);
+  context.chrome.storage.local.set = realSave;
+}
+context.fetch = originalFetch; context.chrome.scripting.executeScript = realExecution;
+console.log('PASS: local Remove failure/restart, Resume/bulk fence and reservation/config races');

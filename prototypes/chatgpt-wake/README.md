@@ -15,10 +15,11 @@ An uncertain click remains fenced even after the mailbox becomes empty: an
 empty poll cannot prove whether ChatGPT received or processed the wake. The
 popup shows **Needs manual reconciliation** in that case. **Resume** rechecks
 one chat; **Resume all** rechecks every saved chat. Neither clears an uncertain
-send or alert. **Remove** requires a fresh empty mailbox observation and a
-resolved alert. It hides the chat but retains its pairing and safety history;
+send or alert. **Remove** stops local wakes and hides the chat after saving,
+even offline or with pending mail/alerts. It retains backend mail and local safety history;
 the same mailbox or conversation cannot be added again automatically. A click
-is not proof that ChatGPT processed mail.
+is not proof that ChatGPT processed mail. Already-dispatched wakes cannot be recalled.
+A failed Remove save is visible and fences this worker; restart may resume the saved chat.
 
 In the popup, **Re-arm** asks for confirmation for one uncertain chat and
 requires a fresh empty mailbox and resolved alert. **Re-arm all** immediately

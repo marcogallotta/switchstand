@@ -16,6 +16,7 @@ async function show() {
       const sendAction = async () => {
         await request({type, id: b.id, ...(type === 'rearm' ? {expectedAttempt: b.wakeAttempt?.id || null} : {})});
         await show();
+        return `${button.textContent}: ${b.name} saved`;
       };
       button.onclick = () => act(async () => {
         if (type !== 'rearm') return sendAction();
@@ -36,14 +37,15 @@ async function show() {
   }
 }
 async function act(action) {
-  try { await action(); $('status').textContent = ''; }
+  try { $('status').textContent = await action() || ''; }
   catch (e) { $('status').textContent = e.message; }
 }
 $('add').onclick = () => act(async () => {
   const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
   await request({type: 'add', name: $('name').value.trim(), tabId: tab?.id, url: tab?.url});
   await show();
+  return `Add chat: ${$('name').value.trim()} saved`;
 });
-$('resume-all').onclick = () => act(async () => { await request({type: 'resume-all'}); await show(); });
-$('rearm-all').onclick = () => act(async () => { await request({type: 'rearm-all'}); await show(); });
+$('resume-all').onclick = () => act(async () => { await request({type: 'resume-all'}); await show(); return 'Resume all saved'; });
+$('rearm-all').onclick = () => act(async () => { await request({type: 'rearm-all'}); await show(); return 'Re-arm all saved'; });
 show().catch(e => { $('status').textContent = e.message; });
