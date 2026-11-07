@@ -49,7 +49,7 @@ Use plain language:
 - material consequence, size, cost, burden, or risk;
 - what safely continues while waiting.
 
-For new or materially changed work, also expose the intended operating scale, introduced complexity and why it is required now, the smallest credible alternative, and deliberate V1 deferrals. Prefer the smallest safe useful vertical stage. If the proposed first stage is foundation-only or inert, explain why a vertical stage is unsafe or impractical, why the foundation is independently stable and non-speculative, and the immediate route to representative useful end-to-end proof.
+For new/materially changed work, expose intended operating scale, introduced complexity and present need, smallest credible alternative and deliberate V1 deferrals. Apply the [smallest useful stage rule](code-quality.md#author--implementer), including its non-speculative foundation exception and immediate route to useful proof.
 
 Do not manufacture a menu when there is one clear recommendation.
 

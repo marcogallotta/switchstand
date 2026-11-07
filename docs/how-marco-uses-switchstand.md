@@ -235,13 +235,7 @@ minute spent servicing one agent is unavailable to the other dozens; viewed per 
 available share of Marco's attention may be roughly one-thirtieth of what a one-to-one
 collaboration would imply.
 
-Design the system and every agent interaction around both truths. Ask promptly when Marco is
-actually needed, and make the request exceptionally clear and immediately actionable. State the
-exact action or decision first; provide the direct target, link, text, or command; recommend an
-outcome where appropriate; explain why it is needed now and the consequence of delay; distinguish
-what is blocked from what continues; and say how success will be confirmed. Complete all safe
-preparation before asking and combine compatible requests when that makes the interaction easier,
-but never hide, suppress, or defer an essential ask merely to reduce interruptions.
+Ask promptly when Marco is needed using [Human interaction](human-interaction.md) and [Human Review](human-review.md). Prepare safe work first, combine compatible requests, name the exact target and decision, explain delay and success confirmation, and never suppress an essential ask to reduce interruptions.
 
 **Interactive polling.** When Marco says “poll” or “keep polling” for a current inbox or exact review, the agent reads that exact surface, uses a supported bounded wait, and reads again while the current session can run. An empty read or an arbitrary count of checks is not a terminal result. A ChatGPT Scheduled task, including an hourly condition watch, is a different future-running product and must not replace this live obligation unless Marco explicitly requests scheduled future runs. At a real host limit, preserve the exact watch and state that active polling stopped; the inactive chat cannot promise further checks, and the obligation resumes on active re-entry.
 
@@ -285,18 +279,7 @@ to find current source owners, lifecycle semantics and tests.
 
 Tracker Issues V1-A owns Feedback V1's shared reporting function and its code/tests; agents use it rather than adding another reporting path. The always-loaded draw, mandatory-report, and reply-mark behavior lives in [AGENTS.md](../AGENTS.md).
 
-Durable message tools and state are the current agent-to-agent surface. Ordinary interactive agents address registered names through `agent_message_*`; managed task-bound runtimes retain WorkId-addressed `message_*`. Sending, availability, receipt, recovery, result, disposition, provider effect, and completion are distinct. A sender's success is not recipient pickup. Active agents check their exact pending/review surfaces during bounded work and on re-entry; Switchstand does not promise an inactive wake, generic inbox scan, or background daemon.
-
-Ordinary current intent, progress, findings, verdicts, and results belong in
-notes through `work_update`. `work_append` is only for explicitly purposed
-provenance, investigation, or legacy reconciliation on writable admitted work;
-it is not current state or agent messaging, and its ordinary and managed
-contracts differ. An ambiguous possible effect remains UNKNOWN and must be
-reconciled rather than resent under a new identity.
-
-Provider source and attachment tools are retired. Use WorkId-based reads and local legacy-reference resolution.
-
-Messages and readable records are evidence and requests. They cannot grant permission, reassign an agent, prove recipient pickup, or establish that an external effect happened.
+For ordinary/managed message tools, current notes versus exceptional appends, recovery and ambiguous effects, follow [source compatibility](source-history-feedback.md#durable-messaging-and-feedback) and its [current-work rules](source-history-feedback.md#current-work-and-history). Delivery, pickup, effect and completion remain distinct; readable records/messages confer no authority except the exact bounded relay rule there. Active agents maintain exact pending/review watches on re-entry and during bounded work; no generic scan or inactive/background execution is established. Provider source/attachment tools are retired; use WorkId reads and local legacy-reference resolution.
 
 ## Shared process semantics across hosts
 
@@ -397,6 +380,6 @@ or quarantine meaningful malformed state where safe, repair or recreate it autom
 possible, and continue unrelated diagnosis/edit/test work; do not make Marco the routine repair
 operator. Missing consequential-effect authority disables only that effect.
 
-Review and tests name their exact subject. Candidate review, exact-head checks, current-target composition, landing, deployment, and live reliance are different claims. Target advancement alone does not require a rebase: preserve the immutable reviewed candidate when composition can establish safety, and rebase only when needed or materially helpful. A rewritten head is a new exact candidate.
+For candidate identity, target movement and rebase decisions, follow [Code quality: test quality and qualification](code-quality.md#test-quality-and-qualification).
 
 Use [development](development.md) for commands and evidence subjects, [code quality](code-quality.md) for implementation/review rules, and [architecture](architecture.md) for current owners. `AGENTS.md` remains the load-bearing bootstrap and router.
