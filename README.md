@@ -40,6 +40,12 @@ scripts/switchstand-worktree <writer-name> <exact-40-character-green-SHA>
 Ordinary ChatGPT without a checkout uses `repository_bundle_get` as specified in [AGENTS.md](AGENTS.md): accept only `current`, verify the advertised SHA-256, and materialize a normal repository. Existing Codex/Claude checkouts stay on normal Git.
 For candidate diagnostics, `repository_candidate_qualification_get` is the preferred compact read of the exact current PR base, head, composition, and code-owned Quality gates. It is provisional: direct public GitHub reads remain an allowed fallback when the semantic read is unavailable, `UNKNOWN`, or lacks needed detail.
 
+## Browser and UI testing
+
+Run browser and UI tests headless or on an isolated virtual display, using a test-owned browser and disposable profile. Never run tests on Marco's active desktop, take focus, inject input into his session, or manipulate his normal browser or profile. Clean up only test-owned resources.
+
+Agents own test execution, debugging, and verification. Do not ask Marco to click, reload, run commands, or report results as QA; involve him for product decisions. If isolated testing is unavailable, establish that capability or report the affected test as not run. Never fall back to his desktop or make him the tester.
+
 ## Documentation map
 
 - [Agent bootstrap](AGENTS.md): load-bearing authority, safety, routing, and repository bootstrap.
