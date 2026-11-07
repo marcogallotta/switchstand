@@ -59,6 +59,9 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
             assert spaced.status_code == 200 and spaced.json()["endpoint"] == str(receiver.endpoint_id)
             empty = await client.get(PATH + "/poll", params={"name": other.name})
             assert empty.json()["delivery_ids"] == []
+            assert empty.json()["name"] == other.name
+            assert empty.json()["endpoint"] == str(other.endpoint_id)
+            assert empty.json()["endpoint"] != str(receiver.endpoint_id)
             unicode_alias = "RÉSUMÉ   AGENT " + unicode_receiver.name.split()[-1].upper()
             unicode_poll = await client.get(PATH + "/poll", params={"name": unicode_alias})
             assert unicode_poll.status_code == 200
