@@ -17,7 +17,7 @@ Exact-candidate managed qualification uses `scripts/switchstand --isolated --act
 
 Install or update official Codex with `npm install -g @openai/codex@latest`. Repository sessions use normal Codex resume semantics and the stock mailbox flow documented in [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md).
 
-See [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for the current usage and identity model. The executable factories, schemas, repository MCP allowlist, and tests own exact tool inventory; raw `source_*` reads are bounded managed compatibility, not the ordinary mental model.
+See [How Marco uses Switchstand](docs/how-marco-uses-switchstand.md) for the current usage and identity model. The executable factories, schemas, repository MCP allowlist, and tests own exact tool inventory; provider source and attachment tools are retired from the current MCP surfaces.
 
 ## Quick start
 
