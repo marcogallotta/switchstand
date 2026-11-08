@@ -593,6 +593,7 @@ const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncert
 state = {minimalBindings: [structuredClone(rearmBinding), {...rearmBinding, id: nextId},
   {...rearmBinding, id: 'cancelled'}, {...rearmBinding, id: 'removed', removed: true}]};
 run("cancelled.clear(); cancelled.add(bindingKey('cancelled'))");
+await run('load()'); // Initialize durable retry migration before testing the save-only action.
 const beforeRearm = structuredClone(state);
 const realSave = context.chrome.storage.local.set;
 const savedFetch = context.fetch, savedScript = context.chrome.scripting.executeScript;
