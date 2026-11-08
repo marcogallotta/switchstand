@@ -665,7 +665,14 @@ for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-
   state = boundary === 'migration' ? {wakeBindings:[{...retained, endpoint:id, seen:[]}]} : {minimalBindings:[structuredClone(retained)]};
   let removal, effects = 0;
   const cancel = () => { removeRequest({type:'resume-all'}); removeRequest({type:'resume',id}); removal = removeRequest({type:'remove', id}); };
-  context.chrome.scripting.executeScript = async () => { effects++; return []; };
+  context.chrome.scripting.executeScript = async ({args}) => {
+    // Initial inspection is read-only; allow the Send path to reach its durable
+    // reservation, then inject Remove before any composer mutation occurs.
+    if (boundary === 'reservation' && args?.[1] === 'inspect')
+      return [{result: {outcome: 'ready'}}];
+    effects++;
+    return [];
+  };
   context.fetch = async (request, options) => {
     if (request.endsWith('/config') && boundary.endsWith('config')) cancel();
     if (request.endsWith('/report')) effects++;
