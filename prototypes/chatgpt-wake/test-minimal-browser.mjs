@@ -282,7 +282,12 @@ try {
   assert.equal((await evaluate(restartedSession,'load()'))[0].retry.attempts >= 0,true,'worker restart retains retry state');
   pendingIds=['22222222-2222-4222-8222-222222222222'];
   await evaluate(restartedSession,'load().then(check)');
-  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new batch wakes after restart');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm,
+    'new AVAILABLE B cannot bypass existing per-chat 2-minute cooldown');
+  // Simulate elapsed time only in the isolated saved retry fixture, not the host clock.
+  await evaluate(restartedSession,'load().then(async bs=>{bs[0].retry.lastAt=Date.now()-300000;await save(bs)})');
+  await evaluate(restartedSession,'load().then(check)');
+  assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'eligible new B wakes after cooldown');
   await evaluate(restartedSession,'load().then(check)');
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new uncertain send is fenced');
   await command('Target.closeTarget',{targetId:page.targetId});
