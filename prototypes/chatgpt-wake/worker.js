@@ -78,7 +78,9 @@ const save = minimalBindings => chrome.storage.local.set({minimalBindings});
 async function load() {
   const state = await chrome.storage.local.get(['minimalBindings', 'wakeBindings']);
   if (Array.isArray(state.minimalBindings)) {
-    if (state.minimalBindings.some(migrateRetry)) await save(state.minimalBindings);
+    let migrated = false;
+    for (const binding of state.minimalBindings) migrated = migrateRetry(binding) || migrated;
+    if (migrated) await save(state.minimalBindings);
     return state.minimalBindings;
   }
   const bindings = (state.wakeBindings || []).map(b => {
