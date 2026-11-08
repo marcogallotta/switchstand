@@ -292,7 +292,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   exclusive(async () => {
     await fence;
     const bindings = await load();
-    if (['resume', 'rearm', 'remove'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
+    if (['resume', 'remove'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
     if (m.type === 'add') {
       if (!validUrl(m.url) || !m.name) throw Error('Open an exact ChatGPT conversation and enter its mailbox');
       if (!Number.isInteger(m.tabId)) throw Error('Current chat tab is unavailable');
@@ -305,16 +305,6 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       if (bindings.some(b => collides(b) && !b.removed)) throw Error('Chat already added; use Resume');
       for (let i = bindings.length - 1; i >= 0; i--) if (collides(bindings[i])) bindings.splice(i, 1);
       bindings.push({id: p.endpoint, name: p.name, generation: p.generation, url: m.url, armed: true, status: 'Armed', incarnation: crypto.randomUUID()});
-    } else if (m.type === 'rearm') {
-      const b = bindings.find(b => b.id === m.id && !b.removed);
-      if (!b?.uncertain || m.expectedAttempt !== (b.wakeAttempt?.id || null)) throw Error('Uncertain wake changed; reopen the popup');
-      const p = await poll(b.name);
-      if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
-      if (p.delivery_ids.length || b.alert || cancelled.has(bindingKey(b.id, b.incarnation))) throw Error('Pending mail or alert must clear before Re-arm');
-      if (!retireBatch(b)) throw Error('Saved batch IDs are missing or invalid; manual reconciliation required');
-      b.uncertain = false;
-      b.armed = true;
-      b.status = 'Armed';
     } else if (m.type === 'rearm-all') {
       for (const b of bindings) {
         if (b.removed || cancelled.has(bindingKey(b.id, b.incarnation))) continue;
