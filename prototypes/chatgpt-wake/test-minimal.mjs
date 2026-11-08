@@ -41,6 +41,21 @@ const run = expression => vm.runInContext(expression, context);
 // Identity aliases are resolved by the backend; the worker must retain its canonical result.
 const originalIdentityFetch = context.fetch;
 const canonicalIdentity = {status: 'ok', name: 'ChatGPT extension', endpoint: id, generation: 1, delivery_ids: []};
+const addRequest = name => new Promise(resolve => handlers[0]({type: 'add', name, url, tabId: 1}, {id: 'test'}, resolve));
+for (const [httpStatus, body, expected] of [
+  [403, {status: 'denied', reason: 'mailbox_not_found'}, 'Mailbox not found. Check the exact registered name.'],
+  [403, {status: 'denied', reason: 'other'}, 'Mailbox service unavailable'],
+  [503, {status: 'denied', reason: 'mailbox_not_found'}, 'Mailbox service unavailable'],
+  [403, {status: 'unavailable', reason: 'mailbox_not_found'}, 'Mailbox service unavailable'],
+]) {
+  context.fetch = async (request, options) => request.includes('/poll?')
+    ? {ok: false, status: httpStatus, json: async () => body} : originalIdentityFetch(request, options);
+  const beforeClicks = clicks;
+  assert.equal((await addRequest('Missing mailbox')).error, expected);
+  assert.deepEqual(state.minimalBindings, [], 'failed Add saves no binding');
+  assert.equal(clicks, beforeClicks, 'failed Add cannot click Send');
+}
+context.fetch = originalIdentityFetch;
 const identityFetch = result => {
   context.fetch = async (request, options) => request.includes('/poll?')
     ? {ok: true, json: async () => result} : originalIdentityFetch(request, options);

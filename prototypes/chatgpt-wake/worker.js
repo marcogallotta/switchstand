@@ -87,6 +87,8 @@ function clearConfirmedAlert(b) {
 async function source(path) {
   const response = await fetch(SOURCE + path, {cache: 'no-store', signal: AbortSignal.timeout(3000)});
   const value = await response.json();
+  if (response.status === 403 && value.status === 'denied' && value.reason === 'mailbox_not_found')
+    throw Error('Mailbox not found. Check the exact registered name.');
   if (!response.ok || value.status !== 'ok') throw Error('Mailbox service unavailable');
   return value;
 }
