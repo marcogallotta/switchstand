@@ -646,7 +646,7 @@ context.chrome.scripting.executeScript = savedScript;
 run('cancelled.clear()');
 console.log('PASS: registered popup Re-arm all; save failure, wrong sender, history, removed/cancelled, idempotence, zero inline I/O');
 
-// Independent result expectations; unknown/failed actions remain fenced after restart.
+// No-click outcomes refund reservations; uncertain attempts retain evidence and cooldown.
 const realExecution = context.chrome.scripting.executeScript;
 for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['draft-present',true],
   ['wrong-conversation',true],['composer-unavailable',true],['insert-failed',true],
@@ -655,20 +655,21 @@ for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['d
     alert:{incident_id:nextId}, alertDone:true};
   state = {minimalBindings:[structuredClone(seeded)]};
   let executions = 0;
-  context.chrome.scripting.executeScript = async () => {
+  context.chrome.scripting.executeScript = async ({args}) => {
     executions++;
+    if (args[1] === 'inspect') return [{result:{outcome:'ready'}}];
     if (outcome === 'throw') throw Error('injected execution failure');
     return [{result:outcome === undefined ? undefined : {outcome}}];
   };
   await run('load().then(check)');
-  assert.equal(Boolean(state.minimalBindings[0].uncertain), !safe, `fence: ${outcome}`);
+  assert.equal(state.minimalBindings[0].retry.attempts, safe ? 0 : 1, `Send reservation: ${outcome}`);
   for (const key of ['ids','seen','alert']) assert.deepEqual(state.minimalBindings[0][key],seeded[key]);
   if (!safe) {
     const callsBeforeRestart = executions;
     const fresh = vm.createContext({...context});
     vm.runInContext(source,fresh);
     await vm.runInContext('load().then(check)',fresh);
-    assert.equal(executions,callsBeforeRestart, `restart cannot repeat ${outcome}`);
+    assert.equal(executions,callsBeforeRestart, `restart respects cooldown: ${outcome}`);
   }
 }
 state = {minimalBindings:[{id,name:'mail',generation:1,url,armed:true}]};
