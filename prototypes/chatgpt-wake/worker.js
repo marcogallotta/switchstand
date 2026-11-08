@@ -216,6 +216,7 @@ async function check(bindings, onlyId, manual = false) {
     if (!b.armed || b.removed || cancelled.has(bindingKey(b.id, b.incarnation)) || (onlyId && b.id !== onlyId)) continue;
     b.pending = null;
     let stage = 'source-unavailable', failure;
+    let currentAttempt = null;
     try {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
@@ -257,7 +258,7 @@ async function check(bindings, onlyId, manual = false) {
           if (block) { b.status = block; break; }
         }
         if (action !== 'send') b.uncertain = true;
-        b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
+        b.wakeAttempt = currentAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
         if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
@@ -274,7 +275,7 @@ async function check(bindings, onlyId, manual = false) {
     } catch (e) {
       b.status = e.message;
       failure = observationReasons[b.status] || stage;
-      if (b.wakeAttempt && !b.wakeAttempt.finished_at && stage === 'execution-failed') {
+      if (currentAttempt && b.wakeAttempt === currentAttempt && !currentAttempt.finished_at && stage === 'execution-failed') {
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = 'execution-failed';
       }
