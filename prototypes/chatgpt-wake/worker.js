@@ -22,6 +22,7 @@ function migrateRetry(b) {
   // Unknown old Send timing cannot waive the binding-wide cooldown.
   b.retry = {attempts, lastAt: validTime ? legacy.lastAt : attempts ? Date.now() : 0};
   if (legacy && !valid) b.uncertain = true;
+  if (b.uncertain) b.priorUncertain = true; // Historical unknown is evidence, not a global Send fence.
   return true;
 }
 function budgetBlock(b) {
