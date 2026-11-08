@@ -1,6 +1,6 @@
 # ChatGPT mailbox wake — operating guide
 
-This is the current operator guide for the maintained Chrome/Brave MV3 extension. **Source remains `prototypes/chatgpt-wake/`** on reviewed repository main `d43d9cb9` (8 November 2026); moving it to `extensions/chatgpt-wake/` is planned, **not landed**. The backend is in `src/switchstand/chatgpt_wake.py` and its optional alert reporter in `src/switchstand/chatgpt_alerts.py`. Historical design documents are not installation instructions.
+This is the current operator guide for the maintained Chrome/Brave MV3 extension. **Source remains `prototypes/chatgpt-wake/`**; moving it to `extensions/chatgpt-wake/` is planned, **not landed**. The guide was authored against reviewed repository main `d43d9cb9`; source main had advanced to `04b7e8f` by the dated verification snapshot below (8 November 2026). The backend is in `src/switchstand/chatgpt_wake.py` and its optional alert reporter in `src/switchstand/chatgpt_alerts.py`. Historical design documents are not installation instructions.
 
 ## Prerequisites and pairing
 
