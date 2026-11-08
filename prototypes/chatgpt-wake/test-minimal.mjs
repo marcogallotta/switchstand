@@ -350,13 +350,18 @@ console.log('PASS: discarded and frozen tabs defer without losing a later wake')
 for (const marker of ['pendingSend', 'diagnostic', 'stopSendAttempt']) {
   state = {wakeBindings: [{endpoint: id, name: 'mail', generation: 1, url, armed: true, [marker]: {outcome: 'unknown'}}]};
   await run('load()');
-  assert.equal(state.minimalBindings[0].uncertain, true, `${marker} remains an uncertain legacy fence`);
+  assert.equal(state.minimalBindings[0].uncertain, true, `${marker} historical outcome remains UNKNOWN`);
   const beforeLegacy = clicks;
+  editor.value = '';
   await run('load().then(check)');
-  assert.equal(clicks, beforeLegacy + 1, `${marker} history does not permanently block AVAILABLE mail`);
+  assert.equal(clicks, beforeLegacy, `${marker}: migration guards an old possible Send`);
   assert.equal(state.minimalBindings[0].priorUncertain, true, 'old unknown outcome retained as evidence');
+  assert.equal(state.minimalBindings[0].retry.lastAt, now);
+  now += 120001;
+  await run('load().then(check)');
+  assert.equal(clicks, beforeLegacy + 1, `${marker}: AVAILABLE mail wakes after conservative cooldown`);
 }
-console.log('PASS: legacy pending-send, diagnostic and stop-send uncertainty remains fenced');
+console.log('PASS: legacy pending-send uncertainty preserves evidence and 2-minute cooldown');
 
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true}]};
 const beforeRecovery = reports.length;
@@ -460,7 +465,8 @@ context.chrome.storage.local.set = addSave;
 const readd = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url: url + '-new'}, {id: 'test'}, resolve));
 assert.equal(readd.error, undefined);
 const fresh = state.minimalBindings.find(b => b.id === id);
-assert.deepEqual(fresh, {id, name: 'mail', generation: 1, url: url + '-new', armed: true, status: 'Armed', incarnation: fresh.incarnation});
+assert.deepEqual({...fresh, retry: undefined}, {id, name: 'mail', generation: 1, url: url + '-new', armed: true, status: 'Armed', incarnation: fresh.incarnation, retry: undefined});
+assert.deepEqual(fresh.retry, {attempts: 0, lastAt: 0}, 'new pairing begins with no prior attempts');
 assert.match(fresh.incarnation, /^[0-9a-f-]{36}$/);
 assert.deepEqual(state.minimalBindings.find(b => b.id === nextId), untouched);
 assert.equal(reports.length, backendReports, 'Add makes no backend writes');
