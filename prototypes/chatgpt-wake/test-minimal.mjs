@@ -572,16 +572,11 @@ state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: false,
 await run('load()'); // Initialize harmless migration before checking unsupported action is a no-op.
 const saved = structuredClone(state);
 const beforeScripts = context.chrome.scripting.executeScript;
-let scripts = 0;
-context.chrome.scripting.executeScript = async (...args) => {
-  scripts++;
-  return beforeScripts(...args);
-};
+context.chrome.scripting.executeScript = async () => { throw Error('obsolete Re-arm touched composer'); };
 const unsupported = await new Promise(resolve => handlers[0]({type:'rearm', id, expectedAttempt:id},
   {id:'test'}, resolve));
 assert.match(unsupported.error, /Unknown request/, 'obsolete Re-arm is unavailable');
 assert.deepEqual(state, saved, 'unsupported Re-arm cannot erase uncertainty');
-assert.equal(scripts, 0, 'unsupported Re-arm must not open the composer');
 context.chrome.scripting.executeScript = beforeScripts;
 console.log('PASS: obsolete Re-arm cannot mutate history or touch composer');
 }
