@@ -483,46 +483,62 @@ context.fetch = originalFetch;
 console.log('PASS: one-click Add, duplicate/navigation rejection, isolated Resume, Resume all and guarded Remove tombstone');
 
 // Diagnostic uploads are independent of alerts and browser actions.
+// Start from durable legacy uncertainty; migration retains UNKNOWN and guards cooldown.
 context.fetch = originalFetch;
 context.chrome.tabs.query = originalTabs;
 run(`cancelled.clear(); loggedObservations.clear()`);
+editor.value = '';
+state = {minimalBindings: [{id, name:'mail', generation:1, url, armed:true,
+  uncertain:true, wakeAttempt:{id, action:'send', started_at:new Date(now).toISOString(), outcome:'unknown-outcome'}}]};
+const diagnosticBinding = (await run('load()'))[0];
 const diagnosticClicks = clicks;
-run(`globalThis.diagnosticBinding = {id: '${id}', name: 'mail', generation: 1, url: '${url}', armed: true, uncertain: true}`);
+assert.equal(diagnosticBinding.retry.lastAt, now, 'migration guards prior ambiguous send with durable cooldown');
+assert.equal(diagnosticBinding.priorUncertain, true, 'historical uncertainty retained');
 await run('check([diagnosticBinding])');
-assert.equal(observations.at(-1).observation.reason, 'uncertain-wake');
-assert.equal(observations.at(-1).observation.attempt, null, 'legacy uncertainty has no invented attempt');
+assert.equal(diagnosticBinding.status, 'Wake cooling down');
+assert.equal(clicks, diagnosticClicks, 'migration does not retry before two minutes');
+assert.equal(observations.at(-1).observation.uncertain, true);
+assert.equal(observations.at(-1).observation.attempt.id, id, 'prior unknown attempt remains attributable');
 const diagnosticCount = observations.length;
 await run('check([diagnosticBinding])');
 assert.equal(observations.length, diagnosticCount, 'unchanged observation is deduplicated');
+now += 120001;
 context.chrome.tabs.query = async () => [{id: 1, url, discarded: true}];
 await run('check([diagnosticBinding])');
 assert.equal(observations.at(-1).observation.reason, 'tab-suspended');
+assert.equal(clicks, diagnosticClicks, 'suspended tab never attempts Send');
 context.chrome.tabs.query = originalTabs;
 const originalScript = context.chrome.scripting.executeScript;
 context.chrome.scripting.executeScript = async () => { throw Error('PRIVATE exception sentinel'); };
-run('delete diagnosticBinding.uncertain');
 await run('check([diagnosticBinding])');
 assert.equal(observations.at(-1).observation.reason, 'execution-failed');
-assert.equal(observations.at(-1).observation.attempt.outcome, 'execution-failed');
-const attemptId = observations.at(-1).observation.attempt.id;
-assert.equal(run('diagnosticBinding.uncertain'), true);
+assert.equal(observations.at(-1).observation.attempt.id, id, 'old unknown attempt remains attributable after probe failure');
+assert.equal(diagnosticBinding.priorUncertain, true);
 context.chrome.scripting.executeScript = originalScript;
-await run('check([diagnosticBinding])');
-assert.equal(observations.at(-1).observation.attempt.id, attemptId, 'old attempt remains attributable');
-assert.equal(observations.at(-1).observation.reason, 'uncertain-wake');
 context.fetch = async (request, options) => request.endsWith('/poll?name=mail')
   ? Promise.reject(Error('PRIVATE network sentinel')) : originalFetch(request, options);
 await run('check([diagnosticBinding])');
 assert.equal(observations.at(-1).observation.reason, 'source-unavailable');
 assert.equal(observations.at(-1).observation.pending_count, null, 'failed poll is not empty mail');
+assert.equal(clicks, diagnosticClicks, 'failed source never dispatches Send');
+// Keep the shared minimum cooldown active while testing a failed diagnostic upload.
+diagnosticBinding.retry.lastAt = now;
+diagnosticBinding.retry.attempts = 1;
+await run('save([diagnosticBinding])');
 context.fetch = async (request, options) => request.endsWith('/report') && JSON.parse(options.body).observation
   ? {ok: false, status: 413} : originalFetch(request, options);
 run('loggedObservations.clear()');
 await run('check([diagnosticBinding])');
-assert.equal(clicks, diagnosticClicks, 'diagnostic failure never clears fence or causes another click');
+assert.equal(clicks, diagnosticClicks, 'diagnostic upload failure cannot bypass cooldown');
 context.fetch = originalFetch;
 await run('check([diagnosticBinding])');
-assert.equal(observations.at(-1).observation.reason, 'uncertain-wake', 'failed upload is retried');
+assert.equal(observations.at(-1).observation.uncertain, true, 'failed diagnostic upload is retried with UNKNOWN evidence');
+assert.equal(clicks, diagnosticClicks);
+now += 120001;
+editor.value = '';
+await run('check([diagnosticBinding])');
+assert.equal(clicks, diagnosticClicks + 1, 'eligible AVAILABLE mail retries after cooldown without permanent uncertainty fence');
+assert.equal(diagnosticBinding.priorUncertain, true, 'later Send does not erase historical UNKNOWN');
 assert.ok(observations.some(p => p.observation.attempt?.outcome === 'click-attempted'));
 assert.ok(observations.some(p => p.observation.reason === 'bound-tab-missing'));
 assert.ok(observations.every(p => p.delivery_ids.length === 0 && !p.incident));
