@@ -124,7 +124,7 @@ await run('check(bindings)');
 const before = clicks;
 await run('check(bindings)');
 assert.equal(clicks, before, 'automatic poll cannot repeat uncertain wake');
-assert.equal(state.minimalBindings[0].sendBudget.auto, 1, 'click reserves a persisted automatic attempt');
+assert.equal(state.minimalBindings[0].retry.attempts, 1, 'click reserves a persisted retry attempt');
 assert.equal(state.minimalBindings[0].uncertain, undefined);
 const restartedAfterClick = vm.createContext({...context});
 vm.runInContext(source, restartedAfterClick);
@@ -144,7 +144,7 @@ run(`cancelled.clear(); globalThis.newBatch = {id: '${id}', name: 'mail', genera
 const beforeNewBatch = clicks;
 await run('check([newBatch])');
 assert.equal(clicks, beforeNewBatch + 1, 'a disjoint new batch can wake after a definite no-click');
-assert.equal(state.minimalBindings[0].ids[0], nextId);
+assert.equal(state.minimalBindings[0].retry.attempts, 1, 'new available mail receives its own guarded Send');
 context.fetch = originalBatchFetch;
 console.log('PASS: new pending IDs replace an old definitely unsent batch');
 
@@ -272,14 +272,17 @@ state = {wakeBindings: [{endpoint: id, name: 'mail', generation: 1, url, armed: 
 await run('load()');
 assert.equal(state.minimalBindings[0].uncertain, false, 'legacy seen IDs do not halt other mail');
 assert.deepEqual(state.minimalBindings[0].seen, [id]);
+const beforeSeenFetch = context.fetch;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id], available_delivery_ids: []})}
+  : beforeSeenFetch(request, options);
 const beforeSeen = clicks;
 await run('load().then(check)');
 assert.equal(clicks, beforeSeen, 'upgrade cannot resend a still-pending seen delivery');
-const beforeSeenFetch = context.fetch;
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config') ? beforeSeenFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId], available_delivery_ids: [id, nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId], available_delivery_ids: [nextId]})};
 await run('load().then(check)');
-assert.equal(clicks, beforeSeen + 1, 'new B wakes even while old seen A remains pending');
+assert.equal(clicks, beforeSeen + 1, 'new AVAILABLE B wakes even while RECEIVED A remains pending');
 context.fetch = beforeSeenFetch;
 console.log('PASS: legacy seen A stays fenced while new B can wake');
 
@@ -350,7 +353,8 @@ for (const marker of ['pendingSend', 'diagnostic', 'stopSendAttempt']) {
   assert.equal(state.minimalBindings[0].uncertain, true, `${marker} remains an uncertain legacy fence`);
   const beforeLegacy = clicks;
   await run('load().then(check)');
-  assert.equal(clicks, beforeLegacy, `${marker} cannot cause an automatic resend`);
+  assert.equal(clicks, beforeLegacy + 1, `${marker} history does not permanently block AVAILABLE mail`);
+  assert.equal(state.minimalBindings[0].priorUncertain, true, 'old unknown outcome retained as evidence');
 }
 console.log('PASS: legacy pending-send, diagnostic and stop-send uncertainty remains fenced');
 
@@ -404,7 +408,7 @@ state = {minimalBindings: [{...staleReport, uncertain: true}]};
 context.fetch = emptyReportPoll;
 await run('load().then(check)');
 assert.equal(state.minimalBindings[0].uncertain, true, 'empty poll preserves uncertain Send fence');
-assert.equal(state.minimalBindings[0].status, 'Needs manual reconciliation');
+assert.equal(state.minimalBindings[0].status, 'Armed', 'empty AVAILABLE mailbox needs no retry');
 context.fetch = recoveryFetch;
 console.log('PASS: validated empty poll clears obsolete alert text; failures and uncertain Send stay fenced');
 
