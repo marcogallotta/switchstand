@@ -490,7 +490,7 @@ run(`cancelled.clear(); loggedObservations.clear()`);
 editor.value = '';
 state = {minimalBindings: [{id, name:'mail', generation:1, url, armed:true,
   uncertain:true, wakeAttempt:{id, action:'send', started_at:new Date(now).toISOString(), outcome:'unknown-outcome'}}]};
-const diagnosticBinding = (await run('load()'))[0];
+const diagnosticBinding = await run('load().then(bs => globalThis.diagnosticBinding = bs[0])');
 const diagnosticClicks = clicks;
 assert.equal(diagnosticBinding.retry.lastAt, now, 'migration guards prior ambiguous send with durable cooldown');
 assert.equal(diagnosticBinding.priorUncertain, true, 'historical uncertainty retained');
@@ -513,6 +513,8 @@ context.chrome.scripting.executeScript = async () => { throw Error('PRIVATE exce
 await run('check([diagnosticBinding])');
 assert.equal(observations.at(-1).observation.reason, 'execution-failed');
 assert.equal(observations.at(-1).observation.attempt.id, id, 'old unknown attempt remains attributable after probe failure');
+assert.equal(observations.at(-1).observation.attempt.outcome, 'unknown-outcome', 'failed inspect cannot overwrite a previous ambiguous Send');
+assert.equal(diagnosticBinding.wakeAttempt.finished_at, undefined, 'inspect failure cannot invent an old attempt completion');
 assert.equal(diagnosticBinding.priorUncertain, true);
 context.chrome.scripting.executeScript = originalScript;
 context.fetch = async (request, options) => request.endsWith('/poll?name=mail')
