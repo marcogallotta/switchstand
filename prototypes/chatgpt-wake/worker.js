@@ -198,7 +198,7 @@ async function check(bindings, onlyId, manual = false) {
       if (!p.delivery_ids.length) {
         delete b.checked; delete b.since; b.status = b.uncertain ? 'Needs manual reconciliation' : 'Armed';
         if (b.alert) b.recovering = true;
-        else delete b.alertDone;
+        else { delete b.alertDone; delete b.report; }
         continue;
       }
       stage = 'execution-failed';

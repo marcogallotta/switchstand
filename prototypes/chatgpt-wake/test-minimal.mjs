@@ -316,6 +316,7 @@ alertStatus = 'unavailable';
 await run('load().then(check)');
 assert.equal(reports.at(-1).incident.phase, 'recovered');
 assert.equal(state.minimalBindings[0].recovering, true, 'uncertain recovery keeps exact incident');
+assert.equal(state.minimalBindings[0].report, 'Alert not confirmed', 'active alert retains its report during uncertain recovery');
 const firstRecovery = structuredClone(reports.at(-1));
 alertStatus = 'queued';
 await run('load().then(check)');
@@ -325,6 +326,35 @@ assert.equal(state.minimalBindings[0].alert, undefined, 'confirmed recovery clea
 context.fetch = recoveryFetch;
 context.chrome.tabs.query = recoveryTabs;
 console.log('PASS: empty mailbox reports one recovery and replays an uncertain receipt');
+
+// A stale alert rejection must stop appearing beside Armed after a validated empty poll.
+const staleReport = {id, name: 'mail', generation: 1, url, armed: true,
+  status: 'Chat not open', report: 'Alert not confirmed', alertDone: true};
+const emptyReportPoll = async () => ({ok: true, json: async () =>
+  ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})});
+state = {minimalBindings: [staleReport]};
+context.fetch = emptyReportPoll;
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].status, 'Armed');
+assert.equal(state.minimalBindings[0].report, undefined, 'empty poll clears obsolete report without an alert');
+assert.equal(state.minimalBindings[0].alertDone, undefined, 'empty poll clears obsolete alert dedupe');
+for (const failedPoll of [
+  async () => { throw Error('Mailbox service unavailable'); },
+  async () => ({ok: true, json: async () =>
+    ({status: 'ok', name: 'mail', endpoint: nextId, generation: 1, delivery_ids: []})})]) {
+  state = {minimalBindings: [staleReport]};
+  context.fetch = failedPoll;
+  await run('load().then(check)');
+  assert.equal(state.minimalBindings[0].report, 'Alert not confirmed', 'unvalidated poll retains prior report');
+  assert.equal(state.minimalBindings[0].alertDone, true, 'unvalidated poll retains alert dedupe');
+}
+state = {minimalBindings: [{...staleReport, uncertain: true}]};
+context.fetch = emptyReportPoll;
+await run('load().then(check)');
+assert.equal(state.minimalBindings[0].uncertain, true, 'empty poll preserves uncertain Send fence');
+assert.equal(state.minimalBindings[0].status, 'Needs manual reconciliation');
+context.fetch = recoveryFetch;
+console.log('PASS: validated empty poll clears obsolete alert text; failures and uncertain Send stay fenced');
 
 state = {minimalBindings: []};
 const add = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url}, {id: 'test'}, resolve));
