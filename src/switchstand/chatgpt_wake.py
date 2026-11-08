@@ -171,13 +171,15 @@ def install_browser_wake(
                             json.dumps({"name": name, "status": resolved.status, "reason": resolved.reason}))
                 return JSONResponse({"status": resolved.status, "reason": resolved.reason},
                                     status_code=403)
-            ids = await messages.all_pending_delivery_ids(binding, observation_only=True)
-            if ids is None or (await state.by_name(name)).mailbox != binding:
+            id_sets = await messages.wake_delivery_id_sets(binding, observation_only=True)
+            if id_sets is None or (await state.by_name(name)).mailbox != binding:
                 return reject("poll", "stale_or_unavailable", 503)
+            pending_ids, available_ids = id_sets
             return JSONResponse({"status": "ok", "name": binding.name,
                                  "endpoint": str(binding.endpoint_id),
                                  "generation": binding.generation,
-                                 "delivery_ids": [str(identity) for identity in ids]},
+                                 "delivery_ids": [str(identity) for identity in pending_ids],
+                                 "available_delivery_ids": [str(identity) for identity in available_ids]},
                                 headers={"Cache-Control": "no-store"})
         except Exception:  # Unavailable observation must not look empty.
             LOG.exception("browser_wake poll unavailable")
