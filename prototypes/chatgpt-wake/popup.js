@@ -10,12 +10,11 @@ async function show() {
   for (const b of minimalBindings.filter(b => !b.removed).sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url))) {
     const row = document.createElement('p');
     row.textContent = `${b.name}: ${b.status || 'Armed'} ${b.report || ''} `;
-    for (const type of ['resume', ...(b.uncertain ? ['rearm'] : []), 'remove']) {
+    for (const type of ['resume', 'remove']) {
       const button = document.createElement('button');
-      button.textContent = {resume: 'Resume', rearm: 'Re-arm', remove: 'Remove'}[type];
+      button.textContent = {resume: 'Resume', remove: 'Remove'}[type];
       const sendAction = async () => {
-        await request({type, id: b.id, expectedIncarnation: b.incarnation ?? null,
-          ...(type === 'rearm' ? {expectedAttempt: b.wakeAttempt?.id || null} : {})});
+        await request({type, id: b.id, expectedIncarnation: b.incarnation ?? null});
         await show();
         return `${button.textContent}: ${b.name} saved`;
       };
