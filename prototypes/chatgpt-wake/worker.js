@@ -17,12 +17,16 @@ function migrateRetry(b) {
   const valid = legacy && validIds(b.ids) && validIds(legacy.ids) &&
     legacy.ids.every(id => b.ids.includes(id)) &&
     Number.isInteger(legacy.auto) && legacy.auto >= 0 && legacy.auto <= 3;
-  const attempts = !legacy ? 0 : valid ? legacy.auto : 3;
-  const validTime = valid && Number.isFinite(legacy.lastAt) && legacy.lastAt >= 0;
-  // Unknown old Send timing cannot waive the binding-wide cooldown.
+  // Both the prior minimal format and old wakeBindings may contain an uncertain
+  // Send with no reliable timestamp. Preserve evidence without fencing new mail.
+  const possibleSend = Boolean(b.uncertain || b.wakeAttempt || b.legacySendEvidence || (legacy && !valid));
+  const attempts = !legacy ? (possibleSend ? 1 : 0) :
+    valid ? Math.max(legacy.auto, possibleSend ? 1 : 0) : 3;
+  const validTime = valid && Number.isFinite(legacy.lastAt) && legacy.lastAt > 0;
+  // One persisted migration-time guard avoids an immediate duplicate on upgrade.
   b.retry = {attempts, lastAt: validTime ? legacy.lastAt : attempts ? Date.now() : 0};
   if (legacy && !valid) b.uncertain = true;
-  if (b.uncertain) b.priorUncertain = true; // Historical unknown is evidence, not a global Send fence.
+  if (possibleSend) b.priorUncertain = true; // Historical outcome remains UNKNOWN.
   return true;
 }
 function budgetBlock(b) {
@@ -86,8 +90,11 @@ async function load() {
   }
   const bindings = (state.wakeBindings || []).map(b => {
     const ids = b.retryBudget?.ids || b.attemptIds;
+    const legacySendEvidence = Boolean(b.pendingSend || b.diagnostic || b.stopSendAttempt ||
+      b.attemptIds?.length || b.retryBudget?.usedRetries);
     return {id: b.endpoint, name: b.name, generation: b.generation, url: b.url, armed: Boolean(b.armed),
-      ids, seen: b.seen, uncertain: Boolean(b.halted || b.pendingSend || b.diagnostic || b.stopSendAttempt || b.attemptIds?.length || b.retryBudget?.usedRetries), status: b.status, alert: b.incident?.evidence,
+      ids, seen: b.seen, legacySendEvidence,
+      uncertain: Boolean(b.halted || legacySendEvidence), status: b.status, alert: b.incident?.evidence,
       alertDone: ['queued', 'recovery-pending'].includes(b.incident?.state)};
   });
   bindings.forEach(migrateRetry);
@@ -285,7 +292,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   exclusive(async () => {
     await fence;
     const bindings = await load();
-    if (['resume', 'rearm', 'remove', 'manual-send'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
+    if (['resume', 'rearm', 'remove'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
     if (m.type === 'add') {
       if (!validUrl(m.url) || !m.name) throw Error('Open an exact ChatGPT conversation and enter its mailbox');
       if (!Number.isInteger(m.tabId)) throw Error('Current chat tab is unavailable');
@@ -313,14 +320,6 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
         if (b.removed || cancelled.has(bindingKey(b.id, b.incarnation))) continue;
         b.armed = true;
       }
-    } else if (m.type === 'manual-send') {
-      const b = bindings.find(matches);
-      if (!b || b.removed || !b.armed || m.expectedBatch !== b.sendBudget?.batchId ||
-          b.sendBudget?.auto !== 3 || b.sendBudget.manualUsed) throw Error('Manual extra unavailable; reopen the popup');
-      const block = budgetBlock(b, true);
-      if (block) throw Error(block);
-      await check(bindings, b.id, true);
-      return {result: b.status};
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
       for (const b of bindings) if (!b.removed && !cancelled.has(bindingKey(b.id, b.incarnation)) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;
