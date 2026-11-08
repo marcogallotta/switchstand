@@ -31,7 +31,7 @@ const context = vm.createContext({crypto: webcrypto, Date: Clock, console, URL, 
       (payload.observation ? observations : reports).push(payload);
       return {ok: true, json: async () => ({status: 'logged', alert: {status: alertStatus, reason: alertReason}})};
     }
-    return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id]})};
+    return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id], available_delivery_ids: [id]})};
   },
   chrome: {runtime: {id: 'test', onMessage: {addListener(handler) { handlers.push(handler); }}}, alarms: {create() {}, onAlarm: {addListener() {}}},
     storage: {local: {get: async () => structuredClone(state), set: async next => { state = {...state, ...structuredClone(next)}; }}},
@@ -40,7 +40,7 @@ vm.runInContext(source, context);
 const run = expression => vm.runInContext(expression, context);
 // Identity aliases are resolved by the backend; the worker must retain its canonical result.
 const originalIdentityFetch = context.fetch;
-const canonicalIdentity = {status: 'ok', name: 'ChatGPT extension', endpoint: id, generation: 1, delivery_ids: []};
+const canonicalIdentity = {status: 'ok', name: 'ChatGPT extension', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []};
 const addRequest = name => new Promise(resolve => handlers[0]({type: 'add', name, url, tabId: 1}, {id: 'test'}, resolve));
 for (const [httpStatus, body, expected] of [
   [403, {status: 'denied', reason: 'mailbox_not_found'}, 'Mailbox not found. Check the exact registered name.'],
@@ -139,7 +139,7 @@ const nextId = '22222222-2222-4222-8222-222222222222';
 const originalBatchFetch = context.fetch;
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config')
   ? originalBatchFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [nextId], available_delivery_ids: [nextId]})};
 run(`cancelled.clear(); globalThis.newBatch = {id: '${id}', name: 'mail', generation: 1, url: '${url}', armed: true, ids: ['${id}'], status: 'draft-present'}`);
 const beforeNewBatch = clicks;
 await run('check([newBatch])');
@@ -188,7 +188,7 @@ await run('report(alertBinding, [alertBinding])');
 assert.equal(reports.length, reportsBeforeStop, 'Stop suppresses alert');
 run(`cancelled.clear(); bindings[0].alertDone = true`);
 const originalFetch = context.fetch;
-context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})});
+context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})});
 await run('check(bindings)');
 assert.equal(run('bindings[0].uncertain'), undefined, 'fresh same-binding empty poll retires a validated batch');
 assert.equal(run('bindings[0].status'), 'Armed');
@@ -277,7 +277,7 @@ await run('load().then(check)');
 assert.equal(clicks, beforeSeen, 'upgrade cannot resend a still-pending seen delivery');
 const beforeSeenFetch = context.fetch;
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config') ? beforeSeenFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId], available_delivery_ids: [id, nextId]})};
 await run('load().then(check)');
 assert.equal(clicks, beforeSeen + 1, 'new B wakes even while old seen A remains pending');
 context.fetch = beforeSeenFetch;
@@ -292,7 +292,7 @@ await run('load().then(check)');
 assert.equal(state.minimalBindings[0].alertDone, true, 'failed poll retains confirmed alert evidence');
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config')
   ? originalAlertFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId], available_delivery_ids: [id, nextId]})};
 context.chrome.tabs.query = async () => [];
 const beforeDifferentBatch = reports.length;
 await run('load().then(check)');
@@ -305,7 +305,7 @@ assert.equal(reports.length, beforeUnconfirmed + 1, 'unconfirmed A replays its e
 assert.equal(reports.at(-1).incident.incident_id, oldAlert.incident_id);
 await run('load().then(check)');
 assert.equal(reports.length, beforeUnconfirmed + 1, 'confirmed incident covers the continuous pending episode');
-context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: [nextId]})});
+context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: [nextId], available_delivery_ids: [nextId]})});
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: false, uncertain: true, alert: oldAlert, alertDone: true}]};
 const duplicate = await new Promise(resolve => handlers[0]({type: 'add', tabId: 1, name: 'mail', url}, {id: 'test'}, resolve));
 assert.match(duplicate.error, /already added/, 'Add cannot replace a prior pairing');
@@ -362,7 +362,7 @@ await run('load().then(check)');
 assert.equal(reports.length, beforeRecovery + 1);
 const blocked = reports.at(-1).incident;
 context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})}
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})}
   : recoveryFetch(request, options);
 alertStatus = 'unavailable';
 await run('load().then(check)');
@@ -383,7 +383,7 @@ console.log('PASS: empty mailbox reports one recovery and replays an uncertain r
 const staleReport = {id, name: 'mail', generation: 1, url, armed: true,
   status: 'Chat not open', report: 'Alert not confirmed', alertDone: true};
 const emptyReportPoll = async () => ({ok: true, json: async () =>
-  ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})});
+  ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})});
 state = {minimalBindings: [staleReport]};
 context.fetch = emptyReportPoll;
 await run('load().then(check)');
@@ -393,7 +393,7 @@ assert.equal(state.minimalBindings[0].alertDone, undefined, 'empty poll clears o
 for (const failedPoll of [
   async () => { throw Error('Mailbox service unavailable'); },
   async () => ({ok: true, json: async () =>
-    ({status: 'ok', name: 'mail', endpoint: nextId, generation: 1, delivery_ids: []})})]) {
+    ({status: 'ok', name: 'mail', endpoint: nextId, generation: 1, delivery_ids: [], available_delivery_ids: []})})]) {
   state = {minimalBindings: [staleReport]};
   context.fetch = failedPoll;
   await run('load().then(check)');
@@ -436,7 +436,7 @@ assert.equal(unsafeRemove.error, undefined, 'pending mail does not block local R
 assert.equal(state.minimalBindings.length, 2, 'Remove retains unresolved history');
 state.minimalBindings[0] = {id, name: 'mail', generation: 1, url, armed: true, uncertain: true, ids: [id], seen: [id]};
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config') ? originalFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})};
 const emptyMailboxFetch = context.fetch; context.fetch = async () => { throw Error('offline'); };
 const removed = await new Promise(resolve => handlers[0]({type: 'remove', id}, {id: 'test'}, resolve));
 assert.equal(removed.error, undefined);
@@ -543,7 +543,7 @@ const rearmRequest = m => new Promise(resolve => handlers[0](m, {id: 'test'}, re
 const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncertain: true,
   ids: [id], seen: [nextId], wakeAttempt: {id, action: 'send', started_at: new Date().toISOString()}, status: 'Wake outcome unknown'};
 const rearmMessage = {type: 'rearm', id, expectedAttempt: id};
-const emptyPoll = {status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []};
+const emptyPoll = {status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []};
 let rearmPoll = emptyPoll;
 context.fetch = async (request, options) => request.includes('/poll?')
   ? {ok: true, json: async () => structuredClone(rearmPoll)} : originalFetch(request, options);
@@ -786,18 +786,18 @@ console.log('PASS: lost browser receipt consumes budget and survives worker rest
 const joinedId = '33333333-3333-4333-8333-333333333333';
 const oldBudgetId = state.minimalBindings[0].sendBudget.batchId;
 context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, joinedId]})}
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, joinedId], available_delivery_ids: [id, joinedId]})}
   : originalFetch(request, options);
 await run('load().then(check)');
 assert.equal(state.minimalBindings[0].sendBudget.batchId, oldBudgetId);
 assert.deepEqual(state.minimalBindings[0].ids, [id, joinedId]);
 context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: []})}
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: [], available_delivery_ids: []})}
   : originalFetch(request, options);
 await run('load().then(check)');
 assert.equal(state.minimalBindings[0].sendBudget.batchId, oldBudgetId, 'changed generation cannot retire a batch');
 context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})}
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})}
   : originalFetch(request, options);
 await run('load().then(check)');
 assert.equal(state.minimalBindings[0].sendBudget, undefined, 'same-binding absence retires validated saved IDs');
