@@ -743,29 +743,26 @@ console.log('PASS: binding-wide 2/4/4-minute retries, controls, and restart dura
 
 // RECEIVED remains in legacy delivery_ids but is not eligible for another Send.
 const historicalFetch = context.fetch;
-context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
-    delivery_ids: [id], available_delivery_ids: []})}
-  : historicalFetch(request, options);
+const setMailbox = (delivery_ids, available_delivery_ids) => {
+  context.fetch = async (request, options) => request.includes('/poll?')
+    ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
+      delivery_ids, ...(available_delivery_ids === null ? {} : {available_delivery_ids})})}
+    : historicalFetch(request, options);
+};
+setMailbox([id], []);
 const beforeReceived = clicks;
 await run('load().then(check)');
 assert.equal(clicks, beforeReceived, 'RECEIVED A cannot be retried');
 assert.equal(state.minimalBindings[0].retry.attempts, 0, 'pickup resets exponential backoff');
 const lastSend = state.minimalBindings[0].retry.lastAt;
-context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
-    delivery_ids: [id, nextId], available_delivery_ids: [nextId]})}
-  : historicalFetch(request, options);
+setMailbox([id, nextId], [nextId]);
 await run('load().then(check)');
 assert.equal(clicks, beforeReceived, 'new B cannot bypass previous Send cooldown');
 assert.equal(state.minimalBindings[0].retry.lastAt, lastSend);
 now += 120001;
 await run('load().then(check)');
 assert.equal(clicks, beforeReceived + 1, 'new AVAILABLE B can wake while old RECEIVED A remains');
-context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
-    delivery_ids: [id, nextId]})}
-  : historicalFetch(request, options);
+setMailbox([id, nextId], null);
 now += 300000;
 await run('load().then(check)');
 assert.equal(clicks, beforeReceived + 1, 'old backend without AVAILABLE field must fail closed');
