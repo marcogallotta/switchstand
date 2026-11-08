@@ -153,14 +153,15 @@ function composer(url, action, diagnostic = false) {
   return result('ready', 'send-ready');
 }
 async function report(b, bindings) {
+  if (b.status === 'Chat not open') { delete b.checked; delete b.since; return; }
   if (cancelled.has(bindingKey(b.id, b.incarnation)) || (!b.pending?.length && !b.recovering) || (b.alertDone && !b.recovering)) return;
-  const now = Date.now(), missing = b.status === 'Chat not open', draft = b.status === 'draft-present';
+  const now = Date.now(), draft = b.status === 'draft-present';
   if (!b.recovering) {
     if (!b.checked || now - b.checked > 60000) b.since = now;
     b.checked = now;
-    if (!b.alert && (missing || now - b.since >= 60000)) {
+    if (!b.alert && now - b.since >= 60000) {
       b.alert = {incident_id: crypto.randomUUID(), phase: 'blocked', name: b.name, endpoint: b.id, generation: b.generation,
-        delivery_ids: b.pending.slice(0, 50), reason: missing ? 'bound-tab-missing' : draft ? 'draft-present' : 'pending-mail',
+        delivery_ids: b.pending.slice(0, 50), reason: draft ? 'draft-present' : 'pending-mail',
         started_at: new Date(b.since).toISOString(), observed_at: new Date(now).toISOString()};
     }
   }
