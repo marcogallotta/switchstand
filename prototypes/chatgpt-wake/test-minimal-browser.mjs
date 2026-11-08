@@ -232,7 +232,7 @@ try {
   const rearmed = (await evaluate(restartedSession,'load()'))[0];
   assert.equal(rearmed.ids,undefined);
   assert.equal(rearmed.sendBudget,undefined);
-  assert.equal(rearmed.seen.includes(id),true);
+  assert.equal(rearmed.seen,undefined,'new retries do not manufacture legacy batch/seen IDs');
   const sendsBeforeRearm = await evaluate(session,'submissions.length');
   await evaluate(restartedSession,'chrome.action.openPopup()');
   const actualPopup=(await command('Target.getTargets')).targetInfos.find(t=>t.url.endsWith('/popup.html') && t.targetId!==popup.targetId);
@@ -243,7 +243,7 @@ try {
     await pause(50);
   }
   assert.equal(await evaluate(actualPopupSession,`chrome.extension.getViews({type:'popup'}).includes(window)`),true,'actual action-popup identity');
-  assert.equal(await evaluate(actualPopupSession,`[...document.querySelectorAll('#bindings button')].some(b=>b.textContent==='Re-arm')`),false,'retired batch needs no confirmation');
+  assert.equal(await evaluate(actualPopupSession,`[...document.querySelectorAll('#bindings button')].some(b=>b.textContent==='Re-arm')`),false,'obsolete per-chat Re-arm stays absent');
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm);
   assert.equal(JSON.parse(await readFile(join(production, 'manifest.json'), 'utf8')).action.default_popup, 'popup.html');
   await evaluate(restartedSession, `(async()=>{const bs=await load();bs.push({...bs[0],id:'other',armed:false,uncertain:true,alert:{retained:true}});bs.push({...bs[0],id:'cancelled',armed:false,uncertain:true});bs.push({...bs[0],id:'removed',removed:true,armed:false});await save(bs);cancelled.add(bindingKey('cancelled',bs[0].incarnation))})()`);
@@ -271,7 +271,7 @@ try {
   for(let attempt=0;attempt<50 && !versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped');attempt++) await pause(100);
   assert.ok(versions.some(v=>v.versionId===rearmVersion.versionId && v.runningStatus==='stopped'));
   const duplicateRearm = await evaluate(popupSession,`chrome.runtime.sendMessage({type:'rearm',id:${JSON.stringify(id)},expectedIncarnation:${JSON.stringify(rearmed.incarnation)},expectedAttempt:${JSON.stringify(rearmed.wakeAttempt.id)}})`);
-  assert.match(duplicateRearm.error,/Uncertain wake changed/,'duplicate confirmation cannot clear another attempt');
+  assert.match(duplicateRearm.error,/Unknown request/,'obsolete single-chat Re-arm cannot clear history');
   for(let attempt=0;attempt<50;attempt++) {
     replacement=(await command('Target.getTargets')).targetInfos.find(t=>t.type==='service_worker' && t.url===worker.url);
     if(replacement && replacement.targetId!==oldRearmTarget) break;
@@ -279,7 +279,7 @@ try {
   }
   assert.ok(replacement && replacement.targetId!==oldRearmTarget);
   restartedSession=await attach(replacement.targetId);
-  assert.equal((await evaluate(restartedSession,'load()'))[0].uncertain,undefined,'real worker restart retains retired batch');
+  assert.equal((await evaluate(restartedSession,'load()'))[0].retry.attempts >= 0,true,'worker restart retains retry state');
   pendingIds=['22222222-2222-4222-8222-222222222222'];
   await evaluate(restartedSession,'load().then(check)');
   assert.equal(await evaluate(session,'submissions.length'),sendsBeforeRearm+1,'new batch wakes after restart');
