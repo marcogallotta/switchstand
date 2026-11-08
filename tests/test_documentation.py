@@ -169,7 +169,7 @@ def test_role_contract_preserves_boundaries_without_execution_detail():
     roles = section(agents, "## Client-specific execution — do not universalize")
     tracker = normalized("docs/coordinator-tracker-contract.md")
 
-    assert "**Codex roles today:** Coordinator and Worker." in roles
+    assert "**Codex execution roles today:** Coordinator and Worker." in roles
     assert "A Worker owns its bounded assignment and does not self-expand" in roles
     assert "**Codex only:** ordinary Worker and Coordinator parent sessions" in roles
     assert "substantive execution runs in context-free native forks" in roles
