@@ -471,7 +471,7 @@ assert.match(fresh.incarnation, /^[0-9a-f-]{36}$/);
 assert.deepEqual(state.minimalBindings.find(b => b.id === nextId), untouched);
 assert.equal(reports.length, backendReports, 'Add makes no backend writes');
 for (const type of ['resume', 'remove']) assert.match((await message({type, id})).error, /Chat changed; reopen the popup/);
-assert.deepEqual(state.minimalBindings.find(b => b.id === id), fresh, 'old row cannot mutate replacement');
+assert.deepEqual(state.minimalBindings.find(b => b.id === id), {...fresh, retry: {attempts: 0, lastAt: 0}}, 'old row cannot mutate replacement beyond safe retry migration');
 assert.equal((await message({type: 'remove', id, expectedIncarnation: fresh.incarnation})).error, undefined);
 assert.equal((await message({type: 'add', name: 'mail', tabId: 1, url: url + '-new'})).error, undefined);
 assert.notEqual(state.minimalBindings.find(b => b.id === id).incarnation, fresh.incarnation, 'same URL gets fresh identity');
@@ -551,6 +551,7 @@ console.log('PASS: composer logs distinguish disabled Send, unrelated draft, att
 // The obsolete per-chat manual Re-arm route is gone; it must never change history.
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: false,
   uncertain: true, wakeAttempt: {id, action:'send'}, ids:[id]}]};
+await run('load()'); // Initialize harmless migration before checking unsupported action is a no-op.
 const saved = structuredClone(state);
 const beforeScripts = context.chrome.scripting.executeScript;
 let scripts = 0;
