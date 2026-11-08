@@ -692,7 +692,10 @@ for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-
     assert.match((await removeRequest({type:'remove',id})).error, /Remove not saved:.*may resume after restart/);
     context.chrome.storage.local.set = realSave;
     for (const type of ['resume', 'resume-all', 'rearm-all']) await removeRequest({type,id});
-    assert.deepEqual(state.minimalBindings[0], retained, 'failed Remove keeps durable history and fence through Resume/bulk');
+    for (const key of Object.keys(retained))
+      assert.deepEqual(state.minimalBindings[0][key], retained[key], `failed Remove retains protected ${key}`);
+    assert.deepEqual(state.minimalBindings[0].retry, {attempts: 0, lastAt: 0},
+      'Resume/bulk may safely initialize durable retry state without clearing Remove fence');
     const restarted = vm.createContext({...context}); vm.runInContext(source, restarted);
     assert.equal(vm.runInContext(`cancelled.has(bindingKey('${id}'))`, restarted), false, 'restart loses volatile failed-Remove fence');
     handlers.pop();
