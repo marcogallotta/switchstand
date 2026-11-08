@@ -21,7 +21,7 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
     assert receiver and other
     unicode_receiver = (await state.register_agent(f"Résumé Agent {uuid4()}", "owner", str(uuid4()))).mailbox
     assert unicode_receiver
-    deliveries = [uuid4() for _ in range(51)]
+    deliveries = [uuid4() for _ in range(54)]
     async with engine.begin() as connection:
         for identity in deliveries:
             await connection.execute(messages.insert().values(
@@ -30,7 +30,9 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
             await connection.execute(message_deliveries.insert().values(
                 delivery_id=identity, sender_work_id=other.endpoint_id, message_id=identity,
                 recipient_work_id=receiver.endpoint_id, recipient_grant_version=1,
-                state="AVAILABLE"))
+                state=("RECEIVED" if identity == deliveries[0] else
+                       "ACKNOWLEDGED" if identity == deliveries[1] else
+                       "DISPOSITIONED" if identity == deliveries[2] else "AVAILABLE")))
         before = (await connection.execute(select(message_deliveries))).all()
     reader = create_async_engine(state_database_schema,
         connect_args={"options": "-c default_transaction_read_only=on"})
@@ -45,7 +47,9 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
             observed = await client.get(PATH + "/poll", params={"name": receiver.name})
             assert observed.status_code == 200
             value = observed.json()
-            assert set(value["delivery_ids"]) == set(map(str, deliveries))
+            assert set(value["delivery_ids"]) == set(map(str, [deliveries[0], *deliveries[3:]]))
+            assert set(value["available_delivery_ids"]) == set(map(str, deliveries[3:]))
+            assert not set(map(str, deliveries[:3])) & set(value["available_delivery_ids"])
             assert value["endpoint"] == str(receiver.endpoint_id)
             assert value["generation"] == receiver.generation
             assert "private body" not in observed.text
@@ -59,6 +63,7 @@ async def test_local_observation_and_reports(state_database_schema, caplog):
             assert spaced.status_code == 200 and spaced.json()["endpoint"] == str(receiver.endpoint_id)
             empty = await client.get(PATH + "/poll", params={"name": other.name})
             assert empty.json()["delivery_ids"] == []
+            assert empty.json()["available_delivery_ids"] == []
             assert empty.json()["name"] == other.name
             assert empty.json()["endpoint"] == str(other.endpoint_id)
             assert empty.json()["endpoint"] != str(receiver.endpoint_id)
