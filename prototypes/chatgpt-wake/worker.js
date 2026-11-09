@@ -121,7 +121,10 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      return result('busy', 'busy');
+      const stop = stopsWithoutEditor[0];
+      const stopping = action === 'prepare' && !stop.disabled && stop.getAttribute('aria-disabled') !== 'true';
+      if (stopping) stop.click();
+      return result('busy', stopping ? 'stop-requested' : 'busy');
     }
     return result('composer-unavailable', !editor ? 'editor-missing' : 'form-missing');
   }
@@ -135,7 +138,9 @@ function composer(url, action, diagnostic = false) {
   const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
   if (stops.length) {
-    return result('busy', 'busy');
+    const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
+    if (stopping) stops[0].click();
+    return result('busy', stopping ? 'stop-requested' : 'busy');
   }
   if (action !== 'send' && !draft) {
     editor.focus();
@@ -216,7 +221,7 @@ async function check(bindings, onlyId, manual = false) {
       if (initialBlock) { b.status = initialBlock; continue; }
       await save(bindings);
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
-        const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
+        const action = tick === 0 ? 'prepare' : b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
         if (action === 'send') {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);

@@ -103,7 +103,7 @@ editor.value = ''; attached = true;
 assert.equal(run(`composer('${url}', 'prepare')`), 'draft-present');
 attached = false; busy = true;
 assert.equal(run(`composer('${url}', 'prepare')`), 'busy');
-assert.equal(stopClicks, 0);
+assert.equal(stopClicks, 1, 'busy matched chat is stopped to make room for pending mail');
 assert.equal(run(`composer('https://chatgpt.com/c/other', 'send')`), 'wrong-conversation');
 context.document.getElementById = () => null;
 busy = false;
@@ -112,7 +112,7 @@ fallbackEditorAvailable = false;
 busy = true;
 const beforeMissingEditorStop = stopClicks;
 assert.equal(run(`composer('${url}', 'prepare')`), 'busy', 'a unique Stop is usable when the editor is absent');
-assert.equal(stopClicks, beforeMissingEditorStop);
+assert.equal(stopClicks, beforeMissingEditorStop + 1, 'unique Stop works even when busy composer has no editor');
 containerAvailable = false;
 assert.equal(run(`composer('${url}', 'prepare')`), 'composer-unavailable', 'unidentified page-wide editor is refused');
 containerAvailable = true;
@@ -133,7 +133,7 @@ assert.equal(clicks, before, 'a worker restart cannot send the same pending mail
 run(`cancelled.add(bindingKey('${id}'))`);
 await run('check(bindings)');
 assert.equal(clicks, before);
-console.log('PASS: exact URL, draft/attachment protection, no Stop, cooldown, restart reservation, cancellation');
+console.log('PASS: exact URL, protected draft, busy Stop, cooldown, restart reservation, cancellation');
 
 const nextId = '22222222-2222-4222-8222-222222222222';
 const originalBatchFetch = context.fetch;
