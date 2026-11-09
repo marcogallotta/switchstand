@@ -10,15 +10,13 @@ async function show() {
   for (const b of minimalBindings.filter(b => !b.removed).sort((a, b) => a.name.localeCompare(b.name) || a.url.localeCompare(b.url))) {
     const row = document.createElement('p');
     row.textContent = `${b.name}: ${b.status || 'Armed'} ${b.report || ''} `;
-    for (const type of ['resume', ...(b.uncertain ? ['rearm'] : []), ...(b.sendBudget?.auto === 3 && !b.sendBudget.manualUsed ? ['manual-send'] : []), 'remove']) {
+    for (const type of ['resume', 'remove']) {
       const button = document.createElement('button');
-      button.textContent = {resume: 'Resume', rearm: 'Re-arm', 'manual-send': 'Send one extra wake', remove: 'Remove'}[type];
+      button.textContent = {resume: 'Resume', remove: 'Remove'}[type];
       const sendAction = async () => {
-        const receipt = await request({type, id: b.id, expectedIncarnation: b.incarnation ?? null,
-          ...(type === 'rearm' ? {expectedAttempt: b.wakeAttempt?.id || null} : {}),
-          ...(type === 'manual-send' ? {expectedBatch: b.sendBudget.batchId} : {})});
+        await request({type, id: b.id, expectedIncarnation: b.incarnation ?? null});
         await show();
-        return type === 'manual-send' ? `${b.name}: ${receipt.result}` : `${button.textContent}: ${b.name} saved`;
+        return `${button.textContent}: ${b.name} saved`;
       };
       button.onclick = () => act(sendAction);
       row.append(button);
