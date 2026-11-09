@@ -9,9 +9,7 @@ from switchstand.agent_mailboxes import AgentMailbox, AgentMailboxResult
 from switchstand.chatgpt_mcp import build_chatgpt_server, build_ordinary_tools
 from switchstand.reviews import (
     BaselineAssessment,
-    BaselineCheck,
     ReviewFinding,
-    ReviewRequest,
     ReviewResult,
     ReviewSubmit,
 )
@@ -38,27 +36,13 @@ def mailbox() -> AgentMailbox:
     )
 
 
-async def test_review_request_delegates_exact_baseline_check(monkeypatch):
-    subject, bound = service(), mailbox()
-    lookup = Mailboxes(AgentMailboxResult(status="ok", mailbox=bound))
-    monkeypatch.setattr("switchstand.chatgpt_mcp.AgentMailboxState", lambda _engine: lookup)
-    subject.messages, subject.reviews = Messages(), AsyncMock()  # type: ignore[assignment]
-    work_id, review_id = uuid4(), uuid4()
-    expected = ReviewResult(
-        status="WAITING_REVIEWER", review_id=review_id, reason="reviewer_not_available",
-    )
-    subject.reviews.request.return_value = expected
-    check = BaselineCheck(
-        baseline_id=uuid4(), phase="PRE_IMPLEMENTATION",
-        owner_disposition="BASELINE_PRESERVED", comparison="Plan preserves baseline",
-        evidence_refs=("git:plan",),
-    )
-    tool = dict(build_ordinary_tools(subject, agent_identity=lambda: "chat"))["review_request"]
-    assert await tool("1", work_id, "r1", "CODE", baseline_check=check) == expected
-    subject.reviews.request.assert_awaited_once_with(ReviewRequest(
-        subject_work_id=work_id, observed_revision="r1", review_kind="CODE",
-        baseline_check=check,
-    ), bound)
+async def test_review_request_not_registered_even_when_legacy_review_tools_enabled():
+    subject = service()
+    subject.reviews = AsyncMock()
+    registered = dict(build_ordinary_tools(subject, agent_identity=lambda: "chat"))
+    assert "review_request" not in registered
+    assert {"review_get", "review_recover", "review_submit"} <= registered.keys()
+    subject.reviews.request.assert_not_awaited()
 
 
 async def test_review_tools_are_default_off_and_closed(monkeypatch):
@@ -75,7 +59,7 @@ async def test_review_tools_are_default_off_and_closed(monkeypatch):
     subject.reviews = AsyncMock()
     tools = await build_chatgpt_server(subject).list_tools()
     names = {tool.name for tool in tools}
-    assert names & (review_tools | {"review_recover"}) == review_tools
+    assert names & review_tools == review_tools - {"review_request"}
     submit_schema = next(tool.input_schema for tool in tools if tool.name == "review_submit")
     assert {
         "api_version", "review_id", "verdict", "context_provenance", "findings",
@@ -84,8 +68,7 @@ async def test_review_tools_are_default_off_and_closed(monkeypatch):
     assert not {
         "reviewer", "reviewer_endpoint_id", "principal", "grant_id", "generation",
     } & set(submit_schema["properties"])
-    request_schema = next(tool.input_schema for tool in tools if tool.name == "review_request")
-    assert "baseline_check" in request_schema["properties"]
+    assert "review_request" not in names
     for name in ("review_get", "review_recover"):
         schema = next(tool.input_schema for tool in tools if tool.name == name)
         assert set(schema["properties"]) == {"api_version", "review_id"}

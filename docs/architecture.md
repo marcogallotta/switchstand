@@ -500,16 +500,20 @@ messaging, and required continuation:
   Both reviewer mailboxes are distinct from the `Codex Coordinator` control mailbox. The V1
   recovery reviewer formally receives and submits after independent native review; other Codex
   review work uses fresh native forks.
-  Its default-off non-Codex path is
-  `review_request` -> `review_get` polling -> bounded focused rereview -> Human Review;
-  pending responses explicitly direct sleep 20 seconds before every exact-ID poll.
+  Ordinary ChatGPT no longer exposes `review_request` for new formal MCP reviews,
+  whether paired or unpaired. Existing exact legacy occurrences remain available through
+  `review_get` polling (sleep 20 seconds before each poll while the session runs),
+  `review_recover`, `review_submit` and `review_bundle_get` where enabled.
   Requesters record the authorized post-PASS step in the subject's existing
   `review_next_action` before submission. Terminal `review_get` responses use that
-  revision-checked instruction for PASS, name findings for disposition/focused resubmission,
-  or direct evidence-based blocker recovery. Missing continuation or blocker evidence
-  requires agent-owned record reconciliation, never an invented coordinator wake-up.
-  Verdicts alone do not end the turn or grant effect authority; Human Review or an
-  evidenced human-action blocker can end it, with real host limits preserved separately.
+  revision-checked instruction for PASS and evidence-based blocker recovery; after
+  FINDINGS, disposition accepted defects and obtain bounded independent focused
+  review through explicitly paired Codex, or Marco-established Codex if unpaired.
+  Do not create a replacement formal MCP review_request; retain legacy review/finding
+  identities. Missing continuation or blocker evidence requires agent-owned record
+  reconciliation, never an invented coordinator wake-up. Verdicts alone do not end
+  the turn or grant effect authority; Human Review or an evidenced human-action
+  blocker can end it, with real host limits preserved separately.
   `review_recover` can rebind only an exact received delivery after a same-principal mailbox
   takeover, and `review_submit` remains the sole verdict mutation. Requester and reviewer
   identities come from the current authenticated agent mailbox and are never public arguments.
