@@ -75,9 +75,9 @@ def test_review_result_guidance_preserves_role_and_authority_boundaries():
         verdict="FINDINGS", findings=(finding,), verdict_digest="a" * 64,
     )
     for required in (
-        "against evidence", "accepted defects only", "mode=FOCUSED",
-        "prior_review_id=<this review_id>", "finding_ids=<accepted finding_ids>",
-        "observed_revision=<new revision>", "scope expansion",
+        "against evidence", "accepted defects only", "paired Codex",
+        "accepted finding_ids", "do not start a new formal review_request",
+        "scope expansion",
     ):
         assert required in findings.next_action
 
@@ -112,7 +112,7 @@ def test_review_result_guidance_distinguishes_unavailable_reviewer_from_active_p
             "While this chat can run", "bounded active polling", "Bash sleep 20",
             f"review_get(review_id='{review_id}')", "empty read is nonterminal",
             "No verdict yet", "Do not end the turn", "until PASS, FINDINGS, or BLOCKED",
-            "Sleep before the first poll", "perform the returned next_action",
+            "perform the returned next_action",
             "Every pending response requires another sleep and poll",
             "real host/session limit", "preserve the exact review_id and state",
             "do not use an hourly Scheduled task",
@@ -565,7 +565,9 @@ async def test_same_principal_distinct_endpoints_complete_review(
             assert "not by itself a reason to ask Marco" in result.next_action
     elif verdict == "FINDINGS":
         assert finding.finding_id in result.next_action
-        assert f"prior_review_id='{sent.review_id}'" in result.next_action
+        assert f"review_id='{sent.review_id}'" in result.next_action
+        assert "accepted finding_ids" in result.next_action
+        assert "Do not issue a new formal review_request" in result.next_action
         assert "apply the smallest authorized clearing fixes" in result.next_action
     else:
         assert "work:actual-blocker-evidence" in result.next_action

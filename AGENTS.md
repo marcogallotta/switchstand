@@ -41,7 +41,7 @@ Shared canonical `main` is read-only for edits. Use an authorized linked writer 
 
 **Codex execution roles today:** Coordinator and Worker. A Worker owns its bounded assignment and does not self-expand; questions normally go to its parent, which handles Marco-facing coordination. Root owns overall integration; delegated Coordinators own only their assigned lane. Independence depends on actual participation, not role label. Preserve one writer per shared surface, trace child obligations and check resource/currentness boundaries. No new coordinator topology is specified here.
 
-**ChatGPT only:** Project Settings provide its entry and MCP transport. Ordinary ChatGPT uses the server's formal review route and polls exact results; substantive independent design/code review must actually go to Codex, not a ChatGPT substitute. Client MCP submission/receipt mechanics never replace Codex's substantive native-fork review or constitute approval. Project Settings are installed manually and verified with readback and rollback.
+**ChatGPT only:** Project Settings provide its entry and MCP transport. Only Marco's explicit named ChatGPT–Codex pairing invokes the paired allocation in those Settings; otherwise each follows its exact assignment with Marco. Ordinary ChatGPT cannot initiate new formal MCP reviews; preserve exact watches for pending legacy reviews. Substantive independent design/code review uses eligible fresh Codex native forks and grants no approval. Project Settings are installed manually and verified with readback and rollback.
 
 ## Routes: load when the trigger is reached
 
