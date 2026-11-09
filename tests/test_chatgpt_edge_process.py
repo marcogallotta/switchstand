@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -30,12 +30,16 @@ from sqlalchemy import func, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from switchstand.agent_mailboxes import AgentMailboxState
 from switchstand.contracts import LaunchAuthority
 from switchstand.edge_semantic_probe import MCP
 from switchstand.grant_state import GrantState
 from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
-from switchstand.messages import messages
+from switchstand.messages import MessageState, messages
+from switchstand.reviews import (
+    ReviewGuidelines, ReviewOccurrenceState, ReviewPolicy, ReviewRequest, ReviewService,
+)
 from switchstand.state import PostgresState, metadata
 from switchstand.tracker.events import WorkEventRepository
 from switchstand.tracker.relations import project_memberships, work_parents
@@ -480,14 +484,44 @@ async def test_notification_attention_process_and_returned_review_over_real_http
         observed = await _agent_call(endpoint, "receiver", "work_get", {
             "api_version": "1", "work_id": work_id,
         })
-        requested = await _agent_call(endpoint, "receiver", "review_request", {
-            "api_version": "1", "subject_work_id": work_id,
-            "observed_revision": observed["item"]["revision"], "review_kind": "CODE",
-        })
-        assert requested["status"] == "SENT"
-        review_id = requested["review_id"]
+        # An unreleased ChatGPT client cannot initiate new MCP reviews. A legacy
+        # occurrence seeded through the internal service must remain pollable over HTTP.
+        transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
+        async with Client(transport) as client:
+            assert "review_request" not in {tool.name for tool in await client.list_tools()}
+            try:
+                rejected = await client.call_tool_mcp("review_request", {
+                    "api_version": "1", "subject_work_id": work_id,
+                    "observed_revision": observed["item"]["revision"],
+                    "review_kind": "CODE",
+                }, meta={"openai/session": "receiver"})
+            except Exception as error:
+                assert "review_request" in str(error)
+            else:
+                assert rejected.is_error
+        engine = create_async_engine(url)
+        try:
+            mailboxes = AgentMailboxState(engine)
+            bound = await mailboxes.for_actor(selected.principal.key, "receiver")
+            assert bound.status == "ok" and bound.mailbox is not None
+            policy_version = ReviewPolicy(version="test-v1")
+            seeded = ReviewService(
+                ReviewOccurrenceState(CanonicalWorkRepository(engine), mailboxes,
+                                      policy_version),
+                mailboxes, MessageState(engine, GrantState(engine)), policy_version,
+                ReviewGuidelines(version="test-v1", digest="a" * 64),
+            )
+            requested = await seeded.request(ReviewRequest(
+                subject_work_id=UUID(work_id),
+                observed_revision=observed["item"]["revision"], review_kind="CODE",
+            ), bound.mailbox)
+            assert requested.status == "SENT"
+            review_id = str(requested.review_id)
+            delivery_id = str(requested.delivery_id)
+        finally:
+            await engine.dispose()
         received_request = await _agent_call(endpoint, "reviewer", "agent_message_receive", {
-            "api_version": "1", "delivery_id": requested["delivery_id"],
+            "api_version": "1", "delivery_id": delivery_id,
         })
         assert received_request["status"] == "ok" and received_request["state"] == "RECEIVED"
         submitted = await _agent_call(endpoint, "reviewer", "review_submit", {

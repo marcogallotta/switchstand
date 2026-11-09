@@ -1816,7 +1816,7 @@ def build_ordinary_tools(
         *((("implementation_request", implementation_request),)
           if service.implementation_requests is not None else ()),
         *((
-            ("review_request", review_request), ("review_get", review_get),
+            ("review_get", review_get),
             ("review_recover", review_recover), ("review_submit", review_submit),
         ) if service.reviews is not None else ()),
         *((("review_bundle_get", review_bundle_get),)
