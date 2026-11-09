@@ -7,8 +7,12 @@ click **Add chat**. The
 extension verifies the mailbox and current tab in one action and rejects an
 already paired mailbox or conversation. Saved chats appear alphabetically.
 
-The extension polls pending delivery IDs about every 30 seconds. For an armed
-matching conversation it interrupts a busy ChatGPT response with one enabled,
+The extension polls about every 30 seconds and **requires** the backend
+`available_delivery_ids` field (only mail not yet received by the agent).
+If the field is missing or malformed, the worker makes no Stop or Send
+attempt. Deploy the compatible backend poll contract in PR #1284 before
+installing this worker; the legacy mixed `delivery_ids` list cannot safely
+authorize an interruption. For an armed matching conversation it interrupts a busy ChatGPT response with one enabled,
 uniquely identified **Stop** click, waits for the composer to become idle, then
 inserts `Process your mailbox` and clicks Send. A fresh same-mailbox poll still
 precedes Send. It never stops the wrong conversation or a chat with no eligible

@@ -96,8 +96,8 @@ async function poll(name) {
   const p = await source('/poll?name=' + encodeURIComponent(name));
   if (typeof p.name !== 'string' || !p.name.trim() || !UUID.test(p.endpoint) || !Number.isInteger(p.generation) || p.generation < 1 ||
       !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id)) ||
-      (p.available_delivery_ids !== undefined && (!Array.isArray(p.available_delivery_ids) ||
-        p.available_delivery_ids.some(id => !UUID.test(id) || !p.delivery_ids.includes(id)))))
+      (!Array.isArray(p.available_delivery_ids) ||
+        p.available_delivery_ids.some(id => !UUID.test(id) || !p.delivery_ids.includes(id))))
     throw Error('Invalid mailbox identity');
   return p;
 }
@@ -219,7 +219,7 @@ async function check(bindings, onlyId, manual = false) {
       if (!tab) { b.status = 'Chat not open'; continue; }
       if (tab.discarded || tab.frozen) { b.status = 'Chat suspended'; continue; }
       if (b.uncertain) { b.status = 'Wake outcome unknown'; continue; }
-      const available = p.available_delivery_ids ?? p.delivery_ids;
+      const available = p.available_delivery_ids;
       const freshIds = available.filter(id => !b.seen?.includes(id));
       if (!freshIds.length) { b.status = 'Already nudged'; continue; }
       b.ids = [...new Set([...(b.ids || []), ...freshIds])];
@@ -234,7 +234,7 @@ async function check(bindings, onlyId, manual = false) {
           const fresh = await poll(b.name);
           stage = 'execution-failed';
           if (fresh.endpoint !== b.id || fresh.generation !== b.generation) { b.status = 'Mailbox identity changed'; break; }
-          if (!(fresh.available_delivery_ids ?? fresh.delivery_ids).some(id => b.ids.includes(id))) { b.status = 'Pending batch changed'; break; }
+          if (!fresh.available_delivery_ids.some(id => b.ids.includes(id))) { b.status = 'Pending batch changed'; break; }
           if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
           const block = await reserveSend(b, bindings, manual);
           if (block) { b.status = block; break; }

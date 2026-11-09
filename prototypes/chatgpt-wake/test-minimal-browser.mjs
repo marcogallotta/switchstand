@@ -25,7 +25,7 @@ const server = createServer(async (request, response) => {
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(path.endsWith('/config') ? {status:'ok',report_token:'isolated-fixture'} :
     path.endsWith('/report') ? {status:'logged',alert:{status:'queued'}} :
-    {status:'ok',name:'mail',endpoint:id,generation:1,delivery_ids:pendingIds}));
+    {status:'ok',name:'mail',endpoint:id,generation:1,delivery_ids:pendingIds,available_delivery_ids:pendingIds}));
 });
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');

@@ -54,7 +54,7 @@ const ctx = vm.createContext({
 });
 vm.runInContext(code, ctx);
 async function run({hasMail=true, isBusy=true, initialDraft='', stopDisabled=false, stops=1, boundUrl=url,
-  stopReleases=true, mailClearsOnStop=false, available=null, editorAvailable=true, attachment=false,
+  stopReleases=true, mailClearsOnStop=false, available=true, editorAvailable=true, attachment=false,
   initialStatus='busy'}={}) {
   pending = hasMail; busy = isBusy; draft = initialDraft; disabled = stopDisabled;
   stopCount = 0; sendCount = 0; sent = []; stopControls = stops; observed = 0;
@@ -70,6 +70,10 @@ const success = await run();
 assert.equal(success.stopCount, 1, 'one Stop click interrupts a busy matching chat');
 assert.deepEqual(success.sent, ['Process your mailbox'], 'worker sends the mailbox prompt after Stop');
 assert.equal(success.sendCount, 1, 'one guarded Send follows Stop');
+const missingField = await run({available:null});
+assert.equal(missingField.stopCount, 0, 'missing AVAILABLE field must fail closed');
+assert.equal(missingField.sendCount, 0, 'legacy mixed list never authorizes a Send');
+assert.equal(missingField.status, 'Invalid mailbox identity');
 const receivedOnly = await run({available:false});
 assert.equal(receivedOnly.stopCount, 0, 'RECEIVED-only mail must not trigger Stop when AVAILABLE list is empty');
 assert.equal(receivedOnly.sendCount, 0, 'RECEIVED-only mail must not be resent');
