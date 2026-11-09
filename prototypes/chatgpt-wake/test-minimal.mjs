@@ -103,7 +103,7 @@ editor.value = ''; attached = true;
 assert.equal(run(`composer('${url}', 'prepare')`), 'draft-present');
 attached = false; busy = true;
 assert.equal(run(`composer('${url}', 'prepare')`), 'busy');
-assert.equal(stopClicks, 0);
+assert.equal(stopClicks, 1, 'eligible busy exact chat is stopped');
 assert.equal(run(`composer('https://chatgpt.com/c/other', 'send')`), 'wrong-conversation');
 context.document.getElementById = () => null;
 busy = false;
@@ -112,7 +112,7 @@ fallbackEditorAvailable = false;
 busy = true;
 const beforeMissingEditorStop = stopClicks;
 assert.equal(run(`composer('${url}', 'prepare')`), 'busy', 'a unique Stop is usable when the editor is absent');
-assert.equal(stopClicks, beforeMissingEditorStop);
+assert.equal(stopClicks, beforeMissingEditorStop + 1, 'missing editor still permits exact Stop');
 containerAvailable = false;
 assert.equal(run(`composer('${url}', 'prepare')`), 'composer-unavailable', 'unidentified page-wide editor is refused');
 containerAvailable = true;
@@ -133,7 +133,7 @@ assert.equal(clicks, before, 'a worker restart cannot send the same pending mail
 run(`cancelled.add(bindingKey('${id}'))`);
 await run('check(bindings)');
 assert.equal(clicks, before);
-console.log('PASS: exact URL, draft/attachment protection, no Stop, cooldown, restart reservation, cancellation');
+console.log('PASS: exact URL, draft/attachment protection, Stop, cooldown, restart reservation, cancellation');
 
 const nextId = '22222222-2222-4222-8222-222222222222';
 const originalBatchFetch = context.fetch;
@@ -627,7 +627,7 @@ for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['d
   let executions = 0;
   context.chrome.scripting.executeScript = async ({args}) => {
     executions++;
-    if (args[1] === 'inspect') return [{result:{outcome:'ready'}}];
+    if (args[1] === 'inspect' || args[1] === 'prepare') return [{result:{outcome:'ready'}}];
     if (outcome === 'throw') throw Error('injected execution failure');
     return [{result:outcome === undefined ? undefined : {outcome}}];
   };
@@ -680,7 +680,7 @@ for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-
       assert.equal(run(`cancelled.has(bindingKey('${id}'))`), true, 'legacy read fences before first migration save settles');
     }
     if (boundary === 'failed-save') throw Error('injected save failure');
-    if (boundary === 'reservation' && next.minimalBindings[0].wakeAttempt && !removal) cancel();
+    if (boundary === 'reservation' && next.minimalBindings[0].stoppedIds?.length && !removal) cancel();
     await realSave(next);
   };
   if (boundary === 'failed-save') {
