@@ -283,7 +283,7 @@ class ReviewResult(ClosedModel):
             raise ValueError("nonterminal review result cannot expose verdict evidence")
         if not self.next_action:
             value = {
-                "FINDINGS": "Evaluate and disposition each exact finding against evidence. For accepted defects only, make the smallest authorized clearing change; request bounded independent focused review through the explicitly paired Codex, or Codex established by Marco if unpaired. Preserve this review_id and accepted finding_ids; do not start a new formal review_request, silently accept a reviewer remedy, or expand scope.",
+                "FINDINGS": "Evaluate and disposition each exact finding against evidence. For accepted defects only, make the smallest authorized clearing change; request bounded independent focused review through the explicitly paired Codex, or Codex established by Marco if unpaired. Preserve this review_id and accepted finding_ids; do not start a new formal review_request, silently accept a reviewer remedy, or permit scope expansion.",
                 "PASS": "PASS is evidence, not scope or effect authority. Read the subject work with work_get, recover its concrete post-review step from the current authorized plan, record review_next_action, and perform that step now. Do not end the turn merely because review passed.",
                 "BLOCKED": "Resolve the stated blocker or replan; do not start another broad review automatically.",
                 "SUBMITTED": "Reviewer verdict submitted. Do not call requester-only review_get. Resume other currently assigned inbound review work, or close this review-only assignment only when its terminal condition is truly met.",
