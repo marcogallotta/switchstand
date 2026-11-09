@@ -95,7 +95,10 @@ async function source(path) {
 async function poll(name) {
   const p = await source('/poll?name=' + encodeURIComponent(name));
   if (typeof p.name !== 'string' || !p.name.trim() || !UUID.test(p.endpoint) || !Number.isInteger(p.generation) || p.generation < 1 ||
-      !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id))) throw Error('Invalid mailbox identity');
+      !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id)) ||
+      (p.available_delivery_ids !== undefined && (!Array.isArray(p.available_delivery_ids) ||
+        p.available_delivery_ids.some(id => !UUID.test(id) || !p.delivery_ids.includes(id)))))
+    throw Error('Invalid mailbox identity');
   return p;
 }
 function composer(url, action, diagnostic = false) {
@@ -121,6 +124,7 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
+      if (document.querySelector('[data-testid="remove-file-button"]')) return result('draft-present', 'attachment-present');
       const stop = stopsWithoutEditor[0];
       const stopping = action === 'prepare' && !stop.disabled && stop.getAttribute('aria-disabled') !== 'true';
       if (stopping) stop.click();
@@ -200,6 +204,7 @@ async function check(bindings, onlyId, manual = false) {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
       b.pending = p.delivery_ids;
+      b.stoppedIds = (b.stoppedIds || []).filter(id => p.delivery_ids.includes(id));
       if (b.ids && !validIds(b.ids)) { b.uncertain = true; b.status = 'Needs manual reconciliation'; continue; }
       if (validIds(b.ids) && b.ids.every(id => !p.delivery_ids.includes(id))) retireBatch(b);
       if (!p.delivery_ids.length) {
@@ -214,20 +219,22 @@ async function check(bindings, onlyId, manual = false) {
       if (!tab) { b.status = 'Chat not open'; continue; }
       if (tab.discarded || tab.frozen) { b.status = 'Chat suspended'; continue; }
       if (b.uncertain) { b.status = 'Wake outcome unknown'; continue; }
-      const freshIds = p.delivery_ids.filter(id => !b.seen?.includes(id));
+      const available = p.available_delivery_ids ?? p.delivery_ids;
+      const freshIds = available.filter(id => !b.seen?.includes(id));
       if (!freshIds.length) { b.status = 'Already nudged'; continue; }
       b.ids = [...new Set([...(b.ids || []), ...freshIds])];
       const initialBlock = budgetBlock(b, manual);
       if (initialBlock) { b.status = initialBlock; continue; }
+      const needsStop = freshIds.some(id => !b.stoppedIds.includes(id));
       await save(bindings);
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
-        const action = tick === 0 ? 'prepare' : b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
+        const action = b.status === 'ready' ? 'send' : tick === 0 && needsStop ? 'prepare' : 'wait';
         if (action === 'send') {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);
           stage = 'execution-failed';
           if (fresh.endpoint !== b.id || fresh.generation !== b.generation) { b.status = 'Mailbox identity changed'; break; }
-          if (!fresh.delivery_ids.some(id => b.ids.includes(id))) { b.status = 'Pending batch changed'; break; }
+          if (!(fresh.available_delivery_ids ?? fresh.delivery_ids).some(id => b.ids.includes(id))) { b.status = 'Pending batch changed'; break; }
           if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
           const block = await reserveSend(b, bindings, manual);
           if (block) { b.status = block; break; }
@@ -239,6 +246,8 @@ async function check(bindings, onlyId, manual = false) {
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
+        if (b.wakeAttempt.detail === 'stop-requested')
+          b.stoppedIds = [...new Set([...b.stoppedIds, ...freshIds])];
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
         if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;

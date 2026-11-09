@@ -221,6 +221,9 @@ try {
   await evaluate(session,`document.getElementById('composer-wrap').innerHTML='<button data-testid="stop-button">Stop</button>';window.stops=0;document.querySelector('button').onclick=()=>stops++`);
   assert.equal(await compose('prepare'),'busy','missing editor with one visible Stop is treated as busy');
   assert.equal(await evaluate(session,'stops'),1,'busy composer without editor still clicks unique Stop');
+  await evaluate(session,`document.getElementById('composer-wrap').innerHTML='<button data-testid="stop-button">Stop</button><button data-testid="remove-file-button">file</button>';window.stops=0;document.querySelector('[data-testid="stop-button"]').onclick=()=>stops++`);
+  assert.equal(await compose('prepare'),'draft-present','no-editor attachment blocks Stop');
+  assert.equal(await evaluate(session,'stops'),0,'attachment cannot interrupt an agent');
   await evaluate(session,`document.getElementById('composer-wrap').outerHTML=${JSON.stringify('<div id="thread-bottom-container"></div><div data-composer-body style="display:none"><div role="textbox" contenteditable="true"></div></div><div data-composer-body><div role="textbox" contenteditable="true"></div><button type="button" aria-label="Send">Send</button></div>')}`);
   await evaluate(session,`document.querySelector('button[aria-label="Send"]').onclick=()=>{const editor=document.querySelectorAll('[role="textbox"]')[1];submissions.push(editor.textContent);editor.textContent=''}`);
   assert.equal(await compose('prepare'),'waiting','current ChatGPT contenteditable composer accepts wake text');
