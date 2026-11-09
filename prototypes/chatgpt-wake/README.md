@@ -60,8 +60,11 @@ an observation timestamp, mailbox endpoint/generation, pending count (absent if
 unavailable), exact blocker, uncertainty flag, and last browser action with its
 own identity/timestamps/result. An older action is history, not a fresh attempt;
 `click-attempted` does not prove ChatGPT accepted or processed the prompt.
-`uncertain-wake` means automatic action is fenced; `manual-reconciliation`
-means that fence remains even though mail is now empty.
+`uncertain-wake` and `manual-reconciliation` are recorded diagnostic reasons,
+not proof that a message was accepted or that automatic wakes stay fenced
+forever. A prior ambiguous Send remains UNKNOWN in history; fresh validated
+AVAILABLE mail can be retried after the persisted cooldown, while a possible
+Stop click stays fenced for the same still-pending delivery.
 
 `browser_wake incident` identifies the alert and phase; the matching
 `browser_wake alert` records queued/stale/denied/unavailable results and reasons.
