@@ -966,7 +966,9 @@ def build_ordinary_tools(
         audited("implementation_request", str(package_work_id), result.status)
         return result
 
-    async def review_request(
+    # Preserve the legacy implementation for existing review semantics;
+    # this nested handler is intentionally absent from ordinary tool registration.
+    async def review_request(  # pyright: ignore[reportUnusedFunction]
         api_version: Literal["1"], subject_work_id: UUID,
         observed_revision: Annotated[str, Field(min_length=1)], review_kind: ReviewKind,
         candidate_ref: Annotated[str | None, Field(min_length=1, max_length=500)] = None,

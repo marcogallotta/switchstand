@@ -38,7 +38,11 @@ from switchstand.grants import PrincipalContext
 from switchstand.managed_identity import rotate_managed_grant
 from switchstand.messages import MessageState, messages
 from switchstand.reviews import (
-    ReviewGuidelines, ReviewOccurrenceState, ReviewPolicy, ReviewRequest, ReviewService,
+    ReviewGuidelines,
+    ReviewOccurrenceState,
+    ReviewPolicy,
+    ReviewRequest,
+    ReviewService,
 )
 from switchstand.state import PostgresState, metadata
 from switchstand.tracker.events import WorkEventRepository
@@ -489,16 +493,14 @@ async def test_notification_attention_process_and_returned_review_over_real_http
         transport = StreamableHttpTransport(endpoint + "/mcp", auth="fixed-bearer")
         async with Client(transport) as client:
             assert "review_request" not in {tool.name for tool in await client.list_tools()}
-            try:
-                rejected = await client.call_tool_mcp("review_request", {
-                    "api_version": "1", "subject_work_id": work_id,
-                    "observed_revision": observed["item"]["revision"],
-                    "review_kind": "CODE",
-                }, meta={"openai/session": "receiver"})
-            except Exception as error:
-                assert "review_request" in str(error)
-            else:
-                assert rejected.is_error
+            rejected = await client.call_tool_mcp("review_request", {
+                "api_version": "1", "subject_work_id": work_id,
+                "observed_revision": observed["item"]["revision"],
+                "review_kind": "CODE",
+            }, meta={"openai/session": "receiver"})
+            assert rejected.is_error
+            assert any("review_request" in getattr(item, "text", "")
+                       for item in rejected.content)
         engine = create_async_engine(url)
         try:
             mailboxes = AgentMailboxState(engine)
