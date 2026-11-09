@@ -555,6 +555,24 @@ class MessageState:
                 return tuple(pending)
             cursor = page[-1]
 
+    async def wake_delivery_id_sets(
+        self, binding: AgentMailbox, *, observation_only: bool = False,
+    ) -> tuple[tuple[UUID, ...], tuple[UUID, ...]] | None:
+        """Read pending and not-yet-received wake IDs from one bound snapshot."""
+        async with self.engine.begin() as connection:
+            if not await self._current_agent_binding(connection, binding, lock=not observation_only):
+                return None
+            rows = (await connection.execute(select(
+                message_deliveries.c.delivery_id, message_deliveries.c.state,
+            ).where(
+                message_deliveries.c.recipient_work_id == binding.endpoint_id,
+                message_deliveries.c.state.in_(("AVAILABLE", "RECEIVED")),
+            ).order_by(message_deliveries.c.delivery_id))).all()
+            return (
+                tuple(row.delivery_id for row in rows),
+                tuple(row.delivery_id for row in rows if row.state == "AVAILABLE"),
+            )
+
     @asynccontextmanager
     async def pending_delivery_fence(
         self, binding: AgentMailbox, delivery_id: UUID,
