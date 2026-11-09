@@ -113,6 +113,18 @@ assert.deepEqual(saved.minimalBindings[0].stoppedIds, [id], 'Stop reservation su
 ctx.chrome.scripting.executeScript = execute;
 await vm.runInContext('load().then(check)', ctx);
 assert.equal(stopCount, 1, 'lost receipt never triggers a repeated Stop on the next check');
+// A browser may return an unrecognized outcome after clicking Stop. That is
+// not definitive evidence that no Stop occurred, so its reservation must stay.
+ctx.chrome.scripting.executeScript = async request => {
+  const reply = await execute(request);
+  return request.args[1] === 'prepare' ? [{result: {outcome: 'future-outcome'}}] : reply;
+};
+const unknownStop = await run({stopReleases:false});
+assert.equal(unknownStop.stopCount, 1, 'one Stop executed before unknown result');
+assert.deepEqual(saved.minimalBindings[0].stoppedIds, [id], 'unknown result cannot refund a possible Stop');
+ctx.chrome.scripting.executeScript = execute;
+await vm.runInContext('load().then(check)', ctx);
+assert.equal(stopCount, 1, 'unknown Stop result cannot interrupt twice');
 const withdrawn = await run({mailClearsOnStop:true});
 assert.equal(withdrawn.stopCount, 1);
 assert.equal(withdrawn.sendCount, 0, 'fresh poll refuses Send after mailbox becomes empty');

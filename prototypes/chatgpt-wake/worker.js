@@ -290,8 +290,11 @@ async function check(bindings, onlyId, manual = false) {
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
-        if (stopIds.length && b.wakeAttempt.detail !== 'stop-requested') {
-          // A definite no-Stop outcome need not fence future eligible attempts.
+        if (stopIds.length &&
+            (['waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status) ||
+             (b.status === 'busy' && b.wakeAttempt.detail === 'busy'))) {
+          // Refund only definite no-Stop outcomes; unknown browser results may
+          // hide a real Stop click and must preserve the durable reservation.
           b.stoppedIds = b.stoppedIds.filter(id => !stopIds.includes(id));
         }
         b.wakeAttempt.finished_at = new Date().toISOString();
