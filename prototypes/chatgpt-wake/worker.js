@@ -228,7 +228,7 @@ async function check(bindings, onlyId, manual = false) {
       const needsStop = freshIds.some(id => !b.stoppedIds.includes(id));
       await save(bindings);
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
-        const action = b.status === 'ready' ? 'send' : tick === 0 && needsStop ? 'prepare' : 'wait';
+        const action = tick === 0 && needsStop ? 'prepare' : b.status === 'ready' ? 'send' : 'wait';
         if (action === 'send') {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);

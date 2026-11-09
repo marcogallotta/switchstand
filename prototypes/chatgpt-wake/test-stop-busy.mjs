@@ -54,14 +54,15 @@ const ctx = vm.createContext({
 });
 vm.runInContext(code, ctx);
 async function run({hasMail=true, isBusy=true, initialDraft='', stopDisabled=false, stops=1, boundUrl=url,
-  stopReleases=true, mailClearsOnStop=false, available=null, editorAvailable=true, attachment=false}={}) {
+  stopReleases=true, mailClearsOnStop=false, available=null, editorAvailable=true, attachment=false,
+  initialStatus='busy'}={}) {
   pending = hasMail; busy = isBusy; draft = initialDraft; disabled = stopDisabled;
   stopCount = 0; sendCount = 0; sent = []; stopControls = stops; observed = 0;
   releaseBusy = stopReleases; clearPendingOnStop = mailClearsOnStop;
   availableIds = available; editorPresent = editorAvailable; attached = attachment;
   send.disabled = true;
   saved = {minimalBindings: [{id, name: 'mail', generation: 1, url: boundUrl,
-    armed: true, status: 'busy'}]}; // A stale previous busy status must not suppress Stop.
+    armed: true, status: initialStatus}]}; // Saved busy/ready status must not override current DOM.
   await vm.runInContext('load().then(check)', ctx);
   return {stopCount, sendCount, sent, status: saved.minimalBindings[0].status};
 }
@@ -72,6 +73,9 @@ assert.equal(success.sendCount, 1, 'one guarded Send follows Stop');
 const receivedOnly = await run({available:false});
 assert.equal(receivedOnly.stopCount, 0, 'RECEIVED-only mail must not trigger Stop when AVAILABLE list is empty');
 assert.equal(receivedOnly.sendCount, 0, 'RECEIVED-only mail must not be resent');
+const staleReady = await run({initialStatus:'ready'});
+assert.equal(staleReady.stopCount, 1, 'saved ready must not override a currently busy composer');
+assert.equal(staleReady.sendCount, 1, 'stale ready still completes Stop then mailbox Send');
 const noMail = await run({hasMail:false});
 assert.equal(noMail.stopCount, 0, 'no pending mail must not interrupt the agent');
 const wrongChat = await run({boundUrl:'https://chatgpt.com/c/other'});
@@ -94,4 +98,4 @@ assert.equal(stopCount, 1, 'the same unresolved delivery cannot click Stop again
 const withdrawn = await run({mailClearsOnStop:true});
 assert.equal(withdrawn.stopCount, 1);
 assert.equal(withdrawn.sendCount, 0, 'fresh poll refuses Send after mailbox becomes empty');
-console.log('PASS: P1 Stop→Send; two tabs, RECEIVED-only, wrong chat, draft, no-editor attachment, disabled, repeat-poll and fresh-mail guards');
+console.log('PASS: P1 Stop→Send; saved ready, two tabs, RECEIVED-only, wrong chat, draft, attachment, repeat-poll and fresh-mail guards');
