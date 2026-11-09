@@ -145,7 +145,11 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      return result('busy', 'busy');
+      if (document.querySelector('[data-testid="remove-file-button"]')) return result('draft-present', 'attachment-present');
+      const stop = stopsWithoutEditor[0];
+      const stopping = action === 'prepare' && !stop.disabled && stop.getAttribute('aria-disabled') !== 'true';
+      if (stopping) stop.click();
+      return result('busy', stopping ? 'stop-requested' : 'busy');
     }
     return result('composer-unavailable', !editor ? 'editor-missing' : 'form-missing');
   }
@@ -159,7 +163,9 @@ function composer(url, action, diagnostic = false) {
   const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
   if (stops.length) {
-    return result('busy', 'busy');
+    const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
+    if (stopping) stops[0].click();
+    return result('busy', stopping ? 'stop-requested' : 'busy');
   }
   if (action === 'inspect' && !draft) return result('waiting', 'editor-empty');
   if (action !== 'send' && action !== 'inspect' && !draft) {
@@ -221,6 +227,8 @@ async function check(bindings, onlyId, manual = false) {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
       b.pending = p.delivery_ids;
+      // Retain a Stop reservation only while its delivery still belongs to this mailbox.
+      b.stoppedIds = (b.stoppedIds || []).filter(id => p.delivery_ids.includes(id));
       if (validIds(b.ids) && b.ids.every(id => !p.delivery_ids.includes(id))) retireBatch(b);
       if (!p.available_delivery_ids.length) {
         b.status = p.delivery_ids.length ? 'Already nudged' : 'Armed';
@@ -243,10 +251,28 @@ async function check(bindings, onlyId, manual = false) {
       const [probe] = await chrome.scripting.executeScript({target: {tabId: tab.id},
         func: composer, args: [b.url, 'inspect', true]});
       b.status = probe?.result?.outcome || 'Unknown outcome';
-      if (!['ready', 'waiting'].includes(b.status)) continue;
+      if (!['ready', 'waiting', 'busy'].includes(b.status)) continue;
+      // A currently busy DOM overrides a saved 'ready' status. New eligible mail
+      // can interrupt once; an already stopped delivery may wait but cannot Stop twice.
+      const needsStop = p.available_delivery_ids.some(id => !b.stoppedIds.includes(id));
       await save(bindings);
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
-        const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
+        const action = tick === 0 && needsStop ? 'prepare' : b.status === 'ready' ? 'send' : 'wait';
+        let stopIds = [];
+        if (action === 'prepare' && needsStop) {
+          // The initial poll may be stale by the time Chrome can inspect the tab.
+          // Recheck the authoritative AVAILABLE set before interrupting a response.
+          stage = 'source-unavailable';
+          const fresh = await poll(b.name);
+          stage = 'execution-failed';
+          if (fresh.endpoint !== b.id || fresh.generation !== b.generation) { b.status = 'Mailbox identity changed'; break; }
+          stopIds = fresh.available_delivery_ids.filter(id => !b.stoppedIds.includes(id));
+          if (!stopIds.length) { b.status = 'Already nudged'; break; }
+          // Reserve first: a browser execution might click Stop but lose its receipt.
+          // Refund only after a definite response proving it did not click Stop.
+          b.stoppedIds = [...new Set([...b.stoppedIds, ...stopIds])];
+          await save(bindings);
+        }
         if (action === 'send') {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);
@@ -264,6 +290,13 @@ async function check(bindings, onlyId, manual = false) {
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
+        if (stopIds.length &&
+            (['waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status) ||
+             (b.status === 'busy' && b.wakeAttempt.detail === 'busy'))) {
+          // Refund only definite no-Stop outcomes; unknown browser results may
+          // hide a real Stop click and must preserve the durable reservation.
+          b.stoppedIds = b.stoppedIds.filter(id => !stopIds.includes(id));
+        }
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
         if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;

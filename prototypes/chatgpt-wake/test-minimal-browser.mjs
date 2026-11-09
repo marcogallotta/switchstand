@@ -92,10 +92,11 @@ try {
   const page = await command('Target.createTarget', {url: 'about:blank'});
   const session = await attach(page.targetId);
   const fixture = `<!doctype html><form><textarea id="prompt-textarea"></textarea>
-    <button type="button" data-testid="send-button" disabled>Send</button></form><script>
+    <button type="button" data-testid="stop-button" aria-label="Stop">Stop</button></form><script>
     window.submissions=[];window.stops=0;
     const editor=document.querySelector('textarea'), button=document.querySelector('button');
-    button.onclick=()=>{submissions.push(editor.value);editor.value='';button.disabled=true};
+    button.onclick=()=>{if(button.dataset.testid==='stop-button'){stops++;setTimeout(()=>{button.dataset.testid='send-button';button.disabled=true;button.removeAttribute('aria-label')},30)}
+      else {submissions.push(editor.value);editor.value='';button.disabled=true}};
     editor.oninput=()=>setTimeout(()=>{button.disabled=!editor.value.trim()},30);
     </script>`;
   const url = 'https://chatgpt.com/c/11111111-2222-4333-8444-555555555555';
@@ -146,7 +147,7 @@ try {
     await pause(50);
   }
   assert.deepEqual(await evaluate(session,'submissions'),['Process your mailbox'],'initial alarm dispatches exactly one wake');
-  assert.equal(await evaluate(session,'stops'),0,'wake never clicks Stop');
+  assert.equal(await evaluate(session,'stops'),1,'one Stop precedes mailbox Send');
   await evaluate(session,`document.querySelector('textarea').value='protected draft'`);
   await evaluate(workerSession,`load().then(check)`);
   assert.equal(await evaluate(session,`document.querySelector('textarea').value`),'protected draft');
@@ -186,7 +187,7 @@ try {
   const sendControl = attributes => `<button type="button" class="send" data-testid="send-button" ${attributes}>Send</button>`;
   const controlCases = [
     ['no Stop','',sendControl(''),'send','click-attempted',0,1],
-    ['one Stop',stopControl(''),sendControl(''),'prepare','busy',0,0],
+    ['one Stop',stopControl(''),sendControl(''),'prepare','busy',1,0],
     ['hidden Stop',stopControl('style="visibility:hidden"'),sendControl(''),'send','click-attempted',0,1],
     ['multiple Stops',stopControl('')+stopControl(''),sendControl(''),'prepare','busy',0,0],
     ...['disabled','aria-disabled="true"'].map(a=>['Stop '+a,stopControl(a),sendControl(''),'prepare','busy',0,0]),
@@ -196,7 +197,7 @@ try {
     ['attachment',stopControl(''),sendControl(''),'prepare','draft-present',0,0,'Process your mailbox','<button data-testid="remove-file-button">file</button>'],
     ['wrong URL',stopControl(''),sendControl(''),'send','wrong-conversation',0,0]
   ];
-  const missingEditorCases = [['enabled','', 'busy',0],['hidden','style="visibility:hidden"','composer-unavailable',0],
+  const missingEditorCases = [['enabled','', 'busy',1],['hidden','style="visibility:hidden"','composer-unavailable',0],
     ['multiple',null,'composer-unavailable',0],['disabled','disabled','busy',0],['aria-disabled','aria-disabled="true"','busy',0]];
   for (const kind of ['textarea','contenteditable','missing']) {
     const cases = kind === 'missing' ? missingEditorCases.map(([name,a,result,stops])=>[name, a===null?stopControl('')+stopControl(''):stopControl(a),'','prepare',result,stops,0]) : controlCases;
@@ -219,7 +220,10 @@ try {
   await evaluate(session,`document.getElementById('composer-wrap').setAttribute('data-testid','composer')`);
   await evaluate(session,`document.getElementById('composer-wrap').innerHTML='<button data-testid="stop-button">Stop</button>';window.stops=0;document.querySelector('button').onclick=()=>stops++`);
   assert.equal(await compose('prepare'),'busy','missing editor with one visible Stop is treated as busy');
-  assert.equal(await evaluate(session,'stops'),0);
+  assert.equal(await evaluate(session,'stops'),1,'missing editor unique Stop clicked');
+  await evaluate(session,`document.getElementById('composer-wrap').innerHTML='<button data-testid="stop-button">Stop</button><button data-testid="remove-file-button">file</button>';window.stops=0;document.querySelector('[data-testid="stop-button"]').onclick=()=>stops++`);
+  assert.equal(await compose('prepare'),'draft-present','no-editor attachment blocks Stop');
+  assert.equal(await evaluate(session,'stops'),0,'attachment cannot interrupt an agent');
   await evaluate(session,`document.getElementById('composer-wrap').outerHTML=${JSON.stringify('<div id="thread-bottom-container"></div><div data-composer-body style="display:none"><div role="textbox" contenteditable="true"></div></div><div data-composer-body><div role="textbox" contenteditable="true"></div><button type="button" aria-label="Send">Send</button></div>')}`);
   await evaluate(session,`document.querySelector('button[aria-label="Send"]').onclick=()=>{const editor=document.querySelectorAll('[role="textbox"]')[1];submissions.push(editor.textContent);editor.textContent=''}`);
   assert.equal(await compose('prepare'),'waiting','current ChatGPT contenteditable composer accepts wake text');
