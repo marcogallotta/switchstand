@@ -7,10 +7,17 @@ click **Add chat**. The
 extension verifies the mailbox and current tab in one action and rejects an
 already paired mailbox or conversation. Saved chats appear alphabetically.
 
-The extension polls pending delivery IDs about every 30 seconds. For an armed
-matching conversation it inserts `Process your mailbox` and clicks Send only
-when the composer is idle. It never clicks Stop, preserves an unrelated draft
-or attachment, and never opens a closed tab. Each saved nonempty batch permits
+The extension polls about every 30 seconds and **requires** the backend
+`available_delivery_ids` field (only mail not yet received by the agent).
+If the field is missing or malformed, the worker makes no Stop or Send
+attempt. Deploy the compatible backend poll contract in PR #1284 before
+installing this worker; the legacy mixed `delivery_ids` list cannot safely
+authorize an interruption. For an armed matching conversation it interrupts a busy ChatGPT response with one enabled,
+uniquely identified **Stop** click, waits for the composer to become idle, then
+inserts `Process your mailbox` and clicks Send. A fresh same-mailbox poll still
+precedes Send. It never stops the wrong conversation or a chat with no eligible
+mail, preserves an unrelated draft or attachment, and never opens a closed tab.
+Each saved nonempty batch permits
 three automatic Send reservations at least two minutes apart across restarts and
 all wake paths. An interrupted or ambiguous Send consumes its reservation;
 a proven no-click outcome refunds it. Joined delivery IDs retain the old budget.
@@ -45,6 +52,7 @@ any mail is pending; a fresh empty observation sends its recovery.
 Focused checks:
 
 ```sh
+node prototypes/chatgpt-wake/test-stop-busy.mjs
 node prototypes/chatgpt-wake/test-minimal.mjs
 node prototypes/chatgpt-wake/test-minimal-browser.mjs
 ```
