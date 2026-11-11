@@ -35,10 +35,11 @@ does not clear uncertainty or a batch budget. Neither action proves mailbox
 processing.
 
 
-Pending mail blocked by a closed tab is reported immediately to the local wake
-backend. A persistent draft or any continuously pending mailbox is reported
-after a minute of observation.
-The popup shows whether an alert was confirmed. An uncertain report retains its
+Closed chats remain paired and log a diagnostic observation without alerting anyone.
+Reopening the same exact URL lets normal polling resume, subject to the existing
+uncertainty fence. A persistent draft or continuously pending mail in an open chat
+qualifies for an alert after a minute of observation; closed time does not count.
+The popup retains historical alert confirmation, which does not establish current health. An uncertain report retains its
 incident identity for replay. A confirmed blocked incident remains active while
 any mail is pending; a fresh empty observation sends its recovery.
 
