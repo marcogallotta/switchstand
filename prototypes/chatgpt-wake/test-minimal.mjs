@@ -31,7 +31,7 @@ const context = vm.createContext({crypto: webcrypto, Date: Clock, console, URL, 
       (payload.observation ? observations : reports).push(payload);
       return {ok: true, json: async () => ({status: 'logged', alert: {status: alertStatus, reason: alertReason}})};
     }
-    return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id]})};
+    return {ok: true, json: async () => ({status: 'ok', report_token: 'fixture', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id], available_delivery_ids: [id]})};
   },
   chrome: {runtime: {id: 'test', onMessage: {addListener(handler) { handlers.push(handler); }}}, alarms: {create() {}, onAlarm: {addListener() {}}},
     storage: {local: {get: async () => structuredClone(state), set: async next => { state = {...state, ...structuredClone(next)}; }}},
@@ -40,7 +40,7 @@ vm.runInContext(source, context);
 const run = expression => vm.runInContext(expression, context);
 // Identity aliases are resolved by the backend; the worker must retain its canonical result.
 const originalIdentityFetch = context.fetch;
-const canonicalIdentity = {status: 'ok', name: 'ChatGPT extension', endpoint: id, generation: 1, delivery_ids: []};
+const canonicalIdentity = {status: 'ok', name: 'ChatGPT extension', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []};
 const addRequest = name => new Promise(resolve => handlers[0]({type: 'add', name, url, tabId: 1}, {id: 'test'}, resolve));
 for (const [httpStatus, body, expected] of [
   [403, {status: 'denied', reason: 'mailbox_not_found'}, 'Mailbox not found. Check the exact registered name.'],
@@ -124,7 +124,7 @@ await run('check(bindings)');
 const before = clicks;
 await run('check(bindings)');
 assert.equal(clicks, before, 'automatic poll cannot repeat uncertain wake');
-assert.equal(state.minimalBindings[0].sendBudget.auto, 1, 'click reserves a persisted automatic attempt');
+assert.equal(state.minimalBindings[0].retry.attempts, 1, 'click reserves a persisted retry attempt');
 assert.equal(state.minimalBindings[0].uncertain, undefined);
 const restartedAfterClick = vm.createContext({...context});
 vm.runInContext(source, restartedAfterClick);
@@ -139,12 +139,12 @@ const nextId = '22222222-2222-4222-8222-222222222222';
 const originalBatchFetch = context.fetch;
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config')
   ? originalBatchFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [nextId], available_delivery_ids: [nextId]})};
 run(`cancelled.clear(); globalThis.newBatch = {id: '${id}', name: 'mail', generation: 1, url: '${url}', armed: true, ids: ['${id}'], status: 'draft-present'}`);
 const beforeNewBatch = clicks;
 await run('check([newBatch])');
 assert.equal(clicks, beforeNewBatch + 1, 'a disjoint new batch can wake after a definite no-click');
-assert.equal(state.minimalBindings[0].ids[0], nextId);
+assert.equal(state.minimalBindings[0].retry.attempts, 1, 'new available mail receives its own guarded Send');
 context.fetch = originalBatchFetch;
 console.log('PASS: new pending IDs replace an old definitely unsent batch');
 
@@ -188,7 +188,7 @@ await run('report(alertBinding, [alertBinding])');
 assert.equal(reports.length, reportsBeforeStop, 'Stop suppresses alert');
 run(`cancelled.clear(); bindings[0].alertDone = true`);
 const originalFetch = context.fetch;
-context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})});
+context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})});
 await run('check(bindings)');
 assert.equal(run('bindings[0].uncertain'), undefined, 'fresh same-binding empty poll retires a validated batch');
 assert.equal(run('bindings[0].status'), 'Armed');
@@ -272,14 +272,17 @@ state = {wakeBindings: [{endpoint: id, name: 'mail', generation: 1, url, armed: 
 await run('load()');
 assert.equal(state.minimalBindings[0].uncertain, false, 'legacy seen IDs do not halt other mail');
 assert.deepEqual(state.minimalBindings[0].seen, [id]);
+const beforeSeenFetch = context.fetch;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id], available_delivery_ids: []})}
+  : beforeSeenFetch(request, options);
 const beforeSeen = clicks;
 await run('load().then(check)');
 assert.equal(clicks, beforeSeen, 'upgrade cannot resend a still-pending seen delivery');
-const beforeSeenFetch = context.fetch;
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config') ? beforeSeenFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId], available_delivery_ids: [nextId]})};
 await run('load().then(check)');
-assert.equal(clicks, beforeSeen + 1, 'new B wakes even while old seen A remains pending');
+assert.equal(clicks, beforeSeen + 1, 'new AVAILABLE B wakes even while RECEIVED A remains pending');
 context.fetch = beforeSeenFetch;
 console.log('PASS: legacy seen A stays fenced while new B can wake');
 
@@ -292,7 +295,7 @@ await run('load().then(check)');
 assert.equal(state.minimalBindings[0].alertDone, true, 'failed poll retains confirmed alert evidence');
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config')
   ? originalAlertFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId]})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, nextId], available_delivery_ids: [id, nextId]})};
 context.chrome.tabs.query = async () => [];
 const beforeDifferentBatch = reports.length;
 await run('load().then(check)');
@@ -305,7 +308,7 @@ assert.equal(reports.length, beforeUnconfirmed + 1, 'unconfirmed A replays its e
 assert.equal(reports.at(-1).incident.incident_id, oldAlert.incident_id);
 await run('load().then(check)');
 assert.equal(reports.length, beforeUnconfirmed + 1, 'confirmed incident covers the continuous pending episode');
-context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: [nextId]})});
+context.fetch = async () => ({ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: [nextId], available_delivery_ids: [nextId]})});
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: false, uncertain: true, alert: oldAlert, alertDone: true}]};
 const duplicate = await new Promise(resolve => handlers[0]({type: 'add', tabId: 1, name: 'mail', url}, {id: 'test'}, resolve));
 assert.match(duplicate.error, /already added/, 'Add cannot replace a prior pairing');
@@ -347,12 +350,18 @@ console.log('PASS: discarded and frozen tabs defer without losing a later wake')
 for (const marker of ['pendingSend', 'diagnostic', 'stopSendAttempt']) {
   state = {wakeBindings: [{endpoint: id, name: 'mail', generation: 1, url, armed: true, [marker]: {outcome: 'unknown'}}]};
   await run('load()');
-  assert.equal(state.minimalBindings[0].uncertain, true, `${marker} remains an uncertain legacy fence`);
+  assert.equal(state.minimalBindings[0].uncertain, true, `${marker} historical outcome remains UNKNOWN`);
   const beforeLegacy = clicks;
+  editor.value = '';
   await run('load().then(check)');
-  assert.equal(clicks, beforeLegacy, `${marker} cannot cause an automatic resend`);
+  assert.equal(clicks, beforeLegacy, `${marker}: migration guards an old possible Send`);
+  assert.equal(state.minimalBindings[0].priorUncertain, true, 'old unknown outcome retained as evidence');
+  assert.equal(state.minimalBindings[0].retry.lastAt, now);
+  now += 120001;
+  await run('load().then(check)');
+  assert.equal(clicks, beforeLegacy + 1, `${marker}: AVAILABLE mail wakes after conservative cooldown`);
 }
-console.log('PASS: legacy pending-send, diagnostic and stop-send uncertainty remains fenced');
+console.log('PASS: legacy pending-send uncertainty preserves evidence and 2-minute cooldown');
 
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true}]};
 const beforeRecovery = reports.length;
@@ -362,7 +371,7 @@ await run('load().then(check)');
 assert.equal(reports.length, beforeRecovery + 1);
 const blocked = reports.at(-1).incident;
 context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})}
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})}
   : recoveryFetch(request, options);
 alertStatus = 'unavailable';
 await run('load().then(check)');
@@ -383,7 +392,7 @@ console.log('PASS: empty mailbox reports one recovery and replays an uncertain r
 const staleReport = {id, name: 'mail', generation: 1, url, armed: true,
   status: 'Chat not open', report: 'Alert not confirmed', alertDone: true};
 const emptyReportPoll = async () => ({ok: true, json: async () =>
-  ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})});
+  ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})});
 state = {minimalBindings: [staleReport]};
 context.fetch = emptyReportPoll;
 await run('load().then(check)');
@@ -393,7 +402,7 @@ assert.equal(state.minimalBindings[0].alertDone, undefined, 'empty poll clears o
 for (const failedPoll of [
   async () => { throw Error('Mailbox service unavailable'); },
   async () => ({ok: true, json: async () =>
-    ({status: 'ok', name: 'mail', endpoint: nextId, generation: 1, delivery_ids: []})})]) {
+    ({status: 'ok', name: 'mail', endpoint: nextId, generation: 1, delivery_ids: [], available_delivery_ids: []})})]) {
   state = {minimalBindings: [staleReport]};
   context.fetch = failedPoll;
   await run('load().then(check)');
@@ -404,7 +413,7 @@ state = {minimalBindings: [{...staleReport, uncertain: true}]};
 context.fetch = emptyReportPoll;
 await run('load().then(check)');
 assert.equal(state.minimalBindings[0].uncertain, true, 'empty poll preserves uncertain Send fence');
-assert.equal(state.minimalBindings[0].status, 'Needs manual reconciliation');
+assert.equal(state.minimalBindings[0].status, 'Armed', 'empty AVAILABLE mailbox needs no retry');
 context.fetch = recoveryFetch;
 console.log('PASS: validated empty poll clears obsolete alert text; failures and uncertain Send stay fenced');
 
@@ -436,7 +445,7 @@ assert.equal(unsafeRemove.error, undefined, 'pending mail does not block local R
 assert.equal(state.minimalBindings.length, 2, 'Remove retains unresolved history');
 state.minimalBindings[0] = {id, name: 'mail', generation: 1, url, armed: true, uncertain: true, ids: [id], seen: [id]};
 context.fetch = async (request, options) => request.endsWith('/report') || request.endsWith('/config') ? originalFetch(request, options)
-  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})};
+  : {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []})};
 const emptyMailboxFetch = context.fetch; context.fetch = async () => { throw Error('offline'); };
 const removed = await new Promise(resolve => handlers[0]({type: 'remove', id}, {id: 'test'}, resolve));
 assert.equal(removed.error, undefined);
@@ -456,7 +465,8 @@ context.chrome.storage.local.set = addSave;
 const readd = await new Promise(resolve => handlers[0]({type: 'add', name: 'mail', tabId: 1, url: url + '-new'}, {id: 'test'}, resolve));
 assert.equal(readd.error, undefined);
 const fresh = state.minimalBindings.find(b => b.id === id);
-assert.deepEqual(fresh, {id, name: 'mail', generation: 1, url: url + '-new', armed: true, status: 'Armed', incarnation: fresh.incarnation});
+assert.deepEqual({...fresh, retry: undefined}, {id, name: 'mail', generation: 1, url: url + '-new', armed: true, status: 'Armed', incarnation: fresh.incarnation, retry: undefined});
+assert.deepEqual(fresh.retry, {attempts: 0, lastAt: 0}, 'new pairing begins with no prior attempts');
 assert.match(fresh.incarnation, /^[0-9a-f-]{36}$/);
 assert.deepEqual(state.minimalBindings.find(b => b.id === nextId), untouched);
 assert.equal(reports.length, backendReports, 'Add makes no backend writes');
@@ -543,7 +553,7 @@ const rearmRequest = m => new Promise(resolve => handlers[0](m, {id: 'test'}, re
 const rearmBinding = {id, name: 'mail', generation: 1, url, armed: false, uncertain: true,
   ids: [id], seen: [nextId], wakeAttempt: {id, action: 'send', started_at: new Date().toISOString()}, status: 'Wake outcome unknown'};
 const rearmMessage = {type: 'rearm', id, expectedAttempt: id};
-const emptyPoll = {status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []};
+const emptyPoll = {status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [], available_delivery_ids: []};
 let rearmPoll = emptyPoll;
 context.fetch = async (request, options) => request.includes('/poll?')
   ? {ok: true, json: async () => structuredClone(rearmPoll)} : originalFetch(request, options);
@@ -642,7 +652,7 @@ context.chrome.scripting.executeScript = savedScript;
 run('cancelled.clear()');
 console.log('PASS: registered popup Re-arm all; save failure, wrong sender, history, removed/cancelled, idempotence, zero inline I/O');
 
-// Independent result expectations; unknown/failed actions remain fenced after restart.
+// No-click outcomes refund reservations; uncertain attempts retain evidence and cooldown.
 const realExecution = context.chrome.scripting.executeScript;
 for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['draft-present',true],
   ['wrong-conversation',true],['composer-unavailable',true],['insert-failed',true],
@@ -651,20 +661,21 @@ for (const [outcome, safe] of [['busy',true],['waiting',true],['ready',true],['d
     alert:{incident_id:nextId}, alertDone:true};
   state = {minimalBindings:[structuredClone(seeded)]};
   let executions = 0;
-  context.chrome.scripting.executeScript = async () => {
+  context.chrome.scripting.executeScript = async ({args}) => {
     executions++;
+    if (args[1] === 'inspect') return [{result:{outcome:'ready'}}];
     if (outcome === 'throw') throw Error('injected execution failure');
     return [{result:outcome === undefined ? undefined : {outcome}}];
   };
   await run('load().then(check)');
-  assert.equal(Boolean(state.minimalBindings[0].uncertain), !safe, `fence: ${outcome}`);
+  assert.equal(state.minimalBindings[0].retry.attempts, safe ? 0 : 1, `Send reservation: ${outcome}`);
   for (const key of ['ids','seen','alert']) assert.deepEqual(state.minimalBindings[0][key],seeded[key]);
   if (!safe) {
     const callsBeforeRestart = executions;
     const fresh = vm.createContext({...context});
     vm.runInContext(source,fresh);
     await vm.runInContext('load().then(check)',fresh);
-    assert.equal(executions,callsBeforeRestart, `restart cannot repeat ${outcome}`);
+    assert.equal(executions,callsBeforeRestart, `restart respects cooldown: ${outcome}`);
   }
 }
 state = {minimalBindings:[{id,name:'mail',generation:1,url,armed:true}]};
@@ -720,7 +731,7 @@ for (const boundary of ['migration', 'reservation', 'diagnostic-config', 'alert-
 context.fetch = originalFetch; context.chrome.scripting.executeScript = realExecution;
 console.log('PASS: local Remove failure/restart, Resume/bulk fence and reservation/config races');
 
-// A persisted reservation is the authority for every automatic and manual entry point.
+// AVAILABLE-only retry is binding-wide: pickup stops nudges, later mail gets a chance.
 run('cancelled.clear()');
 editor.value = '';
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true}]};
@@ -728,39 +739,62 @@ const retryMessage = m => new Promise(resolve => handlers[0](m, {id: 'test'}, re
 const clickBase = clicks;
 await run('load().then(check)');
 assert.equal(clicks, clickBase + 1);
-assert.equal(state.minimalBindings[0].sendBudget.auto, 1);
-const firstBudget = structuredClone(state.minimalBindings[0].sendBudget);
-await retryMessage({type: 'resume-all'});
-await retryMessage({type: 'resume', id});
-await retryMessage({type: 'rearm-all'});
-assert.equal(clicks, clickBase + 1, 'all entry points share persisted cooldown');
-assert.deepEqual(state.minimalBindings[0].sendBudget, firstBudget);
+assert.equal(state.minimalBindings[0].retry.attempts, 1);
+const firstRetry = structuredClone(state.minimalBindings[0].retry);
+for (const type of ['resume-all', 'rearm-all']) await retryMessage({type});
+await retryMessage({type:'resume', id});
+assert.equal(clicks, clickBase + 1, 'Resume cannot bypass per-binding cooldown');
+assert.deepEqual(state.minimalBindings[0].retry, firstRetry);
 now += 120000;
 await run('load().then(check)');
-assert.equal(clicks, clickBase + 2);
+assert.equal(clicks, clickBase + 2, 'AVAILABLE mail retries after two minutes');
 const restartedRetry = vm.createContext({...context});
 vm.runInContext(source, restartedRetry);
-now += 120000;
+now += 239999;
 await vm.runInContext('load().then(check)', restartedRetry);
-assert.equal(clicks, clickBase + 3, 'worker restart retains the third reservation');
-now += 120000;
-await retryMessage({type: 'resume-all'});
-assert.equal(clicks, clickBase + 3, 'fourth automatic Send is blocked');
-assert.equal(state.minimalBindings[0].sendBudget.auto, 3);
-const batchId = state.minimalBindings[0].sendBudget.batchId;
-assert.match((await retryMessage({type: 'manual-send', id, expectedBatch: 'stale'})).error, /unavailable/i);
-const extra = await retryMessage({type: 'manual-send', id, expectedBatch: batchId});
-assert.equal(extra.result, 'click-attempted');
-assert.equal(clicks, clickBase + 4);
-assert.equal(state.minimalBindings[0].sendBudget.manualUsed, true);
-assert.match((await retryMessage({type: 'manual-send', id, expectedBatch: batchId})).error, /unavailable/i);
-await retryMessage({type: 'rearm-all'});
-await retryMessage({type: 'resume-all'});
-assert.equal(clicks, clickBase + 4, 'manual extra and global buttons cannot bypass cap');
+assert.equal(clicks, clickBase + 2, '4-minute backoff survives worker restart');
+now += 1;
+await run('load().then(check)');
+assert.equal(clicks, clickBase + 3);
+now += 240000;
+await run('load().then(check)');
+assert.equal(clicks, clickBase + 4, 'persistently AVAILABLE mail is not permanently capped');
 handlers.pop();
-console.log('PASS: three persisted automatic reservations, shared cooldown, capped fourth, one idempotent manual extra');
+console.log('PASS: binding-wide 2/4/4-minute retries, controls, and restart durability');
 
-// The browser may execute after the persisted reservation and before returning a receipt.
+// RECEIVED remains in legacy delivery_ids but is not eligible for another Send.
+const historicalFetch = context.fetch;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
+    delivery_ids: [id], available_delivery_ids: []})}
+  : historicalFetch(request, options);
+const beforeReceived = clicks;
+await run('load().then(check)');
+assert.equal(clicks, beforeReceived, 'RECEIVED A cannot be retried');
+assert.equal(state.minimalBindings[0].retry.attempts, 0, 'pickup resets exponential backoff');
+const lastSend = state.minimalBindings[0].retry.lastAt;
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
+    delivery_ids: [id, nextId], available_delivery_ids: [nextId]})}
+  : historicalFetch(request, options);
+await run('load().then(check)');
+assert.equal(clicks, beforeReceived, 'new B cannot bypass previous Send cooldown');
+assert.equal(state.minimalBindings[0].retry.lastAt, lastSend);
+now += 120001;
+await run('load().then(check)');
+assert.equal(clicks, beforeReceived + 1, 'new AVAILABLE B can wake while old RECEIVED A remains');
+context.fetch = async (request, options) => request.includes('/poll?')
+  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1,
+    delivery_ids: [id, nextId]})}
+  : historicalFetch(request, options);
+now += 300000;
+await run('load().then(check)');
+assert.equal(clicks, beforeReceived + 1, 'old backend without AVAILABLE field must fail closed');
+assert.equal(state.minimalBindings[0].status, 'Invalid mailbox identity');
+context.fetch = historicalFetch;
+console.log('PASS: only AVAILABLE IDs wake, new B after received A, and missing-field fail-closed');
+
+// Unknown browser Send outcome consumes a durable reservation, without permanent poisoning.
 state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true}]};
 editor.value = '';
 const crashBase = clicks;
@@ -770,40 +804,32 @@ context.chrome.scripting.executeScript = async args => {
   return normalScript(args);
 };
 await run('load().then(check)');
-assert.equal(state.minimalBindings[0].sendBudget.auto, 1, 'ambiguous browser execution consumes a reservation');
+assert.equal(state.minimalBindings[0].retry.attempts, 1);
 assert.equal(clicks, crashBase);
 const crashRestart = vm.createContext({...context});
 vm.runInContext(source, crashRestart);
 context.chrome.scripting.executeScript = normalScript;
 await vm.runInContext('load().then(check)', crashRestart);
-assert.equal(clicks, crashBase, 'restart cannot bypass the persisted cooldown');
-now += 120000;
+assert.equal(clicks, crashBase, 'restart cannot bypass ambiguous Send cooldown');
+now += 120001;
 await run('load().then(check)');
-assert.equal(clicks, crashBase + 1, 'retry becomes available after cooldown');
-console.log('PASS: lost browser receipt consumes budget and survives worker restart');
+assert.equal(clicks, crashBase + 1, 'uncertain Send cannot permanently block unreceived mail');
+assert.equal(state.minimalBindings[0].wakeAttempt.outcome, 'click-attempted');
+console.log('PASS: ambiguous browser execution is durable but does not fence all later mail');
 
-// Joined IDs retain the old budget; only a valid same-binding absence retires it.
-const joinedId = '33333333-3333-4333-8333-333333333333';
-const oldBudgetId = state.minimalBindings[0].sendBudget.batchId;
-context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: [id, joinedId]})}
-  : originalFetch(request, options);
-await run('load().then(check)');
-assert.equal(state.minimalBindings[0].sendBudget.batchId, oldBudgetId);
-assert.deepEqual(state.minimalBindings[0].ids, [id, joinedId]);
-context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 2, delivery_ids: []})}
-  : originalFetch(request, options);
-await run('load().then(check)');
-assert.equal(state.minimalBindings[0].sendBudget.batchId, oldBudgetId, 'changed generation cannot retire a batch');
-context.fetch = async (request, options) => request.includes('/poll?')
-  ? {ok: true, json: async () => ({status: 'ok', name: 'mail', endpoint: id, generation: 1, delivery_ids: []})}
-  : originalFetch(request, options);
-await run('load().then(check)');
-assert.equal(state.minimalBindings[0].sendBudget, undefined, 'same-binding absence retires validated saved IDs');
-assert.deepEqual(state.minimalBindings[0].seen, [id, joinedId]);
-state = {minimalBindings: [{id, name: 'mail', generation: 1, url, armed: true, uncertain: true}]};
-await run('load().then(check)');
-assert.equal(state.minimalBindings[0].uncertain, true, 'missing legacy IDs stay fenced even on empty poll');
-context.fetch = originalFetch;
-console.log('PASS: joined IDs, changed-binding poll, same-binding retirement, legacy missing-ID fence');
+// All saved bindings migrate, including old invalid timing, without inventing a safe prior Send.
+state = {minimalBindings: [
+  {id, name:'mail', generation:1, url, armed:true, ids:[id], uncertain:true,
+    sendBudget:{batchId:id, ids:[id], auto:3, manualUsed:false, lastAt:NaN}},
+  {id:nextId, name:'other', generation:1, url:'https://chatgpt.com/c/other', armed:false,
+    ids:[nextId], sendBudget:{batchId:nextId, ids:[nextId], auto:1, manualUsed:false, lastAt:now-1000}}
+]};
+await run('load()');
+assert.ok(state.minimalBindings.every(b => b.retry), 'migration processes every saved binding');
+assert.equal(state.minimalBindings[0].retry.attempts, 3);
+assert.equal(state.minimalBindings[0].priorUncertain, true);
+const seededTime = state.minimalBindings[0].retry.lastAt;
+assert.equal(seededTime, now, 'missing legacy timing seeds conservative cooldown');
+await run('load()');
+assert.equal(state.minimalBindings[0].retry.lastAt, seededTime, 'restart never slides migration timer');
+console.log('PASS: multi-binding migration retains prior unknown evidence and binding-wide cooldown');

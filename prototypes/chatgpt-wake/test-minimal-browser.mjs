@@ -25,7 +25,7 @@ const server = createServer(async (request, response) => {
   response.setHeader('Content-Type', 'application/json');
   response.end(JSON.stringify(path.endsWith('/config') ? {status:'ok',report_token:'isolated-fixture'} :
     path.endsWith('/report') ? {status:'logged',alert:{status:'queued'}} :
-    {status:'ok',name:'mail',endpoint:id,generation:1,delivery_ids:pendingIds}));
+    {status:'ok',name:'mail',endpoint:id,generation:1,delivery_ids:pendingIds, available_delivery_ids: pendingIds}));
 });
 server.listen(0, '127.0.0.1');
 await once(server, 'listening');
@@ -179,7 +179,7 @@ try {
   assert.ok(replacement && replacement.targetId !== worker.targetId, 'real MV3 worker restarted with a new target');
   let restartedSession = await attach(replacement.targetId);
   assert.equal(await evaluate(restartedSession,`Boolean(globalThis.__restartFenceProbe)`),false,'restart created a fresh execution context');
-  assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].sendBudget.auto)`),1,'reservation survived worker restart');
+  assert.equal(await evaluate(restartedSession,`load().then(bs=>bs[0].retry.attempts)`),1,'reservation survived worker restart');
   assert.equal(await evaluate(session,'submissions.length'),before,'worker restart did not repeat the wake');
   // Exercise the actual serialized function against hostile DOM controls.
   const stopControl = attributes => `<button type="button" class="stop" data-testid="stop-button" ${attributes}>Stop</button>`;
@@ -321,13 +321,9 @@ try {
   assert.deepEqual(rows.map(row=>row.text.split(':')[0]),['Alpha','Zulu'],'saved chats are alphabetical');
   assert.deepEqual(rows[0].buttons,['Resume','Remove'],'Stop is absent from the popup');
   await evaluate(popupSession, `(async()=>{await chrome.storage.local.set({minimalBindings:[{id:${JSON.stringify(id)},name:'mail',generation:1,url:${JSON.stringify(url)},armed:true,ids:[${JSON.stringify(id)}],sendBudget:{batchId:${JSON.stringify(id)},ids:[${JSON.stringify(id)}],auto:3,manualUsed:false,lastAt:Date.now()}}]});await show()})()`);
-  await evaluate(popupSession, `[...document.querySelectorAll('#bindings button')].find(b=>b.textContent==='Send one extra wake').click()`);
-  for(let attempt=0;attempt<50;attempt++) {
-    if((await evaluate(popupSession,`document.getElementById('status').textContent`)).includes('cooling down')) break;
-    await pause(50);
-  }
-  assert.match(await evaluate(popupSession,`document.getElementById('status').textContent`),/cooling down/,'manual rejection is visible in real popup');
-  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer guards, restart reservation, alert dedupe, popup rejection. Installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
+  assert.equal(await evaluate(popupSession, `[...document.querySelectorAll('#bindings button')].some(b=>b.textContent==='Send one extra wake')`),
+    false, 'obsolete manual extra Send control removed after cap retirement');
+  console.log('PASS isolated MV3 fixture: storage, alarm/poll, serialized composer guards, restart reservation, alert dedupe, no obsolete manual extra. Installed reload and live ChatGPT acceptance/pickup: NOT_RUN.');
 } catch (error) {
   console.error(error);
   throw error;
