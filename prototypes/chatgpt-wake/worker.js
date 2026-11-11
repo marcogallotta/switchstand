@@ -3,6 +3,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const cancelled = new Set();
 const bindingKey = (id, incarnation = null) => JSON.stringify([id, incarnation]);
 const COOLDOWN_MS = 2 * 60 * 1000;
+const LATER_RETRY_MS = 4 * 60 * 1000;
 const validIds = ids => Array.isArray(ids) && ids.length > 0 && ids.every(id => typeof id === 'string' && UUID.test(id));
 function retireBatch(b) {
   if (!validIds(b.ids)) return false;
@@ -10,32 +11,44 @@ function retireBatch(b) {
   delete b.ids; delete b.sendBudget; delete b.uncertain;
   return true;
 }
-function budgetBlock(b, manual = false) {
-  if (b.uncertain || !validIds(b.ids)) return 'Needs manual reconciliation';
-  const budget = b.sendBudget;
-  if (!budget) return manual ? 'Manual extra unavailable for this batch' : null;
-  if (!validIds(budget.ids) || !budget.ids.every(id => b.ids.includes(id)) ||
-      !UUID.test(budget.batchId || '') ||
-      !Number.isInteger(budget.auto) || budget.auto < 0 || budget.auto > 3 ||
-      !Number.isFinite(budget.lastAt)) return 'Needs manual reconciliation';
-  if (manual ? budget.auto < 3 || budget.manualUsed : budget.auto >= 3)
-    return manual ? 'Manual extra unavailable for this batch' : 'Automatic wake limit reached';
-  if (Date.now() - budget.lastAt < COOLDOWN_MS) return 'Wake cooling down';
-  return null;
+function migrateRetry(b) {
+  if (b.retry) return false;
+  const legacy = b.sendBudget;
+  const valid = legacy && validIds(b.ids) && validIds(legacy.ids) &&
+    legacy.ids.every(id => b.ids.includes(id)) &&
+    Number.isInteger(legacy.auto) && legacy.auto >= 0 && legacy.auto <= 3;
+  // Both the prior minimal format and old wakeBindings may contain an uncertain
+  // Send with no reliable timestamp. Preserve evidence without fencing new mail.
+  const possibleSend = Boolean(b.uncertain || b.wakeAttempt || b.legacySendEvidence || (legacy && !valid));
+  const attempts = !legacy ? (possibleSend ? 1 : 0) :
+    valid ? Math.max(legacy.auto, possibleSend ? 1 : 0) : 3;
+  const validTime = valid && Number.isFinite(legacy.lastAt) && legacy.lastAt > 0;
+  // One persisted migration-time guard avoids an immediate duplicate on upgrade.
+  b.retry = {attempts, lastAt: validTime ? legacy.lastAt : attempts ? Date.now() : 0};
+  if (legacy && !valid) b.uncertain = true;
+  if (possibleSend) b.priorUncertain = true; // Historical outcome remains UNKNOWN.
+  return true;
 }
-async function reserveSend(b, bindings, manual) {
-  const block = budgetBlock(b, manual);
+function budgetBlock(b) {
+  const retry = b.retry;
+  const delay = (retry?.attempts || 0) >= 2 ? LATER_RETRY_MS : COOLDOWN_MS;
+  return retry?.lastAt && Date.now() - retry.lastAt < delay ? 'Wake cooling down' : null;
+}
+async function reserveSend(b, bindings) {
+  const block = budgetBlock(b);
   if (block) return block;
-  b.sendBudget ||= {batchId: crypto.randomUUID(), ids: b.ids.slice(), auto: 0, manualUsed: false, lastAt: 0};
-  if (manual) b.sendBudget.manualUsed = true;
-  else b.sendBudget.auto++;
-  b.sendBudget.lastAt = Date.now();
+  b.retry ||= {attempts: 0, lastAt: 0};
+  b.retry.previousLastAt = b.retry.lastAt;
+  b.retry.lastAt = Date.now();
+  b.retry.attempts = Math.min(3, b.retry.attempts + 1);
   await save(bindings);
   return null;
 }
-async function refundSend(b, bindings, manual) {
-  if (manual) b.sendBudget.manualUsed = false;
-  else b.sendBudget.auto--;
+async function refundSend(b, bindings) {
+  if (!b.retry) return;
+  b.retry.attempts = Math.max(0, b.retry.attempts - 1);
+  b.retry.lastAt = b.retry.previousLastAt || 0;
+  delete b.retry.previousLastAt;
   await save(bindings);
 }
 const loggedObservations = new Map();
@@ -69,13 +82,22 @@ const exclusive = fn => { const result = queue.then(fn); queue = result.catch(()
 const save = minimalBindings => chrome.storage.local.set({minimalBindings});
 async function load() {
   const state = await chrome.storage.local.get(['minimalBindings', 'wakeBindings']);
-  if (Array.isArray(state.minimalBindings)) return state.minimalBindings;
+  if (Array.isArray(state.minimalBindings)) {
+    let migrated = false;
+    for (const binding of state.minimalBindings) migrated = migrateRetry(binding) || migrated;
+    if (migrated) await save(state.minimalBindings);
+    return state.minimalBindings;
+  }
   const bindings = (state.wakeBindings || []).map(b => {
     const ids = b.retryBudget?.ids || b.attemptIds;
+    const legacySendEvidence = Boolean(b.pendingSend || b.diagnostic || b.stopSendAttempt ||
+      b.attemptIds?.length || b.retryBudget?.usedRetries);
     return {id: b.endpoint, name: b.name, generation: b.generation, url: b.url, armed: Boolean(b.armed),
-      ids, seen: b.seen, uncertain: Boolean(b.halted || b.pendingSend || b.diagnostic || b.stopSendAttempt || b.attemptIds?.length || b.retryBudget?.usedRetries), status: b.status, alert: b.incident?.evidence,
+      ids, seen: b.seen, legacySendEvidence,
+      uncertain: Boolean(b.halted || legacySendEvidence), status: b.status, alert: b.incident?.evidence,
       alertDone: ['queued', 'recovery-pending'].includes(b.incident?.state)};
   });
+  bindings.forEach(migrateRetry);
   await save(bindings);
   return bindings;
 }
@@ -95,7 +117,9 @@ async function source(path) {
 async function poll(name) {
   const p = await source('/poll?name=' + encodeURIComponent(name));
   if (typeof p.name !== 'string' || !p.name.trim() || !UUID.test(p.endpoint) || !Number.isInteger(p.generation) || p.generation < 1 ||
-      !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id))) throw Error('Invalid mailbox identity');
+      !Array.isArray(p.delivery_ids) || p.delivery_ids.some(id => !UUID.test(id)) ||
+      !Array.isArray(p.available_delivery_ids) || p.available_delivery_ids.some(id => !UUID.test(id) || !p.delivery_ids.includes(id)))
+    throw Error('Invalid mailbox identity');
   return p;
 }
 function composer(url, action, diagnostic = false) {
@@ -121,7 +145,11 @@ function composer(url, action, diagnostic = false) {
   }
   if (!form || !editor) {
     if (!editor && stopsWithoutEditor.length === 1) {
-      return result('busy', 'busy');
+      if (document.querySelector('[data-testid="remove-file-button"]')) return result('draft-present', 'attachment-present');
+      const stop = stopsWithoutEditor[0];
+      const stopping = action === 'prepare' && !stop.disabled && stop.getAttribute('aria-disabled') !== 'true';
+      if (stopping) stop.click();
+      return result('busy', stopping ? 'stop-requested' : 'busy');
     }
     return result('composer-unavailable', !editor ? 'editor-missing' : 'form-missing');
   }
@@ -135,9 +163,12 @@ function composer(url, action, diagnostic = false) {
   const enabled = b => b && !b.disabled && b.getAttribute('aria-disabled') !== 'true';
   const stops = visible('[data-testid="stop-button"],button[aria-label="Stop" i],button[aria-label="Stop streaming" i]');
   if (stops.length) {
-    return result('busy', 'busy');
+    const stopping = action === 'prepare' && stops.length === 1 && enabled(stops[0]);
+    if (stopping) stops[0].click();
+    return result('busy', stopping ? 'stop-requested' : 'busy');
   }
-  if (action !== 'send' && !draft) {
+  if (action === 'inspect' && !draft) return result('waiting', 'editor-empty');
+  if (action !== 'send' && action !== 'inspect' && !draft) {
     editor.focus();
     if (textarea) {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(editor, text);
@@ -191,16 +222,22 @@ async function check(bindings, onlyId, manual = false) {
     if (!b.armed || b.removed || cancelled.has(bindingKey(b.id, b.incarnation)) || (onlyId && b.id !== onlyId)) continue;
     b.pending = null;
     let stage = 'source-unavailable', failure;
+    let currentAttempt = null;
     try {
       const p = await poll(b.name);
       if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
       b.pending = p.delivery_ids;
-      if (b.ids && !validIds(b.ids)) { b.uncertain = true; b.status = 'Needs manual reconciliation'; continue; }
+      // Retain a Stop reservation only while its delivery still belongs to this mailbox.
+      b.stoppedIds = (b.stoppedIds || []).filter(id => p.delivery_ids.includes(id));
       if (validIds(b.ids) && b.ids.every(id => !p.delivery_ids.includes(id))) retireBatch(b);
-      if (!p.delivery_ids.length) {
-        delete b.checked; delete b.since; b.status = b.uncertain ? 'Needs manual reconciliation' : 'Armed';
-        if (b.alert) b.recovering = true;
-        else { delete b.alertDone; delete b.report; }
+      if (!p.available_delivery_ids.length) {
+        b.status = p.delivery_ids.length ? 'Already nudged' : 'Armed';
+        if (!p.delivery_ids.length) {
+          delete b.checked; delete b.since;
+          if (b.alert) b.recovering = true;
+          else { delete b.alertDone; delete b.report; }
+        }
+        if (b.retry) b.retry.attempts = 0; // Retain last Send time across new mail.
         continue;
       }
       stage = 'execution-failed';
@@ -208,36 +245,62 @@ async function check(bindings, onlyId, manual = false) {
       const tab = tabs.find(t => t.url === b.url);
       if (!tab) { b.status = 'Chat not open'; continue; }
       if (tab.discarded || tab.frozen) { b.status = 'Chat suspended'; continue; }
-      if (b.uncertain) { b.status = 'Wake outcome unknown'; continue; }
-      const freshIds = p.delivery_ids.filter(id => !b.seen?.includes(id));
-      if (!freshIds.length) { b.status = 'Already nudged'; continue; }
-      b.ids = [...new Set([...(b.ids || []), ...freshIds])];
-      const initialBlock = budgetBlock(b, manual);
+      const initialBlock = budgetBlock(b);
       if (initialBlock) { b.status = initialBlock; continue; }
+      // Observe before mutating: an interrupted earlier prepare may have left a prompt.
+      const [probe] = await chrome.scripting.executeScript({target: {tabId: tab.id},
+        func: composer, args: [b.url, 'inspect', true]});
+      b.status = probe?.result?.outcome || 'Unknown outcome';
+      if (!['ready', 'waiting', 'busy'].includes(b.status)) continue;
+      // A currently busy DOM overrides a saved 'ready' status. New eligible mail
+      // can interrupt once; an already stopped delivery may wait but cannot Stop twice.
+      const needsStop = p.available_delivery_ids.some(id => !b.stoppedIds.includes(id));
       await save(bindings);
       for (let tick = 0; tick < 50 && !cancelled.has(bindingKey(b.id, b.incarnation)); tick++) {
-        const action = b.status === 'ready' ? 'send' : b.status === 'busy' ? 'wait' : 'prepare';
+        const action = tick === 0 && needsStop ? 'prepare' : b.status === 'ready' ? 'send' : 'wait';
+        let stopIds = [];
+        if (action === 'prepare' && needsStop) {
+          // The initial poll may be stale by the time Chrome can inspect the tab.
+          // Recheck the authoritative AVAILABLE set before interrupting a response.
+          stage = 'source-unavailable';
+          const fresh = await poll(b.name);
+          stage = 'execution-failed';
+          if (fresh.endpoint !== b.id || fresh.generation !== b.generation) { b.status = 'Mailbox identity changed'; break; }
+          stopIds = fresh.available_delivery_ids.filter(id => !b.stoppedIds.includes(id));
+          if (!stopIds.length) { b.status = 'Already nudged'; break; }
+          // Reserve first: a browser execution might click Stop but lose its receipt.
+          // Refund only after a definite response proving it did not click Stop.
+          b.stoppedIds = [...new Set([...b.stoppedIds, ...stopIds])];
+          await save(bindings);
+        }
         if (action === 'send') {
           stage = 'source-unavailable';
           const fresh = await poll(b.name);
           stage = 'execution-failed';
           if (fresh.endpoint !== b.id || fresh.generation !== b.generation) { b.status = 'Mailbox identity changed'; break; }
-          if (!fresh.delivery_ids.some(id => b.ids.includes(id))) { b.status = 'Pending batch changed'; break; }
+          if (!fresh.available_delivery_ids.length) { b.status = 'Already nudged'; break; }
           if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
-          const block = await reserveSend(b, bindings, manual);
+          const block = await reserveSend(b, bindings);
           if (block) { b.status = block; break; }
         }
         if (action !== 'send') b.uncertain = true;
-        b.wakeAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
+        b.wakeAttempt = currentAttempt = {id: crypto.randomUUID(), action, started_at: new Date().toISOString()};
         await save(bindings);
         if (cancelled.has(bindingKey(b.id, b.incarnation))) break;
         const [receipt] = await chrome.scripting.executeScript({target: {tabId: tab.id}, func: composer, args: [b.url, action, true]});
         b.status = receipt?.result?.outcome || 'Unknown outcome';
         if (receipt?.result?.detail) b.wakeAttempt.detail = receipt.result.detail;
+        if (stopIds.length &&
+            (['waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status) ||
+             (b.status === 'busy' && b.wakeAttempt.detail === 'busy'))) {
+          // Refund only definite no-Stop outcomes; unknown browser results may
+          // hide a real Stop click and must preserve the durable reservation.
+          b.stoppedIds = b.stoppedIds.filter(id => !stopIds.includes(id));
+        }
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = actionOutcomes.includes(b.status) ? b.status : 'unknown-outcome';
         if (['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) delete b.uncertain;
-        if (action === 'send' && ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) await refundSend(b, bindings, manual);
+        if (action === 'send' && ['busy', 'waiting', 'ready', 'draft-present', 'wrong-conversation', 'composer-unavailable', 'insert-failed'].includes(b.status)) await refundSend(b, bindings);
         await save(bindings);
         if (!['busy', 'waiting', 'ready'].includes(b.status)) break;
         await new Promise(resolve => setTimeout(resolve, 100));
@@ -245,7 +308,7 @@ async function check(bindings, onlyId, manual = false) {
     } catch (e) {
       b.status = e.message;
       failure = observationReasons[b.status] || stage;
-      if (b.wakeAttempt && !b.wakeAttempt.finished_at && stage === 'execution-failed') {
+      if (currentAttempt && b.wakeAttempt === currentAttempt && !currentAttempt.finished_at && stage === 'execution-failed') {
         b.wakeAttempt.finished_at = new Date().toISOString();
         b.wakeAttempt.outcome = 'execution-failed';
       }
@@ -263,7 +326,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   exclusive(async () => {
     await fence;
     const bindings = await load();
-    if (['resume', 'rearm', 'remove', 'manual-send'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
+    if (['resume', 'remove'].includes(m.type) && !bindings.some(matches)) throw Error('Chat changed; reopen the popup');
     if (m.type === 'add') {
       if (!validUrl(m.url) || !m.name) throw Error('Open an exact ChatGPT conversation and enter its mailbox');
       if (!Number.isInteger(m.tabId)) throw Error('Current chat tab is unavailable');
@@ -276,29 +339,11 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
       if (bindings.some(b => collides(b) && !b.removed)) throw Error('Chat already added; use Resume');
       for (let i = bindings.length - 1; i >= 0; i--) if (collides(bindings[i])) bindings.splice(i, 1);
       bindings.push({id: p.endpoint, name: p.name, generation: p.generation, url: m.url, armed: true, status: 'Armed', incarnation: crypto.randomUUID()});
-    } else if (m.type === 'rearm') {
-      const b = bindings.find(b => b.id === m.id && !b.removed);
-      if (!b?.uncertain || m.expectedAttempt !== (b.wakeAttempt?.id || null)) throw Error('Uncertain wake changed; reopen the popup');
-      const p = await poll(b.name);
-      if (p.endpoint !== b.id || p.generation !== b.generation) throw Error('Mailbox identity changed');
-      if (p.delivery_ids.length || b.alert || cancelled.has(bindingKey(b.id, b.incarnation))) throw Error('Pending mail or alert must clear before Re-arm');
-      if (!retireBatch(b)) throw Error('Saved batch IDs are missing or invalid; manual reconciliation required');
-      b.uncertain = false;
-      b.armed = true;
-      b.status = 'Armed';
     } else if (m.type === 'rearm-all') {
       for (const b of bindings) {
         if (b.removed || cancelled.has(bindingKey(b.id, b.incarnation))) continue;
         b.armed = true;
       }
-    } else if (m.type === 'manual-send') {
-      const b = bindings.find(matches);
-      if (!b || b.removed || !b.armed || m.expectedBatch !== b.sendBudget?.batchId ||
-          b.sendBudget?.auto !== 3 || b.sendBudget.manualUsed) throw Error('Manual extra unavailable; reopen the popup');
-      const block = budgetBlock(b, true);
-      if (block) throw Error(block);
-      await check(bindings, b.id, true);
-      return {result: b.status};
     } else if (m.type === 'resume' || m.type === 'resume-all') {
       if (m.type === 'resume' && !bindings.some(b => b.id === m.id && !b.removed)) throw Error('Chat not found');
       for (const b of bindings) if (!b.removed && !cancelled.has(bindingKey(b.id, b.incarnation)) && (m.type === 'resume-all' || b.id === m.id)) b.armed = true;

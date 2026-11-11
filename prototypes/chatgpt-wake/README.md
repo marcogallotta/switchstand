@@ -7,33 +7,30 @@ click **Add chat**. The
 extension verifies the mailbox and current tab in one action and rejects an
 already paired mailbox or conversation. Saved chats appear alphabetically.
 
-The extension polls pending delivery IDs about every 30 seconds. For an armed
-matching conversation it inserts `Process your mailbox` and clicks Send only
-when the composer is idle. It never clicks Stop, preserves an unrelated draft
-or attachment, and never opens a closed tab. Each saved nonempty batch permits
-three automatic Send reservations at least two minutes apart across restarts and
-all wake paths. An interrupted or ambiguous Send consumes its reservation;
-a proven no-click outcome refunds it. Joined delivery IDs retain the old budget.
-A successful poll for the same mailbox binding retires a validated saved batch
-when all its IDs are absent. This resets the budget for later mail but does not
-prove that ChatGPT accepted the wake or processed the mail. Older uncertain rows
-with missing or invalid saved IDs stay fenced. **Resume** rechecks
-one chat; **Resume all** rechecks every saved chat. Neither clears an uncertain
-send or alert. **Remove** stops local wakes and hides the chat after saving,
-even offline or with pending mail/alerts. It retains backend mail and local safety history;
-Add can replace a removed mailbox or conversation with fresh local bookkeeping.
-Old popup buttons cannot affect the replacement. Backend mail/history stay intact. A click
-is not proof that ChatGPT processed mail. Already-dispatched wakes cannot be recalled.
-A failed Remove save is visible and fences this worker; restart may resume the saved chat.
+The extension polls about every 30 seconds and requires the backend's
+`available_delivery_ids` (only mail not yet RECEIVED). A missing or malformed
+field fails closed: no Stop or Send. Deploy the compatible backend poll contract
+(PR #1284) before installing this extension. The legacy `delivery_ids` list
+still includes RECEIVED mail for existing alert/recovery semantics.
 
-After three automatic reservations, the popup offers **Send one extra wake**
-for that chat and batch. It can be used once, follows the same cooldown and
-composer guards, and shows the result or refusal. **Re-arm** is one click for
-an older uncertain chat; it requires a fresh empty same-binding mailbox poll,
-validated saved IDs, and a resolved alert. **Re-arm all** arms saved chats but
-does not clear uncertainty or a batch budget. Neither action proves mailbox
-processing.
+For new AVAILABLE mail on an exact, armed, open paired ChatGPT conversation,
+the extension may click one unique enabled **Stop** button to interrupt a busy
+response, wait until the composer is idle, insert `Process your mailbox`, and
+click Send after rechecking the same mailbox's AVAILABLE deliveries. A durable
+per-delivery Stop fence prevents repeated interruption for the same mail even
+if the browser click result is uncertain. Wrong conversations, closed tabs,
+unrelated drafts, attachments and ambiguous controls are not modified.
 
+Wake retries use a per-chat cooldown: after a Send attempt, no earlier than
+2 minutes, then 4 minutes, then every 4 minutes while unreceived mail remains.
+The persisted binding-level clock survives restart, replacement and new mail;
+historical uncertain Send evidence is retained but does not permanently block
+new AVAILABLE deliveries. A click does not prove ChatGPT accepted or processed
+mail. **Resume** rechecks one chat; **Resume all** rechecks all saved chats.
+**Remove** hides a chat and fences local actions without deleting backend mail.
+Removed pairings can be replaced with fresh local binding state; stale popup
+buttons cannot change the new binding. Old one-extra-Send and Re-arm-per-chat
+workflows are retired. Re-arm all never clears recorded uncertainty.
 
 Pending mail blocked by a closed tab is reported immediately to the local wake
 backend. A persistent draft or any continuously pending mailbox is reported
@@ -45,6 +42,7 @@ any mail is pending; a fresh empty observation sends its recovery.
 Focused checks:
 
 ```sh
+node prototypes/chatgpt-wake/test-stop-busy.mjs
 node prototypes/chatgpt-wake/test-minimal.mjs
 node prototypes/chatgpt-wake/test-minimal-browser.mjs
 ```
