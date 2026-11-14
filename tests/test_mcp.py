@@ -364,11 +364,14 @@ async def test_managed_server_constructs_task_runs_but_defaults_deny(monkeypatch
     server = managed_mcp.server_from_env()
     assert constructed == [(engine, works)]
     assert "agent_task_request" in server._tool_manager._tools
+    schema = server._tool_manager.get_tool("agent_task_request").parameters["properties"]
+    assert schema["task_kind"].get("const", schema["task_kind"].get("enum")) == "VALIDATION"
+    assert schema["continuation"].get("const", schema["continuation"].get("enum")) == "START"
     result = await server.call_tool("agent_task_request", {
         "api_version": "1",
         "execution_work_id": str(ID),
         "observed_revision": "r1",
-        "task_kind": "INVESTIGATION",
+        "task_kind": "VALIDATION",
         "objective": "Prove the default grant remains inert.",
         "result_contract": {},
     })
