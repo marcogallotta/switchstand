@@ -1,0 +1,1 @@
+Bounded native worker sandbox proof, 2026-11-04. Disposable audit branch; never merge.
