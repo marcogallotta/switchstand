@@ -360,8 +360,8 @@ The current development path is operational but still has explicit ownership/tra
 - **Launch-source ownership:** isolated launch still uses `launch_source.py` for protected task-source parsing/readback;
   exact Git remote/ref verification/materialization is owned by `candidate.py`. Do not copy the transitional source
   bridge into new product code.
-- **Legacy source MCP:** raw `source_*` tools remain exposed for recovery/reference compatibility until neutral
-  replacement coverage and legacy-drain proof exist.
+- **Legacy source compatibility:** current MCP surfaces do not expose raw `source_*` tools; retained internal
+  provider and launch bridges are separate compatibility boundaries.
 - **Independent CONTROL reliance:** repository trust convergence routes isolated launch only through the external
   SHA-keyed selector and removes the candidate-local trusted launcher. Live ordinary-use reliance remains separately
   blocked until the installed selector path and ACTIVE CONTROL manifest are authorized and read back; no repository
