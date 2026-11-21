@@ -41,13 +41,75 @@ def test_process_start_token_handles_parentheses_in_command(tmp_path):
     assert process_start_token(123, tmp_path) == 42
 
 
-def test_stop_wrapper_uses_dependency_complete_repository_python(tmp_path):
+def test_stop_wrapper_rejects_unexpected_arguments(tmp_path):
     wrapper = Path(__file__).parents[1] / "scripts" / "switchstand-run-stop"
     completed = subprocess.run(
         [wrapper, "unexpected"], cwd=tmp_path, text=True, capture_output=True, check=False,
     )
     assert completed.returncode == 1
     assert completed.stderr.strip() == "usage: switchstand-run-stop"
+
+
+@pytest.fixture
+def stop_wrapper_repository(tmp_path, monkeypatch):
+    primary = tmp_path / "primary"
+    scripts = primary / "scripts"
+    scripts.mkdir(parents=True)
+    wrapper = scripts / "switchstand-run-stop"
+    source = Path(__file__).parents[1] / "scripts" / wrapper.name
+    wrapper.write_bytes(source.read_bytes())
+    wrapper.chmod(0o755)
+    linked = tmp_path / "linked"
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for args in (
+        ["init", "--template=", str(primary)],
+        ["-C", str(primary), "add", "scripts"],
+        ["-C", str(primary), "-c", "core.hooksPath=/dev/null", "-c", "user.name=Test",
+         "-c", "user.email=test@example.invalid", "commit", "-m", "wrapper fixture"],
+        ["-C", str(primary), "worktree", "add", "-b", "writer", str(linked)],
+    ):
+        subprocess.run(["git", *args], text=True, capture_output=True, check=True)
+    for path, identity in (
+        (primary / ".venv/bin/python", "COMMON"),
+        (linked / ".venv/bin/python", "LOCAL"),
+        (tmp_path / "bin/python3", "PATH"),
+    ):
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f'#!/bin/sh\nprintf "%s\\n" {identity} "$PWD" "$PYTHONPATH" "$@"\n'
+        )
+        path.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("PYTHONPATH", "inherited-decoy")
+    return primary, linked
+
+
+def test_stop_wrapper_dispatches_with_git_common_primary_python(stop_wrapper_repository, tmp_path):
+    _, linked = stop_wrapper_repository
+    completed = subprocess.run(
+        [linked / "scripts/switchstand-run-stop"], cwd=tmp_path,
+        text=True, capture_output=True, check=False,
+    )
+    assert completed.returncode == 0
+    assert completed.stderr == ""
+    assert completed.stdout.splitlines() == [
+        "COMMON", str(linked), str(linked / "src"), "-m", "switchstand.run",
+    ]
+
+
+def test_stop_wrapper_requires_common_primary_python_despite_decoys(
+    stop_wrapper_repository, tmp_path,
+):
+    primary, linked = stop_wrapper_repository
+    (primary / ".venv/bin/python").unlink()
+    completed = subprocess.run(
+        [linked / "scripts/switchstand-run-stop"], cwd=tmp_path,
+        text=True, capture_output=True, check=False,
+    )
+    assert completed.returncode == 1
+    assert completed.stderr == "run the documented bootstrap in the primary checkout first\n"
+    assert completed.stdout == ""
 
 
 def test_inspect_receipt_reports_running_stopped_lost_and_unknown(tmp_path):
